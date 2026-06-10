@@ -1370,6 +1370,119 @@ class Neo4jWriter:
         self.heal_resolved_unresolved_flags(odoo_version)
         return counts
 
+    def reconcile_same_name_inherits(self, odoo_version: str) -> int:
+        """MERGE any missing extender-to-definition INHERITS edges for odoo_version.
+
+        Background — topology change (#273, ADR new):
+        The writer (W1) now emits K×D edges: each extender Model node (same name,
+        is_definition=false) gets one INHERITS edge per definition node (is_definition=true)
+        of the same name+version.  Before this fix it emitted K² mesh edges.
+
+        Cross-repo write-order gap:
+        When an extender repo is indexed BEFORE the definition repo (no topo order between
+        repos, only within a single repo's module dependency tree), the definition node does
+        not exist at write time → the writer MATCH tip returns 0 rows → 0 edges created.
+        A subsequent index_repo run for the definition repo writes the definition node but
+        does NOT retroactively connect the extenders in other repos that were written earlier.
+
+        This post-pass reconciliation fills those gaps after all repos for the version have
+        been written.  It is designed to be:
+        - **Idempotent** (MERGE — safe to run twice, only creates missing edges).
+        - **Version-scoped** (odoo_version parameter — only touches the current run's version,
+          never scans the whole graph across all versions).
+        - **Safe in both incremental and full-reindex runs** (runs at the end of
+          _index_repo, after gc_unresolved_placeholders, for every version indexed in the run).
+
+        Selection criterion for "extender" (who gets a reconciled edge):
+        A Model node M is treated as an extender requiring reconciliation when ALL of:
+          1. M.odoo_version == odoo_version (version-scoped).
+          2. coalesce(M.is_definition, false) = false  (M is not the definition).
+          3. M.module <> '__unresolved__'  (skip placeholder nodes — gc handles them).
+          4. There exists at least one definition node D with the same name+version:
+             D.name = M.name, D.odoo_version = M.odoo_version,
+             coalesce(D.is_definition, false) = true, D.module <> M.module.
+          5. M does NOT already have an INHERITS edge to D (the gap to fill).
+
+        The Cypher MATCH for "extender has same-name out-edges" is NOT used as the criterion
+        (that would conflate cross-name parent edges with same-name self-extend edges).
+        Instead, the criterion is purely structural: name-match to a definition node and
+        missing edge.  This is correct because:
+        - If M is a pure cross-name extender (only has `_inherit['other.model']`), it will
+          have a different name from any definition, so condition 4 never matches → no
+          spurious edges created.
+        - If M is a same-name extender that was written before its definition existed, it may
+          have 0 same-name INHERITS out-edges currently → this pass creates the missing one.
+        - If M already has the correct extender→definition edge, condition 5 excludes it
+          from the MERGE → idempotent.
+
+        `r.order` on the new edge:
+        Prefer the minimum `r.order` from any existing same-name INHERITS out-edge on M
+        (preserves the MRO position recorded at write time if at least one edge exists).
+        Falls back to 0 when M has no same-name out-edges yet (cross-repo gap: no edge was
+        created at write time, so we use the "lowest priority" sentinel — consistent with
+        the writer's ON CREATE default for a model that only has `_inherit = ['own.name']`).
+
+        Failure policy:
+        Logs a WARNING and returns 0 on any Neo4j error — does NOT raise.  This mirrors
+        the auto-reseed pattern (ADR-0007): a post-pass failure should never abort the
+        indexer run; the graph is still correct up to this point, and the next run will
+        retry the reconciliation.
+
+        Returns the number of INHERITS edges created (0 if already complete or on error).
+        """
+        try:
+            with self.driver.session() as session:
+                row = session.run(
+                    f"""
+                    // For each extender Model that lacks an edge to its definition node,
+                    // determine the order to stamp on the new edge.
+                    MATCH (ext:Model)
+                    WHERE ext.odoo_version = $version
+                      AND NOT coalesce(ext.is_definition, false)
+                      AND ext.module <> '__unresolved__'
+                    // Collect the minimum order from any existing same-name out-edge
+                    // (there may be none if this is a pure cross-repo gap).
+                    OPTIONAL MATCH (ext)-[existing_r:{REL_INHERITS}]->(same_name:Model)
+                    WHERE same_name.name = ext.name
+                      AND same_name.odoo_version = ext.odoo_version
+                    WITH ext, min(existing_r.order) AS edge_order
+                    // Find the definition node(s) for this extender's model name.
+                    MATCH (def:Model)
+                    WHERE def.name = ext.name
+                      AND def.odoo_version = ext.odoo_version
+                      AND coalesce(def.is_definition, false) = true
+                      AND def.module <> ext.module
+                    WITH ext, def, edge_order
+                    // Only process pairs that are missing the edge (idempotency guard).
+                    WHERE NOT (ext)-[:{REL_INHERITS}]->(def)
+                    // MERGE creates the edge only when it does not already exist.
+                    MERGE (ext)-[r:{REL_INHERITS}]->(def)
+                    ON CREATE SET r.order = coalesce(edge_order, 0)
+                    RETURN count(r) AS created
+                    """,
+                    version=odoo_version,
+                ).single()
+                created = row["created"] if row is not None else 0
+                if created > 0:
+                    _logger.info(
+                        "Same-name INHERITS reconciliation: created %d edge(s) "
+                        "for version %s (cross-repo write-order gap fill)",
+                        created, odoo_version,
+                    )
+                else:
+                    _logger.debug(
+                        "Same-name INHERITS reconciliation: no gaps found for version %s",
+                        odoo_version,
+                    )
+                return created
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Same-name INHERITS reconciliation failed for version %s: %s — "
+                "indexer run continues; next run will retry",
+                odoo_version, exc,
+            )
+            return 0
+
     def heal_resolved_unresolved_flags(self, odoo_version: str) -> dict[str, int]:
         """Clear stale ``unresolved=true`` flags on already-resolved View/QWebTmpl nodes
         and their incident edges, scoped to ``odoo_version``.
