@@ -2723,10 +2723,15 @@ def test_grammar_consistency_all_tools(grammar_seed, idx):
     lines = out.splitlines()
     assert lines, f"{tool_name}: output is empty"
 
-    # Strip leading informational banners (V0 lint matcher, curate status).
+    # Strip leading informational banners (V0 lint matcher / V0.5 hybrid matcher,
+    # curate status). Updated for WI-6: banner wording changed from "V0 fuzzy
+    # matcher" to "Hybrid matcher (V0.5)" - both substrings must be recognised so
+    # the grammar check sees the header as the first non-banner line.
     def _is_banner(line: str) -> bool:
         return (
             "V0 fuzzy matcher" in line
+            or "Hybrid matcher" in line
+            or "V0.5" in line
             or "Spec data" in line
             and "pending curation" in line
         )

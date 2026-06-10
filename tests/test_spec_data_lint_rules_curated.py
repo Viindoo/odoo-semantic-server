@@ -1,14 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_spec_data_lint_rules_curated.py
-"""Acceptance tests for curated lint_rules_*.json static data files (WI-A4).
+"""Acceptance tests for curated lint_rules_*.json static data files (WI-A4/WI-8).
 
-Two tests:
-  1. test_each_version_has_curated_status_complete — all 12 versioned files
+Tests:
+  1. test_each_version_has_curated_status_complete - all 12 versioned files
      must have _curate_status == "complete" and len(rules) >= 10.
-  2. test_rule_schema_valid — every rule entry in every file must conform to
+  2. test_rule_schema_valid - every rule entry in every file must conform to
      lint_rule.schema.json (jsonschema validation).
+  3. WI-8 additions:
+     a. test_code_pattern_regex_compiles - every non-null code_pattern must
+        compile without error (re.compile).
+     b. test_code_pattern_no_redos_shape - reject patterns with naive nested
+        quantifier shapes e.g. (...+)+ that cause exponential backtracking.
+     c. test_code_pattern_cross_version_consistent - same rule_id in multiple
+        versions must carry the same code_pattern (no silent drift).
+     d. test_overlay_propagates_code_pattern - _apply_code_patterns_overlay
+        patches code_pattern from static JSON onto a synthetic live-parse list,
+        locking the overlay mechanism against future refactor regressions.
 """
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -204,3 +215,177 @@ class TestRuleSchemaValid:
         assert "kind" in required
         assert "message" in required
         assert "severity" in required
+
+
+# ---------------------------------------------------------------------------
+# WI-8 Test E: cross-version consistency + regex safety
+# ---------------------------------------------------------------------------
+
+class TestCodePatternDataIntegrity:
+    """WI-8 data integrity checks for code_pattern across all 12 version files."""
+
+    def _all_rules_with_patterns(self) -> list[tuple[str, str, str]]:
+        """Return [(version, rule_id, code_pattern)] for every non-null pattern."""
+        result = []
+        for version in _REQUIRED_VERSIONS:
+            data = _load_lint_file(version)
+            for r in data.get("rules", []):
+                if isinstance(r, dict) and r.get("code_pattern"):
+                    result.append((version, r["rule_id"], r["code_pattern"]))
+        return result
+
+    def test_code_pattern_regex_compiles(self):
+        """Every non-null code_pattern in every version file must compile via re.compile.
+
+        A broken regex in the data causes silent fallback to fuzzy matching for all
+        rules in that version during index-core. Compile-check at test time catches
+        typos early.
+        """
+        failures = []
+        for version, rule_id, pattern in self._all_rules_with_patterns():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                failures.append(
+                    f"  lint_rules_{version}.json {rule_id}: "
+                    f"code_pattern={pattern!r} - re.error: {exc}"
+                )
+        assert not failures, (
+            "The following code_pattern values fail re.compile:\n" + "\n".join(failures)
+        )
+
+    # Naive ReDoS shape detector: flag patterns that contain (...+)+ or (.*)*
+    # or (.+)+ forms at the string level. This is a simple string check, not a
+    # full ReDoS analyser - it catches the most common exponential-backtracking
+    # shapes documented in OWASP ReDoS guidance without requiring an external
+    # library. Legitimate complex alternations (e.g. (?:...)+) that happen to
+    # match the substring are also flagged conservatively.
+    _REDOS_SHAPE_RE = re.compile(r"\((?:[^()]*[+*])[^()]*\)[+*]")
+
+    def test_code_pattern_no_redos_shape(self):
+        """No code_pattern should contain naive nested quantifier shapes like (...+)+.
+
+        Such patterns cause exponential backtracking on adversarial input and can
+        make the MCP server hang during lint_check tool calls.
+        """
+        failures = []
+        for version, rule_id, pattern in self._all_rules_with_patterns():
+            if self._REDOS_SHAPE_RE.search(pattern):
+                failures.append(
+                    f"  lint_rules_{version}.json {rule_id}: "
+                    f"code_pattern={pattern!r} contains nested quantifier shape"
+                )
+        assert not failures, (
+            "The following code_pattern values contain ReDoS-prone nested quantifiers:\n"
+            + "\n".join(failures)
+        )
+
+    def test_code_pattern_cross_version_consistent(self):
+        """Same rule_id appearing in multiple version files must have identical code_pattern.
+
+        Silent drift (e.g. fixing a regex in v17 but not v16) causes inconsistent
+        behaviour across Odoo versions. Cross-version consistency is mandatory.
+        """
+        # Build: rule_id -> {pattern -> [versions]}
+        pattern_map: dict[str, dict[str, list[str]]] = {}
+        for version, rule_id, pattern in self._all_rules_with_patterns():
+            pattern_map.setdefault(rule_id, {}).setdefault(pattern, []).append(version)
+
+        failures = []
+        for rule_id, patterns_to_versions in pattern_map.items():
+            if len(patterns_to_versions) > 1:
+                # Multiple distinct patterns for same rule_id - drift detected.
+                details = "; ".join(
+                    f"{pattern!r} in {sorted(versions)}"
+                    for pattern, versions in sorted(patterns_to_versions.items())
+                )
+                failures.append(f"  {rule_id}: {details}")
+
+        assert not failures, (
+            "The following rule_ids have inconsistent code_pattern across versions:\n"
+            + "\n".join(failures)
+        )
+
+
+# ---------------------------------------------------------------------------
+# WI-8 Test D: overlay mechanism lock
+# ---------------------------------------------------------------------------
+
+class TestCodePatternOverlayMechanism:
+    """Lock the _apply_code_patterns_overlay post-pass against future refactor breakage.
+
+    The overlay is critical: live-parse rules (v17+) win the dedup race in
+    parse_lint_rules_for_version, so without the overlay their code_pattern would
+    remain None even when the static JSON has a pattern for the same rule_id.
+
+    This test exercises the overlay function directly with a synthetic live-parse
+    list so it does not require an Odoo source tree.
+    """
+
+    def test_overlay_patches_code_pattern_from_static_json(self):
+        """After overlay, a live-parse rule with code_pattern=None gets patched from static JSON.
+
+        Simulates: live-parse produced E8501 with code_pattern=None (because the
+        live-parse path does not read the static JSON patterns). The overlay must
+        patch E8501.code_pattern from the 17.0 static JSON.
+        """
+        from src.indexer.models import LintRuleInfo
+        from src.indexer.parser_lint_rules import _apply_code_patterns_overlay
+
+        # Synthetic live-parse rule - E8501 is present in lint_rules_17.0.json with a pattern.
+        live_parse_rule = LintRuleInfo(
+            rule_id="E8501",
+            odoo_version="17.0",
+            kind="pylint-odoo",
+            message="Possible SQL injection risk",
+            severity="error",
+            code_pattern=None,  # live-parse does not set this
+        )
+
+        # Verify precondition: E8501 exists in static JSON with a non-null pattern.
+        static_data = _load_lint_file("17.0")
+        static_e8501 = next(
+            (r for r in static_data.get("rules", []) if r["rule_id"] == "E8501"), None
+        )
+        assert static_e8501 is not None, "E8501 must be present in lint_rules_17.0.json"
+        assert static_e8501.get("code_pattern"), (
+            "E8501 must have a non-null code_pattern in lint_rules_17.0.json"
+        )
+        expected_pattern = static_e8501["code_pattern"]
+
+        rules = [live_parse_rule]
+        _apply_code_patterns_overlay(rules, "17.0", _SPEC_DATA_DIR)
+
+        assert rules[0].code_pattern == expected_pattern, (
+            f"Overlay must patch E8501.code_pattern from static JSON.\n"
+            f"Expected: {expected_pattern!r}\n"
+            f"Got: {rules[0].code_pattern!r}"
+        )
+
+    def test_overlay_does_not_overwrite_existing_pattern(self):
+        """If a rule already has a code_pattern, the overlay must not overwrite it.
+
+        The overlay uses an 'only set when None' policy so live-parse rules that
+        happen to define their own pattern are not silently replaced.
+        """
+        from src.indexer.models import LintRuleInfo
+        from src.indexer.parser_lint_rules import _apply_code_patterns_overlay
+
+        custom_pattern = r"custom_specific_pattern"
+        rule_with_own_pattern = LintRuleInfo(
+            rule_id="W8140",
+            odoo_version="17.0",
+            kind="pylint-odoo",
+            message="SQL injection risk",
+            severity="warning",
+            code_pattern=custom_pattern,  # already set - must be preserved
+        )
+
+        rules = [rule_with_own_pattern]
+        _apply_code_patterns_overlay(rules, "17.0", _SPEC_DATA_DIR)
+
+        assert rules[0].code_pattern == custom_pattern, (
+            f"Overlay must not overwrite an existing code_pattern.\n"
+            f"Expected: {custom_pattern!r}\n"
+            f"Got: {rules[0].code_pattern!r}"
+        )
