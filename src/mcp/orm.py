@@ -167,55 +167,67 @@ def _lookup_field(
         ttype, comodel = MAGIC_FIELDS[field]
         return {"ttype": ttype, "comodel": comodel, "source": "magic"}
 
-    # Step 3 — inherited/delegated fallback. Per-hop name-dedup BFS (issue #273):
-    # collect the DISTINCT ancestor model *names* one hop at a time (each hop
-    # collapses the K-duplicate same-name mesh to <=16 distinct names), tag each
-    # name with the nearest depth it was reached at, then join Field by name.
-    # This replaces the variable-length-path `*1..3` that anchored on all K
-    # duplicate Model nodes and enumerated 20-86M paths to find <=16 names.
+    # Step 3 — inherited/delegated fallback. Per-hop name-dedup BFS (issue #273,
+    # review r3 CRITICAL-1): collect the DISTINCT ancestor model *names* one hop
+    # at a time, tag each name with the nearest depth it was reached at, then
+    # join Field by name. This replaces the variable-length-path `*1..3` that
+    # anchored on all K duplicate Model nodes and enumerated 20-86M paths.
+    #
+    # TWO STRUCTURAL FIXES over the first cut (both empirically proven necessary
+    # on the un-cleaned prod K^2 mesh — review r3 measured 12.6s..TIMEOUT):
+    #
+    #   (1) PRUNE same-name DURING expansion, not only at the final WHERE. Each
+    #       per-hop MATCH adds `h<i>.name <> <expansion-source-name>`, so the BFS
+    #       never re-enters a same-name node and never re-expands the K-duplicate
+    #       mesh. Lossless on old data: every per-hop MATCH re-anchors by NAME on
+    #       ALL nodes of that name, so anything reachable via a same-name
+    #       intermediate is already reachable directly from that name's own
+    #       expansion (confirmed against prod). The first cut applied `pn <> $mn`
+    #       only at the end → hop1 still collected $mn (same-name edges) and
+    #       hop2/hop3 re-expanded from all K nodes across ~9.3k mesh edges.
+    #
+    #   (2) AGGREGATE to a SINGLE ROW before each subsequent hop. The anchor
+    #       `MATCH (start:Model {name:$mn,...})` returns K rows (97-237 on prod);
+    #       the old per-hop CALL subquery ran PER START ROW, multiplying every
+    #       hop by K. Folding each hop into a `WITH collect(DISTINCT ...)` over
+    #       all anchors yields one row carrying the deduped name list, so hop2
+    #       runs once over hop1's <=16 names, hop3 once over hop2's. Flat
+    #       OPTIONAL MATCH + WITH (no CALL subquery) — simplest shape that holds
+    #       the "run each hop once" invariant, and sidesteps the Neo4j 5.26
+    #       `CALL { WITH }` deprecation entirely.
     #
     # Predicates preserved (khaosat-273-orm.md §4.2):
     #   - odoo_version on every per-hop MATCH;
-    #   - NOT coalesce(<node>.unresolved, false) on the anchor AND every hop node
-    #     (tighter than the old VLP, which only filtered the terminal node);
+    #   - NOT coalesce(<node>.unresolved, false) on the anchor AND every hop node;
     #   - tenant scope choke ONLY on Field f via _scope_pred("f") (the single
     #     tenant boundary of step 3 — Model nodes carry no scope here);
-    #   - pn <> $mn excludes same-name "ancestors" (the unclean mesh).
+    #   - pn <> $mn at the final WHERE as defense-in-depth (redundant once same-
+    #     name is pruned during expansion, kept as a belt-and-braces guard).
     #
-    # Semantics CHANGE (flagged in PR): the old query ranked the winning field by
-    # parent.name ASC over the whole depth-1..3 set. This one is DEPTH-FIRST — a
-    # field on a nearer ancestor wins over a farther one; within the same depth
-    # the tiebreak is parent name ASC then f.module ASC. ORDER BY runs over the
-    # tiny (<=16 names x few Field rows) joined set, so it cannot force the full
-    # enumeration the old ORDER-BY-before-LIMIT did.
+    # Semantics (flagged in PR): DEPTH-FIRST — a field on a nearer ancestor wins
+    # over a farther one; within the same depth the tiebreak is parent name ASC
+    # then f.module ASC. ORDER BY runs over the tiny joined set.
     try:
         rows = session.run(
             _bounded(
                 """
                 MATCH (start:Model {name: $mn, odoo_version: $v})
                 WHERE NOT coalesce(start.unresolved, false)
-                CALL {
-                    WITH start
-                    MATCH (start)-[:INHERITS|DELEGATES_TO]->(h1:Model {odoo_version: $v})
-                    WHERE NOT coalesce(h1.unresolved, false)
-                    RETURN collect(DISTINCT h1.name) AS hop1
-                }
-                CALL {
-                    WITH hop1
-                    UNWIND hop1 AS pn1
-                    MATCH (:Model {name: pn1, odoo_version: $v})
-                          -[:INHERITS|DELEGATES_TO]->(h2:Model {odoo_version: $v})
-                    WHERE NOT coalesce(h2.unresolved, false)
-                    RETURN collect(DISTINCT h2.name) AS hop2
-                }
-                CALL {
-                    WITH hop2
-                    UNWIND hop2 AS pn2
-                    MATCH (:Model {name: pn2, odoo_version: $v})
-                          -[:INHERITS|DELEGATES_TO]->(h3:Model {odoo_version: $v})
-                    WHERE NOT coalesce(h3.unresolved, false)
-                    RETURN collect(DISTINCT h3.name) AS hop3
-                }
+                OPTIONAL MATCH (start)-[:INHERITS|DELEGATES_TO]->(h1:Model {odoo_version: $v})
+                WHERE NOT coalesce(h1.unresolved, false) AND h1.name <> $mn
+                WITH collect(DISTINCT h1.name) AS hop1
+                UNWIND (CASE WHEN size(hop1) = 0 THEN [null] ELSE hop1 END) AS pn1
+                OPTIONAL MATCH (:Model {name: pn1, odoo_version: $v})
+                      -[:INHERITS|DELEGATES_TO]->(h2:Model {odoo_version: $v})
+                WHERE pn1 IS NOT NULL AND NOT coalesce(h2.unresolved, false)
+                      AND h2.name <> pn1
+                WITH hop1, collect(DISTINCT h2.name) AS hop2
+                UNWIND (CASE WHEN size(hop2) = 0 THEN [null] ELSE hop2 END) AS pn2
+                OPTIONAL MATCH (:Model {name: pn2, odoo_version: $v})
+                      -[:INHERITS|DELEGATES_TO]->(h3:Model {odoo_version: $v})
+                WHERE pn2 IS NOT NULL AND NOT coalesce(h3.unresolved, false)
+                      AND h3.name <> pn2
+                WITH hop1, hop2, collect(DISTINCT h3.name) AS hop3
                 WITH [n IN hop1 | {name: n, depth: 1}]
                      + [n IN hop2 | {name: n, depth: 2}]
                      + [n IN hop3 | {name: n, depth: 3}] AS tagged
@@ -493,8 +505,7 @@ def _validate_depends(
                 _bounded(
                     """
                     MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
-                    WHERE ($own IS NULL OR (size(mth.profile) > 0
-                           AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
+                    WHERE """ + _scope_pred("mth") + """
                     RETURN mth.depends AS depends
                     """
                 ),
@@ -599,19 +610,28 @@ def _validate_relation(
             # Accept when the field's comodel is a subtype of target_model
             # (comodel INHERITS* target_model) — e.g. field -> a mixin's subtype.
             #
-            # Per-hop name-dedup over 5 INHERITS hops (issue #273): the old
-            # `MATCH (c)-[:INHERITS*1..5]->(t)` anchored on all K duplicate
-            # comodel nodes and enumerated the depth-5 mesh even in the common
-            # MISMATCH case (no subtype → exhaustive negative search). This
-            # collapses each hop to its DISTINCT ancestor names first, so the
-            # working set stays <=16 names per hop.
+            # Per-hop name-dedup over 5 INHERITS hops (issue #273, review r3
+            # CRITICAL-1): the old `MATCH (c)-[:INHERITS*1..5]->(t)` anchored on
+            # all K duplicate comodel nodes and enumerated the depth-5 mesh even
+            # in the common MISMATCH case (exhaustive negative search).
+            #
+            # Same TWO structural fixes as _lookup_field step-3:
+            #   (1) prune same-name DURING expansion — each hop adds
+            #       `h<i>.name <> <expansion-source-name>`, so the BFS never
+            #       re-enters the K-duplicate mesh (lossless: per-hop MATCH
+            #       re-anchors by name on ALL nodes of that name);
+            #   (2) aggregate to a SINGLE row before each subsequent hop via flat
+            #       OPTIONAL MATCH + WITH collect(DISTINCT ...) — the anchor's K
+            #       rows fold into one row up front, so each hop runs exactly
+            #       once instead of once-per-anchor-row. Flat shape also drops
+            #       the Neo4j 5.26 `CALL { WITH }` deprecation.
             #
             # Predicates preserved (khaosat-273-orm.md §4.2): INHERITS only (no
             # DELEGATES_TO); odoo_version on every MATCH; unresolved filter on
             # the anchor AND every hop node; _scope_pred("c") on the anchor and
             # _scope_pred("t") on the re-bound target (intermediate hops carry
-            # no scope, matching the original); pn <> $comodel excludes the
-            # same-name mesh; LIMIT 1, no ORDER BY (existence check).
+            # no scope, matching the original); pn <> $comodel as defense-in-depth
+            # at the final WHERE; LIMIT 1, no ORDER BY (existence check).
             try:
                 rec = session.run(
                     _bounded(
@@ -619,44 +639,33 @@ def _validate_relation(
                         MATCH (c:Model {{name: $comodel, odoo_version: $v}})
                         WHERE NOT coalesce(c.unresolved, false)
                           AND {_scope_pred("c")}
-                        CALL {{
-                            WITH c
-                            MATCH (c)-[:INHERITS]->(h1:Model {{odoo_version: $v}})
-                            WHERE NOT coalesce(h1.unresolved, false)
-                            RETURN collect(DISTINCT h1.name) AS hop1
-                        }}
-                        CALL {{
-                            WITH hop1
-                            UNWIND hop1 AS pn1
-                            MATCH (:Model {{name: pn1, odoo_version: $v}})
-                                  -[:INHERITS]->(h2:Model {{odoo_version: $v}})
-                            WHERE NOT coalesce(h2.unresolved, false)
-                            RETURN collect(DISTINCT h2.name) AS hop2
-                        }}
-                        CALL {{
-                            WITH hop2
-                            UNWIND hop2 AS pn2
-                            MATCH (:Model {{name: pn2, odoo_version: $v}})
-                                  -[:INHERITS]->(h3:Model {{odoo_version: $v}})
-                            WHERE NOT coalesce(h3.unresolved, false)
-                            RETURN collect(DISTINCT h3.name) AS hop3
-                        }}
-                        CALL {{
-                            WITH hop3
-                            UNWIND hop3 AS pn3
-                            MATCH (:Model {{name: pn3, odoo_version: $v}})
-                                  -[:INHERITS]->(h4:Model {{odoo_version: $v}})
-                            WHERE NOT coalesce(h4.unresolved, false)
-                            RETURN collect(DISTINCT h4.name) AS hop4
-                        }}
-                        CALL {{
-                            WITH hop4
-                            UNWIND hop4 AS pn4
-                            MATCH (:Model {{name: pn4, odoo_version: $v}})
-                                  -[:INHERITS]->(h5:Model {{odoo_version: $v}})
-                            WHERE NOT coalesce(h5.unresolved, false)
-                            RETURN collect(DISTINCT h5.name) AS hop5
-                        }}
+                        OPTIONAL MATCH (c)-[:INHERITS]->(h1:Model {{odoo_version: $v}})
+                        WHERE NOT coalesce(h1.unresolved, false) AND h1.name <> $comodel
+                        WITH collect(DISTINCT h1.name) AS hop1
+                        UNWIND (CASE WHEN size(hop1) = 0 THEN [null] ELSE hop1 END) AS pn1
+                        OPTIONAL MATCH (:Model {{name: pn1, odoo_version: $v}})
+                              -[:INHERITS]->(h2:Model {{odoo_version: $v}})
+                        WHERE pn1 IS NOT NULL AND NOT coalesce(h2.unresolved, false)
+                              AND h2.name <> pn1
+                        WITH hop1, collect(DISTINCT h2.name) AS hop2
+                        UNWIND (CASE WHEN size(hop2) = 0 THEN [null] ELSE hop2 END) AS pn2
+                        OPTIONAL MATCH (:Model {{name: pn2, odoo_version: $v}})
+                              -[:INHERITS]->(h3:Model {{odoo_version: $v}})
+                        WHERE pn2 IS NOT NULL AND NOT coalesce(h3.unresolved, false)
+                              AND h3.name <> pn2
+                        WITH hop1, hop2, collect(DISTINCT h3.name) AS hop3
+                        UNWIND (CASE WHEN size(hop3) = 0 THEN [null] ELSE hop3 END) AS pn3
+                        OPTIONAL MATCH (:Model {{name: pn3, odoo_version: $v}})
+                              -[:INHERITS]->(h4:Model {{odoo_version: $v}})
+                        WHERE pn3 IS NOT NULL AND NOT coalesce(h4.unresolved, false)
+                              AND h4.name <> pn3
+                        WITH hop1, hop2, hop3, collect(DISTINCT h4.name) AS hop4
+                        UNWIND (CASE WHEN size(hop4) = 0 THEN [null] ELSE hop4 END) AS pn4
+                        OPTIONAL MATCH (:Model {{name: pn4, odoo_version: $v}})
+                              -[:INHERITS]->(h5:Model {{odoo_version: $v}})
+                        WHERE pn4 IS NOT NULL AND NOT coalesce(h5.unresolved, false)
+                              AND h5.name <> pn4
+                        WITH hop1, hop2, hop3, hop4, collect(DISTINCT h5.name) AS hop5
                         WITH hop1 + hop2 + hop3 + hop4 + hop5 AS all_names
                         UNWIND all_names AS pn
                         WITH DISTINCT pn
