@@ -136,24 +136,48 @@ class TestLintCheckPendingDataShowsCurationBanner:
             f"Hard 'NOT a clean bill' must not appear when rules are present:\n{out}"
         )
 
-    def test_lint_check_no_banner_when_curate_status_done(
+    def test_lint_check_no_banner_when_curate_status_done_and_rules_present(
         self, banner_writer, neo4j_driver,
     ):
-        """No curation banner when curate_status = 'done'.
+        """A non-'pending', non-empty version emits NEITHER disclosure banner.
 
-        _BANNER_V2 was seeded with curate_status='pending' + no rules earlier, so
-        it will hit Tier-1. This test uses _BANNER_V2 which has pending+no-rules,
-        but what matters is checking that a 'done' version has no pending banner.
-        We re-use _BANNER_V2 seeded as 'done' after the earlier fixture runs.
+        Business rule: only ``curate_status == 'pending'`` (Tier-2) emits the soft
+        "pending curation" banner, and only an empty rule set / missing status
+        (Tier-1) emits the hard "NOT a clean bill" warning. Any OTHER status
+        (e.g. the legacy 'done' alias) WITH rules present must fall through to
+        normal output (Tier-3) — no disclosure banner at all.
+
+        This test seeds >=1 LintRule for the version so it does NOT collapse into
+        the vacuous Tier-1 path (an earlier version of this test asserted on a
+        no-rules version and therefore passed trivially regardless of status).
+        It now fails if 'done' were ever routed to Tier-2 (would add the pending
+        banner) or to Tier-1 (would add the hard warning despite rules existing).
         """
         import src.mcp.server as spec_tools
 
-        # Overwrite _BANNER_V2 as 'done' (no-op if already done).
+        # banner_writer is module-scoped, so reset _BANNER_V2 first (a sibling
+        # test seeds it as pending+no-rules) to keep this test order-independent.
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=_BANNER_V2,
+            )
+        banner_writer.write_lint_rules([
+            LintRuleInfo(
+                rule_id="W9997",
+                odoo_version=_BANNER_V2,
+                kind="pylint-odoo",
+                message="Placeholder lint rule for done-status test.",
+                severity="warning",
+            )
+        ])
         banner_writer.write_spec_metadata(
             kind="lint", odoo_version=_BANNER_V2, curate_status="done",
         )
         out = spec_tools._lint_check("x = 1", _BANNER_V2, language="python")
+        # Tier-2 soft banner absent.
         assert "pending curation" not in out.lower()
+        # Tier-1 hard warning absent (rules ARE present for this version).
+        assert "not a clean bill" not in out.lower()
 
 
 # ---------------------------------------------------------------------------

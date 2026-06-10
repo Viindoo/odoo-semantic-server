@@ -146,7 +146,7 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Use parameterized query: `cr.execute('SELECT ... WHERE id = %s', (record_id,))`.",
-      "code_pattern": "\\.execute\\s*\\(.*?[\"\\'].*?[\"\\'].*?%(?!\\s*\\()|\\bexecute\\s*\\(.*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
+      "code_pattern": "\\.execute\\s*\\([^)]*?[\"\\']\\s*%\\s(?!\\()|\\bexecute\\s*\\([^)]*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
     },
     {
       "rule_id": "W8141",
@@ -288,7 +288,7 @@
       "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "code_pattern": "\\bfields\\.Html\\s*\\("
+      "code_pattern": "\\bfields\\.Html\\s*\\((?![^)]*sanitize)"
     },
     {
       "rule_id": "W8179",

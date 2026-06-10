@@ -1191,6 +1191,18 @@ class Neo4jWriter:
         The per-repo Postgres advisory lock held by the caller (web_ui/routes/repos.py)
         guarantees no concurrent writes to the same repo+version pair during deletion.
 
+        Outer-tx timeout caveat (verified Neo4j 5.26.25, 2026-06-10): batching bounds
+        each INNER transaction, but the OUTER coordinating transaction of
+        CALL IN TRANSACTIONS is itself subject to db.transaction.timeout. Deleting a
+        very large repo (millions of nodes, hundreds of batches) whose TOTAL elapsed
+        exceeds the configured timeout (600s, see docs/operations/timeouts.md) will
+        have its outer tx terminated part-way. This is recoverable — already-committed
+        batches persist and a re-run resumes the delete (idempotent DETACH DELETE) —
+        but the Web UI surfaces a TransactionTimedOut error. For an exceptionally
+        large repo delete, temporarily raise/disable db.transaction.timeout
+        (CALL dbms.setConfigValue('db.transaction.timeout','0')) per the same
+        guidance as ops/cleanup_same_name_inherits_mesh.cypher.
+
         Returns: {"modules": N, "children": M} counts.
         """
         with self.driver.session() as session:
@@ -1390,8 +1402,15 @@ class Neo4jWriter:
         This post-pass reconciliation fills those gaps after all repos for the version have
         been written.  It is designed to be:
         - **Idempotent** (MERGE — safe to run twice, only creates missing edges).
-        - **Version-scoped** (odoo_version parameter — only touches the current run's version,
-          never scans the whole graph across all versions).
+        - **Version-scoped** (odoo_version parameter — only touches the current run's version).
+          Physical plan note: the driving ``MATCH (ext:Model) WHERE ext.odoo_version = $version``
+          carries no ``name`` predicate, so it is ONE :Model label scan filtered by version
+          (the Model(name, odoo_version) index needs a name anchor and cannot serve a
+          version-only filter). It does not scan other versions' rows beyond the label-scan
+          membership test, but on a large graph this is a per-run linear cost that grows with
+          the total :Model count. Acceptable under the 600s db.transaction.timeout for current
+          graph sizes; if it becomes a hotspot, scope by the run's module-name set or add a
+          Model(odoo_version) index (deferred — no new index added in this wave).
         - **Safe in both incremental and full-reindex runs** (runs at the end of
           _index_repo, after gc_unresolved_placeholders, for every version indexed in the run).
 

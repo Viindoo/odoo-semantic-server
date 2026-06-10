@@ -42,7 +42,7 @@
     },
     "code_pattern": {
       "type": ["string", "null"],
-      "description": "Python regex applied per-line for deterministic detection. Conventions: no nested quantifiers, no backreferences (ReDoS guard); case-sensitive; matched with re.search per line. Null when deterministic per-line detection is not feasible (e.g. rules requiring graph/cross-file context)."
+      "description": "Python regex applied per-line for deterministic detection. Conventions (ReDoS guard): no nested quantifiers ((.*)*), no sequential lazy quantifiers (.*?...*?...*?) which cause polynomial backtracking, no backreferences; prefer bounded character classes ([^)]*) over unbounded .* between anchors; case-sensitive; matched with re.search per line (the matcher also skips lines longer than its per-line length cap as a defence-in-depth bound). Null when deterministic per-line detection is not feasible (e.g. rules requiring graph/cross-file context)."
     }
   }
 }

@@ -34,8 +34,17 @@
 //        CALL { ... } IN TRANSACTIONS OF 10000 ROWS, which runs each inner
 //        batch as its own auto-commit transaction.  Inner transactions of 10 000
 //        rows complete well within 600 s.  HOWEVER, the outer coordinator
-//        transaction for CALL IN TRANSACTIONS has been reported to be subject
-//        to the global timeout on some Neo4j 5.x versions.
+//        transaction for CALL IN TRANSACTIONS IS subject to the global timeout.
+//
+//        VERIFIED on Neo4j 5.26.25 (testcontainer, 2026-06-10): with
+//        db.transaction.timeout = 3 s, a batched CALL IN TRANSACTIONS run whose
+//        total elapsed reached ~4 s was KILLED mid-run
+//        (Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration);
+//        the inner batches that had already committed persisted, the in-flight
+//        batch rolled back.  So on a large cleanup (~1.1 M edges) whose total
+//        wall-clock exceeds the configured timeout, the outer tx WILL be
+//        terminated part-way.  The script is idempotent (re-run resumes), but to
+//        complete in one pass you MUST raise or disable the timeout first.
 //
 //        To be safe, either:
 //
@@ -65,8 +74,14 @@
 // counts show 0 mesh edges and the DELETE / BACKFILL blocks are no-ops.
 //
 // PER-VERSION VARIANT: to process one version at a time (lower peak memory),
-// replace `AND a.odoo_version = a.odoo_version` lines with
-// `AND a.odoo_version = '17.0'` (or whichever version you want).
+// ADD a version predicate to the driving MATCH of each phase:
+//   Phase 1 (BACKFILL): add `AND ext.odoo_version = '17.0'` to the first
+//                       `MATCH (ext:Model) WHERE ...` block.
+//   Phase 2 (DELETE):   add `AND a.odoo_version = '17.0'` to the
+//                       `MATCH (a:Model)-[r:INHERITS]->(b:Model) WHERE ...` block.
+// (Replace '17.0' with whichever version you want.)  Do NOT touch the existing
+// `a.odoo_version = b.odoo_version` / `def.odoo_version = ext.odoo_version`
+// same-version predicates — those keep the cleanup within one version's nodes.
 // Run the full script once per version, then run VERIFY for each version.
 
 // ---------------------------------------------------------------------------
@@ -98,9 +113,11 @@
 // MATCH (def:Model)
 // WHERE def.name = ext.name AND def.odoo_version = ext.odoo_version
 //   AND coalesce(def.is_definition, false) AND def.module <> ext.module
-// WHERE NOT (ext)-[:INHERITS]->(def)
+//   AND NOT (ext)-[:INHERITS]->(def)
 // RETURN ext.odoo_version AS version, count(ext) AS extenders_missing_edge
 // ORDER BY version;
+// (NOTE: the two predicates are folded into ONE WHERE with AND — two
+//  consecutive WHERE clauses after a single MATCH is a Cypher syntax error.)
 
 // ---------------------------------------------------------------------------
 // PHASE 1: BACKFILL — create missing extender-to-definition edges
@@ -113,29 +130,37 @@
 // hundreds of thousands of extender+definition pairs in a single transaction
 // would violate the db.transaction.timeout and risk heap pressure.
 
-CALL {
-    MATCH (ext:Model)
-    WHERE NOT coalesce(ext.is_definition, false)
-      AND ext.module <> '__unresolved__'
-    // Collect the minimum order from any existing same-name out-edge on this
-    // extender.  This preserves the MRO position recorded at write time.
-    // Falls back to 0 when no such edge exists yet (pure cross-repo gap).
-    OPTIONAL MATCH (ext)-[existing_r:INHERITS]->(same_name:Model)
-    WHERE same_name.name = ext.name
-      AND same_name.odoo_version = ext.odoo_version
-    WITH ext, min(existing_r.order) AS edge_order
-    // Find the definition node(s) for this model name+version.
-    MATCH (def:Model)
-    WHERE def.name = ext.name
-      AND def.odoo_version = ext.odoo_version
-      AND coalesce(def.is_definition, false) = true
-      AND def.module <> ext.module
-    WITH ext, def, edge_order
-    // Only act on pairs that are missing the edge (idempotent).
-    WHERE NOT (ext)-[:INHERITS]->(def)
+// The MATCH chain is the OUTER driving query: it produces one row per
+// (extender, definition, edge_order) pair that is missing its edge.  The CALL
+// then batches those rows 10 000 at a time — `IN TRANSACTIONS OF n ROWS` splits
+// the INPUT rows from the outer query into separate transactions.  (If the MATCH
+// were INSIDE the CALL with no outer driving clause, the input would be a single
+// unit row and the whole MERGE would run in ONE transaction — batching would be
+// a no-op.  See delete_modules_scoped in writer_neo4j.py for the same shape.)
+MATCH (ext:Model)
+WHERE NOT coalesce(ext.is_definition, false)
+  AND ext.module <> '__unresolved__'
+// Collect the minimum order from any existing same-name out-edge on this
+// extender.  This preserves the MRO position recorded at write time.
+// Falls back to 0 when no such edge exists yet (pure cross-repo gap).
+OPTIONAL MATCH (ext)-[existing_r:INHERITS]->(same_name:Model)
+WHERE same_name.name = ext.name
+  AND same_name.odoo_version = ext.odoo_version
+WITH ext, min(existing_r.order) AS edge_order
+// Find the definition node(s) for this model name+version.
+MATCH (def:Model)
+WHERE def.name = ext.name
+  AND def.odoo_version = ext.odoo_version
+  AND coalesce(def.is_definition, false) = true
+  AND def.module <> ext.module
+  // Only act on pairs that are missing the edge (idempotent). Folded into the
+  // same WHERE with AND — two consecutive WHERE clauses after one MATCH is a
+  // Cypher syntax error.
+  AND NOT (ext)-[:INHERITS]->(def)
+WITH ext, def, edge_order
+CALL { WITH ext, def, edge_order
     MERGE (ext)-[r:INHERITS]->(def)
     ON CREATE SET r.order = coalesce(edge_order, 0)
-    RETURN count(r) AS backfilled
 } IN TRANSACTIONS OF 10000 ROWS;
 
 // ---------------------------------------------------------------------------
@@ -155,12 +180,14 @@ CALL {
 // consumes same-name edges with semantic meaning; R3/R4 explicitly filter
 // `p.name <> $name`).
 
-CALL {
-    MATCH (a:Model)-[r:INHERITS]->(b:Model)
-    WHERE a.name = b.name AND a.odoo_version = b.odoo_version
-      AND NOT coalesce(b.is_definition, false)
+// Same shape as Phase 1: the MATCH is the OUTER driving query (one row per mesh
+// edge `r`); the CALL batches those rows 10 000 at a time so each DELETE batch
+// is its own transaction and stays well under db.transaction.timeout.
+MATCH (a:Model)-[r:INHERITS]->(b:Model)
+WHERE a.name = b.name AND a.odoo_version = b.odoo_version
+  AND NOT coalesce(b.is_definition, false)
+CALL { WITH r
     DELETE r
-    RETURN count(r) AS deleted
 } IN TRANSACTIONS OF 10000 ROWS;
 
 // ---------------------------------------------------------------------------
