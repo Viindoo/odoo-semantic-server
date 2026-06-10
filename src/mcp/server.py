@@ -548,8 +548,9 @@ def offload(fn):
 # and validated at server startup by _validate_orm_env() — a value of 0 or an
 # acquire-timeout >= the Neo4j query timeout is rejected fail-fast there.
 #
-# A *threading* BoundedSemaphore (NOT asyncio.Semaphore) is used here, built at
-# module load. Rationale (the #276 / CRITICAL-2 fix):
+# A *threading* BoundedSemaphore (NOT asyncio.Semaphore) is used here, built
+# lazily on first ORM call (after init_dotenv() settles). Rationale (the
+# #276 / CRITICAL-2 fix):
 #   - A threading semaphore does not bind to an event loop, so there is no lazy
 #     init dance and no per-loop ownership to reason about.
 #   - acquire()/release() happen INSIDE the worker thread (see offload_bounded),
@@ -563,7 +564,40 @@ def offload(fn):
 #     frees it. This is the pool-drain protection #273/#276 require.
 #   - BoundedSemaphore (not plain) turns any over-release into an immediate
 #     ValueError instead of silent value inflation (HIGH #4).
-_orm_semaphore = threading.BoundedSemaphore(ORM_QUERY_MAX_CONCURRENCY)
+# Built LAZILY on first ORM call, NOT at import. ``config.init_dotenv()`` runs in
+# the __main__ block AFTER this module imports, so the import-time constant can be
+# stale for a value set ONLY in .env (a supported config path per ADR-0031). A
+# threading semaphore has no event-loop affinity, so first-use construction is
+# safe behind a plain lock (none of the lazy-per-loop dance the embed Semaphore
+# needs). Resolving the cap + acquire-timeout here too means the live semaphore,
+# the fast-reject window, and _validate_orm_env() all read the SAME post-dotenv
+# value — there is no import-time/.env mismatch to warn about (#275 LOW).
+_orm_semaphore: "threading.BoundedSemaphore | None" = None
+_orm_semaphore_lock = threading.Lock()
+_orm_cap_in_use: "int | None" = None
+_orm_slot_timeout_in_use: "float | None" = None
+
+
+def _resolve_orm_int(name: str, default: int) -> int:
+    """Post-dotenv int knob: env wins over the (possibly stale) import constant."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _resolve_orm_float(name: str, default: float) -> float:
+    """Post-dotenv float knob: env wins over the (possibly stale) import constant."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 class OrmOverloaded(RuntimeError):
@@ -577,12 +611,26 @@ class OrmOverloaded(RuntimeError):
 
 
 def _get_orm_semaphore() -> threading.BoundedSemaphore:
-    """Return the module-level threading BoundedSemaphore.
+    """Return the ORM threading BoundedSemaphore, building it once on first use.
 
-    Threading semaphores have no event-loop binding, so unlike the embed
-    Semaphore there is no lazy per-loop construction — this is a plain accessor
-    kept for test access and parity with _get_embed_semaphore().
+    Lazy so the cap honours a .env-only ORM_QUERY_MAX_CONCURRENCY (resolved after
+    init_dotenv() settles, not at import). The cap + acquire-timeout the live
+    semaphore was built with are cached in module globals so the hot path
+    (_run_in_thread) reads exactly the value the semaphore was sized for. A module
+    reload (as the tests do) resets the globals to None, so the next call rebuilds
+    from the freshly-set env — keeping test reconfiguration honest.
     """
+    global _orm_semaphore, _orm_cap_in_use, _orm_slot_timeout_in_use
+    if _orm_semaphore is None:
+        with _orm_semaphore_lock:
+            if _orm_semaphore is None:
+                _orm_cap_in_use = _resolve_orm_int(
+                    "ORM_QUERY_MAX_CONCURRENCY", ORM_QUERY_MAX_CONCURRENCY
+                )
+                _orm_slot_timeout_in_use = _resolve_orm_float(
+                    "ORM_SLOT_ACQUIRE_TIMEOUT", ORM_SLOT_ACQUIRE_TIMEOUT
+                )
+                _orm_semaphore = threading.BoundedSemaphore(_orm_cap_in_use)
     return _orm_semaphore
 
 
@@ -635,19 +683,29 @@ def offload_bounded(fn):
         # Runs entirely on the worker thread. The slot is acquired and released
         # here so its lifetime is bound to THIS thread, never to the (possibly
         # cancelled) caller coroutine. See THREAD-LIFETIME RELEASE above.
-        if not _orm_semaphore.acquire(timeout=ORM_SLOT_ACQUIRE_TIMEOUT):
+        # _get_orm_semaphore() also resolves the cap + acquire-timeout the
+        # semaphore was sized with (post-dotenv), so the reject window and the
+        # logged max match the live semaphore exactly.
+        sem = _get_orm_semaphore()
+        cap = _orm_cap_in_use if _orm_cap_in_use is not None else ORM_QUERY_MAX_CONCURRENCY
+        slot_timeout = (
+            _orm_slot_timeout_in_use
+            if _orm_slot_timeout_in_use is not None
+            else ORM_SLOT_ACQUIRE_TIMEOUT
+        )
+        if not sem.acquire(timeout=slot_timeout):
             # Saturated: fast-reject. Record metric + log here so cancel-storms
             # are never invisible (the coroutine may already be gone).
             _metric_orm_overloaded(tool_name)
             logger.warning(
                 "ORM tool overloaded — semaphore full (max %d): tool=%s %s",
-                ORM_QUERY_MAX_CONCURRENCY,
+                cap,
                 tool_name,
                 _orm_call_context(a, k),
             )
             raise OrmOverloaded(
                 "server busy — too many concurrent ORM-validation requests"
-                f" (max {ORM_QUERY_MAX_CONCURRENCY}); retry shortly"
+                f" (max {cap}); retry shortly"
             )
         try:
             return fn(*a, **k)
@@ -664,7 +722,7 @@ def offload_bounded(fn):
             )
             raise
         finally:
-            _orm_semaphore.release()
+            sem.release()
 
     @functools.wraps(fn)
     async def wrapper(*a, **k):

@@ -318,6 +318,82 @@ class TestCodePatternDataIntegrity:
             "a plain pattern must not be flagged as a backreference"
         )
 
+    # Sequential-lazy-quantifier detector: the schema description forbids
+    # "sequential lazy quantifiers (.*?...*?...*?) which cause polynomial
+    # backtracking". The dangerous shape is two or more UNBOUNDED dot-based lazy
+    # quantifiers (.*? / .+? / .??) in one matching path — bounded char-class
+    # lazies like [^)]*? do not blow up (they cannot cross their excluded char)
+    # and our curated W8140/E8501 patterns use those across SEPARATE `|`
+    # branches, so they are correctly NOT flagged. We split on top-level `|` and
+    # require >=2 unbounded dot-lazies within a single branch.
+    _DOT_LAZY_RE = re.compile(r"\.[*+?]\?")
+
+    @staticmethod
+    def _split_top_level_alternation(pattern: str) -> list[str]:
+        """Split a regex on `|` only at depth 0 (outside groups and char classes)."""
+        branches, depth, in_class, buf, i = [], 0, False, [], 0
+        while i < len(pattern):
+            c = pattern[i]
+            if c == "\\" and i + 1 < len(pattern):
+                buf.append(pattern[i:i + 2])
+                i += 2
+                continue
+            if in_class:
+                buf.append(c)
+                if c == "]":
+                    in_class = False
+            elif c == "[":
+                in_class = True
+                buf.append(c)
+            elif c == "(":
+                depth += 1
+                buf.append(c)
+            elif c == ")":
+                depth -= 1
+                buf.append(c)
+            elif c == "|" and depth == 0:
+                branches.append("".join(buf))
+                buf = []
+            else:
+                buf.append(c)
+            i += 1
+        branches.append("".join(buf))
+        return branches
+
+    def test_code_pattern_no_sequential_lazy_quantifiers(self):
+        """No code_pattern branch may chain >=2 unbounded dot-lazy quantifiers.
+
+        Locks the schema's "no sequential lazy quantifiers (.*?...*?...*?)"
+        clause — the polynomial-backtracking shape distinct from the nested
+        (.*)* shape already covered by test_code_pattern_no_redos_shape.
+        """
+        failures = []
+        for version, rule_id, pattern in self._all_rules_with_patterns():
+            for branch in self._split_top_level_alternation(pattern):
+                if len(self._DOT_LAZY_RE.findall(branch)) >= 2:
+                    failures.append(
+                        f"  lint_rules_{version}.json {rule_id}: branch {branch!r} "
+                        "chains >=2 unbounded dot-lazy quantifiers"
+                    )
+        assert not failures, (
+            "The following code_pattern branches contain sequential lazy "
+            "quantifiers (polynomial-backtracking risk):\n" + "\n".join(failures)
+        )
+
+    def test_sequential_lazy_detector_actually_fires(self):
+        """Sanity: the sequential-lazy detector must catch the schema's bad shape
+        and must NOT flag the safe bounded-lazy-in-separate-branches form."""
+        bad = ".*?foo.*?bar"
+        assert any(
+            len(self._DOT_LAZY_RE.findall(b)) >= 2
+            for b in self._split_top_level_alternation(bad)
+        ), "two sequential dot-lazies in one branch must be caught"
+        safe = r"\.execute\s*\([^)]*?x|\bexecute\s*\([^)]*?y"
+        assert all(
+            len(self._DOT_LAZY_RE.findall(b)) < 2
+            for b in self._split_top_level_alternation(safe)
+        ), "bounded [^)]*? lazies in separate branches must NOT be flagged"
+
     def test_code_pattern_cross_version_consistent(self):
         """Same rule_id appearing in multiple version files must have identical code_pattern.
 

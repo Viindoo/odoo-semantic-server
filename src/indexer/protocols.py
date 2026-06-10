@@ -117,18 +117,21 @@ class IndexWriterProtocol(Protocol):
         self, repo: str, odoo_version: str, live_paths: set[str],
     ) -> int: ...
 
-    def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]: ...
-    """DETACH DELETE '__unresolved__' placeholder nodes scoped to odoo_version."""
+    def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
+        """DETACH DELETE '__unresolved__' placeholder nodes scoped to odoo_version."""
+        ...
 
-    def gc_null_repo_dep_stubs(self, odoo_version: str) -> int: ...
-    """DETACH DELETE childless dep-stub Module nodes for odoo_version."""
+    def gc_null_repo_dep_stubs(self, odoo_version: str) -> int:
+        """DETACH DELETE childless dep-stub Module nodes for odoo_version."""
+        ...
 
-    def reconcile_same_name_inherits(self, odoo_version: str) -> int: ...
-    """MERGE missing extender-to-definition INHERITS edges (ADR-0048, #273).
+    def reconcile_same_name_inherits(self, odoo_version: str) -> int:
+        """MERGE missing extender-to-definition INHERITS edges (ADR-0048, #273).
 
-    Called once per version after ALL repos for that version are indexed.
-    Non-fatal on error (logs WARNING, returns 0). Idempotent (MERGE).
-    Concurrent same-version calls from --profile-workers can hit MERGE
-    deadlocks; warn-and-continue policy catches them but leaves silent gaps -
-    re-run or accept the miss (next full reindex fills it).
-    """
+        Called once per version after ALL repos for that version are indexed.
+        Non-fatal on error (logs WARNING, returns 0). Idempotent (MERGE).
+        Concurrent same-version calls from --profile-workers can hit MERGE
+        deadlocks; warn-and-continue policy catches them but leaves silent gaps -
+        re-run or accept the miss (next full reindex fills it).
+        """
+        ...
