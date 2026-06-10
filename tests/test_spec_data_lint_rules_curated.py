@@ -280,6 +280,44 @@ class TestCodePatternDataIntegrity:
             + "\n".join(failures)
         )
 
+    # Backreference detector: the schema description explicitly promises
+    # "no backreferences", which the ReDoS-shape test above did not cover.
+    # Catches numeric backrefs (\1-\9) and named backrefs ((?P=name)). A
+    # backreference forces the engine to revisit captured text and is a
+    # documented catastrophic-backtracking vector.
+    _BACKREF_RE = re.compile(r"\\[1-9]|\(\?P=")
+
+    def test_code_pattern_no_backreferences(self):
+        """No code_pattern may contain a backreference (schema description promise).
+
+        The lint_rule.schema.json code_pattern description states "no
+        backreferences". This locks the data to that contract — a numeric (\\1)
+        or named ((?P=x)) backreference in any curated pattern fails the test.
+        """
+        failures = []
+        for version, rule_id, pattern in self._all_rules_with_patterns():
+            if self._BACKREF_RE.search(pattern):
+                failures.append(
+                    f"  lint_rules_{version}.json {rule_id}: "
+                    f"code_pattern={pattern!r} contains a backreference"
+                )
+        assert not failures, (
+            "The following code_pattern values contain backreferences "
+            "(forbidden by the schema description):\n" + "\n".join(failures)
+        )
+
+    def test_backref_detector_actually_fires(self):
+        """Sanity: the backreference detector must match a known backref shape.
+
+        A detector that never matches anything would make the guard above a
+        false-green. Confirms the regex flags both numeric and named backrefs.
+        """
+        assert self._BACKREF_RE.search(r"(\w)\1"), "numeric backref must be caught"
+        assert self._BACKREF_RE.search(r"(?P<x>\w)(?P=x)"), "named backref must be caught"
+        assert not self._BACKREF_RE.search(r"\bfields\.Html\s*\("), (
+            "a plain pattern must not be flagged as a backreference"
+        )
+
     def test_code_pattern_cross_version_consistent(self):
         """Same rule_id appearing in multiple version files must have identical code_pattern.
 
@@ -388,4 +426,70 @@ class TestCodePatternOverlayMechanism:
             f"Overlay must not overwrite an existing code_pattern.\n"
             f"Expected: {custom_pattern!r}\n"
             f"Got: {rules[0].code_pattern!r}"
+        )
+
+    def test_real_merge_order_live_parse_wins_overlay_supplies_pattern(self, tmp_path):
+        """Lock the REAL production merge order, not just the overlay function (PR #275 r3 #5).
+
+        ``test_overlay_patches_code_pattern_from_static_json`` calls the overlay
+        on a synthetic rule directly, so it cannot detect a regression in how
+        ``parse_lint_rules_for_version`` orders live-parse vs. static merge vs.
+        the overlay post-pass. This test drives the full public entry point with
+        a real (temp) Odoo source tree that live-parses E8501 with NO
+        code_pattern (the live source never carries one), then asserts the final
+        E8501 carries the code_pattern from the static JSON.
+
+        Why this fails-red on a broken merge order: the live-parse rule wins the
+        ``(rule_id, kind)`` dedup (it is ``_add``-ed first), so the merged E8501
+        has ``code_pattern=None`` until the overlay runs LAST. Remove the overlay,
+        run it before the static merge, or let the static rule win the dedup
+        instead, and the final pattern is wrong → assertion fails.
+        """
+        from src.indexer.parser_lint_rules import parse_lint_rules_for_version
+
+        # Build a minimal Odoo source tree so the live-parse path activates for v17.
+        checker_dir = tmp_path / "odoo" / "addons" / "test_lint" / "tests"
+        checker_dir.mkdir(parents=True)
+        # A pylint-odoo BaseChecker with E8501 in `msgs` - mirrors the real shape.
+        # The live-parse path (`_parse_pylint_odoo_source`) extracts rule_id +
+        # message + severity but NEVER a code_pattern.
+        (checker_dir / "_odoo_checker_sql.py").write_text(
+            "class OdooChecker:\n"
+            "    msgs = {\n"
+            '        "E8501": (\n'
+            '            "Possible SQL injection risk", "sql-injection", "doc"\n'
+            "        ),\n"
+            "    }\n",
+            encoding="utf-8",
+        )
+
+        # Static SSOT for the pattern lives in the real spec_data dir.
+        static_e8501 = next(
+            (r for r in _load_lint_file("17.0").get("rules", [])
+             if r["rule_id"] == "E8501"),
+            None,
+        )
+        assert static_e8501 and static_e8501.get("code_pattern"), (
+            "Precondition: E8501 must carry a code_pattern in lint_rules_17.0.json"
+        )
+        expected_pattern = static_e8501["code_pattern"]
+
+        merged = parse_lint_rules_for_version(
+            "17.0",
+            odoo_source_root=str(tmp_path),
+            static_data_dir=_SPEC_DATA_DIR,
+        )
+        by_id = {r.rule_id: r for r in merged}
+
+        # The live-parse rule must be the one that survived dedup (proves order).
+        assert "E8501" in by_id, "E8501 must be present after the full merge"
+        assert by_id["E8501"].message == "Possible SQL injection risk", (
+            "The live-parse E8501 (not the static one) must win the dedup race - "
+            "if this fails the static rule won, inverting the documented order."
+        )
+        # ...yet its code_pattern must come from the static SSOT via the overlay.
+        assert by_id["E8501"].code_pattern == expected_pattern, (
+            "Final merge order is broken: the live-parse E8501 won the dedup but "
+            "the overlay did not supply its code_pattern from the static JSON.\n"
+            f"Expected: {expected_pattern!r}\nGot: {by_id['E8501'].code_pattern!r}"
         )

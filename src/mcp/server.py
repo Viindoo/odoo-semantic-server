@@ -3341,16 +3341,6 @@ def _fuzzy_rule_tokens(rule: dict) -> set[str]:
     }
 
 
-def _match_lint_rule(code: str, rule: dict) -> bool:
-    """Deprecated thin wrapper around the per-line SSOT matcher.
-
-    Retained so the historical unit tests keep exercising the matching
-    contract. Runtime uses :func:`_match_lint_rule_lines` directly. A rule
-    fires when it matches on at least one line (pattern-first per the SSOT).
-    """
-    return bool(_match_lint_rule_lines(code, rule))
-
-
 def _build_noqa_suppress(code: str) -> dict[int, set[str]]:
     """Parse noqa comments and return a suppress-set keyed by 1-based line number.
 
@@ -3551,13 +3541,21 @@ def _lint_check(
         """, v=odoo_version).single()
         curate_status = curate_rec["curate_status"] if curate_rec else None
 
-    # Tier-1 disclosure (ADR-0002 §4): no rules indexed OR no curation status
-    # recorded → this is a data gap, NOT a clean bill. Emit a hard warning
-    # instead of a false-green "0 violations". Note: an empty rule set wins even
-    # when curate_status == 'pending' (a pending version with zero rules cannot
-    # vouch for any code).
-    if not rules or curate_status is None:
+    # Tier-1 disclosure (ADR-0002 §4): NO rules indexed → genuine data gap, NOT a
+    # clean bill. Emit the hard warning instead of a false-green "0 violations".
+    # An empty rule set wins even when curate_status == 'pending' (a pending
+    # version with zero rules cannot vouch for any code).
+    if not rules:
         return _format_lint_empty_index(odoo_version, code, language)
+
+    # `rules` present but `curate_status is None` is a distinct state, NOT a data
+    # gap: write_lint_rules and write_spec_metadata run in separate Neo4j sessions
+    # (pipeline.py), so a crash between the two calls — or any version indexed
+    # before write_spec_metadata existed — leaves rules present with no metadata.
+    # Hard-returning here would suppress real findings behind a false "no rules
+    # indexed" message. Instead: run the matcher and prepend a softer "curation
+    # status unknown" banner (set after rendering, alongside the pending banner).
+    curation_unknown = curate_status is None
 
     # Build noqa suppress set from the input code.
     suppress = _build_noqa_suppress(code)
@@ -3584,6 +3582,16 @@ def _lint_check(
     if curate_status == "pending":
         result = (
             f"ℹ Spec data v{odoo_version} pending curation - limited results.\n" + result
+        )
+    elif curation_unknown:
+        # Rules indexed but SpecMetadata missing (crash window between the two
+        # separate write sessions, or a pre-SpecMetadata index run). Distinct
+        # from the pending banner: results are real but their curation provenance
+        # is unverifiable. English-only per ADR-0023 §2; ASCII hyphens only.
+        result = (
+            f"⚠ curation status unknown for Odoo {odoo_version} - rules are "
+            f"indexed but SpecMetadata is missing; results may be incomplete.\n"
+            + result
         )
     return result
 
@@ -3660,7 +3668,7 @@ def lint_check(
     Example:
         lint_check("self.env.cr.execute('... WHERE n=%s' % x)", "17.0", "python")
         → lint_check(Odoo 17.0, language=python) — 1 violations
-          └─ [pattern] W8140 (warning): SQL injection risk: cr.execute string interpolation.
+          └─ [pattern] W8140 (error): SQL injection risk: `cr.execute` string interpolation.
         lint_check("", "17.0", "xml")   # RelaxNG violations grouped by view
     """
     return _lint_check(code, odoo_version, language)

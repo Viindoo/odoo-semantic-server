@@ -21,6 +21,7 @@ _BANNER_V = "95.0"    # pending + rules -> Tier-2 soft banner
 _BANNER_V2 = "96.0"   # pending + no rules -> Tier-1 hard warning; then done
 _BANNER_V3 = "97.0"   # complete + rules -> Tier-3 normal
 _BANNER_V4 = "98.0"   # no metadata at all -> Tier-1 hard warning
+_BANNER_V5 = "94.0"   # rules present + NO SpecMetadata -> matcher fires + "unknown" banner
 
 
 @pytest.fixture(scope="module")
@@ -32,11 +33,11 @@ def banner_writer(neo4j_driver):
     )
     writer.setup_indexes()
     with neo4j_driver.session() as session:
-        for v in (_BANNER_V, _BANNER_V2, _BANNER_V3, _BANNER_V4):
+        for v in (_BANNER_V, _BANNER_V2, _BANNER_V3, _BANNER_V4, _BANNER_V5):
             session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
     yield writer
     with neo4j_driver.session() as session:
-        for v in (_BANNER_V, _BANNER_V2, _BANNER_V3, _BANNER_V4):
+        for v in (_BANNER_V, _BANNER_V2, _BANNER_V3, _BANNER_V4, _BANNER_V5):
             session.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
     writer.close()
 
@@ -85,6 +86,76 @@ class TestLintCheckEmptyIndexHardWarning:
         assert "not a clean bill" in out.lower(), (
             "Tier-1 (empty rules) must win over Tier-2 (pending) when rules == []:\n"
             f"{out}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Rules present + NO SpecMetadata (curate_status=None): matcher still fires +
+# a soft "curation status unknown" banner. Regression for PR #275 HIGH #1 - the
+# crash window between write_lint_rules and write_spec_metadata (separate Neo4j
+# sessions), or any version indexed before write_spec_metadata existed.
+# ---------------------------------------------------------------------------
+
+class TestLintCheckRulesPresentNoMetadataStillMatches:
+    """Rules indexed but SpecMetadata absent must NOT suppress real findings."""
+
+    def test_rules_present_no_metadata_runs_matcher_and_warns_unknown(
+        self, banner_writer,
+    ):
+        """rules present + curate_status=None -> matcher fires + 'unknown' banner.
+
+        PR #275 HIGH #1: the old gate ``if not rules or curate_status is None``
+        hard-returned the empty-index "no rules indexed ... NOT a clean bill"
+        message even when rules existed - suppressing all real violations behind
+        a doubly-false message. The fix splits the gate: ``not rules`` keeps the
+        hard return; ``rules`` + ``curate_status is None`` runs the matcher and
+        prepends a distinct soft "curation status unknown" banner.
+
+        This regression test was entirely missing (existing Tier-1 tests cover
+        only the zero-rules case). _BANNER_V5 is seeded with a real W8140 rule
+        (carrying its code_pattern) but NO SpecMetadata, and the input code is a
+        SQL-injection snippet that W8140's pattern fires on.
+        """
+        import src.mcp.server as spec_tools
+
+        # Seed the real W8140 rule WITH its production code_pattern, so the
+        # pattern-first matcher can deterministically fire. No SpecMetadata.
+        banner_writer.write_lint_rules([
+            LintRuleInfo(
+                rule_id="W8140",
+                odoo_version=_BANNER_V5,
+                kind="pylint-odoo",
+                message="SQL injection risk: `cr.execute` called with string interpolation.",
+                severity="error",
+                code_pattern=(
+                    r"\.execute\s*\([^)]*?[\"']\s*%\s"
+                    r"|\bexecute\s*\([^)]*?\.format\s*\("
+                    r"|\.execute\s*\(\s*f[\"']"
+                ),
+            )
+        ])
+        # Deliberately do NOT write_spec_metadata for _BANNER_V5.
+
+        code = "self.env.cr.execute('SELECT id FROM p WHERE n=%s' % self.name)"
+        out = spec_tools._lint_check(code, _BANNER_V5, language="python")
+
+        # 1. The matcher must have fired - the real finding is NOT suppressed.
+        assert "W8140" in out, (
+            "W8140 must fire when rules are indexed even with no SpecMetadata; "
+            f"the finding must not be suppressed.\n{out}"
+        )
+        # 2. The soft "unknown" banner must be present...
+        assert "curation status unknown" in out.lower(), (
+            f"Expected soft 'curation status unknown' banner; got:\n{out}"
+        )
+        # 3. ...and it must NOT be the false empty-index message.
+        assert "not a clean bill" not in out.lower(), (
+            "Tier-1 'NOT a clean bill' must NOT appear when rules are present:\n"
+            f"{out}"
+        )
+        # 4. ...nor the pending banner (distinct state).
+        assert "pending curation" not in out.lower(), (
+            f"'pending curation' banner must not appear for unknown state:\n{out}"
         )
 
 

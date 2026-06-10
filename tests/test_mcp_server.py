@@ -2601,6 +2601,34 @@ def grammar_seed(neo4j_driver):
             ),
         ],
     )
+    # Seed a LintRule (with code_pattern) + SpecMetadata so lint_check exercises
+    # the NORMAL violation-rendering path under the grammar check (PR #275 MED).
+    # Without the SpecMetadata seed curate_status=None and lint_check would only
+    # ever hit the empty-index branch, leaving the normal-path tree ungoverned.
+    from src.indexer.models import LintRuleInfo  # noqa: PLC0415
+    lint_writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    lint_writer.write_lint_rules([
+        LintRuleInfo(
+            rule_id="W8140",
+            odoo_version=W6_GRAMMAR_VERSION,
+            kind="pylint-odoo",
+            message="SQL injection risk: `cr.execute` called with string interpolation.",
+            severity="error",
+            code_pattern=(
+                r"\.execute\s*\([^)]*?[\"']\s*%\s"
+                r"|\bexecute\s*\([^)]*?\.format\s*\("
+                r"|\.execute\s*\(\s*f[\"']"
+            ),
+        )
+    ])
+    lint_writer.write_spec_metadata(
+        kind="lint", odoo_version=W6_GRAMMAR_VERSION, curate_status="complete",
+    )
+    lint_writer.close()
     yield W6_GRAMMAR_VERSION
     _cleanup_version(neo4j_driver, W6_GRAMMAR_VERSION)
 
@@ -2640,8 +2668,15 @@ def _all_tool_invocations(version: str):
         ("find_override_point",
          lambda: srv._find_override_point("sale.order", "action_confirm", version)),
         # Terminal tools (no Next: footer):
+        # Use a SQL-injection snippet that fires the seeded W8140 rule so the
+        # NORMAL violation-rendering tree is grammar-checked, not just the
+        # empty-index branch (PR #275 MED — grammar fixture now seeds LintRule
+        # + SpecMetadata).
         ("lint_check",
-         lambda: srv._lint_check("def f(): pass", version)),
+         lambda: srv._lint_check(
+             "self.env.cr.execute('SELECT id FROM p WHERE n=%s' % self.name)",
+             version,
+         )),
         ("cli_help",
          lambda: srv._cli_help("server", version)),
         ("api_version_diff",
