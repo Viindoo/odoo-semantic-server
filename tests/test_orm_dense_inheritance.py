@@ -634,3 +634,190 @@ def test_reconcile_backfills_deleted_edges_idempotently(seeded_dense_graph):
         ).single()["c"]
     assert restored == before, f"reconcile must restore to {before} edges, got {restored}"
     assert null_orders == 0, "every restored edge must carry a valid (non-null) order"
+
+
+# ---------------------------------------------------------------------------
+# 10. UN-CLEANED K^2 MESH (review r3 CRITICAL-1).
+#
+#     The fixtures above seed through the REAL writer, which emits the clean
+#     K-edge topology (each extender -> the single definition). Production at
+#     deploy time is DIFFERENT: it still carries the legacy K x (K-1) same-name
+#     mesh that the cleanup script has not yet removed — exactly the "new code x
+#     old data" cell of the ADR-0048 D8 rollout matrix where review r3 measured
+#     12.6s..TIMEOUT against the FIRST per-hop rewrite.
+#
+#     Root cause of that regression: the first cut applied `pn <> $mn` only at
+#     the final WHERE, so hop1 still collected $mn (same-name edges) and
+#     hop2/hop3 re-expanded from ALL K mesh nodes; and the K-row anchor ran each
+#     per-hop CALL once-per-row. These tests seed the mesh DIRECTLY via Cypher
+#     (NOT the writer) so they reproduce that production shape, and assert the
+#     fixed query (prune-during-expansion + single-row hop aggregation) both
+#     returns the right answer AND finishes far under a tight bound — a bound
+#     small enough to catch a re-introduction of the mesh re-expansion.
+# ---------------------------------------------------------------------------
+
+# Dedicated version so this mesh never collides with DENSE_VERSION/"99.0".
+MESH_VERSION = "99.6"
+# K large enough that re-expanding the full K x (K-1) mesh would blow far past
+# MESH_TIME_BOUND_S, small enough to seed quickly.
+MESH_K = 120
+# A TIGHT ceiling: the fixed query traverses only cross-name edges (a handful)
+# even on this mesh, so it finishes in well under a second. A multi-second
+# result means the same-name mesh re-expansion has returned. Deliberately far
+# tighter than TIME_BOUND_S (20s) so this test is the tripwire, not the 30s
+# Neo4j query timeout.
+MESH_TIME_BOUND_S = 5.0
+
+_MESH_MODEL = "mesh.model"        # the K-duplicated same-name model
+_MESH_MIXIN = "mesh.mixin"        # cross-name mixin carrying the inherited field
+_MESH_FIELD = "mesh_widget_ids"   # field living ONLY on the mixin
+_MESH_REL_TARGET = "mesh.target"  # validate_relation expected comodel
+_MESH_REL_OTHER = "mesh.other"    # comodel with NO path to target -> MISMATCH
+
+
+@pytest.fixture(scope="module")
+def mesh_graph(neo4j_driver):
+    """Seed an UN-CLEANED K^2 same-name mesh directly via Cypher.
+
+    Topology (all at MESH_VERSION):
+
+        mesh.model x MESH_K  (1 definition + (K-1) extenders, all same name)
+            -- FULL K x (K-1) INHERITS mesh among them (the legacy un-cleaned
+               shape: every same-name node points at every other) --
+        definition node --INHERITS--> mesh.mixin   (the only cross-name edge)
+        mesh.mixin.mesh_widget_ids : one2many -> mesh.line   (the inherited field)
+
+        mesh.model (definition) field other_id : many2one -> mesh.other
+        mesh.other  : no INHERITS path to mesh.target  -> validate_relation MISMATCH
+
+    No profiles set -> admin-visible ($own IS NULL path), so _scope_pred passes.
+    """
+    v = MESH_VERSION
+    with neo4j_driver.session() as s:
+        s.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
+
+        # K same-name mesh.model nodes; index 0 is the definition.
+        s.run(
+            """
+            UNWIND range(0, $k - 1) AS i
+            CREATE (m:Model {name:$n, module:'mesh_' + toString(i), odoo_version:$v,
+                             is_definition: (i = 0), had_explicit_name: true})
+            """,
+            n=_MESH_MODEL, k=MESH_K, v=v,
+        )
+        # FULL K x (K-1) same-name INHERITS mesh (the un-cleaned legacy shape).
+        s.run(
+            """
+            MATCH (a:Model {name:$n, odoo_version:$v})
+            MATCH (b:Model {name:$n, odoo_version:$v})
+            WHERE a.module <> b.module
+            CREATE (a)-[:INHERITS {order:0}]->(b)
+            """,
+            n=_MESH_MODEL, v=v,
+        )
+        # The single cross-name edge: definition -> mixin carrying the field.
+        s.run(
+            """
+            MERGE (mx:Model {name:$x, module:'mesh_mixin_mod', odoo_version:$v})
+              ON CREATE SET mx.is_definition=true, mx.had_explicit_name=true
+            WITH mx
+            MATCH (d:Model {name:$n, odoo_version:$v}) WHERE d.is_definition = true
+            MERGE (d)-[:INHERITS {order:0}]->(mx)
+            """,
+            n=_MESH_MODEL, x=_MESH_MIXIN, v=v,
+        )
+        # The inherited field lives ONLY on the mixin.
+        s.run(
+            """
+            MATCH (mx:Model {name:$x, odoo_version:$v})
+            MERGE (f:Field {name:$f, model:$x, module:'mesh_mixin_mod', odoo_version:$v})
+              ON CREATE SET f.ttype='one2many', f.comodel_name='mesh.line'
+            MERGE (f)-[:BELONGS_TO]->(mx)
+            """,
+            x=_MESH_MIXIN, f=_MESH_FIELD, v=v,
+        )
+        # Relation chain: a m2o field on the definition pointing at mesh.other,
+        # which has NO INHERITS path to mesh.target -> the exhaustive-negative
+        # MISMATCH case (review r3's res.users->res.partner shape).
+        s.run(
+            """
+            MERGE (t:Model {name:$t, module:'mesh_rel', odoo_version:$v})
+              ON CREATE SET t.is_definition=true, t.had_explicit_name=true
+            MERGE (o:Model {name:$o, module:'mesh_rel', odoo_version:$v})
+              ON CREATE SET o.is_definition=true, o.had_explicit_name=true
+            WITH o
+            MATCH (d:Model {name:$n, odoo_version:$v}) WHERE d.is_definition = true
+            MERGE (rf:Field {name:'other_id', model:$n, module:'mesh_0', odoo_version:$v})
+              ON CREATE SET rf.ttype='many2one', rf.comodel_name=$o
+            MERGE (rf)-[:BELONGS_TO]->(d)
+            """,
+            n=_MESH_MODEL, t=_MESH_REL_TARGET, o=_MESH_REL_OTHER, v=v,
+        )
+
+    yield neo4j_driver
+    with neo4j_driver.session() as s:
+        s.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n", v=v)
+
+
+@pytest.fixture
+def mesh_funcs(mesh_graph):
+    """ORM helpers bound to the test Neo4j, for the mesh tests."""
+    os.environ["NEO4J_URI"] = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    os.environ["NEO4J_USER"] = os.getenv("NEO4J_TEST_USER", "neo4j")
+    os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
+    import sys
+    sys.modules.pop("src.mcp.server", None)
+    from src.mcp.orm import _lookup_field, _validate_relation
+    return _lookup_field, _validate_relation
+
+
+def test_lookup_field_on_uncleaned_mesh_resolves_under_tight_bound(mesh_funcs, capsys):
+    """_lookup_field must resolve the inherited field through the SINGLE
+    cross-name edge even on the un-cleaned K^2 same-name mesh, far under a
+    tight bound.
+
+    Regression intent (review r3 C1): the first per-hop rewrite re-expanded the
+    full K x (K-1) mesh (`pn <> $mn` only at the end; K-row anchor x per-row
+    CALL) -> 12.6s..TIMEOUT on prod. With prune-during-expansion + single-row
+    hop aggregation the BFS only crosses the one cross-name edge.
+    """
+    _lookup_field, _ = mesh_funcs
+    from src.mcp import server as srv
+    start = time.monotonic()
+    with srv._get_driver().session() as session:
+        info = _lookup_field(_MESH_MODEL, _MESH_FIELD, MESH_VERSION, session)
+    elapsed = time.monotonic() - start
+    with capsys.disabled():
+        print(f"\n[mesh K={MESH_K}] _lookup_field inherited resolve: {elapsed * 1000:.0f} ms")
+    assert info is not None, "inherited field must resolve through the cross-name edge"
+    assert info["source"] == "inherited"
+    assert info["ttype"] == "one2many"
+    assert info["comodel"] == "mesh.line"
+    assert elapsed < MESH_TIME_BOUND_S, (
+        f"_lookup_field on un-cleaned K^2 mesh took {elapsed:.1f}s "
+        f"(>{MESH_TIME_BOUND_S}s) — same-name mesh re-expansion regression (review r3 C1)"
+    )
+
+
+def test_validate_relation_mismatch_on_uncleaned_mesh_under_tight_bound(mesh_funcs, capsys):
+    """validate_relation MISMATCH (exhaustive-negative, TEST GAP #7) on the
+    un-cleaned K^2 mesh: proving NO subtype edge exists is the worst case
+    because it walks all 5 hops. It must answer MISMATCH far under a tight
+    bound, never re-expanding the same-name mesh.
+
+    This is the exact interim deploy window review r3 measured as TIMEOUT for
+    res.users -> res.partner before the cleanup script runs.
+    """
+    _, validate_relation = mesh_funcs
+    start = time.monotonic()
+    out = validate_relation(_MESH_MODEL, "other_id", _MESH_REL_TARGET, MESH_VERSION)
+    elapsed = time.monotonic() - start
+    with capsys.disabled():
+        print(f"[mesh K={MESH_K}] validate_relation MISMATCH: {elapsed * 1000:.0f} ms")
+    assert "MISMATCH" in out, out
+    assert _MESH_REL_OTHER in out, out  # reports the actual comodel
+    assert elapsed < MESH_TIME_BOUND_S, (
+        f"validate_relation MISMATCH on un-cleaned K^2 mesh took {elapsed:.1f}s "
+        f"(>{MESH_TIME_BOUND_S}s) — exhaustive-negative mesh re-expansion regression "
+        f"(review r3 C1 + TEST GAP #7)"
+    )
