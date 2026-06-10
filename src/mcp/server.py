@@ -3155,16 +3155,38 @@ def _format_lint_check(
         rule_id = r.get("rule_id") or "?"
         sev = r.get("severity") or "warning"
         msg = (r.get("message") or "").strip()
-        lines.append(f"{connector} {rule_id} ({sev}): {msg}")
+        # Match-kind label per ADR-0023 disclosure: [pattern] = deterministic
+        # regex hit, [fuzzy] = heuristic token-overlap. Placed right after the
+        # connector so the rule_id/message rendering stays byte-stable.
+        kind = r.get("match_kind") or "fuzzy"
+        lines.append(f"{connector} [{kind}] {rule_id} ({sev}): {msg}")
     return "\n".join(lines)
 
 
-# V0 lint matcher constant — surface in every lint_check output so users know this
-# is a fuzzy approximation requiring manual verification.
+# Lint matcher banner (V0.5 hybrid) — surface in every python/javascript
+# lint_check output so users know which findings are deterministic and which
+# are heuristic. Kept under the name _LINT_V0_BANNER so existing imports/tests
+# resolve unchanged. English-only per ADR-0023 §2; ASCII hyphens only.
 _LINT_V0_BANNER = (
-    "⚠ V0 fuzzy matcher — verify manually before action. "
-    "Requires ≥2 significant token overlap between rule message and code."
+    "⚠ Hybrid matcher (V0.5): [pattern] findings are deterministic regex hits; "
+    "[fuzzy] findings are heuristic - verify manually. "
+    "Real pylint-odoo remains the authoritative gate."
 )
+
+
+# Hard warning emitted when no lint rules are indexed (or curation status is
+# absent) for the requested version. This is NOT a clean bill of health — it is
+# a data gap (ADR-0002 §4 disclosure, ADR-0023 §1 tree grammar preserved).
+def _format_lint_empty_index(version: str, code: str, language: str) -> str:
+    header = f"lint_check(Odoo {version}, language={language}) — 0 violations"
+    code_preview = (code or "")[:CODE_PREVIEW_MAX_CHARS].replace("\n", " ")
+    return "\n".join([
+        _LINT_V0_BANNER,
+        header,
+        f"├─ Code: {code_preview!r}",
+        f"└─ ⚠ no lint rules indexed for Odoo {version} - this result is NOT a "
+        f"clean bill. Run index-core for this version.",
+    ])
 
 _LINT_STOPWORDS = frozenset({
     "with", "from", "this", "that", "have", "must", "should",
@@ -3174,32 +3196,75 @@ _LINT_STOPWORDS = frozenset({
 })
 
 
-def _match_lint_rule(code: str, rule: dict) -> bool:
-    """V0 lint match: ≥2 significant token overlap between rule.message and code.
+# Compiled-pattern cache keyed by raw `code_pattern` string. Populated lazily
+# inside one lint_check run; entries persist process-wide (rule regexes are
+# small + bounded by the curated catalogue). A value of None records a pattern
+# that failed to compile so we only warn once per distinct pattern.
+_LINT_PATTERN_CACHE: dict[str, "object | None"] = {}
 
-    Significant token: >3 chars, alpha-only (after split on [^a-z_]), not in stopword set.
-    Requires at least 2 such tokens from the rule message to appear in the code.
-    This reduces single-word false positives common in the previous ≥1 threshold.
 
-    Returns False if rule.message is empty or has fewer than 2 significant tokens.
+def _compile_lint_pattern(pattern: str):
+    """Compile a rule's ``code_pattern`` regex, caching the result.
+
+    Returns the compiled pattern, or None if the pattern fails to compile
+    (logged once per distinct pattern). The caller then falls back to fuzzy
+    token-overlap so a single bad pattern never crashes a lint_check run.
+    """
+    import re as _re
+
+    if pattern in _LINT_PATTERN_CACHE:
+        return _LINT_PATTERN_CACHE[pattern]
+    try:
+        compiled = _re.compile(pattern)
+    except _re.error as exc:
+        logger.warning(
+            "lint_check: code_pattern failed to compile, "
+            "falling back to fuzzy matching: %s", exc,
+        )
+        compiled = None
+    _LINT_PATTERN_CACHE[pattern] = compiled
+    return compiled
+
+
+def _lint_match_kind(rule: dict) -> str:
+    """Return 'pattern' if *rule* carries a compilable ``code_pattern``, else 'fuzzy'.
+
+    Shares the compile cache with :func:`_match_lint_rule_lines` so a pattern
+    that fails to compile is reported as 'fuzzy' (it falls back to token-overlap).
+    """
+    pattern = rule.get("code_pattern")
+    if pattern and _compile_lint_pattern(pattern) is not None:
+        return "pattern"
+    return "fuzzy"
+
+
+def _fuzzy_rule_tokens(rule: dict) -> set[str]:
+    """Significant tokens of *rule*.message for fuzzy token-overlap matching.
+
+    Significant token: >3 chars, alpha-underscore-only (after split on [^a-z_]),
+    not in the stopword set. Returns a set that may have fewer than 2 entries —
+    callers treat <2 significant tokens as 'rule never fires' (the rule message
+    lacks enough domain vocabulary to match reliably).
     """
     import re as _re
 
     msg = (rule.get("message") or "").lower()
     if not msg:
-        return False
-    code_lc = (code or "").lower()
-    # Tokenize on non-alpha-underscore boundaries, keep tokens > 3 chars.
-    rule_tokens = {
+        return set()
+    return {
         t for t in _re.split(r"[^a-z_]+", msg)
         if len(t) > 3 and t not in _LINT_STOPWORDS
     }
-    if len(rule_tokens) < 2:
-        # Not enough significant tokens in the rule message itself → never fires.
-        return False
-    code_tokens = set(_re.split(r"[^a-z_]+", code_lc))
-    overlap = rule_tokens & code_tokens
-    return len(overlap) >= 2
+
+
+def _match_lint_rule(code: str, rule: dict) -> bool:
+    """Deprecated thin wrapper around the per-line SSOT matcher.
+
+    Retained so the historical unit tests keep exercising the matching
+    contract. Runtime uses :func:`_match_lint_rule_lines` directly. A rule
+    fires when it matches on at least one line (pattern-first per the SSOT).
+    """
+    return bool(_match_lint_rule_lines(code, rule))
 
 
 def _build_noqa_suppress(code: str) -> dict[int, set[str]]:
@@ -3232,38 +3297,48 @@ def _build_noqa_suppress(code: str) -> dict[int, set[str]]:
 
 
 def _match_lint_rule_lines(code: str, rule: dict) -> list[int]:
-    """Return 1-based line numbers in *code* where *rule* matches.
+    """Return 1-based line numbers in *code* where *rule* matches (SSOT matcher).
 
-    Uses the same token-overlap logic as :func:`_match_lint_rule` but applies
-    it per-line so we can honour ``# noqa`` suppression.  A line matches when
-    it contains ≥2 significant tokens from the rule message.
+    Pattern-first: when *rule* carries a compilable ``code_pattern`` regex, the
+    pattern is applied per line (``re.search``) and only its hits are returned —
+    a deterministic match. When there is no pattern (or it fails to compile),
+    the matcher falls back to fuzzy token-overlap: a line matches when it shares
+    ≥2 significant tokens with the rule message.
 
-    Returns an empty list when the rule message has fewer than 2 significant
-    tokens (same contract as ``_match_lint_rule`` — the rule never fires).
+    Per-line evaluation keeps ``# noqa`` line-level suppression working for both
+    pattern and fuzzy hits. Returns an empty list when the rule never fires.
     """
     import re as _re
 
-    msg = (rule.get("message") or "").lower()
-    if not msg:
+    if not code:
         return []
-    rule_tokens = {
-        t for t in _re.split(r"[^a-z_]+", msg)
-        if len(t) > 3 and t not in _LINT_STOPWORDS
-    }
+
+    # --- Pattern-first (deterministic) ---
+    pattern = rule.get("code_pattern")
+    if pattern:
+        compiled = _compile_lint_pattern(pattern)
+        if compiled is not None:
+            return [
+                lineno
+                for lineno, line in enumerate(code.splitlines(), start=1)
+                if compiled.search(line)
+            ]
+        # compiled is None → bad pattern, fall through to fuzzy below.
+
+    # --- Fuzzy token-overlap (heuristic) ---
+    rule_tokens = _fuzzy_rule_tokens(rule)
     if len(rule_tokens) < 2:
         return []
 
-    # First check the whole snippet (existing behaviour) — if not triggered at
-    # all, skip per-line work.
-    code_tokens_all = set(_re.split(r"[^a-z_]+", (code or "").lower()))
+    # First check the whole snippet — if not triggered at all, skip per-line work.
+    code_tokens_all = set(_re.split(r"[^a-z_]+", code.lower()))
     if len(rule_tokens & code_tokens_all) < 2:
         return []
 
     # Per-line pass to get line numbers.
     hit_lines: list[int] = []
     for lineno, line in enumerate(code.splitlines(), start=1):
-        line_lc = line.lower()
-        line_tokens = set(_re.split(r"[^a-z_]+", line_lc))
+        line_tokens = set(_re.split(r"[^a-z_]+", line.lower()))
         if len(rule_tokens & line_tokens) >= 2:
             hit_lines.append(lineno)
     # If the whole-code match fired but no individual line triggered ≥2 tokens
@@ -3335,13 +3410,15 @@ def _lint_check_xml(odoo_version: str) -> str:
 def _lint_check(
     code: str, odoo_version: str = "auto", language: str = "python",
 ) -> str:
-    """Pattern-match user code against indexed LintRule.message (V0).
+    """Hybrid-match user code against the indexed LintRule catalogue (V0.5).
 
     For language='xml': queries :LintViolation nodes from the graph (ground-truth
     RelaxNG results indexed from v15+ views) — no code-snippet arg needed.
 
-    For language='python'/'javascript': fuzzy token-overlap match against
-    indexed LintRule catalogue with noqa suppression support:
+    For language='python'/'javascript': pattern-first hybrid match against the
+    indexed LintRule catalogue. Rules carrying a ``code_pattern`` regex produce
+    deterministic ``[pattern]`` hits; rules without one fall back to heuristic
+    ``[fuzzy]`` token-overlap. noqa suppression is honoured for both:
 
     * ``# noqa: E8001`` — suppress rule ``E8001`` on that line only.
     * ``# noqa: E8001, W9002`` — suppress multiple rules on that line.
@@ -3367,7 +3444,8 @@ def _lint_check(
                 RETURN l.rule_id AS rule_id,
                        l.severity AS severity,
                        l.message AS message,
-                       l.kind AS kind
+                       l.kind AS kind,
+                       l.code_pattern AS code_pattern
             """, v=odoo_version).data()
         else:  # javascript: ESLint rules + Odoo JS-targeted pylint rules (file_pattern *.js)
             rules = session.run("""
@@ -3377,13 +3455,22 @@ def _lint_check(
                 RETURN l.rule_id AS rule_id,
                        l.severity AS severity,
                        l.message AS message,
-                       l.kind AS kind
+                       l.kind AS kind,
+                       l.code_pattern AS code_pattern
             """, v=odoo_version).data()
         curate_rec = session.run("""
             MATCH (sm:SpecMetadata {kind: 'lint', odoo_version: $v})
             RETURN sm.curate_status AS curate_status
         """, v=odoo_version).single()
         curate_status = curate_rec["curate_status"] if curate_rec else None
+
+    # Tier-1 disclosure (ADR-0002 §4): no rules indexed OR no curation status
+    # recorded → this is a data gap, NOT a clean bill. Emit a hard warning
+    # instead of a false-green "0 violations". Note: an empty rule set wins even
+    # when curate_status == 'pending' (a pending version with zero rules cannot
+    # vouch for any code).
+    if not rules or curate_status is None:
+        return _format_lint_empty_index(odoo_version, code, language)
 
     # Build noqa suppress set from the input code.
     suppress = _build_noqa_suppress(code)
@@ -3400,12 +3487,16 @@ def _lint_check(
             if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
         )
         if suppressed_lines < len(hit_lines):
-            violations.append(rule)
+            # Tag the match kind ([pattern] vs [fuzzy]) for the renderer. Copy
+            # so we never mutate the Neo4j record dict in place.
+            violations.append({**rule, "match_kind": _lint_match_kind(rule)})
 
     result = _format_lint_check(violations, odoo_version, code, language)
+    # Tier-2 disclosure: rules exist but curation is still pending → keep the
+    # softer "limited results" banner (a valid partially-curated version).
     if curate_status == "pending":
         result = (
-            f"ℹ Spec data v{odoo_version} pending curation — limited results.\n" + result
+            f"ℹ Spec data v{odoo_version} pending curation - limited results.\n" + result
         )
     return result
 
@@ -3462,22 +3553,27 @@ def lint_check(
     TRIGGER when: "lint check this module", "OCA style violations", "check coding
     standards", "kiểm tra code quality", "does this code follow Odoo guidelines"
     PREFER over: running ruff/pylint directly — applies the Odoo-specific LintRule
-    catalogue, not generic Python linters
+    catalogue, not generic Python linters. This is a first-pass screen, not the
+    authoritative gate: real pylint-odoo still owns the merge decision.
     SKIP when: deprecated API scan → find_deprecated_usage; module existence
     check → check_module_exists
 
     Args:
         code: Source chunk to check. Ignored for language='xml' (the tool then
             returns all indexed RelaxNG violations from the graph, v15+ only).
-        language: 'python' | 'javascript' (fuzzy token-overlap vs indexed rules)
+        language: 'python' | 'javascript' (pattern-first hybrid match: [pattern]
+            deterministic regex hits, [fuzzy] heuristic token-overlap fallback)
             | 'xml' (ground-truth RelaxNG :LintViolation nodes, v15+ only).
 
     Returns:
-        Tree text of violations. python/javascript = V0 fuzzy first-pass screen;
-        xml = ground-truth RelaxNG violations grouped by view xmlid.
+        Tree text of violations, each labelled [pattern] or [fuzzy]. If no rules
+        are indexed for the version, returns a hard data-gap warning (NOT a
+        clean bill). xml = ground-truth RelaxNG violations grouped by view xmlid.
 
     Example:
-        lint_check("raise UserError('Hi %s' % n)", "17.0", "python")
+        lint_check("self.env.cr.execute('... WHERE n=%s' % x)", "17.0", "python")
+        → lint_check(Odoo 17.0, language=python) — 1 violations
+          └─ [pattern] W8140 (warning): SQL injection risk: cr.execute string interpolation.
         lint_check("", "17.0", "xml")   # RelaxNG violations grouped by view
     """
     return _lint_check(code, odoo_version, language)
