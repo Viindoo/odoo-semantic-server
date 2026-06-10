@@ -44,14 +44,16 @@
       "kind": "pylint-odoo",
       "message": "`@api.multi` is removed in v18 — use plain method with `for rec in self:` loop.",
       "severity": "error",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "@api\\.multi\\b"
     },
     {
       "rule_id": "W8108",
       "kind": "pylint-odoo",
       "message": "`@api.one` is removed in v18.",
       "severity": "error",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "@api\\.one\\b"
     },
     {
       "rule_id": "W8115",
@@ -86,14 +88,16 @@
       "kind": "pylint-odoo",
       "message": "Translation string uses positional `%s` formatting — use named `%(name)s` or lazy format.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "_\\s*\\([^)]*%s"
     },
     {
       "rule_id": "W8123",
       "kind": "pylint-odoo",
       "message": "Translatable string concatenation — do not split translatable strings across `+` operators.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "_\\s*\\([^)]*\\)\\s*\\+"
     },
     {
       "rule_id": "W8130",
@@ -107,35 +111,40 @@
       "kind": "pylint-odoo",
       "message": "SQL injection risk: `cr.execute` called with string interpolation.",
       "severity": "error",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\.execute\\s*\\(.*?[\"\\'].*?[\"\\'].*?%(?!\\s*\\()|\\bexecute\\s*\\(.*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
     },
     {
       "rule_id": "W8141",
       "kind": "pylint-odoo",
       "message": "Built-in dynamic expression interpreter used with external input — use `odoo.tools.safe_eval` instead.",
       "severity": "error",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\b(?:eval|exec)\\s*\\("
     },
     {
       "rule_id": "W8142",
       "kind": "pylint-odoo",
       "message": "`sudo()` called without restricting scope — avoid broad `sudo()` for entire CRUD operations.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\.sudo\\s*\\(\\s*\\)"
     },
     {
       "rule_id": "W8150",
       "kind": "pylint-odoo",
       "message": "Hardcoded database ID used — use `env.ref()` instead.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\bbrowse\\s*\\(\\s*\\d+\\s*\\)"
     },
     {
       "rule_id": "W8151",
       "kind": "pylint-odoo",
       "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\bcompany_id\\s*=\\s*\\d+\\b"
     },
     {
       "rule_id": "W8160",
@@ -177,28 +186,32 @@
       "kind": "pylint-odoo",
       "message": "`invalidate_cache()` removed — use `flush_recordset()` or `invalidate_recordset()`.",
       "severity": "error",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\binvalidate_cache\\s*\\("
     },
     {
       "rule_id": "W8167",
       "kind": "pylint-odoo",
       "message": "`track_visibility` field attribute renamed to `tracking` in v16+.",
       "severity": "error",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\btrack_visibility\\s*="
     },
     {
       "rule_id": "W8168",
       "kind": "pylint-odoo",
       "message": "`attrs` attribute in XML view removed — use Python-domain `invisible`/`required`/`readonly` directly.",
       "severity": "error",
-      "file_pattern": "**/*.xml"
+      "file_pattern": "**/*.xml",
+      "code_pattern": "\\battrs\\s*=\\s*[\"\\']"
     },
     {
       "rule_id": "W8169",
       "kind": "pylint-odoo",
       "message": "`states` attribute in XML view removed — use `invisible` domain expression instead.",
       "severity": "error",
-      "file_pattern": "**/*.xml"
+      "file_pattern": "**/*.xml",
+      "code_pattern": "\\bstates\\s*=\\s*[\"\\']"
     },
     {
       "rule_id": "W8170",
@@ -233,7 +246,8 @@
       "kind": "pylint-odoo",
       "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\bdigits\\s*=\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)"
     },
     {
       "rule_id": "W8175",
@@ -261,7 +275,8 @@
       "kind": "pylint-odoo",
       "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\bfields\\.Html\\s*\\("
     },
     {
       "rule_id": "W8179",
@@ -275,7 +290,8 @@
       "kind": "pylint-odoo",
       "message": "Static assets declared via `qweb` key — use `assets` key with bundle names in v18.",
       "severity": "error",
-      "file_pattern": "**/__manifest__.py"
+      "file_pattern": "**/__manifest__.py",
+      "code_pattern": "'qweb'\\s*:"
     },
     {
       "rule_id": "W8183",
@@ -305,7 +321,8 @@
       "message": "String formatting used in UserError/ValidationError — use lazy args or named placeholders.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "raise UserError(_('Hello %s', name))  # preferred (lazy format)"
+      "fix_template": "raise UserError(_('Hello %s', name))  # preferred (lazy format)",
+      "code_pattern": "(?:UserError|ValidationError)\\s*\\([^)]*(?:%[^%]|\\.format\\s*\\(|f[\"\\'][^\"\\']*\\{)"
     },
     {
       "rule_id": "W8202",
@@ -313,7 +330,8 @@
       "message": "`name_get()` is removed in v18 — use `_compute_display_name()` instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "core_symbol_qname": "odoo.models.BaseModel.name_get"
+      "core_symbol_qname": "odoo.models.BaseModel.name_get",
+      "code_pattern": "\\bdef\\s+name_get\\s*\\(\\s*self\\s*\\)"
     },
     {
       "rule_id": "W8210",
@@ -352,14 +370,16 @@
       "kind": "eslint",
       "message": "Unexpected `var`. Use `let` or `const` instead.",
       "severity": "error",
-      "file_pattern": "**/*.js"
+      "file_pattern": "**/*.js",
+      "code_pattern": "\\bvar\\s+\\w"
     },
     {
       "rule_id": "no-console",
       "kind": "eslint",
       "message": "Unexpected `console` statement in production JS.",
       "severity": "warning",
-      "file_pattern": "**/*.js"
+      "file_pattern": "**/*.js",
+      "code_pattern": "\\bconsole\\s*\\."
     },
     {
       "rule_id": "no-undef",
@@ -394,7 +414,8 @@
       "kind": "ruff-builtin",
       "message": "Line too long (exceeds max line length).",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": ".{80,}"
     },
     {
       "rule_id": "I001",
@@ -444,6 +465,14 @@
       "message": "t-set-slot=\"body\" is invalid under <Dialog>: the body IS the default slot. Put body content in the default slot; only header and footer are named slots.",
       "severity": "error",
       "file_pattern": "**/*.js"
+    },
+    {
+      "rule_id": "E8501",
+      "kind": "pylint-odoo",
+      "message": "Possible SQL injection risk - string interpolation used in SQL query. Use parameterized queries instead.",
+      "severity": "error",
+      "file_pattern": "**/*.py",
+      "code_pattern": "\\.execute\\s*\\(.*?[\"\\'].*?[\"\\'].*?%(?!\\s*\\()|\\bexecute\\s*\\(.*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
     }
   ]
 }
