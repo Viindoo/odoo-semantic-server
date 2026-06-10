@@ -96,7 +96,8 @@
       "message": "Translation string uses positional `%s` formatting — use named `%(name)s` for clarity.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace `_('Hello %s') % name` with `_('Hello %(name)s') % {'name': name}`."
+      "fix_template": "Replace `_('Hello %s') % name` with `_('Hello %(name)s') % {'name': name}`.",
+      "code_pattern": "_\\s*\\([^)]*%s"
     },
     {
       "rule_id": "W8130",
@@ -120,7 +121,8 @@
       "message": "SQL injection risk: `cr.execute` called with string interpolation instead of parameterized query.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Use `cr.execute('SELECT ... WHERE id = %s', (record_id,))` — never use string formatting with cr.execute."
+      "fix_template": "Use `cr.execute('SELECT ... WHERE id = %s', (record_id,))` — never use string formatting with cr.execute.",
+      "code_pattern": "\\.execute\\s*\\(.*?[\"\\'].*?[\"\\'].*?%(?!\\s*\\()|\\bexecute\\s*\\(.*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
     },
     {
       "rule_id": "W8141",
@@ -128,7 +130,8 @@
       "message": "Built-in dynamic expression interpreter used with external input — use `safe_eval` from `openerp.tools` instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Import safe_eval from openerp.tools.safe_eval and use it to sandbox expression execution."
+      "fix_template": "Import safe_eval from openerp.tools.safe_eval and use it to sandbox expression execution.",
+      "code_pattern": "\\b(?:eval|exec)\\s*\\("
     },
     {
       "rule_id": "W8150",
@@ -136,7 +139,8 @@
       "message": "Hardcoded database ID used in code — use `xml_id` or `env.ref()` instead.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace hardcoded `id` with `self.env.ref('module.xml_id').id` for portability."
+      "fix_template": "Replace hardcoded `id` with `self.env.ref('module.xml_id').id` for portability.",
+      "code_pattern": "\\bbrowse\\s*\\(\\s*\\d+\\s*\\)"
     },
     {
       "rule_id": "W8160",

@@ -384,6 +384,7 @@ class LintRuleInfo:
     file_pattern: str | None = None
     fix_template: str | None = None
     core_symbol_qname: str | None = None
+    code_pattern: str | None = None
 
 
 @dataclass

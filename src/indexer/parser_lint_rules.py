@@ -184,8 +184,45 @@ def _load_static_lint_rules(
             file_pattern=r.get("file_pattern"),
             fix_template=r.get("fix_template"),
             core_symbol_qname=r.get("core_symbol_qname"),
+            code_pattern=r.get("code_pattern"),
         ))
     return out
+
+
+def _apply_code_patterns_overlay(
+    rules: list[LintRuleInfo],
+    odoo_version: str,
+    static_data_dir: str | Path | None,
+) -> None:
+    """Overlay code_pattern from static JSON onto rules already merged (including live-parse).
+
+    Live-parse rules (v17+) win the dedup race in parse_lint_rules_for_version, so their
+    code_pattern would be None even when the static JSON has a pattern for the same rule_id.
+    This post-pass patches code_pattern by rule_id from the static data, regardless of which
+    source won the dedup. SSOT for patterns stays in the static JSON files.
+
+    Modifies rules in-place. Only sets code_pattern when static JSON has a non-null value
+    and the rule's current code_pattern is None (never overwrites an existing pattern).
+    """
+    base = Path(static_data_dir) if static_data_dir else _SPEC_DATA_DIR_DEFAULT
+    static_path = base / f"lint_rules_{odoo_version}.json"
+    if not static_path.is_file():
+        return
+    try:
+        data = json.loads(static_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    # Build rule_id -> code_pattern map from static JSON
+    pattern_map: dict[str, str] = {}
+    for r in data.get("rules", []):
+        if isinstance(r, dict) and r.get("rule_id") and r.get("code_pattern"):
+            pattern_map[r["rule_id"]] = r["code_pattern"]
+    if not pattern_map:
+        return
+    # Patch rules in-place
+    for rule in rules:
+        if rule.code_pattern is None and rule.rule_id in pattern_map:
+            rule.code_pattern = pattern_map[rule.rule_id]
 
 
 def parse_lint_rules_for_version(
@@ -249,6 +286,12 @@ def parse_lint_rules_for_version(
     # Static data — always merge (placeholder for v8-v16 + ad-hoc curated entries).
     for r in _load_static_lint_rules(odoo_version, static_data_dir):
         _add(r)
+
+    # Overlay code_pattern from static JSON onto all rules (including live-parse winners).
+    # Live-parse rules win the dedup race above, so their code_pattern would be None even
+    # when static has a pattern for the same rule_id. This post-pass patches them from the
+    # static SSOT without reversing the merge order.
+    _apply_code_patterns_overlay(rules, odoo_version, static_data_dir)
 
     return rules
 

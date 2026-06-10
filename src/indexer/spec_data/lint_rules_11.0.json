@@ -46,7 +46,8 @@
       "kind": "pylint-odoo",
       "message": "`@api.multi` is deprecated and will be removed in v13 — prefer explicit `for rec in self:` pattern.",
       "severity": "info",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "@api\\.multi\\b"
     },
     {
       "rule_id": "W8110",
@@ -115,7 +116,8 @@
       "kind": "pylint-odoo",
       "message": "Translation string uses positional `%s` formatting — use named `%(name)s`.",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": "_\\s*\\([^)]*%s"
     },
     {
       "rule_id": "W8123",
@@ -123,7 +125,8 @@
       "message": "Translatable string concatenation — do not split translatable strings across `+` operators.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Use a single `_('Full sentence %(var)s')` instead of concatenating translated fragments."
+      "fix_template": "Use a single `_('Full sentence %(var)s')` instead of concatenating translated fragments.",
+      "code_pattern": "_\\s*\\([^)]*\\)\\s*\\+"
     },
     {
       "rule_id": "W8130",
@@ -145,7 +148,8 @@
       "message": "SQL injection risk: `cr.execute` called with string interpolation instead of parameterized query.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Use parameterized query: `cr.execute('SELECT ... WHERE id = %s', (record_id,))`."
+      "fix_template": "Use parameterized query: `cr.execute('SELECT ... WHERE id = %s', (record_id,))`.",
+      "code_pattern": "\\.execute\\s*\\(.*?[\"\\'].*?[\"\\'].*?%(?!\\s*\\()|\\bexecute\\s*\\(.*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
     },
     {
       "rule_id": "W8141",
@@ -153,7 +157,8 @@
       "message": "Built-in dynamic expression interpreter used with external input — use `odoo.tools.safe_eval` instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Import safe_eval from odoo.tools.safe_eval and use it to sandbox expression execution."
+      "fix_template": "Import safe_eval from odoo.tools.safe_eval and use it to sandbox expression execution.",
+      "code_pattern": "\\b(?:eval|exec)\\s*\\("
     },
     {
       "rule_id": "W8142",
@@ -161,7 +166,8 @@
       "message": "`sudo()` called without restricting scope — avoid broad `sudo()` for entire CRUD operations.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Prefer `self.sudo(user)` or narrow the sudo() call to the minimum required action."
+      "fix_template": "Prefer `self.sudo(user)` or narrow the sudo() call to the minimum required action.",
+      "code_pattern": "\\.sudo\\s*\\(\\s*\\)"
     },
     {
       "rule_id": "W8150",
@@ -169,7 +175,8 @@
       "message": "Hardcoded database ID used in code — use `env.ref()` instead.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace hardcoded integer id with `self.env.ref('module.xml_id').id`."
+      "fix_template": "Replace hardcoded integer id with `self.env.ref('module.xml_id').id`.",
+      "code_pattern": "\\bbrowse\\s*\\(\\s*\\d+\\s*\\)"
     },
     {
       "rule_id": "W8151",
@@ -177,7 +184,8 @@
       "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Use `self.env.company.id` rather than a literal integer."
+      "fix_template": "Use `self.env.company.id` rather than a literal integer.",
+      "code_pattern": "\\bcompany_id\\s*=\\s*\\d+\\b"
     },
     {
       "rule_id": "W8160",
@@ -256,7 +264,8 @@
       "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace `digits=(16, 2)` with `digits='Account'` referencing a `decimal.precision` record."
+      "fix_template": "Replace `digits=(16, 2)` with `digits='Account'` referencing a `decimal.precision` record.",
+      "code_pattern": "\\bdigits\\s*=\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)"
     },
     {
       "rule_id": "W8175",
@@ -288,7 +297,8 @@
       "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Explicitly set `sanitize=True` (default) or document why sanitization is disabled."
+      "fix_template": "Explicitly set `sanitize=True` (default) or document why sanitization is disabled.",
+      "code_pattern": "\\bfields\\.Html\\s*\\("
     },
     {
       "rule_id": "W8179",
@@ -334,14 +344,16 @@
       "kind": "eslint",
       "message": "Unexpected `var`. Use `let` or `const` instead.",
       "severity": "error",
-      "file_pattern": "**/*.js"
+      "file_pattern": "**/*.js",
+      "code_pattern": "\\bvar\\s+\\w"
     },
     {
       "rule_id": "no-console",
       "kind": "eslint",
       "message": "Unexpected `console` statement in production JS.",
       "severity": "warning",
-      "file_pattern": "**/*.js"
+      "file_pattern": "**/*.js",
+      "code_pattern": "\\bconsole\\s*\\."
     },
     {
       "rule_id": "no-undef",
@@ -384,7 +396,8 @@
       "kind": "ruff-builtin",
       "message": "Line too long (exceeds max line length).",
       "severity": "warning",
-      "file_pattern": "**/*.py"
+      "file_pattern": "**/*.py",
+      "code_pattern": ".{80,}"
     },
     {
       "rule_id": "I001",

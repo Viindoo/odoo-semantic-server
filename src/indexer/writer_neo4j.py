@@ -610,10 +610,12 @@ def _write_lint_rules_batch(tx, rules: list[LintRuleInfo]) -> None:
                 l.severity = $sev,
                 l.file_pattern = $fp,
                 l.fix_template = $fix,
-                l.core_symbol_qname = $cs
+                l.core_symbol_qname = $cs,
+                l.code_pattern = $cp
         """, rid=r.rule_id, v=r.odoo_version, kind=r.kind,
              msg=r.message, sev=r.severity, fp=r.file_pattern,
-             fix=r.fix_template, cs=r.core_symbol_qname)
+             fix=r.fix_template, cs=r.core_symbol_qname,
+             cp=r.code_pattern)
         # CHECKS edge: when rule is bound to a specific CoreSymbol, link them.
         if r.core_symbol_qname:
             tx.run(f"""

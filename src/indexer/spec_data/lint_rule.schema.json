@@ -39,6 +39,10 @@
     "core_symbol_qname": {
       "type": ["string", "null"],
       "description": "Qualified name of the CoreSymbol this rule is associated with (e.g. 'odoo.models.BaseModel.name_get'). Used to MERGE USES_CORE_SYMBOL edge in Neo4j. Null when rule is not tied to a specific API symbol."
+    },
+    "code_pattern": {
+      "type": ["string", "null"],
+      "description": "Python regex applied per-line for deterministic detection. Conventions: no nested quantifiers, no backreferences (ReDoS guard); case-sensitive; matched with re.search per line. Null when deterministic per-line detection is not feasible (e.g. rules requiring graph/cross-file context)."
     }
   }
 }
