@@ -249,6 +249,21 @@ EMBEDDER_TRUNCATE_CHARS_PER_TOKEN: float = float(
 EMBEDDER_MAX_CONCURRENCY: int = int(os.getenv("EMBEDDER_MAX_CONCURRENCY", "4"))
 
 # ---------------------------------------------------------------------------
+# Neo4j query execution timeout
+# ---------------------------------------------------------------------------
+
+# NEO4J_QUERY_TIMEOUT_SECONDS: per-query server-side transaction timeout passed
+# via neo4j.Query(text, timeout=...) on the ORM-tool read path. Bounds the
+# variable-length / dense-inheritance traversals so a runaway query becomes a
+# fast, actionable error instead of an indefinite hang (issue #273: 11 zombie
+# transactions ran 19-24h on prod because db.transaction.timeout was 0s and no
+# driver/session/query timeout was set anywhere). The rewritten per-hop
+# name-dedup queries run ~0.5-1.0s on the worst prod models, so 30s is a very
+# generous ceiling that only ever fires on genuine pathology. Override via
+# NEO4J_QUERY_TIMEOUT_SECONDS.
+NEO4J_QUERY_TIMEOUT_SECONDS: int = int(os.getenv("NEO4J_QUERY_TIMEOUT_SECONDS", "30"))
+
+# ---------------------------------------------------------------------------
 # PostgreSQL connection pool
 # ---------------------------------------------------------------------------
 
