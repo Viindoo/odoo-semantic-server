@@ -209,6 +209,19 @@ jobs:
                   '       odoo_version:\$v}) RETURN count(f) AS c', v=TEST_VERSION
               ).single()['c']
               assert direct == 0, 'amount_total must NOT be a direct field on smoke.order'
+              # Relational self-referential field for the validate_relation MISMATCH
+              # smoke (step below): a many2one whose comodel IS smoke.order (the
+              # K=140 mesh). A MISMATCH check (target != comodel) then anchors the
+              # 5-hop INHERITS subtype traversal on ALL K same-name nodes and must
+              # exhaust them fast — the genuine exhaustive-negative end-to-end the
+              # reviewer asked the smoke to exercise (a non-relational field would
+              # exit early at the 'not relational' branch and never reach the 5 hops).
+              s.run(
+                  'MERGE (f:Field {name:\"parent_id\", model:\"smoke.order\", '
+                  '       module:\"smoke_base\", odoo_version:\$v, ttype:\"many2one\", '
+                  '       comodel_name:\"smoke.order\", profile:[\"__global__\"]})',
+                  v=TEST_VERSION
+              )
           print(f'Seeded: K={K} same-name nodes, {mesh} mesh edges, field on smoke.mixin only')
 
           os.environ.setdefault('NEO4J_URI', NEO4J_URI)
@@ -321,19 +334,29 @@ jobs:
           from src.mcp.orm import _validate_relation
           from src.mcp import server as srv
 
-          # (A) validate_relation MISMATCH on K² mesh: nonexistent comodel must
-          # return fast (not time out). On the old VLP all-K query this would
-          # exhaust all same-name paths before returning empty — K=140 => ~19460
-          # edges => timeout. Per-hop name-dedup collapses it to <=N names.
+          # (A) validate_relation MISMATCH on K² mesh: smoke.order.parent_id is a
+          # many2one whose comodel is smoke.order itself (the K=140 mesh). A target
+          # of 'nonexistent.model' (!= the comodel) forces the 5-hop INHERITS
+          # subtype traversal to run the EXHAUSTIVE-NEGATIVE search anchored on all
+          # K same-name comodel nodes, then return MISMATCH. On the old VLP all-K
+          # query this would exhaust ~19460 mesh edges and time out; the per-hop
+          # name-dedup collapses it to <=N names. (A non-relational field would
+          # exit at the 'not relational' branch and never reach the 5 hops.)
           t0 = time.monotonic()
           result_mismatch = _validate_relation(
-              'smoke.order', 'amount_total', 'nonexistent.model', TEST_VERSION
+              'smoke.order', 'parent_id', 'nonexistent.model', TEST_VERSION
           )
           elapsed_mismatch = time.monotonic() - t0
           print(f'validate_relation MISMATCH elapsed {elapsed_mismatch:.2f}s: {result_mismatch!r}')
           assert elapsed_mismatch < 10, (
               f'validate_relation MISMATCH took {elapsed_mismatch:.1f}s > 10s on K² mesh — '
               'regression to VLP all-K traversal. Check orm.py validate_relation per-hop dedup.'
+          )
+          # Lock in that we actually exercised the 5-hop subtype check (relational
+          # field), not the 'not relational' early exit that a monetary field hit.
+          assert 'MISMATCH' in result_mismatch and 'not a relational' not in result_mismatch, (
+              'expected a relational MISMATCH that ran the 5-hop subtype traversal, '
+              f'got: {result_mismatch!r}'
           )
           print(f'validate_relation MISMATCH smoke PASS ({elapsed_mismatch:.2f}s < 10s)')
 
@@ -357,10 +380,14 @@ jobs:
                   MERGE (ext)-[r:INHERITS]->(def)
                   ON CREATE SET r.order = coalesce(edge_order, 0)
               ''', v=TEST_VERSION)
-              # Phase 2 DELETE: remove same-name edges to non-definition targets
+              # Phase 2 DELETE: remove same-name edges to non-definition targets.
+              # The ops script (ops/cleanup_same_name_inherits_mesh.cypher) runs
+              # this GLOBALLY; here we scope it to $v so the smoke only ever touches
+              # its own dedicated TEST_VERSION data on the shared CI database (and
+              # so the v= parameter is actually referenced, not misleadingly unused).
               s.run('''
-                  MATCH (a:Model)-[r:INHERITS]->(b:Model)
-                  WHERE a.name = b.name AND a.odoo_version = b.odoo_version
+                  MATCH (a:Model {odoo_version: $v})-[r:INHERITS]->(b:Model {odoo_version: $v})
+                  WHERE a.name = b.name
                     AND NOT coalesce(b.is_definition, false)
                   CALL (r) { DELETE r } IN TRANSACTIONS OF 10000 ROWS
               ''', v=TEST_VERSION)

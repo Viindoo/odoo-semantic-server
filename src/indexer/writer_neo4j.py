@@ -1452,6 +1452,14 @@ class Neo4jWriter:
         indexer run; the graph is still correct up to this point, and the next run will
         retry the reconciliation.
 
+        Concurrency (--profile-workers):
+        Two profiles indexing the SAME version in parallel can run this MERGE pass
+        concurrently and hit a Neo4j MERGE deadlock on the shared definition node. The
+        failure policy above absorbs the deadlock (WARNING + return 0) rather than
+        aborting, but the loser then leaves its gap unfilled for that run — re-run the
+        profile, or accept the miss (the next full reindex fills it). Idempotent MERGE
+        makes a re-run safe.
+
         Returns the number of INHERITS edges created (0 if already complete or on error).
         """
         try:
