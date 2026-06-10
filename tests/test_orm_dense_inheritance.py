@@ -474,8 +474,11 @@ def test_query_timeout_surfaces_as_ormquerytimeout(orm_funcs, monkeypatch):
 
 def test_offload_bounded_caps_concurrency_and_releases():
     """offload_bounded must (a) never run more than the cap concurrently,
-    (b) fast-reject the overflow with OrmOverloaded, and (c) release every slot
-    after the worker settles so the cap is fully reclaimable afterwards.
+    (b) fast-reject the overflow as a 'busy' STRING (PR #275 review C2/MED
+    isError: OrmOverloaded is now caught in the wrapper and returned as a plain
+    str, uniform with the embed path + ADR-0023 — it no longer escapes as a
+    protocol-level error), and (c) release every slot after the worker settles
+    so the cap is fully reclaimable afterwards.
 
     Run with a tiny cap + short acquire timeout via env so the test is fast and
     deterministic. Uses asyncio.run (no reliance on the asyncio_mode fixture).
@@ -484,6 +487,10 @@ def test_offload_bounded_caps_concurrency_and_releases():
 
     os.environ["ORM_QUERY_MAX_CONCURRENCY"] = "2"
     os.environ["ORM_SLOT_ACQUIRE_TIMEOUT"] = "0.2"
+    # PR #275 review LOW SSOT: the ORM knobs moved to src.constants, so reload
+    # constants FIRST for the env override to take, then server (re-imports them).
+    import src.constants as consts
+    importlib.reload(consts)
     import src.mcp.server as srv
     importlib.reload(srv)
 
@@ -511,27 +518,32 @@ def test_offload_bounded_caps_concurrency_and_releases():
     results = asyncio.run(_drive())
 
     served = [r for r in results if r == "done"]
-    rejected = [r for r in results if isinstance(r, srv.OrmOverloaded)]
+    # PR #275 C2/MED isError: overload now returns a 'busy' STRING, not an
+    # OrmOverloaded exception that escapes the wrapper.
+    rejected = [
+        r for r in results if isinstance(r, str) and "busy" in r and "retry" in r
+    ]
     assert peak <= 2, f"concurrency cap breached: peak={peak} (max 2)"
     assert len(served) == 2, f"expected 2 served, got {len(served)}: {results}"
     assert len(rejected) == 3, f"expected 3 fast-rejected, got {len(rejected)}: {results}"
 
     # After everything settled, the full cap must be reacquirable (slots freed).
-    async def _reacquire_all():
-        sem = srv._get_orm_semaphore()
-        got = 0
-        for _ in range(2):
-            await asyncio.wait_for(sem.acquire(), timeout=1.0)
-            got += 1
-        for _ in range(2):
-            sem.release()
-        return got
+    # PR #275 C2: the semaphore is now a threading.BoundedSemaphore (slot tied to
+    # the worker thread, not the coroutine), so acquire()/release() are the
+    # blocking threading API, not awaitables.
+    sem = srv._get_orm_semaphore()
+    got = 0
+    for _ in range(2):
+        assert sem.acquire(timeout=1.0), "slot not released after worker completion"
+        got += 1
+    for _ in range(2):
+        sem.release()
+    assert got == 2, "slots not released after worker completion"
 
-    assert asyncio.run(_reacquire_all()) == 2, "slots not released after worker completion"
-
-    # Reset env + module so other tests see defaults.
+    # Reset env + modules so other tests see defaults (constants then server).
     os.environ.pop("ORM_QUERY_MAX_CONCURRENCY", None)
     os.environ.pop("ORM_SLOT_ACQUIRE_TIMEOUT", None)
+    importlib.reload(consts)
     importlib.reload(srv)
 
 

@@ -35,6 +35,9 @@ from src.constants import (
     LIST_PREVIEW_MAX_ITEMS,
     LIST_PREVIEW_PATCHES_MAX,
     MAGIC_FIELDS,
+    NEO4J_QUERY_TIMEOUT_SECONDS,
+    ORM_QUERY_MAX_CONCURRENCY,
+    ORM_SLOT_ACQUIRE_TIMEOUT,
     PG_POOL_MAX_CONN,
     PG_POOL_MIN_CONN,
     REL_DEPENDS_ON,
@@ -540,75 +543,85 @@ def offload(fn):
 # @offload tool. Without the cap, N hung ORM calls starve model_inspect /
 # entity_lookup / etc. for the duration of the Neo4j timeout window.
 #
-# ORM_QUERY_MAX_CONCURRENCY caps in-flight ORM queries. It is read from env at
-# module load here (mirroring _EMBED_SLOT_ACQUIRE_TIMEOUT_S above) rather than
-# in constants.py to keep this fix self-contained in server.py. Callers that
-# cannot acquire a slot within _ORM_SLOT_ACQUIRE_TIMEOUT_S fail fast with an
-# OrmOverloaded message instead of queueing forever.
-_ORM_QUERY_MAX_CONCURRENCY = int(os.getenv("ORM_QUERY_MAX_CONCURRENCY", "8"))
-# Short bound: if we cannot start an ORM query within this window the pool is
-# already saturated; reject fast. Must stay well below the Neo4j query timeout
-# (WI-1, NEO4J_QUERY_TIMEOUT_SECONDS default 30s) so the reject is genuinely
-# fast and the slot is not held for the full traversal window on overload.
-_ORM_SLOT_ACQUIRE_TIMEOUT_S = float(os.getenv("ORM_SLOT_ACQUIRE_TIMEOUT", "5"))
-
-_orm_semaphore: asyncio.Semaphore | None = None
-_orm_sem_lock = threading.Lock()  # guards lazy Semaphore construction
+# ORM_QUERY_MAX_CONCURRENCY caps in-flight ORM queries; ORM_SLOT_ACQUIRE_TIMEOUT
+# is the fast-reject window. Both are the SSOT in constants.py (imported above)
+# and validated at server startup by _validate_orm_env() — a value of 0 or an
+# acquire-timeout >= the Neo4j query timeout is rejected fail-fast there.
+#
+# A *threading* BoundedSemaphore (NOT asyncio.Semaphore) is used here, built at
+# module load. Rationale (the #276 / CRITICAL-2 fix):
+#   - A threading semaphore does not bind to an event loop, so there is no lazy
+#     init dance and no per-loop ownership to reason about.
+#   - acquire()/release() happen INSIDE the worker thread (see offload_bounded),
+#     so the slot's lifetime is tied to the THREAD, not the coroutine. When a
+#     client disconnects mid-call FastMCP cancels the wrapper coroutine and
+#     `await asyncio.to_thread(...)` raises CancelledError immediately — but the
+#     worker thread keeps running the blocking Neo4j call. Because the slot is
+#     held by the thread, cancellation can no longer free it early; the slot
+#     stays held until the thread itself exits (its own `finally`), i.e. until
+#     the query finishes or the Neo4j-side timeout (NEO4J_QUERY_TIMEOUT_SECONDS)
+#     frees it. This is the pool-drain protection #273/#276 require.
+#   - BoundedSemaphore (not plain) turns any over-release into an immediate
+#     ValueError instead of silent value inflation (HIGH #4).
+_orm_semaphore = threading.BoundedSemaphore(ORM_QUERY_MAX_CONCURRENCY)
 
 
 class OrmOverloaded(RuntimeError):
     """Raised when the bounded ORM semaphore cannot be acquired in time.
 
-    Surfaced to the MCP client as a fast, actionable overload message rather
-    than letting the request hang on an unbounded queue (#273, mirrors the
-    embed path's EmbedOverloaded per ADR-0046 D3).
+    Caught in ``offload_bounded`` and surfaced to the MCP client as a fast,
+    actionable overload *string* (NOT a protocol-level error) — uniform with the
+    embed path's EmbedOverloaded (ADR-0046 D3) and the ADR-0023 raw-text posture
+    (so "server busy" never shows up as ``isError=true``, MED isError fix).
     """
 
 
-def _get_orm_semaphore() -> asyncio.Semaphore:
-    """Lazily build the ORM Semaphore inside the running event loop.
+def _get_orm_semaphore() -> threading.BoundedSemaphore:
+    """Return the module-level threading BoundedSemaphore.
 
-    asyncio.Semaphore binds to the loop running when it is first awaited, so we
-    must NOT construct it at import time (no loop yet) — build it on first use
-    from within a handler coroutine. Double-checked under a thread lock so
-    concurrent first-callers share one instance (mirrors _get_embed_semaphore).
+    Threading semaphores have no event-loop binding, so unlike the embed
+    Semaphore there is no lazy per-loop construction — this is a plain accessor
+    kept for test access and parity with _get_embed_semaphore().
     """
-    global _orm_semaphore
-    if _orm_semaphore is not None:
-        return _orm_semaphore
-    with _orm_sem_lock:
-        if _orm_semaphore is None:
-            _orm_semaphore = asyncio.Semaphore(_ORM_QUERY_MAX_CONCURRENCY)
     return _orm_semaphore
 
 
 def offload_bounded(fn):
     """Move a blocking sync ORM tool body off the loop, bounded by a Semaphore.
 
-    Like ``offload`` (which it mirrors), but acquires a slot from the ORM
-    Semaphore with a short fast-reject timeout BEFORE handing the body to a
-    worker thread. This bounds concurrent dense ORM traversals so a fan-out
-    burst cannot drain the shared ThreadPoolExecutor (#273 / ADR-0046).
+    Like ``offload`` (which it mirrors), but bounds the number of concurrent
+    dense ORM traversals so a fan-out burst cannot drain the shared
+    ThreadPoolExecutor that ``asyncio.to_thread`` uses, nor exhaust the Neo4j
+    connection pool (#273 / #276 / ADR-0046).
 
-    Behaviour:
-      * On semaphore-acquire timeout: raise ``OrmOverloaded`` (fast reject,
-        ~5s) — increments ``orm_overloaded_total{tool=...}`` and logs a WARNING.
+    Behaviour (all overload/timeout bookkeeping happens INSIDE the worker
+    thread, so it is recorded even after the coroutine is cancelled):
+      * On semaphore-acquire timeout: increment ``orm_overloaded_total`` + log a
+        WARNING in-thread, then raise ``OrmOverloaded``. The async wrapper
+        catches it and returns the message as a normal ``str`` (uniform with the
+        embed path + ADR-0023 raw-text; never ``isError=true``).
       * On ``OrmQueryTimeout`` (raised by WI-1's orm.py when the Neo4j query
-        timeout fires): increment ``orm_query_timeout_total{tool=...}``, log a
-        WARNING and return ``exc.user_message`` (a normal ``str`` result, the
-        tool's declared return type).
+        timeout fires): increment ``orm_query_timeout_total`` + log in-thread,
+        then re-raise; the wrapper returns ``exc.user_message`` to the client.
 
-    RELEASE-ORDERING CONSTRAINT (the #273 trap, debate Part 2-A1.4):
-      The semaphore slot is released ONLY after ``asyncio.to_thread`` settles
-      (the ``finally`` runs after the awaited future completes or raises) — it
-      is NOT released the instant the coroutine is cancelled. asyncio.wait_for
-      can cancel this coroutine, but it CANNOT kill the worker thread already
-      running the blocking Neo4j call. If we released on cancellation while the
-      thread kept running, the cap would be exceeded by "cancelled-but-alive"
-      threads and the pool-drain protection would silently fail exactly when it
-      is needed most. The slot stays held until the thread truly finishes (or
-      until the Neo4j-side timeout frees it) — the two timeouts are
-      complementary, not redundant.
+    THREAD-LIFETIME RELEASE (the #276 / CRITICAL-2 fix):
+      acquire()/release() run INSIDE the thread function, so the slot is tied to
+      the WORKER THREAD, not the coroutine. ``threading.BoundedSemaphore`` is
+      thread-safe and is released only in the thread's own ``finally``. When a
+      client disconnects mid-call FastMCP cancels the wrapper coroutine and the
+      awaited ``to_thread`` future raises ``CancelledError`` immediately — but
+      the worker thread keeps running and STILL HOLDS the slot until it exits.
+      Cancellation can therefore no longer free a slot while a thread is still
+      pinning a Neo4j connection (the exact #276 drain the old loop-bound
+      ``asyncio.Semaphore`` released-on-cancel implementation failed to prevent).
+      The slot is freed only when the thread finishes or the Neo4j-side timeout
+      (NEO4J_QUERY_TIMEOUT_SECONDS) ends the query.
+
+      Accepted trade-off: a fast-reject now occupies one ThreadPoolExecutor slot
+      for up to ORM_SLOT_ACQUIRE_TIMEOUT seconds while it blocks on acquire().
+      This is acceptable — the Neo4j pool (~24) comfortably exceeds the ORM cap
+      (8) plus this brief reject headroom, and rejecting from inside the thread
+      is what makes the slot accounting cancellation-safe.
 
     ``functools.wraps`` preserves ``__wrapped__`` so FastMCP introspects the
     ORIGINAL handler signature (the 4 tools' signatures are unchanged — clients
@@ -618,49 +631,110 @@ def offload_bounded(fn):
     """
     tool_name = getattr(fn, "__name__", "orm_tool")
 
-    @functools.wraps(fn)
-    async def wrapper(*a, **k):
-        sem = _get_orm_semaphore()
-        try:
-            await asyncio.wait_for(
-                sem.acquire(), timeout=_ORM_SLOT_ACQUIRE_TIMEOUT_S
-            )
-        except TimeoutError as e:
+    def _run_in_thread(a, k):
+        # Runs entirely on the worker thread. The slot is acquired and released
+        # here so its lifetime is bound to THIS thread, never to the (possibly
+        # cancelled) caller coroutine. See THREAD-LIFETIME RELEASE above.
+        if not _orm_semaphore.acquire(timeout=ORM_SLOT_ACQUIRE_TIMEOUT):
+            # Saturated: fast-reject. Record metric + log here so cancel-storms
+            # are never invisible (the coroutine may already be gone).
             _metric_orm_overloaded(tool_name)
             logger.warning(
                 "ORM tool overloaded — semaphore full (max %d): tool=%s %s",
-                _ORM_QUERY_MAX_CONCURRENCY,
+                ORM_QUERY_MAX_CONCURRENCY,
                 tool_name,
                 _orm_call_context(a, k),
             )
             raise OrmOverloaded(
                 "server busy — too many concurrent ORM-validation requests"
-                f" (max {_ORM_QUERY_MAX_CONCURRENCY}); retry shortly"
-            ) from e
+                f" (max {ORM_QUERY_MAX_CONCURRENCY}); retry shortly"
+            )
         try:
-            return await asyncio.to_thread(functools.partial(fn, *a, **k))
-        except OrmQueryTimeout as exc:
-            # WI-1 raises OrmQueryTimeout when the Neo4j query timeout fires.
-            # Convert to the tool's normal str result + record the timeout
-            # metric. We never leak the Cypher / user code here.
+            return fn(*a, **k)
+        except OrmQueryTimeout:
+            # Record the timeout metric + log IN-THREAD so it is observed even
+            # if the awaiting coroutine was already cancelled (MED cancel-path
+            # blind spot). Re-raise so the wrapper can return user_message to a
+            # still-connected client.
             _metric_orm_query_timeout(tool_name)
             logger.warning(
                 "ORM query timed out: tool=%s %s",
                 tool_name,
                 _orm_call_context(a, k),
             )
+            raise
+        finally:
+            _orm_semaphore.release()
+
+    @functools.wraps(fn)
+    async def wrapper(*a, **k):
+        try:
+            return await asyncio.to_thread(_run_in_thread, a, k)
+        except OrmOverloaded as exc:
+            # Uniform with the embed path + ADR-0023: return the overload
+            # message as a normal str, never a protocol-level isError.
+            return str(exc)
+        except OrmQueryTimeout as exc:
+            # Metric/log already recorded in-thread; return the normal str
+            # result. We never leak the Cypher / user code here.
             return getattr(
                 exc,
                 "user_message",
                 "ORM query timed out — the request was too expensive to"
                 " complete; narrow the model/version and retry.",
             )
-        finally:
-            # See RELEASE-ORDERING CONSTRAINT above: release ONLY after the
-            # to_thread future has settled, never on bare coroutine cancel.
-            sem.release()
 
     return wrapper
+
+
+def _validate_orm_env() -> None:
+    """Fail-fast guard for the ORM concurrency / timeout env knobs (HIGH #3).
+
+    Called once at server startup (NOT at import — see the call site in the
+    __main__ block), so pytest collection and tool imports never trip these
+    assertions. Values are re-read from ``os.getenv`` here rather than trusting
+    the import-time constants, because ``config.init_dotenv()`` runs in the
+    __main__ block AFTER this module imports — so a ``.env``-only value would
+    not yet be reflected in the module-level constant when this runs. Each
+    foot-gun below silently reverts a load-bearing #273/#276 protection:
+
+      * NEO4J_QUERY_TIMEOUT_SECONDS <= 0 — the neo4j driver treats 0 as
+        "no timeout", reverting the core #273 per-query-timeout fix.
+      * ORM_QUERY_MAX_CONCURRENCY <= 0 — every ORM call fast-rejects forever
+        (0 slots can never be acquired).
+      * ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS — the reject is
+        no longer "fast", so an overloaded server pins a worker-thread slot for
+        as long as the query itself would run. The .env.example states this
+        constraint; this enforces it.
+    """
+    neo4j_timeout = int(
+        os.getenv("NEO4J_QUERY_TIMEOUT_SECONDS", str(NEO4J_QUERY_TIMEOUT_SECONDS))
+    )
+    orm_max = int(
+        os.getenv("ORM_QUERY_MAX_CONCURRENCY", str(ORM_QUERY_MAX_CONCURRENCY))
+    )
+    orm_acquire = float(
+        os.getenv("ORM_SLOT_ACQUIRE_TIMEOUT", str(ORM_SLOT_ACQUIRE_TIMEOUT))
+    )
+    if neo4j_timeout <= 0:
+        raise SystemExit(
+            "FATAL: NEO4J_QUERY_TIMEOUT_SECONDS must be > 0 "
+            f"(got {neo4j_timeout}); 0 disables the per-query timeout and "
+            "reverts the #273 zombie-transaction fix."
+        )
+    if orm_max <= 0:
+        raise SystemExit(
+            "FATAL: ORM_QUERY_MAX_CONCURRENCY must be > 0 "
+            f"(got {orm_max}); 0 makes every ORM-validation tool fast-reject "
+            "forever."
+        )
+    if orm_acquire >= neo4j_timeout:
+        raise SystemExit(
+            "FATAL: ORM_SLOT_ACQUIRE_TIMEOUT "
+            f"({orm_acquire}) must be < NEO4J_QUERY_TIMEOUT_SECONDS "
+            f"({neo4j_timeout}) so an overloaded server rejects fast instead "
+            "of pinning a worker-thread slot for the whole traversal window."
+        )
 
 
 def _orm_call_context(args: tuple, kwargs: dict) -> str:
@@ -7930,6 +8004,9 @@ def resolve_orm_chain(
     graph (following many2one/one2many/many2many comodels), reporting the
     terminal type or the exact hop where the path breaks.
 
+    Inherited fields resolve depth-first: a field on a nearer ancestor (mixin)
+    shadows the same field name on a farther one.
+
     TRIGGER when: "what type is sale.order.partner_id.country_id.code", "does
     this dotted path resolve", "trace a field path", "field nào ở cuối chain",
     "kiểm tra đường dẫn field a.b.c có hợp lệ không"
@@ -7965,6 +8042,9 @@ def validate_domain(
     must be valid for the version ('any'/'not any' only exist from v17). Catches
     hallucinated fields before they reach a user.
 
+    Inherited fields resolve depth-first: a field on a nearer ancestor (mixin)
+    shadows the same field name on a farther one.
+
     TRIGGER when: "is this domain valid", "check domain [('x','=',1)]", "validate
     search domain for sale.order", "domain này có field sai không", "kiểm tra
     domain trước khi dùng"
@@ -7996,6 +8076,9 @@ def validate_depends(
     Reads the indexed @api.depends('a.b', ...) arguments of the method and
     checks each dependency path resolves; flags depends on 'id' (Odoo forbids
     it) and suggests the closest field name for typos.
+
+    Inherited fields resolve depth-first: a field on a nearer ancestor (mixin)
+    shadows the same field name on a farther one.
 
     TRIGGER when: "are the @api.depends on _compute_x correct", "validate depends
     of this compute method", "check compute dependencies", "depends của method
@@ -8030,6 +8113,9 @@ def validate_relation(
     Checks that model.field is a many2one/one2many/many2many whose comodel is
     target_model (or a subtype of it via inheritance). Reports the actual
     comodel on mismatch and suggests the closest field name when missing.
+
+    Inherited fields resolve depth-first: a field on a nearer ancestor (mixin)
+    shadows the same field name on a farther one.
 
     TRIGGER when: "does sale.order.partner_id point to res.partner", "is this
     field a many2one to res.users", "check relation target", "field X có trỏ
@@ -8097,6 +8183,11 @@ if __name__ == "__main__":
 
     from src import config as _config
     _config.init_dotenv()
+
+    # HIGH #3: fail-fast on zero-value / mis-ordered ORM concurrency knobs now
+    # that init_dotenv() has settled the env. A bad value here silently reverts
+    # a #273/#276 protection, so refuse to start rather than serve degraded.
+    _validate_orm_env()
 
     from src.logging_config import configure_logging as _configure_logging
     _configure_logging(level=_logging.INFO)
@@ -8254,12 +8345,18 @@ if __name__ == "__main__":
     # #227 backpressure: cap the number of concurrent connections uvicorn will
     # service. Beyond this, uvicorn returns HTTP 503 immediately instead of
     # letting the accept-backlog grow unbounded (which turns overload into
-    # latency + OOM). The ceiling is a multiple of EMBEDDER_MAX_CONCURRENCY so
-    # there is headroom for cheap non-embed tools + /health while the embed
-    # semaphore independently bounds the expensive embed slots. Tunable via
-    # MCP_LIMIT_CONCURRENCY (no constants.py edit — WI-C scope).
+    # latency + OOM). There are now TWO independent inner bounds — the embed
+    # semaphore (EMBEDDER_MAX_CONCURRENCY) and the ORM semaphore
+    # (ORM_QUERY_MAX_CONCURRENCY). The connection ceiling is a multiple of their
+    # SUM so that both bounded pools can be fully saturated and there is still
+    # ample headroom for cheap non-embed/non-ORM tools + /health while the two
+    # semaphores independently bound the expensive slots. Tunable via
+    # MCP_LIMIT_CONCURRENCY.
     _limit_concurrency = int(
-        os.getenv("MCP_LIMIT_CONCURRENCY", str(EMBEDDER_MAX_CONCURRENCY * 16))
+        os.getenv(
+            "MCP_LIMIT_CONCURRENCY",
+            str((EMBEDDER_MAX_CONCURRENCY + ORM_QUERY_MAX_CONCURRENCY) * 16),
+        )
     )
     _uvicorn.run(
         _app,
