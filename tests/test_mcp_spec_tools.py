@@ -61,6 +61,12 @@ def seeded_spec_neo4j(neo4j_driver):
             severity="error",
         ),
     ])
+    # Mirror the real index-core invariant: LintRule rows and SpecMetadata are
+    # always written together (pipeline.py).  Without this, curate_status=None
+    # now triggers the tier-1 empty-index disclosure (#271) instead of matching.
+    writer.write_spec_metadata(
+        kind="lint", odoo_version=SPEC_VERSION_FROM, curate_status="complete",
+    )
 
     # CoreSymbol: name_get deprecated@v96, removed@v95 + replacement display_name@v95
     # NOTE: write CoreSymbols BEFORE the user Model — _write_parse_result MERGEs
