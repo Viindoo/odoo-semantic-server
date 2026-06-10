@@ -576,6 +576,23 @@ def _index_repo(
         writer.gc_unresolved_placeholders(odoo_version)
     # === End Module GC ===
 
+    # === Post-pass INHERITS reconciliation (#273) ===
+    # Fill any extender-to-definition INHERITS edges missed due to cross-repo
+    # write-order gaps.  When an extender repo is indexed BEFORE the definition
+    # repo, the writer W1 MATCH tip returns 0 rows (definition node not yet
+    # written) and emits 0 same-name edges.  A later index_repo for the
+    # definition repo writes the definition node but does not retroactively
+    # connect extenders from other repos.
+    #
+    # This set-based MERGE pass runs UNCONDITIONALLY (not gated on gc=True)
+    # because cross-repo gaps arise whenever multiple repos share a model name
+    # and can occur on any run, incremental or full.  Running after all writes
+    # for this version maximises the chance that both extender and definition
+    # nodes are present.  The pass is version-scoped (odoo_version) so it never
+    # touches other versions.  Failure is non-fatal (see writer docstring).
+    writer.reconcile_same_name_inherits(odoo_version)
+    # === End post-pass ===
+
     # Observability summary log (M7 C5) — one line per repo, readable by admins.
     _logger.info(
         "Indexer run: %d modules, %d embed calls, %d rows written",
