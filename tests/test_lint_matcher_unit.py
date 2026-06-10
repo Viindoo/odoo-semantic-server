@@ -1,15 +1,38 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_lint_matcher_unit.py
-"""Pure unit tests for _match_lint_rule + V0 banner (PR#11 WI-F6) + noqa (M10A D4).
+"""Pure unit tests for _match_lint_rule + V0/V0.5 banner + noqa + pattern-first (WI-8).
 
-No Neo4j required — exercises only the token matching logic and output header.
+No Neo4j required - exercises only the token matching logic, pattern-first path,
+match-kind labelling, noqa suppression, and the V0.5 banner constant.
+
+WI-8 additions:
+- SQL injection snippet fires W8140 with match_kind 'pattern' (regression for #271).
+- UserError string formatting fires W8201 with match_kind 'pattern'.
+- Safe parameterized cr.execute does NOT fire W8140 (no false positive).
+- Label distinguishes [pattern] from [fuzzy] via _lint_match_kind.
+- noqa suppresses pattern hits on the annotated line.
+- Invalid regex in code_pattern falls back to fuzzy without crashing.
 """
+import json
+from pathlib import Path
+
 from src.mcp.server import (
     _LINT_V0_BANNER,
     _build_noqa_suppress,
+    _compile_lint_pattern,
+    _lint_match_kind,
     _match_lint_rule,
     _match_lint_rule_lines,
 )
+
+# Load real spec data from the 17.0 JSON so regression tests use the actual
+# production patterns rather than hardcoded strings. This ensures tests break
+# if the data is edited in a way that breaks the patterns.
+_SPEC_DATA_PATH = (
+    Path(__file__).parent.parent / "src" / "indexer" / "spec_data" / "lint_rules_17.0.json"
+)
+_SPEC_17 = json.loads(_SPEC_DATA_PATH.read_text(encoding="utf-8"))
+_RULES_BY_ID: dict[str, dict] = {r["rule_id"]: r for r in _SPEC_17.get("rules", [])}
 
 
 def _rule(message: str, rule_id: str = "E9001", severity: str = "warning") -> dict:
@@ -218,9 +241,163 @@ def test_noqa_on_different_line_does_not_suppress_other_line():
         1 for ln in hit_lines
         if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
     )
-    # Line 1 triggered; noqa is only on line 2 — line 1 should NOT be suppressed
+    # Line 1 triggered; noqa is only on line 2 - line 1 should NOT be suppressed
     assert 1 in hit_lines, f"Expected line 1 to be in hit_lines; got {hit_lines}"
     assert 1 not in suppress, f"Line 1 should not be in suppress map; {suppress}"
     assert suppressed_count < len(hit_lines), (
         "Line 1 violation should not be suppressed by line 2 noqa"
+    )
+
+
+# ===========================================================================
+# WI-8 Pattern-first regression tests (issue #271 fix)
+# ===========================================================================
+# These tests use real production patterns from lint_rules_17.0.json and guard
+# against regressions in the pattern-first matcher introduced in WI-6.
+# Each test MUST be able to fail: if the code_pattern in the JSON is removed or
+# broken, the corresponding assertion will fail.
+
+
+# SQL injection snippet from issue #271 - was false-green under V0 fuzzy matcher.
+_SQL_INJECTION_CODE = (
+    'self.env.cr.execute("SELECT id FROM res_partner WHERE name = \'%s\'" % self.name)'
+)
+# Safe parameterized variant - must never fire W8140 (no false positive).
+_SQL_SAFE_CODE = "cr.execute(\"SELECT id FROM res_partner WHERE id = %s\", (self.id,))"
+# UserError string formatting snippet - was false-green under V0 fuzzy matcher.
+_USER_ERROR_CODE = "raise UserError('Hi %s' % n)"
+
+
+def test_pattern_w8140_fires_on_sql_injection():
+    """W8140 (SQL injection) must fire on cr.execute with string interpolation.
+
+    Regression for issue #271: V0 fuzzy matcher never fired this rule because
+    the rule message vocabulary ('injection', 'interpolation') does not appear
+    in the code. Pattern-first matcher uses the real regex from the JSON data.
+    """
+    rule = _RULES_BY_ID.get("W8140")
+    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+
+    lines = _match_lint_rule_lines(_SQL_INJECTION_CODE, rule)
+    assert len(lines) >= 1, (
+        f"W8140 must fire on SQL injection snippet; got no violations.\n"
+        f"code_pattern: {rule['code_pattern']!r}\n"
+        f"code: {_SQL_INJECTION_CODE!r}"
+    )
+
+
+def test_pattern_w8140_silent_on_safe_parameterized():
+    """W8140 must NOT fire on cr.execute with tuple parameters (no false positive).
+
+    The pattern specifically targets string interpolation; parameterized
+    queries pass the values as a separate tuple argument, not in the SQL string.
+    """
+    rule = _RULES_BY_ID.get("W8140")
+    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+
+    lines = _match_lint_rule_lines(_SQL_SAFE_CODE, rule)
+    assert lines == [], (
+        f"W8140 must NOT fire on safe parameterized query; got lines={lines}.\n"
+        f"code_pattern: {rule['code_pattern']!r}\n"
+        f"code: {_SQL_SAFE_CODE!r}"
+    )
+
+
+def test_pattern_w8201_fires_on_usererror_format():
+    """W8201 (UserError string formatting) must fire on 'raise UserError(... % n)'.
+
+    Regression for issue #271: V0 fuzzy matcher failed because 'usererror'
+    appears in the rule message but the code uses CamelCase 'UserError' which
+    after lower() becomes 'usererror' - only 1 token matched (below the
+    2-token threshold). Pattern-first resolves this deterministically.
+    """
+    rule = _RULES_BY_ID.get("W8201")
+    assert rule is not None, "W8201 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8201 must have a non-null code_pattern"
+
+    lines = _match_lint_rule_lines(_USER_ERROR_CODE, rule)
+    assert len(lines) >= 1, (
+        f"W8201 must fire on UserError string formatting; got no violations.\n"
+        f"code_pattern: {rule['code_pattern']!r}\n"
+        f"code: {_USER_ERROR_CODE!r}"
+    )
+
+
+def test_lint_match_kind_pattern_for_rule_with_code_pattern():
+    """_lint_match_kind returns 'pattern' when rule has a valid code_pattern."""
+    rule = _RULES_BY_ID.get("W8140")
+    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+
+    kind = _lint_match_kind(rule)
+    assert kind == "pattern", (
+        f"_lint_match_kind must return 'pattern' for a rule with code_pattern; got {kind!r}"
+    )
+
+
+def test_lint_match_kind_fuzzy_for_rule_without_code_pattern():
+    """_lint_match_kind returns 'fuzzy' when rule has no code_pattern."""
+    rule = _rule("Some rule message without pattern", rule_id="W9999")
+    # No 'code_pattern' key -> falls back to fuzzy.
+    kind = _lint_match_kind(rule)
+    assert kind == "fuzzy", (
+        f"_lint_match_kind must return 'fuzzy' for a rule without code_pattern; got {kind!r}"
+    )
+
+
+def test_noqa_suppresses_pattern_hit():
+    """noqa: W8140 on the SQL injection line suppresses the pattern-match violation.
+
+    noqa suppression must work for pattern hits, not just fuzzy hits.
+    """
+    rule = _RULES_BY_ID.get("W8140")
+    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
+
+    code = _SQL_INJECTION_CODE + "  # noqa: W8140"
+    suppress = _build_noqa_suppress(code)
+    hit_lines = _match_lint_rule_lines(code, rule)
+    rule_id = rule["rule_id"]
+
+    # Without suppression the pattern must have fired (sanity guard).
+    raw_lines = _match_lint_rule_lines(_SQL_INJECTION_CODE, rule)
+    assert raw_lines, "Prerequisite: W8140 must fire before noqa is applied"
+
+    # All hit lines should be covered by the noqa annotation.
+    suppressed_count = sum(
+        1 for ln in hit_lines
+        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
+    )
+    assert suppressed_count == len(hit_lines), (
+        f"All pattern hits must be suppressed by '# noqa: W8140'; "
+        f"hit_lines={hit_lines}, suppress={suppress}"
+    )
+
+
+def test_invalid_code_pattern_falls_back_to_fuzzy_no_crash():
+    """A rule with an invalid regex code_pattern falls back to fuzzy without crashing.
+
+    _compile_lint_pattern must cache None for bad patterns so callers get fuzzy
+    behaviour rather than an unhandled exception.
+    """
+    bad_pattern = r"(?invalid-regex"
+    # _compile_lint_pattern must return None, not raise.
+    result = _compile_lint_pattern(bad_pattern)
+    assert result is None, (
+        f"_compile_lint_pattern must return None for invalid regex; got {result!r}"
+    )
+
+    # With a bad pattern the rule should fall back to fuzzy (no crash).
+    rule_with_bad_pattern = {
+        "rule_id": "W9997",
+        "severity": "warning",
+        "message": "percent format string literal usage",
+        "code_pattern": bad_pattern,
+    }
+    code = "msg = 'Hello %s' % name  # percent format"
+    # Must not raise; result is either [] or a list from fuzzy fallback.
+    lines = _match_lint_rule_lines(code, rule_with_bad_pattern)
+    assert isinstance(lines, list), (
+        f"_match_lint_rule_lines must return a list even with bad code_pattern; got {lines!r}"
     )
