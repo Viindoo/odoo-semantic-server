@@ -188,6 +188,17 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
+**Active work — ORM hang + lint false-green fix wave (fix/#271-#273, ADR-0048):** Two production
+issues fixed in one wave. (1) Four ORM tools (`resolve_orm_chain` / `validate_domain` /
+`validate_depends` / `validate_relation`) hung indefinitely on dense inheritance graphs (11 zombie
+transactions, 19-24h on prod) — fixed by per-hop name-dedup read query + 30s driver timeout +
+semaphore (8 slots). (2) `lint_check` false-green on SQL injection — fixed by `code_pattern` regex
+data + pattern-first hybrid matcher (V0.5). Writer same-name INHERITS topology changed to K×D
+(extender→definition only). Tool count stays **25**. No Postgres migration. Cleanup script
+`ops/cleanup_same_name_inherits_mesh.cypher` must be run off-peak after deploy (backup ADR-0018
+required first). See [ADR-0048](docs/adr/0048-inherits-topology-and-orm-read-bounds.md) and
+CHANGELOG.md `[Unreleased]`.
+
 **Latest release:** v0.13.1 (2026-05-28) — Self-host waitlist + post-v0.13.0 cleanup (PR #204). Adds `POST /api/waitlist` endpoint (5/min per-IP rate-limit, admin email notification), `src/web_ui/email.py` sender abstraction, migration `m13_008_waitlist_emails`. Tool count stays **24**. See CHANGELOG.md.
 
 **v0.11.1 (2026-05-23)** — Pre-LIVE read-side hygiene + stylesheet/lint cleanup. See CHANGELOG.md.

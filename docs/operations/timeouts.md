@@ -37,6 +37,34 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 |---------|---------|-----|-----------|-----------|
 | `NEO4J_WRITE_BATCH_SIZE` | 500 | 500 | `src/constants.py` | 500 rows/tx is the proven sweet spot. Decrease if Neo4j GC pauses cause transaction timeouts on underpowered hardware. |
 
+### Neo4j ORM read (MCP tools — ADR-0048)
+
+| Env var | Default | Was | File:line | Reasoning |
+|---------|---------|-----|-----------|-----------|
+| `NEO4J_QUERY_TIMEOUT_SECONDS` | 30 | (new) | `src/constants.py` | Per-query driver timeout for the 5 ORM read call-sites in `src/mcp/orm.py`. Wraps Cypher text via `neo4j.Query(text, timeout=...)`. On timeout, surfaces `OrmQueryTimeout` to the tool handler — English error, no Cypher leaked. 30s is safe for per-hop name-dedup queries (measured p99 < 1s on dense graphs); raise only if you observe false timeouts on extremely large profiles. |
+| `ORM_QUERY_MAX_CONCURRENCY` | 8 | (new) | `src/mcp/server.py` | Semaphore cap on concurrent ORM tool executions (resolve_orm_chain / validate_domain / validate_depends / validate_relation). Prevents pool-drain: 24 fan-out calls from an AI agent would otherwise occupy all `asyncio.to_thread` threads for 30s each. Mirrors `EMBEDDER_MAX_CONCURRENCY` pattern (ADR-0046). |
+| `ORM_SLOT_ACQUIRE_TIMEOUT` | 5 | (new) | `src/mcp/server.py` | Fast-reject if an ORM semaphore slot is not available within N seconds. Caller receives `OrmOverloaded` structured error. Keeps the tool responsive under load spikes instead of queuing indefinitely. |
+
+**Ops recommendation — Neo4j `db.transaction.timeout`:**
+
+Set to **600s** (not 60s) in `neo4j.conf` and apply dynamically:
+
+```cypher
+CALL dbms.setConfigValue('db.transaction.timeout', '600s')
+```
+
+**Why 600s, not 60s:** The 30s per-query driver timeout (above) handles ORM tool runaway.
+The global `db.transaction.timeout` must accommodate legitimate long-running indexer transactions:
+- `delete_modules_scoped` deletes all child nodes of a repo in a single transaction (no CALL IN
+  TRANSACTIONS) — can exceed 60s for large repos.
+- `gc_stale_modules` DETACH DELETEs module nodes; can spike after large renames.
+- `_write_parse_result` is one transaction per ParseResult with hundreds of sequential `tx.run`
+  calls; 60s is not safe under concurrent load.
+
+600s kills zombie ORM transactions (which ran 19-24h before this fix) while leaving indexer
+headroom. Once `delete_modules_scoped` is batched (planned follow-up), the global timeout can
+be reduced.
+
 ### Web UI operations
 
 | Env var | Default | Was | File:line | Reasoning |

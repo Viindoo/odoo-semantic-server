@@ -158,18 +158,39 @@ SET m.is_abstract = $is_abstract
 MERGE (m:Model {name: $name, module: $mod, odoo_version: $v, is_abstract: $is_abstract})
 ```
 
-### INHERITS Chain — Tip Pattern
+### INHERITS Chain — Topology (ADR-0048)
 
-Vì indexer chạy theo topological order, khi extension module ghi INHERITS edge, base node đã tồn tại:
+**Same-name topology: K×D, not K².** Writer W1 (self-extend same-name) emits edges from each
+extender to **definition nodes only** (`coalesce(tip.is_definition, false) = true`). With K copies
+of a model and D definitions (usually D=1), this produces K×D edges — NOT the old K×(K-1) complete
+directed graph. The old mesh caused #273 (86M path enumeration on `sale.order` v17.0).
+
+**`r.order` on same-name edges** preserves the extender's own `_inherit` list position (MRO future
+use). One edge per extender is sufficient — the K² mesh stamped the same value on K-1 redundant
+edges with no benefit.
+
+**Read-side: per-hop name-dedup, depth-first semantics.** ORM tools (`_lookup_field` step-3) no
+longer use VLP `*1..3` with ORDER BY before LIMIT. Instead, a CALL subquery collects distinct
+ancestor names per hop, tagged with minimum depth, then joins Field. Nearest ancestor wins (minimum
+hop count); alphabetical module tiebreak within same depth. This is the formal depth-first contract
+(not an implementation accident) — see ADR-0048 D2.
+
+**Post-pass reconciliation** at the end of each `index_repo` creates any missed extender→definition
+edges (cross-repo write-order gap). Idempotent, version-scoped.
 
 ```cypher
-// Tìm node cùng tên nhưng ít inbound INHERITS hơn (= gần base hơn) để nối
+// Writer W1 — correct topology: extender nối tới definition only
 MATCH (ext:Model {name: $name, module: $mod, odoo_version: $v})
 MATCH (tip:Model {name: $name, odoo_version: $v})
 WHERE tip.module <> $mod
-  AND NOT (:Model {name: $name, odoo_version: $v})-[:INHERITS]->(tip)
-MERGE (ext)-[:INHERITS]->(tip)
+  AND coalesce(tip.is_definition, false) = true
+MERGE (ext)-[r:INHERITS]->(tip)
+ON CREATE SET r.order = $order
+ON MATCH  SET r.order = coalesce(r.order, $order)
 ```
+
+Xem ADR-0048 để biết đầy đủ: evidence mesh không consumer, ma trận rollout an toàn, và cleanup
+script `ops/cleanup_same_name_inherits_mesh.cypher`.
 
 ### Sắp Xếp Version
 
@@ -196,6 +217,11 @@ ORDER BY COUNT { ()-[:INHERITS]->(m) } ASC
 ```
 
 Dùng `COUNT { pattern }` bất cứ khi nào cần đếm nodes/edges theo pattern — không dùng `size()`.
+
+**Lưu ý lịch sử:** query ranking cũ (trước ADR-0013) dùng `COUNT { ()-[:INHERITS]->(m) }` để
+chọn "base node" (ít inbound INHERITS nhất). Ranking hiện tại (ADR-0013) dùng `is_definition`
+property + `field_count` + `DEPENDS_ON` — không đi INHERITS edge. `COUNT { ()-[:INHERITS]->(m) }`
+trong tài liệu cũ là **lịch sử**, không còn trong code.
 
 ### .single() vs .data()
 
