@@ -363,19 +363,30 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 Resolve tất cả module-scoped nodes của `sale.order` trong 17.0 (C1 schema):
 
 ```cypher
-// Lấy tất cả nodes theo thứ tự base→extension (ít inbound INHERITS nhất = base)
+// Lấy tất cả module nodes của sale.order theo thứ tự definition-first
+// (is_definition=true là definition node, còn lại là extender)
 MATCH (m:Model {name: 'sale.order', odoo_version: '17.0'})-[:DEFINED_IN]->(mod:Module)
 RETURN m.module AS module_name, mod.repo AS repo,
-       COUNT { ()-[:INHERITS]->(m) } AS depth
-ORDER BY depth ASC
+       m.is_definition AS is_definition
+ORDER BY m.is_definition DESC, m.field_count DESC
 ```
 
-Lấy toàn bộ INHERITS chain (bao gồm cross-name mixins):
+// Lưu ý: COUNT { ()-[:INHERITS]->(m) } là query ranking CŨ (trước ADR-0013).
+// Ranking hiện tại dùng is_definition + field_count + DEPENDS_ON.
+// Topology INHERITS: extender→definition (K×D edges, ADR-0048 D1).
+
+Lấy INHERITS chain của một extender (cross-name mixins, depth-first per-hop):
 
 ```cypher
-MATCH path = (:Model {name: 'sale.order', odoo_version: '17.0'})
-             -[:INHERITS*]->(:Model {odoo_version: '17.0'})
-RETURN path
+// Per-hop name-dedup (ADR-0048 D2): dùng CALL subquery, không dùng VLP *1..N với ORDER BY trước LIMIT
+MATCH (start:Model {name: 'sale.order', odoo_version: '17.0', module: $mod})
+CALL {
+    WITH start
+    MATCH (start)-[:INHERITS]->(hop1:Model)
+    WHERE hop1.name <> 'sale.order' AND NOT coalesce(hop1.unresolved, false)
+    RETURN hop1.name AS parent_name, 1 AS depth
+}
+RETURN parent_name, depth ORDER BY depth ASC, parent_name ASC
 ```
 
 Impact analysis khi đổi field `amount_total` (M1 scope, full version Milestone 4):

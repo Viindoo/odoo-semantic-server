@@ -11,6 +11,78 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Fixed — ORM tools hang on dense inheritance + lint_check false-green (#271 #273, ADR-0048)
+
+Two production issues fixed in one wave (10 work items, 1 PR). Tool count **stays 25**. No Postgres
+migration. Behavior changes flagged below.
+
+#### Root causes
+
+- **#273:** Three-layered: (1) writer created K×(K-1) same-name INHERITS mesh (~256k edges/version
+  17.0); (2) ORM read used VLP `*1..3` anchored on all-K copies + ORDER BY before LIMIT, forcing
+  86M path enumeration; (3) no timeout at any level — 11 zombie transactions ran 19-24h on prod.
+- **#271:** Token-overlap matcher structurally cannot fire on SQL injection rules (W8140/E8501) —
+  security vocabulary never appears in violation code. Secondary bug: empty-index returned silent
+  false-green instead of a disclosure warning.
+
+#### Fixes
+
+- **Writer (ADR-0048 D1):** same-name INHERITS writer W1 now requires `tip.is_definition=true`.
+  Topology changes from K² → K×D (D=1 in practice). Post-pass reconciliation at end of each
+  `index_repo` fills cross-repo write-order gaps (idempotent, version-scoped).
+- **ORM read (ADR-0048 D2/D3):** `_lookup_field` step-3 replaced with per-hop name-dedup CALL
+  subquery. Depth-first semantics now formal contract (nearest ancestor wins; alphabetical
+  module tiebreak at same depth). Per-hop `unresolved` filter tightened deliberately.
+- **Timeouts (ADR-0048 D7):** `neo4j.Query(text, timeout=NEO4J_QUERY_TIMEOUT_SECONDS)` wraps all
+  5 ORM read call-sites (default 30s). `OrmQueryTimeout` exception surfaces structured English
+  error, no Cypher leaked. `asyncio.Semaphore(ORM_QUERY_MAX_CONCURRENCY)` (default 8) wraps 4
+  ORM tool wrappers via `offload_bounded` decorator (mirrors ADR-0046 embed pattern); fast-reject
+  `OrmOverloaded` in 5s when all slots occupied.
+- **Lint data (#271):** `code_pattern` (regex string | null) added to `LintRuleInfo` and all 12
+  `lint_rules_*.json` files. 178 total patterns (security group 100% covered). A
+  `_apply_code_patterns_overlay` post-pass patches patterns onto ALL rules after the merge loop,
+  ensuring static JSON patterns propagate even to live-parse rule winners (first-write-wins dedup
+  order). Cross-version consistency enforced (same rule_id = same pattern across all versions).
+- **Lint matcher (#271, ADR-0048 D9):** pattern-first per-line `re.search` (V0.5 hybrid). Each
+  violation labeled `[pattern]` or `[fuzzy]`. Banner updated to "Hybrid matcher (V0.5)".
+- **3-tier disclosure (ADR-0048 D9):** Tier-1 `rules==[] or curate_status is None` → hard warning
+  "NOT a clean bill of health" (silent false-green eliminated). Tier-2 pending+rules → soft banner.
+  Tier-3 complete → normal.
+- **Cleanup script:** `ops/cleanup_same_name_inherits_mesh.cypher` — 2-step batched (backfill MERGE
+  + delete ~1.1M same-name non-definition edges). Full reindex does NOT auto-clean (writer is
+  additive MERGE). Requires backup bundle (ADR-0018) before running.
+- **Metrics:** `orm_query_timeout_total{tool}` + `orm_overloaded_total{tool}` counters added to
+  `/metrics` Prometheus endpoint.
+
+#### Behavior changes (flagged)
+
+- `resolve_orm_chain` field resolution: depth-first (nearest ancestor) instead of alphabetical
+  across all paths. Differs only when same field name exists at different inheritance depths with
+  different types.
+- Per-hop unresolved filter: paths through `__unresolved__` intermediate nodes are no longer
+  traversed (pre-deploy verification: 0 such paths in production data).
+- Lint: banner wording "V0 fuzzy" → "Hybrid matcher (V0.5)"; violation lines include
+  `[pattern]`/`[fuzzy]` label. Empty-index now shows warning instead of empty tree.
+
+#### Environment variables added
+
+- `NEO4J_QUERY_TIMEOUT_SECONDS` (default `30`) — per-ORM-query driver timeout.
+- `ORM_QUERY_MAX_CONCURRENCY` (default `8`) — semaphore cap for ORM tools.
+- `ORM_SLOT_ACQUIRE_TIMEOUT` (default `5`) — fast-reject timeout for slot acquisition.
+
+#### Ops notes (see deploy runbook)
+
+- **Wave 0 (before code deploy):** `CALL dbms.setConfigValue('db.transaction.timeout','600s')` +
+  persist in `neo4j.conf` (NOT 60s — indexer has long-running transactions). Kill 11 zombie
+  transactions. Create 2 indexes: `Model(name, odoo_version)` + `Field(model, odoo_version)`.
+- **After deploy:** run `ops/cleanup_same_name_inherits_mesh.cypher` off-peak (backup ADR-0018
+  first); run `index-core` for all 12 versions to populate `code_pattern` on LintRule nodes.
+- **Prod smoke:** `resolve_orm_chain("product.product","categ_id","17.0")` < 5s;
+  lint SQL injection snippet → `[pattern]` W8140 hit; `/metrics` shows 2 new counter families.
+- No Postgres migration. Tool count stays **25**.
+
+---
+
 ### Fixed — docs/site MCP tool-count drift (24 -> 25)
 
 Follow-up to PR #266 (`profile_inspect`, tool 25): several current-state references still advertised "24 tools". Corrected to 25 across live-facing surfaces; immutable history (per-PR CHANGELOG/ADR-at-time notes, completed TASKS items) left untouched.

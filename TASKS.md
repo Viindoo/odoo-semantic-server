@@ -1248,6 +1248,27 @@ Small operational waves pending on prod server — not code changes.
 
 ---
 
+## Deferred — Lint V1 + mini-AST checks (ADR-0048 D9 direction)
+
+These items are explicitly out of scope for the #271/#273 fix wave. V0.5 hybrid matcher fixes the
+false-green root cause. V1 requires separate infra design.
+
+- [ ] **Lint V1 — real pylint-odoo per-era in isolated subprocess:** 3 pinned venv environments
+  (era1 v8-v9 / era2 v10-v16 / era3 v17+) + sandbox (`setrlimit` CPU/mem, no-network) + `noqa`
+  ↔ rule-id two-way ID mapping + pin-matrix HTTP endpoint. Needs a separate ADR covering: venv
+  lifecycle (creation, upgrade, lock), sandbox security policy, ID mapping for noqa 2-way,
+  ADR-0046 hot-path safety (subprocess in `asyncio.to_thread`, no blocking event loop).
+  *Precondition for V1: ADR approved + infra vetted in staging.*
+
+- [ ] **Lint mini-AST checks — engine for structural rules:** AST-visitor dispatch for rules that
+  require code structure rather than regex: W8161-W8164 (super-override pattern), W8170 (N+1 query
+  in loop), W8171 (missing `@api.depends` on computed field). These require a new engine layer
+  (check-id registry, per-rule AST visitor, error handling for unparseable code). Not doable as
+  delta to code_pattern string field — needs design discussion. Track as separate work item once V0.5
+  wave is stable in production.
+
+---
+
 ## Pre-launch Signoff
 
 Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 25 MCP tool sign-off table.

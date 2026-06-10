@@ -47,7 +47,7 @@ scanner → registry → resolver → parser → (writer_neo4j | embedder → wr
 
 ## Neo4j — C1 Schema (Critical)
 
-Mỗi module tạo node Model riêng, không gộp theo tên model. Composite MERGE key bắt buộc cho Module/Model/Field/Method. `Model.is_definition` flag bậc 1 ranking heuristic, fallback `field_count DESC`. INHERITS edge `order` property preserves Pattern D mixin injection order.
+Mỗi module tạo node Model riêng, không gộp theo tên model. Composite MERGE key bắt buộc cho Module/Model/Field/Method. `Model.is_definition` flag bậc 1 ranking heuristic, fallback `field_count DESC`. INHERITS edge `order` property preserves Pattern D mixin injection order (MRO future use, no read-consumer yet). **Same-name INHERITS topology: K×D edges extender→definition (NOT K² mesh)** — writer W1 requires `tip.is_definition=true`; post-pass fills cross-repo gaps. See ADR-0048.
 
 **Chi tiết schema, MERGE patterns, ranking heuristic:** [`docs/huong-dan-stack.md §2 Schema C1`](docs/huong-dan-stack.md#schema-c1) và [`docs/adr/0013-defined-in-ranking-heuristic.md`](docs/adr/0013-defined-in-ranking-heuristic.md).
 
@@ -55,9 +55,11 @@ Mỗi module tạo node Model riêng, không gộp theo tên model. Composite ME
 
 Các gotchas quan trọng nhất:
 - `ORDER BY toFloat(v) DESC` cho version sort (NOT lexicographic).
-- `COUNT { ()-[:INHERITS]->(m) }` (Neo4j 5.x), không phải `size(...)` (4.x).
+- `COUNT { ()-[:INHERITS]->(m) }` (Neo4j 5.x), không phải `size(...)` (4.x). Lưu ý: query ranking cũ dùng pattern này — ranking hiện tại (ADR-0013) KHÔNG dùng INHERITS edge count.
 - `.single()` chỉ khi chắc 1 row; `.data()` cho 0-N rows.
 - **ORDER BY phải có deterministic tiebreak** (vd `ORDER BY rank_key DESC, mod.name ASC`) — đặc biệt cho ranking heuristic, xem [`docs/adr/0013`](docs/adr/0013-defined-in-ranking-heuristic.md).
+- **VLP `*1..N` + ORDER BY trước LIMIT = full path enumeration** — trên K² same-name mesh có thể nổ thành 86M paths (bug #273). Dùng per-hop name-dedup CALL subquery thay vì VLP cho ORM read. Xem ADR-0048.
+- **`NEO4J_QUERY_TIMEOUT_SECONDS`** (default 30): ORM read call-sites dùng `neo4j.Query(text, timeout=...)` để bound từng query. `db.transaction.timeout` trên server nên set 600s (không 60s — indexer có tx dài hơn).
 
 **Full Cypher patterns + numeric compare:** [`docs/huong-dan-stack.md §2 Cypher gotchas`](docs/huong-dan-stack.md#cypher-gotchas).
 

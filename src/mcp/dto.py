@@ -162,8 +162,11 @@ class CoreSymbolRef(BaseModel):
 class ResolveModelOutput(BaseModel):
     """Structured response for ``resolve_model`` (layer-0 model overview).
 
-    ``extended_by`` is ordered per INHERITS edge ``order`` property — the
-    first entry is the lowest-level extension (typically the base module).
+    ``extended_by`` lists modules that extend this model (non-definition copies).
+    Ordering derives from the 5-tier ranking heuristic (ADR-0013: ``is_definition``
+    flag + ``field_count`` DESC + dependents), not from INHERITS edge ``order``
+    property. The ``order`` property on INHERITS edges is reserved for future MRO
+    reconstruction (ADR-0048 D1) and has no current read-consumer.
     ``next_step_hint`` mirrors the ``└─ Next: ...`` footer in the text channel.
     """
 
