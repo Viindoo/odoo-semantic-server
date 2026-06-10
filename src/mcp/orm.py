@@ -26,8 +26,77 @@ TASKS.md M10.5 Phase 2.
 import ast
 import difflib
 
-from src.constants import MAGIC_FIELDS, RELATIONAL_TTYPES, valid_domain_operators
+import neo4j
+from neo4j.exceptions import ClientError
+
+from src.constants import (
+    MAGIC_FIELDS,
+    NEO4J_QUERY_TIMEOUT_SECONDS,
+    RELATIONAL_TTYPES,
+    valid_domain_operators,
+)
 from src.mcp.hints import hints_for
+
+# Status codes raised when a transaction exceeds its timeout. There are TWO:
+#   - Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration
+#     is returned when the timeout comes from the *driver* (our per-query
+#     neo4j.Query(text, timeout=...)) — verified against neo4j 5.28 + server 5.26.
+#   - Neo.ClientError.Transaction.TransactionTimedOut
+#     is returned when the timeout comes from the *server* config
+#     (db.transaction.timeout, which Wave-0 sets to 600s on prod).
+# We match the common prefix so BOTH surface as OrmQueryTimeout; any other
+# ClientError (syntax, constraint, ...) still propagates unchanged.
+_TX_TIMEOUT_CODE_PREFIX = "Neo.ClientError.Transaction.TransactionTimedOut"
+
+
+class OrmQueryTimeout(Exception):
+    """A bounded ORM read query exceeded NEO4J_QUERY_TIMEOUT_SECONDS.
+
+    Carries a user-facing English message (ADR-0023 tone, no Cypher leaked).
+    Interface contract with the MCP wrapper layer (server.py): the wrapper
+    catches this, increments the timeout metric, and returns ``user_message``
+    to the client. The traversal/validation helpers deliberately do NOT
+    catch-and-render it — they let it propagate to that wrapper.
+    """
+
+    def __init__(self, user_message: str):
+        super().__init__(user_message)
+        self.user_message = user_message
+
+
+def _is_tx_timeout(exc: ClientError) -> bool:
+    """True when a ClientError is a transaction-timeout (driver- or server-set)."""
+    return (getattr(exc, "code", None) or "").startswith(_TX_TIMEOUT_CODE_PREFIX)
+
+
+def _lookup_timeout(field: str, model: str, version: str) -> "OrmQueryTimeout":
+    """Build an OrmQueryTimeout for a field-resolution timeout (ADR-0023 tone)."""
+    return OrmQueryTimeout(
+        f"Query timed out after {NEO4J_QUERY_TIMEOUT_SECONDS}s while resolving "
+        f"field '{field}' on '{model}' (Odoo {version}). The inheritance graph "
+        f"for this model may be unusually dense - try a more specific model or "
+        f"retry later."
+    )
+
+
+def _relation_timeout(comodel: str, target: str, version: str) -> "OrmQueryTimeout":
+    """Build an OrmQueryTimeout for a relation subtype-check timeout (ADR-0023 tone)."""
+    return OrmQueryTimeout(
+        f"Query timed out after {NEO4J_QUERY_TIMEOUT_SECONDS}s while checking "
+        f"whether '{comodel}' is a subtype of '{target}' (Odoo {version}). The "
+        f"inheritance graph may be unusually dense - try a more specific model "
+        f"or retry later."
+    )
+
+
+def _bounded(text: str) -> "neo4j.Query":
+    """Wrap Cypher text in a neo4j.Query carrying the per-query timeout.
+
+    ``session.run`` does not accept a ``timeout`` kwarg for auto-commit
+    transactions, but a ``neo4j.Query`` object does — this is the least-invasive
+    way to bound every ORM read (issue #273).
+    """
+    return neo4j.Query(text, timeout=NEO4J_QUERY_TIMEOUT_SECONDS)
 
 
 def _effective_allowed(profile_name):
@@ -67,17 +136,24 @@ def _lookup_field(
     delegation) up to depth 3 — covers fields like ``message_ids`` that live on
     a mixin model, not the child.
     """
-    rows = session.run(
-        """
-        MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
-        WHERE ($own IS NULL OR (size(f.profile) > 0
-               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-        RETURN f.ttype AS ttype, f.comodel_name AS comodel
-        ORDER BY f.module ASC
-        LIMIT 1
-        """,
-        fn=field, mn=model, v=odoo_version, **_scope(profile_name),
-    ).data()
+    try:
+        rows = session.run(
+            _bounded(
+                """
+                MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v})
+                WHERE ($own IS NULL OR (size(f.profile) > 0
+                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                RETURN f.ttype AS ttype, f.comodel_name AS comodel
+                ORDER BY f.module ASC
+                LIMIT 1
+                """
+            ),
+            fn=field, mn=model, v=odoo_version, **_scope(profile_name),
+        ).data()
+    except ClientError as exc:
+        if _is_tx_timeout(exc):
+            raise _lookup_timeout(field, model, odoo_version) from exc
+        raise
     if rows:
         return {"ttype": rows[0]["ttype"], "comodel": rows[0]["comodel"], "source": "direct"}
 
@@ -85,21 +161,75 @@ def _lookup_field(
         ttype, comodel = MAGIC_FIELDS[field]
         return {"ttype": ttype, "comodel": comodel, "source": "magic"}
 
-    rows = session.run(
-        """
-        MATCH (start:Model {name: $mn, odoo_version: $v})
-        WHERE NOT coalesce(start.unresolved, false)
-        MATCH (start)-[:INHERITS|DELEGATES_TO*1..3]->(parent:Model)
-        WHERE NOT coalesce(parent.unresolved, false)
-        MATCH (f:Field {name: $fn, model: parent.name, odoo_version: $v})
-        WHERE ($own IS NULL OR (size(f.profile) > 0
-               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-        RETURN f.ttype AS ttype, f.comodel_name AS comodel
-        ORDER BY parent.name ASC, f.module ASC
-        LIMIT 1
-        """,
-        fn=field, mn=model, v=odoo_version, **_scope(profile_name),
-    ).data()
+    # Step 3 — inherited/delegated fallback. Per-hop name-dedup BFS (issue #273):
+    # collect the DISTINCT ancestor model *names* one hop at a time (each hop
+    # collapses the K-duplicate same-name mesh to <=16 distinct names), tag each
+    # name with the nearest depth it was reached at, then join Field by name.
+    # This replaces the variable-length-path `*1..3` that anchored on all K
+    # duplicate Model nodes and enumerated 20-86M paths to find <=16 names.
+    #
+    # Predicates preserved (khaosat-273-orm.md §4.2):
+    #   - odoo_version on every per-hop MATCH;
+    #   - NOT coalesce(<node>.unresolved, false) on the anchor AND every hop node
+    #     (tighter than the old VLP, which only filtered the terminal node);
+    #   - tenant scope choke ONLY on Field f via _scope_pred("f") (the single
+    #     tenant boundary of step 3 — Model nodes carry no scope here);
+    #   - pn <> $mn excludes same-name "ancestors" (the unclean mesh).
+    #
+    # Semantics CHANGE (flagged in PR): the old query ranked the winning field by
+    # parent.name ASC over the whole depth-1..3 set. This one is DEPTH-FIRST — a
+    # field on a nearer ancestor wins over a farther one; within the same depth
+    # the tiebreak is parent name ASC then f.module ASC. ORDER BY runs over the
+    # tiny (<=16 names x few Field rows) joined set, so it cannot force the full
+    # enumeration the old ORDER-BY-before-LIMIT did.
+    try:
+        rows = session.run(
+            _bounded(
+                """
+                MATCH (start:Model {name: $mn, odoo_version: $v})
+                WHERE NOT coalesce(start.unresolved, false)
+                CALL {
+                    WITH start
+                    MATCH (start)-[:INHERITS|DELEGATES_TO]->(h1:Model {odoo_version: $v})
+                    WHERE NOT coalesce(h1.unresolved, false)
+                    RETURN collect(DISTINCT h1.name) AS hop1
+                }
+                CALL {
+                    WITH hop1
+                    UNWIND hop1 AS pn1
+                    MATCH (:Model {name: pn1, odoo_version: $v})
+                          -[:INHERITS|DELEGATES_TO]->(h2:Model {odoo_version: $v})
+                    WHERE NOT coalesce(h2.unresolved, false)
+                    RETURN collect(DISTINCT h2.name) AS hop2
+                }
+                CALL {
+                    WITH hop2
+                    UNWIND hop2 AS pn2
+                    MATCH (:Model {name: pn2, odoo_version: $v})
+                          -[:INHERITS|DELEGATES_TO]->(h3:Model {odoo_version: $v})
+                    WHERE NOT coalesce(h3.unresolved, false)
+                    RETURN collect(DISTINCT h3.name) AS hop3
+                }
+                WITH [n IN hop1 | {name: n, depth: 1}]
+                     + [n IN hop2 | {name: n, depth: 2}]
+                     + [n IN hop3 | {name: n, depth: 3}] AS tagged
+                UNWIND tagged AS t
+                WITH t.name AS pn, min(t.depth) AS depth
+                WHERE pn <> $mn
+                MATCH (f:Field {name: $fn, model: pn, odoo_version: $v})
+                WHERE ($own IS NULL OR (size(f.profile) > 0
+                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                RETURN f.ttype AS ttype, f.comodel_name AS comodel
+                ORDER BY depth ASC, pn ASC, f.module ASC
+                LIMIT 1
+                """
+            ),
+            fn=field, mn=model, v=odoo_version, **_scope(profile_name),
+        ).data()
+    except ClientError as exc:
+        if _is_tx_timeout(exc):
+            raise _lookup_timeout(field, model, odoo_version) from exc
+        raise
     if rows:
         return {"ttype": rows[0]["ttype"], "comodel": rows[0]["comodel"], "source": "inherited"}
 
@@ -165,15 +295,26 @@ def _field_names_on_model(
     model: str, odoo_version: str, session, profile_name: str | None = None
 ) -> list[str]:
     """All field names declared on a model (+ magic fields) — for typo suggestions."""
-    rows = session.run(
-        """
-        MATCH (f:Field {model: $mn, odoo_version: $v})
-        WHERE ($own IS NULL OR (size(f.profile) > 0
-               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-        RETURN DISTINCT f.name AS name
-        """,
-        mn=model, v=odoo_version, **_scope(profile_name),
-    ).data()
+    try:
+        rows = session.run(
+            _bounded(
+                """
+                MATCH (f:Field {model: $mn, odoo_version: $v})
+                WHERE ($own IS NULL OR (size(f.profile) > 0
+                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                RETURN DISTINCT f.name AS name
+                """
+            ),
+            mn=model, v=odoo_version, **_scope(profile_name),
+        ).data()
+    except ClientError as exc:
+        if _is_tx_timeout(exc):
+            raise OrmQueryTimeout(
+                f"Query timed out after {NEO4J_QUERY_TIMEOUT_SECONDS}s while "
+                f"listing fields on '{model}' (Odoo {odoo_version}). Try a more "
+                f"specific model or retry later."
+            ) from exc
+        raise
     names = {r["name"] for r in rows} | set(MAGIC_FIELDS)
     return sorted(names)
 
@@ -343,15 +484,26 @@ def _validate_depends(
 
     with srv._get_driver().session() as session:
         version = srv._resolve_version(odoo_version, session)
-        rows = session.run(
-            """
-            MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN mth.depends AS depends
-            """,
-            mn=method, model=model, v=version, **_scope(profile_name),
-        ).data()
+        try:
+            rows = session.run(
+                _bounded(
+                    """
+                    MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v})
+                    WHERE ($own IS NULL OR (size(mth.profile) > 0
+                           AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
+                    RETURN mth.depends AS depends
+                    """
+                ),
+                mn=method, model=model, v=version, **_scope(profile_name),
+            ).data()
+        except ClientError as exc:
+            if _is_tx_timeout(exc):
+                raise OrmQueryTimeout(
+                    f"Query timed out after {NEO4J_QUERY_TIMEOUT_SECONDS}s while "
+                    f"resolving @api.depends on '{model}.{method}' (Odoo {version}). "
+                    f"Try a more specific model or retry later."
+                ) from exc
+            raise
 
         if not rows:
             return (f"Method '{method}' not found on model '{model}' in Odoo {version}.")
@@ -442,18 +594,81 @@ def _validate_relation(
         elif actual:
             # Accept when the field's comodel is a subtype of target_model
             # (comodel INHERITS* target_model) — e.g. field -> a mixin's subtype.
-            rec = session.run(
-                f"""
-                MATCH (c:Model {{name: $comodel, odoo_version: $v}})
-                WHERE NOT coalesce(c.unresolved, false)
-                  AND {_scope_pred("c")}
-                MATCH (c)-[:INHERITS*1..5]->(t:Model {{name: $target, odoo_version: $v}})
-                WHERE {_scope_pred("t")}
-                RETURN 1 AS ok LIMIT 1
-                """,
-                comodel=actual, target=target_model, v=version,
-                **_scope(profile_name),
-            ).single()
+            #
+            # Per-hop name-dedup over 5 INHERITS hops (issue #273): the old
+            # `MATCH (c)-[:INHERITS*1..5]->(t)` anchored on all K duplicate
+            # comodel nodes and enumerated the depth-5 mesh even in the common
+            # MISMATCH case (no subtype → exhaustive negative search). This
+            # collapses each hop to its DISTINCT ancestor names first, so the
+            # working set stays <=16 names per hop.
+            #
+            # Predicates preserved (khaosat-273-orm.md §4.2): INHERITS only (no
+            # DELEGATES_TO); odoo_version on every MATCH; unresolved filter on
+            # the anchor AND every hop node; _scope_pred("c") on the anchor and
+            # _scope_pred("t") on the re-bound target (intermediate hops carry
+            # no scope, matching the original); pn <> $comodel excludes the
+            # same-name mesh; LIMIT 1, no ORDER BY (existence check).
+            try:
+                rec = session.run(
+                    _bounded(
+                        f"""
+                        MATCH (c:Model {{name: $comodel, odoo_version: $v}})
+                        WHERE NOT coalesce(c.unresolved, false)
+                          AND {_scope_pred("c")}
+                        CALL {{
+                            WITH c
+                            MATCH (c)-[:INHERITS]->(h1:Model {{odoo_version: $v}})
+                            WHERE NOT coalesce(h1.unresolved, false)
+                            RETURN collect(DISTINCT h1.name) AS hop1
+                        }}
+                        CALL {{
+                            WITH hop1
+                            UNWIND hop1 AS pn1
+                            MATCH (:Model {{name: pn1, odoo_version: $v}})
+                                  -[:INHERITS]->(h2:Model {{odoo_version: $v}})
+                            WHERE NOT coalesce(h2.unresolved, false)
+                            RETURN collect(DISTINCT h2.name) AS hop2
+                        }}
+                        CALL {{
+                            WITH hop2
+                            UNWIND hop2 AS pn2
+                            MATCH (:Model {{name: pn2, odoo_version: $v}})
+                                  -[:INHERITS]->(h3:Model {{odoo_version: $v}})
+                            WHERE NOT coalesce(h3.unresolved, false)
+                            RETURN collect(DISTINCT h3.name) AS hop3
+                        }}
+                        CALL {{
+                            WITH hop3
+                            UNWIND hop3 AS pn3
+                            MATCH (:Model {{name: pn3, odoo_version: $v}})
+                                  -[:INHERITS]->(h4:Model {{odoo_version: $v}})
+                            WHERE NOT coalesce(h4.unresolved, false)
+                            RETURN collect(DISTINCT h4.name) AS hop4
+                        }}
+                        CALL {{
+                            WITH hop4
+                            UNWIND hop4 AS pn4
+                            MATCH (:Model {{name: pn4, odoo_version: $v}})
+                                  -[:INHERITS]->(h5:Model {{odoo_version: $v}})
+                            WHERE NOT coalesce(h5.unresolved, false)
+                            RETURN collect(DISTINCT h5.name) AS hop5
+                        }}
+                        WITH hop1 + hop2 + hop3 + hop4 + hop5 AS all_names
+                        UNWIND all_names AS pn
+                        WITH DISTINCT pn
+                        WHERE pn <> $comodel AND pn = $target
+                        MATCH (t:Model {{name: pn, odoo_version: $v}})
+                        WHERE {_scope_pred("t")}
+                        RETURN 1 AS ok LIMIT 1
+                        """
+                    ),
+                    comodel=actual, target=target_model, v=version,
+                    **_scope(profile_name),
+                ).single()
+            except ClientError as exc:
+                if _is_tx_timeout(exc):
+                    raise _relation_timeout(actual, target_model, version) from exc
+                raise
             ok = rec is not None
 
     lines = [header]
