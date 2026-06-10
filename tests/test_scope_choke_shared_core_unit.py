@@ -428,6 +428,10 @@ class _CapturingWriter:
     def gc_stale_modules(self, *_a, **_kw):
         return 0
 
+    def reconcile_same_name_inherits(self, *_a, **_kw):
+        # Post-pass added by #273 - pipeline calls it unconditionally.
+        return 0
+
 
 def _seed_unit_module(repo, name="unitmod"):
     """Minimal Odoo module on disk (no DB) for _index_repo to parse."""
