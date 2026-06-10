@@ -41,9 +41,22 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 
 | Env var | Default | Was | File:line | Reasoning |
 |---------|---------|-----|-----------|-----------|
-| `NEO4J_QUERY_TIMEOUT_SECONDS` | 30 | (new) | `src/constants.py` | Per-query driver timeout for the 5 ORM read call-sites in `src/mcp/orm.py`. Wraps Cypher text via `neo4j.Query(text, timeout=...)`. On timeout, surfaces `OrmQueryTimeout` to the tool handler — English error, no Cypher leaked. 30s is safe for per-hop name-dedup queries (measured p99 < 1s on dense graphs); raise only if you observe false timeouts on extremely large profiles. |
-| `ORM_QUERY_MAX_CONCURRENCY` | 8 | (new) | `src/mcp/server.py` | Semaphore cap on concurrent ORM tool executions (resolve_orm_chain / validate_domain / validate_depends / validate_relation). Prevents pool-drain: 24 fan-out calls from an AI agent would otherwise occupy all `asyncio.to_thread` threads for 30s each. Mirrors `EMBEDDER_MAX_CONCURRENCY` pattern (ADR-0046). |
-| `ORM_SLOT_ACQUIRE_TIMEOUT` | 5 | (new) | `src/mcp/server.py` | Fast-reject if an ORM semaphore slot is not available within N seconds. Caller receives `OrmOverloaded` structured error. Keeps the tool responsive under load spikes instead of queuing indefinitely. |
+| `NEO4J_QUERY_TIMEOUT_SECONDS` | 30 | (new) | `src/constants.py` | Per-query driver timeout for the 5 ORM read call-sites in `src/mcp/orm.py`. Wraps Cypher text via `neo4j.Query(text, timeout=...)`. On timeout, surfaces `OrmQueryTimeout` to the tool handler - English error, no Cypher leaked. 30s is safe for per-hop name-dedup queries (measured p99 < 1s on dense graphs); raise only if you observe false timeouts on extremely large profiles. **WARNING: must be > 0. The neo4j driver treats 0 as no-timeout, which silently reverts the #273 zombie-transaction fix. The server refuses to start (SystemExit) if this value is 0.** |
+| `ORM_QUERY_MAX_CONCURRENCY` | 8 | (new) | `src/constants.py` | Semaphore cap on concurrent ORM tool executions (resolve_orm_chain / validate_domain / validate_depends / validate_relation). Uses a `threading.BoundedSemaphore` held by the worker thread (not the coroutine) - slot is released only when the thread exits, not when the client disconnects. Prevents pool-drain (#276 pattern). Mirrors `EMBEDDER_MAX_CONCURRENCY` pattern (ADR-0046). **WARNING: must be > 0. A value of 0 makes every ORM-validation tool fast-reject forever. The server refuses to start (SystemExit) if this value is 0.** |
+| `ORM_SLOT_ACQUIRE_TIMEOUT` | 5 | (new) | `src/constants.py` | Fast-reject if an ORM semaphore slot is not available within N seconds. Caller receives `OrmOverloaded` structured error (plain string, never `isError=true`). **Must be strictly less than `NEO4J_QUERY_TIMEOUT_SECONDS`** (constraint enforced at startup - server refuses to start on violation). |
+
+**Startup validation:** `_validate_orm_env()` is called once at `__main__` entry (after `init_dotenv`,
+not at import-time to avoid breaking pytest). It performs three checks and calls `SystemExit(1)` if
+any fail: `NEO4J_QUERY_TIMEOUT_SECONDS <= 0`, `ORM_QUERY_MAX_CONCURRENCY <= 0`,
+`ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS`. This ensures the core #273 fix cannot
+be silently disabled by a mis-set env var.
+
+**Non-ORM reads (accepted posture):** Approximately 84 `session.run` calls in `src/mcp/server.py`
+(e.g., `impact_analysis` ~9 queries, `_resolve_model` ranking) do NOT have a per-query timeout.
+This is accepted: all run in `@offload` worker threads (no event-loop wedge); `db.transaction.timeout=600s`
+backstops all. A slow non-ORM traversal can pin a `asyncio.to_thread` pool thread up to 600s under
+fan-out, but this is degraded throughput, not a #273-class zombie. Extending `_bounded()` to hot
+non-ORM paths is a follow-up item (TASKS.md).
 
 **Ops recommendation — Neo4j `db.transaction.timeout`:**
 
