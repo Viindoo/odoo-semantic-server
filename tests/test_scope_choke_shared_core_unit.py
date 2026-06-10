@@ -429,7 +429,15 @@ class _CapturingWriter:
         return 0
 
     def reconcile_same_name_inherits(self, *_a, **_kw):
-        # Post-pass added by #273 - pipeline calls it unconditionally.
+        # Post-pass added by #273 - called once per version from index_profile,
+        # not from _index_repo.  Stub kept so _CapturingWriter satisfies the
+        # IndexWriterProtocol contract (reconcile_same_name_inherits is declared there).
+        return 0
+
+    def gc_unresolved_placeholders(self, *_a, **_kw):
+        return {}
+
+    def gc_null_repo_dep_stubs(self, *_a, **_kw):
         return 0
 
 

@@ -120,6 +120,15 @@ IMPACT_RISK_MED_THRESHOLD: int = 4
 # Override via NEO4J_WRITE_BATCH_SIZE env var.
 NEO4J_WRITE_BATCH_SIZE: int = int(os.getenv("NEO4J_WRITE_BATCH_SIZE", "500"))
 
+# NEO4J_DELETE_BATCH_ROWS: rows per inner transaction for CALL {} IN TRANSACTIONS
+# DELETE batches (delete_modules_scoped + cleanup scripts).
+# Intentionally separate from NEO4J_WRITE_BATCH_SIZE: delete batches should be
+# much larger (each row is a single DELETE, not a multi-property MERGE) and are
+# auto-commit transactions that live outside the normal write batch semantics.
+# The cleanup script ops/cleanup_same_name_inherits_mesh.cypher uses the same
+# default (10000) — if you change this constant, update the script comment too.
+NEO4J_DELETE_BATCH_ROWS: int = int(os.getenv("NEO4J_DELETE_BATCH_ROWS", "10000"))
+
 # EMBEDDER_MAX_BATCH: texts per Ollama /api/embed call.
 # Empirical (production, qwen3-embedding-q5km behind Ollama): a 50-text batch
 # takes ~10-56s depending on text density and concurrent profile-worker load.

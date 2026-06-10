@@ -576,24 +576,11 @@ def _index_repo(
         writer.gc_unresolved_placeholders(odoo_version)
     # === End Module GC ===
 
-    # === Post-pass INHERITS reconciliation (#273) ===
-    # Fill any extender-to-definition INHERITS edges missed due to cross-repo
-    # write-order gaps.  When an extender repo is indexed BEFORE the definition
-    # repo, the writer W1 MATCH tip returns 0 rows (definition node not yet
-    # written) and emits 0 same-name edges.  A later index_repo for the
-    # definition repo writes the definition node but does not retroactively
-    # connect extenders from other repos.
-    #
-    # This set-based MERGE pass runs UNCONDITIONALLY (not gated on gc=True)
-    # because cross-repo gaps arise whenever multiple repos share a model name
-    # and can occur on any run, incremental or full.  Running after all writes
-    # for this version maximises the chance that both extender and definition
-    # nodes are present.  The pass is version-scoped (odoo_version) so it never
-    # touches other versions.  Failure is non-fatal (see writer docstring).
-    writer.reconcile_same_name_inherits(odoo_version)
-    # === End post-pass ===
+    # NOTE: reconcile_same_name_inherits was moved from here to index_profile
+    # (called once per version AFTER all repos are indexed) to avoid R redundant
+    # full :Model label scans per profile run.  See PERF comment in index_profile.
 
-    # Observability summary log (M7 C5) — one line per repo, readable by admins.
+    # Observability summary log (M7 C5) - one line per repo, readable by admins.
     _logger.info(
         "Indexer run: %d modules, %d embed calls, %d rows written",
         total_modules,
@@ -906,8 +893,26 @@ def index_profile(
                             f"{len(failed_repo_ids)} repo(s) failed: {summary}"
                         )
 
+            # === Post-pass INHERITS reconciliation (PERF: once per version, not per repo) ===
+            # Fill extender-to-definition INHERITS edges missed due to cross-repo write-order
+            # gaps (when an extender repo is indexed before its definition repo).  Running
+            # ONCE per version here - after ALL repos of that version are written - avoids
+            # R redundant full :Model label scans that would occur if called per-repo (the
+            # function scans ALL :Model nodes for the version, which cannot use the composite
+            # (name, odoo_version) index without a name anchor).  Calling R times per profile
+            # run is pure waste; the gap it fills only materialises after the last repo writes.
+            #
+            # Concurrent same-version reconciles from --profile-workers can cause MERGE
+            # deadlocks; warn-and-continue policy in the writer catches them but leaves a
+            # silent gap.  To resolve: re-run index_profile, or accept the miss (next full
+            # reindex fills it).  See IndexWriterProtocol.reconcile_same_name_inherits docstring.
+            _indexed_versions: set[str] = {r["odoo_version"] for r in repos}
+            for _rv in sorted(_indexed_versions):
+                writer.reconcile_same_name_inherits(_rv)
+            # === End post-pass reconciliation ===
+
             # Auto-reseed pattern catalogue (W2-7).
-            # Hash-gated via _SeedMeta sentinel (W2-6) — cheap when patterns.json unchanged.
+            # Hash-gated via _SeedMeta sentinel (W2-6) - cheap when patterns.json unchanged.
             # Per --no-embed semantic: if embedder is None, pattern embedding is also skipped.
             try:
                 from src.indexer.seed_patterns import run as _seed_patterns_run

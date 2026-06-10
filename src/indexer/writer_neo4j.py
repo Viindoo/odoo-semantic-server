@@ -5,6 +5,7 @@ import logging
 from neo4j import GraphDatabase
 
 from src.constants import (
+    NEO4J_DELETE_BATCH_ROWS,
     NEO4J_WRITE_BATCH_SIZE,
     REL_CHECKS,
     REL_DEFINED_IN,
@@ -1221,18 +1222,20 @@ class Neo4jWriter:
 
             module_names = module_names_row["names"]
 
-            # Step 2: delete child nodes in batches of 10 000 to stay well under
-            # db.transaction.timeout (600s). CALL {} IN TRANSACTIONS requires an
-            # implicit (auto-commit) transaction — session.run() here, NOT execute_write.
+            # Step 2: delete child nodes in batches (NEO4J_DELETE_BATCH_ROWS) to stay
+            # well under db.transaction.timeout (600s). CALL {} IN TRANSACTIONS requires
+            # an implicit (auto-commit) transaction — session.run() here, NOT execute_write.
+            # CALL (child) { ... } syntax required for Neo4j 5.23+ (5.x deprecates
+            # CALL { WITH <var> } in favour of CALL (<var>) { }; both work on 5.26.25).
             children_row = session.run(
-                """
+                f"""
                 MATCH (child)
                 WHERE child.module IN $names AND child.odoo_version = $version
                   AND (child:Model OR child:Field OR child:Method OR child:View
                        OR child:QWebTmpl OR child:JSPatch OR child:OWLComp)
-                CALL { WITH child
+                CALL (child) {{
                     DETACH DELETE child
-                } IN TRANSACTIONS OF 10000 ROWS
+                }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
                 RETURN count(child) AS cc
                 """,
                 names=module_names,
@@ -1242,11 +1245,11 @@ class Neo4jWriter:
 
             # Step 3: delete the Module nodes themselves (batched, same rationale)
             modules_row = session.run(
-                """
-                MATCH (m:Module {repo: $repo, odoo_version: $version})
-                CALL { WITH m
+                f"""
+                MATCH (m:Module {{repo: $repo, odoo_version: $version}})
+                CALL (m) {{
                     DETACH DELETE m
-                } IN TRANSACTIONS OF 10000 ROWS
+                }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
                 RETURN count(m) AS mc
                 """,
                 repo=repo_basename,
