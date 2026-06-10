@@ -160,3 +160,63 @@ class TestDeleteModulesScoped:
                 "MATCH (m:Module {name: 'module_repo_X', odoo_version: $v}) DETACH DELETE m",
                 v=other_version,
             )
+
+    def test_batched_call_runs_in_auto_commit_session(self, clean_neo4j, writer):
+        """delete_modules_scoped CALL (var) IN TRANSACTIONS runs without error.
+
+        CALL {} IN TRANSACTIONS requires an implicit (auto-commit) session — it cannot
+        run inside an explicit transaction.  This test seeds a small repo, deletes it,
+        and asserts (a) no exception is raised and (b) nodes are actually removed.
+        The shape verifies the Neo4j 5.23+ CALL (var) { } syntax works on the test
+        container image (5.26.25) and that session.run() - NOT execute_write() - is
+        the correct call path.
+        """
+        driver = clean_neo4j
+
+        # Seed enough nodes so both CALL IN TRANSACTIONS steps execute.
+        for i in range(3):
+            with driver.session() as session:
+                session.run(
+                    """
+                    MERGE (m:Module {name: $mod, odoo_version: $v})
+                    SET m.repo = 'batch_repo', m.path = '/fake'
+                    """,
+                    mod=f"batch_mod_{i}", v=TEST_VERSION,
+                )
+                session.run(
+                    """
+                    MERGE (mdl:Model {name: $mdl, module: $mod, odoo_version: $v})
+                    """,
+                    mdl=f"batch.model.{i}", mod=f"batch_mod_{i}", v=TEST_VERSION,
+                )
+                session.run(
+                    """
+                    MERGE (f:Field {name: $fn, model: $mdl, module: $mod, odoo_version: $v})
+                    """,
+                    fn=f"field_{i}", mdl=f"batch.model.{i}",
+                    mod=f"batch_mod_{i}", v=TEST_VERSION,
+                )
+
+        # Verify seeded
+        with driver.session() as s:
+            n = s.run(
+                "MATCH (m:Module {repo: 'batch_repo', odoo_version: $v}) RETURN count(m) AS n",
+                v=TEST_VERSION,
+            ).single()["n"]
+        assert n == 3, f"Expected 3 seeded modules, got {n}"
+
+        # Run delete - must not raise (validates CALL (var) {} IN TRANSACTIONS auto-commit shape)
+        result = writer.delete_modules_scoped("batch_repo", TEST_VERSION)
+
+        assert result["modules"] == 3, f"Expected 3 modules deleted, got {result}"
+        assert result["children"] >= 6, (  # 3 Model + 3 Field
+            f"Expected >= 6 children deleted, got {result}"
+        )
+
+        # Verify all nodes gone
+        with driver.session() as s:
+            remaining = s.run(
+                "MATCH (m:Module {repo: 'batch_repo', odoo_version: $v}) RETURN count(m) AS n",
+                v=TEST_VERSION,
+            ).single()["n"]
+        assert remaining == 0, f"Expected 0 remaining modules, got {remaining}"

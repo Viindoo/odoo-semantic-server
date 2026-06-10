@@ -15,6 +15,25 @@
 //
 // PREREQUISITES (must be done IN ORDER before running this script):
 //
+//   0. NULL is_definition check (MANDATORY — run before ANY other phase):
+//        MATCH (m:Model)
+//        WHERE m.is_definition IS NULL AND m.module <> '__unresolved__'
+//        RETURN count(m) AS null_flag_models;
+//
+//        Result MUST be 0.  If > 0: STOP.  Run a full reindex or the
+//        backfill_unresolved_is_definition.cypher script to set the flag on
+//        all legacy nodes BEFORE continuing.  A NULL-flagged node causes:
+//          - Phase 1 BACKFILL: `coalesce(def.is_definition, false) = true` never
+//            matches a NULL-flagged definition node -> 0 edges created for it.
+//          - Phase 2 DELETE: `NOT coalesce(b.is_definition, false)` treats NULL
+//            as false -> ALL same-name edges TO the NULL-flagged node are deleted,
+//            including any legitimate extender->definition edges that existed.
+//        Both wrongs together mean a NULL-flagged model ends with 0 same-name
+//        edges regardless of what existed before — silent data loss.
+//        The DIAGNOSE step uses the same `coalesce(b.is_definition, false)` guard
+//        and will report "0 mesh edges to delete" even when mesh edges exist
+//        anchored on a NULL-flagged target, masking the problem until DELETE runs.
+//
 //   1. Writer fix deployed:
 //        Ensure the new code (PR #273 merged + services restarted) is live.
 //        Running cleanup BEFORE the fix means a subsequent reindex would
@@ -87,6 +106,14 @@
 // ---------------------------------------------------------------------------
 // PHASE: DIAGNOSE (run first — observe counts before any changes)
 // ---------------------------------------------------------------------------
+// !! PREREQUISITE GUARD !! Run this first and confirm result = 0:
+//
+// MATCH (m:Model) WHERE m.is_definition IS NULL AND m.module <> '__unresolved__'
+// RETURN count(m) AS null_flag_models;
+//
+// If null_flag_models > 0: STOP and run a full reindex / backfill_unresolved_is_definition.cypher
+// before proceeding.  See the PREREQUISITES section above for the full explanation.
+//
 // Count same-name INHERITS edges that target a NON-definition node
 // (these are the mesh edges to be deleted in Phase 2):
 //
@@ -158,7 +185,9 @@ WHERE def.name = ext.name
   // Cypher syntax error.
   AND NOT (ext)-[:INHERITS]->(def)
 WITH ext, def, edge_order
-CALL { WITH ext, def, edge_order
+// CALL (var, ...) { } syntax required for Neo4j 5.23+ (CALL { WITH <var> } deprecated;
+// both syntaxes work on Neo4j 5.26.25 but the new form avoids deprecation warnings).
+CALL (ext, def, edge_order) {
     MERGE (ext)-[r:INHERITS]->(def)
     ON CREATE SET r.order = coalesce(edge_order, 0)
 } IN TRANSACTIONS OF 10000 ROWS;
@@ -186,7 +215,8 @@ CALL { WITH ext, def, edge_order
 MATCH (a:Model)-[r:INHERITS]->(b:Model)
 WHERE a.name = b.name AND a.odoo_version = b.odoo_version
   AND NOT coalesce(b.is_definition, false)
-CALL { WITH r
+// CALL (var) { } syntax required for Neo4j 5.23+ (see Phase 1 note above).
+CALL (r) {
     DELETE r
 } IN TRANSACTIONS OF 10000 ROWS;
 
