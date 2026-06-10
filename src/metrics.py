@@ -61,10 +61,35 @@ forgot_password_success_total = Counter(
     "Number of password-reset tokens successfully inserted and emailed.",
 )
 
+# ---------------------------------------------------------------------------
+# ORM-validation tools — timeout + overload counters (#273, ADR-0046 style)
+# ---------------------------------------------------------------------------
+# These surface the two NEW failure modes introduced by the #273 fix so ops
+# can distinguish "dense-graph query hit the Neo4j timeout" (data regression /
+# mesh re-grown) from "a fan-out burst saturated the ORM semaphore". The
+# `tool` label is the ORM tool name (resolve_orm_chain / validate_domain /
+# validate_depends / validate_relation).
+
+orm_query_timeout_total = Counter(
+    "orm_query_timeout_total",
+    "Number of ORM-validation tool calls whose Neo4j query hit the per-query"
+    " timeout (#273).",
+    labelnames=["tool"],
+)
+
+orm_overloaded_total = Counter(
+    "orm_overloaded_total",
+    "Number of ORM-validation tool calls fast-rejected because the bounded ORM"
+    " concurrency semaphore was full (#273).",
+    labelnames=["tool"],
+)
+
 __all__ = [
     "embedder_batch_duration_seconds",
     "forgot_password_db_failure_total",
     "forgot_password_email_send_failure_total",
     "forgot_password_success_total",
+    "orm_overloaded_total",
+    "orm_query_timeout_total",
     "prometheus_client",
 ]
