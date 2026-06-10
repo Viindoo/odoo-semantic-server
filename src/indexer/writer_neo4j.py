@@ -1630,7 +1630,12 @@ class Neo4jWriter:
         Args:
             kind:          'lint' | 'cli' — which spec category this metadata covers.
             odoo_version:  Odoo version label, e.g. '8.0', '17.0'.
-            curate_status: 'pending' | 'done' (or any string per ADR-0002 §4).
+            curate_status: 'pending' | 'complete' (the two values actually written
+                by the pipeline: 'complete' when a static spec JSON declares
+                ``_curate_status: complete``, else the 'pending' default). Any
+                string is accepted per ADR-0002 §4; the MCP read side treats
+                anything other than 'pending'/'complete' (incl. absent) as a
+                data gap and discloses accordingly.
         """
         with self.driver.session() as session:
             session.run("""
