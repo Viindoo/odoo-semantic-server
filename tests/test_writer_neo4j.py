@@ -113,8 +113,11 @@ def test_write_inherits_edge(writer, neo4j_driver):
         name="base_mod", odoo_version=TEST_VERSION,
         repo="base_repo", path="/tmp", depends=[], version_raw="",
     )
+    # had_explicit_name=True makes is_definition=True on this node; edge now targets
+    # definition node only — see ADR topology change #273.
     base_model = ModelInfo(
         name="sale.order", module="base_mod", odoo_version=TEST_VERSION,
+        had_explicit_name=True,
     )
     ext_module = ModuleInfo(
         name="ext_mod", odoo_version=TEST_VERSION,
