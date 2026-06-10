@@ -1248,6 +1248,34 @@ Small operational waves pending on prod server — not code changes.
 
 ---
 
+## Deferred — #271/#273 PR #275 review-round-3 follow-ups
+
+Items identified during review round 3 that are out of scope for the fix wave but should be
+tracked. Each has bounded risk (not blocking merge); see ADR-0048 Amendment for full context.
+
+- [ ] **Embed-path semaphore cancellation flaw (ADR-0046 pattern):** the embed path
+  (`offload_bounded` analog in `src/mcp/server.py` embed wrappers) has the same latent
+  cancellation-release flaw that CRITICAL-2 fixed for ORM tools - `asyncio.Semaphore` released on
+  coroutine cancel while the thread still runs. Fix: apply the same `threading.BoundedSemaphore`
+  in-thread acquire/release pattern. Risk is bounded by 30s query timeout but the protection
+  claimed by ADR-0046 does not exist until fixed.
+  *Cross-ref: ADR-0048 D7 amendment, ADR-0046.*
+
+- [ ] **Extend per-query timeout to non-ORM hot read paths:** ~84 `session.run` calls in
+  `server.py` currently have no `neo4j.Query(timeout=...)` wrapper. Accepted for now (all run in
+  `@offload` threads - no event-loop wedge; 600s `db.transaction.timeout` backstops). Priority
+  targets for a follow-up: `impact_analysis` (~9 queries), `_resolve_model` ranking query
+  (INHERITS-heavy graphs). Extend `_bounded()` from `orm.py` or create a shared helper.
+  *Cross-ref: FOLLOW-UP #8 inline comment (pr275-comments.md), ADR-0048 D7 amendment.*
+
+- [ ] **`reconcile_same_name_inherits` concurrent D>1 deadlock note:** when `--profile-workers > 1`
+  runs same-version reconciles in parallel, MERGE-deadlocks can occur. Current policy: warn-and-
+  continue (idempotent, gaps filled on next run). Add a docstring note to the function documenting
+  this behavior explicitly, and consider an advisory lock per-version for the reconcile pass.
+  *Cross-ref: ADR-0048 D1/D5 note, pr275-comments.md MED.*
+
+---
+
 ## Deferred — Lint V1 + mini-AST checks (ADR-0048 D9 direction)
 
 These items are explicitly out of scope for the #271/#273 fix wave. V0.5 hybrid matcher fixes the

@@ -290,6 +290,130 @@ deletes (now documented in its docstring).
 
 ---
 
+## Amendment - PR #275 review round 3 (2026-06-10)
+
+### D8 amendment - "new code x old data" safety re-validated after per-hop pruning fix
+
+The original D8 row "New code x Old (K² mesh): YES - dedup still works" was empirically false.
+The first per-hop rewrite applied `pn <> $mn` only at the final WHERE and ran each per-hop CALL
+subquery once-per-anchor-row (K=97-237 rows on prod). On the un-cleaned K² mesh:
+`sale.order/message_ids` timed out at 25s; `res.config.settings` (K=237) timed out on
+nonexistent-field exhaustive-negative. Root cause: (1) hop1 still collected `$mn`-named nodes
+(same-name edges), so hop2/hop3 re-expanded the full mesh; (2) the anchor `MATCH (start {name:$mn})`
+returns K rows and each per-hop CALL ran once-per-row.
+
+Two structural fixes (PR #275 wi/r3-fix-a):
+
+1. Prune same-name DURING expansion: `h1.name <> $mn`, `h2.name <> pn1`, etc. so the BFS never
+   re-enters a same-name mesh node. Lossless on old data: per-hop MATCH re-anchors by NAME on all
+   nodes of that name, so anything reachable via a same-name intermediate is already reachable
+   directly from the same-name expansion.
+2. Aggregate to a SINGLE ROW before each subsequent hop via flat OPTIONAL MATCH +
+   `WITH collect(DISTINCT ...)` (replaces CALL subquery - also removes the Neo4j 5.26 deprecation).
+
+Measured on testcontainers K=120 un-cleaned mesh: `_lookup_field` inherited resolve = 443ms;
+`validate_relation` MISMATCH (exhaustive-negative) = 109ms. Both << the 5s tripwire.
+Reviewer offered to re-run against the production graph before merge.
+
+Updated D8 table:
+
+| Code version | Data (INHERITS topology) | Safe? | Notes |
+|---|---|---|---|
+| Old (VLP all-K) | Old (K² mesh) | **NO** | Bug #273 - current prod before fix |
+| First per-hop cut | Old (K² mesh) | **NO** | CRITICAL-1 empirically proven - 12.6s..TIMEOUT |
+| New (per-hop prune+aggregate) | Old (K² mesh) | **YES** | 443ms/109ms measured (K=120); reviewer-validated |
+| Old (VLP all-K) | New (K×D, cleanup run) | YES | Fewer paths; old query is fast on clean data |
+| New (per-hop prune+aggregate) | New (K×D, cleanup run) | YES | Optimal - intended end state |
+
+Deploy order remains: cleanup AFTER deploy is acceptable. The per-hop pruning makes new code safe
+on old data, so the cleanup is a graph hygiene step (removes ~1.1M redundant edges), not a safety
+prerequisite.
+
+### D7 amendment - non-ORM session.run posture; thread-held semaphore; isError semantics; env validation
+
+**Non-ORM reads accepted posture (FOLLOW-UP #8 inline comment):** Approximately 84 `session.run`
+calls in `server.py` (e.g., `impact_analysis` ~9 queries, `_resolve_model` ranking) are NOT wrapped
+with `neo4j.Query(timeout=...)`. This is an accepted, bounded risk:
+- neo4j-driver 5.x has no driver/session-level default query timeout; per-call `neo4j.Query` is the
+  only lever.
+- All these tools run in `@offload` worker threads - they cannot wedge the event loop.
+- The global `db.transaction.timeout = 600s` backstops all transactions including these.
+- A slow non-ORM traversal can pin a `asyncio.to_thread` pool thread for up to 600s under fan-out
+  load, but this is degraded throughput, not a #273-class zombie wedge.
+
+Extending `_bounded()` to the hottest non-ORM read paths (`impact_analysis`, `_resolve_model`
+ranking) is a follow-up item - see TASKS.md.
+
+**Thread-held semaphore (CRITICAL-2 fix):** The original D7 text described `asyncio.Semaphore`
+with `sem.release()` in the coroutine `finally` block. This was empirically shown to release the
+slot on coroutine cancellation (client disconnect) WHILE the worker thread still held the Neo4j
+connection - the exact #276 drain pattern the decorator exists to prevent.
+
+Fix (PR #275 wi/r3-fix-b): replaced with `threading.BoundedSemaphore(ORM_QUERY_MAX_CONCURRENCY)`.
+Acquire/release run INSIDE the worker thread function, so the slot is tied to thread lifetime, not
+coroutine lifetime. Cancellation can no longer free a slot early. `BoundedSemaphore` also turns
+any over-release into an immediate `ValueError`. Cancel-path metrics (`orm_query_timeout_total`,
+`orm_overloaded_total`) are now incremented in-thread, so cancel-storms are visible in Prometheus.
+
+**isError semantics (MED inline #4):** `OrmOverloaded` is now caught in the async wrapper and
+returned as a plain string (uniform with embed `EmbedOverloaded` per ADR-0023 raw-text posture).
+`OrmQueryTimeout` was already returned as a string. Both conditions are now consistent: transient
+"server busy" surfaces as a structured English string, never as `isError=true`.
+
+**Env fail-fast validation (HIGH #3):** `_validate_orm_env()` called once at `__main__` entry
+(post `init_dotenv`, not at import-time). Raises `SystemExit` when:
+- `NEO4J_QUERY_TIMEOUT_SECONDS <= 0` (neo4j driver treats 0 as no-timeout, silently reverts #273 fix)
+- `ORM_QUERY_MAX_CONCURRENCY <= 0` (every ORM call fast-rejects forever)
+- `ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS` (reject can never be faster than timeout)
+
+`.env.example` documents these constraints with explicit warnings.
+
+**SSOT knobs moved to constants.py:** `ORM_QUERY_MAX_CONCURRENCY` and `ORM_SLOT_ACQUIRE_TIMEOUT`
+moved from inline `os.getenv()` in `server.py` to `src/constants.py` (same pattern as
+`NEO4J_QUERY_TIMEOUT_SECONDS` and `EMBEDDER_MAX_CONCURRENCY`).
+
+### D1/D5 note - reconcile_same_name_inherits hoisted to per-version (agent D fix)
+
+The initial implementation ran `reconcile_same_name_inherits` once per `_index_repo` call
+(R redundant full-scan passes per profile run). PR #275 wi/r3-fix-d (agent D) hoists this
+to run once per version in `index_profile`, after all repos for that version complete. This
+reduces cost by R× and makes the deferred `Model(odoo_version)` index less urgent. Concurrent
+same-version reconciles from `--profile-workers` may produce MERGE-deadlocks; these are caught
+by the warn-and-continue policy and do not leave hard gaps (idempotent post-pass on next run).
+
+### D9 amendment - Tier-1 gate split; merge-order test now locks real order; W8140 tuple form fixed
+
+**Tier-1 gate split (HIGH #1 inline finding):** The original D9 text stated:
+"Tier 1: `rules == []` OR `curate_status is None` - hard disclosure". This was wrong for the case
+`rules present + curate_status is None` (crash between `write_lint_rules` and `write_spec_metadata`
+sessions, or a version indexed before `write_spec_metadata` existed). The hard return suppressed all
+real findings with a false "no rules indexed" message.
+
+Fix (PR #275 wi/r3-fix-c): split into two sub-cases:
+- `rules == []` alone triggers the hard "NOT a clean bill of health" return.
+- `rules present + curate_status is None` runs the matcher AND prepends a distinct soft banner:
+  "curation status unknown for Odoo {v} - rules are indexed but SpecMetadata is missing; results
+  may be incomplete." This is Tier-1b (distinct from the pending Tier-2 soft banner).
+
+**W8140/E8501 tuple interpolation form now fires (HIGH #2):** The `(?!\()` lookahead after `%\s`
+in branch 0 blocked `cr.execute("... %s" % (val,))` - arguably the most common legacy injection
+shape. Lookahead removed across all 12 `lint_rules_*.json` files. Must-fire tests added for the
+tuple form. The safe parameterized form `cr.execute("... %s", (val,))` remains silent (no
+quote-then-`%` operator in that form).
+
+**W8178 multi-line false-positive fixed (MED #3):** Pattern tightened to require `)` on the same
+line (`(?=[^)]*\))` lookahead added). Multi-line `fields.Html(` opening lines no longer fire; all
+single-line unsanitized `fields.Html(...)` still fire.
+
+**Merge-order test now locks real order (HIGH r3 #5):** The previous overlay test called
+`_apply_code_patterns_overlay` directly and did not lock the actual merge order. Replaced with a
+test that drives `parse_lint_rules_for_version` with a temp Odoo source tree (live-parse WINS dedup)
+and asserts E8501 carries the live-parse rule message BUT the static SSOT `code_pattern` (overlay
+applied AFTER). The test fails-red if the overlay is removed or reordered. The "overlay merge order
+locked by test" claim in the prior CHANGELOG entry is now accurate (it was previously overstated).
+
+---
+
 ## Ops Notes
 
 **Pre-deploy (Wave 0, before code deploy):**

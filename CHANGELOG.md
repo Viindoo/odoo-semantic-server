@@ -13,52 +13,82 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ### Fixed — ORM tools hang on dense inheritance + lint_check false-green (#271 #273, ADR-0048)
 
-Two production issues fixed in one wave (10 work items, 1 PR). Tool count **stays 25**. No Postgres
-migration. Behavior changes flagged below.
+Two production issues fixed in one wave (10 work items + PR #275 review-round-3 fixes). Tool count
+**stays 25**. No Postgres migration. Behavior changes flagged below.
 
 #### Root causes
 
 - **#273:** Three-layered: (1) writer created K×(K-1) same-name INHERITS mesh (~256k edges/version
   17.0); (2) ORM read used VLP `*1..3` anchored on all-K copies + ORDER BY before LIMIT, forcing
-  86M path enumeration; (3) no timeout at any level — 11 zombie transactions ran 19-24h on prod.
-- **#271:** Token-overlap matcher structurally cannot fire on SQL injection rules (W8140/E8501) —
+  86M path enumeration; (3) no timeout at any level - 11 zombie transactions ran 19-24h on prod.
+- **#271:** Token-overlap matcher structurally cannot fire on SQL injection rules (W8140/E8501) -
   security vocabulary never appears in violation code. Secondary bug: empty-index returned silent
   false-green instead of a disclosure warning.
 
 #### Fixes
 
 - **Writer (ADR-0048 D1):** same-name INHERITS writer W1 now requires `tip.is_definition=true`.
-  Topology changes from K² → K×D (D=1 in practice). Post-pass reconciliation at end of each
-  `index_repo` fills cross-repo write-order gaps (idempotent, version-scoped).
-- **ORM read (ADR-0048 D2/D3):** `_lookup_field` step-3 replaced with per-hop name-dedup CALL
-  subquery. Depth-first semantics now formal contract (nearest ancestor wins; alphabetical
-  module tiebreak at same depth). Per-hop `unresolved` filter tightened deliberately.
+  Topology changes from K² to K×D (D=1 in practice). Post-pass reconciliation at end of each
+  `index_profile` (hoisted from `index_repo` - once per version after all repos complete; cut cost
+  by R×) fills cross-repo write-order gaps (idempotent, version-scoped).
+- **ORM read (ADR-0048 D2/D3, r3 CRITICAL-1):** `_lookup_field` step-3 and `validate_relation`
+  5-hop chain replaced with per-hop name-dedup shape. Two structural fixes over the first cut
+  (empirically proven necessary - prod measured 12.6s..TIMEOUT on un-cleaned K² mesh):
+  (1) prune same-name DURING expansion (`h1.name <> $mn`, `h2.name <> pn1`, ...) so the BFS
+  never re-enters the mesh; (2) aggregate to a SINGLE ROW before each subsequent hop via flat
+  OPTIONAL MATCH + `WITH collect(DISTINCT ...)` so each hop runs exactly once regardless of K.
+  Measured on K=120 un-cleaned mesh: 443ms (_lookup_field) / 109ms (validate_relation MISMATCH).
+  Depth-first semantics are now formal contract (nearest ancestor wins; alphabetical module tiebreak
+  at same depth). Per-hop `unresolved` filter tightened deliberately. CALL subquery shape removed
+  (also eliminates Neo4j 5.26 `CALL { WITH }` deprecation).
 - **Timeouts (ADR-0048 D7):** `neo4j.Query(text, timeout=NEO4J_QUERY_TIMEOUT_SECONDS)` wraps all
   5 ORM read call-sites (default 30s). `OrmQueryTimeout` exception surfaces structured English
-  error, no Cypher leaked. `asyncio.Semaphore(ORM_QUERY_MAX_CONCURRENCY)` (default 8) wraps 4
-  ORM tool wrappers via `offload_bounded` decorator (mirrors ADR-0046 embed pattern); fast-reject
-  `OrmOverloaded` in 5s when all slots occupied.
+  error, no Cypher leaked. Thread-held `threading.BoundedSemaphore(ORM_QUERY_MAX_CONCURRENCY)`
+  (default 8) wraps 4 ORM tool wrappers via `offload_bounded` decorator; acquire/release run
+  INSIDE the worker thread (slot tied to thread lifetime, not coroutine cancellation - prevents
+  the #276 pool-drain pattern). Fast-reject `OrmOverloaded` returns a plain string (ADR-0023
+  uniform posture, never `isError=true`). Cancel-path metrics increment in-thread even when
+  coroutine is cancelled. `_validate_orm_env()` fail-fast at startup: `SystemExit` on
+  `NEO4J_QUERY_TIMEOUT_SECONDS <= 0`, `ORM_QUERY_MAX_CONCURRENCY <= 0`, or
+  `ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS`. `ORM_QUERY_MAX_CONCURRENCY` and
+  `ORM_SLOT_ACQUIRE_TIMEOUT` moved to `src/constants.py` (SSOT per ADR-0048 D7 amendment).
 - **Lint data (#271):** `code_pattern` (regex string | null) added to `LintRuleInfo` and all 12
   `lint_rules_*.json` files. 178 total patterns (security group 100% covered). A
   `_apply_code_patterns_overlay` post-pass patches patterns onto ALL rules after the merge loop,
   ensuring static JSON patterns propagate even to live-parse rule winners (first-write-wins dedup
-  order). Cross-version consistency enforced (same rule_id = same pattern across all versions).
+  order confirmed by a real-merge-order test that locks both the live-parse win AND the overlay
+  supply). Cross-version consistency enforced (same rule_id = same pattern across all versions).
+  W8140/E8501 tuple interpolation form `execute("... %s" % (val,))` now fires - the `(?!\()` lookahead
+  that blocked it has been removed from all 12 files. W8178 multi-line false-positive fixed (requires
+  `)` on the same line now).
 - **Lint matcher (#271, ADR-0048 D9):** pattern-first per-line `re.search` (V0.5 hybrid). Each
   violation labeled `[pattern]` or `[fuzzy]`. Banner updated to "Hybrid matcher (V0.5)".
-- **3-tier disclosure (ADR-0048 D9):** Tier-1 `rules==[] or curate_status is None` → hard warning
-  "NOT a clean bill of health" (silent false-green eliminated). Tier-2 pending+rules → soft banner.
-  Tier-3 complete → normal.
-- **Cleanup script:** `ops/cleanup_same_name_inherits_mesh.cypher` — 2-step batched via an OUTER
+- **3-tier disclosure (ADR-0048 D9, r3 HIGH #1):**
+  - Tier-1a: `rules == []` alone triggers hard "NOT a clean bill of health" (silent false-green
+    eliminated).
+  - Tier-1b (NEW): `rules present + curate_status is None` (crash between `write_lint_rules` and
+    `write_spec_metadata` sessions, or pre-SpecMetadata index) runs the matcher AND prepends a
+    distinct soft banner "curation status unknown ... results may be incomplete".
+  - Tier-2: `curate_status == 'pending'` with rules present - soft "limited results" banner.
+  - Tier-3: `curate_status == 'complete'` - normal output, no banner.
+- **Cleanup script:** `ops/cleanup_same_name_inherits_mesh.cypher` - 2-step batched via an OUTER
   driving `MATCH` + `CALL { WITH <row> ... } IN TRANSACTIONS OF 10000 ROWS` (backfill MERGE + delete
   ~1.1M same-name non-definition edges). Full reindex does NOT auto-clean (writer is additive MERGE).
-  Requires backup bundle (ADR-0018) before running. Note: the OUTER tx of `CALL IN TRANSACTIONS` is
+  Requires backup bundle (ADR-0018) before running. Note: OUTER tx of `CALL IN TRANSACTIONS` is
   subject to `db.transaction.timeout` (verified Neo4j 5.26.25); for a full ~1.1M-edge run raise or
-  disable the timeout first (script header Option A).
+  disable the timeout first (script header Option A). Cleanup is a post-deploy ops step (not a
+  safety prerequisite - per-hop pruning makes new code safe on old data).
 - **Batched repo delete (#273):** `delete_modules_scoped` now uses `CALL {} IN TRANSACTIONS OF
   10000 ROWS` for child + Module deletion (was a single transaction). Same outer-tx timeout caveat
   documented in its docstring.
 - **Metrics:** `orm_query_timeout_total{tool}` + `orm_overloaded_total{tool}` counters added to
-  `/metrics` Prometheus endpoint.
+  `/metrics` Prometheus endpoint. Both increment in-thread regardless of coroutine cancellation.
+- **`_validate_depends` SSOT fix (MED #5):** last inline copy of the ADR-0034 tenant-choke predicate
+  replaced with `_scope_pred("mth")` call. All 5 orm.py read call-sites now use the shared helper.
+- **ORM tool docstrings (HIGH #6):** depth-first shadowing sentence added to all 4 ORM tool
+  docstrings visible to MCP clients.
+- **`limit_concurrency` formula:** headroom formula now accounts for both `EMBEDDER_MAX_CONCURRENCY`
+  and `ORM_QUERY_MAX_CONCURRENCY`.
 
 #### Behavior changes (flagged)
 
@@ -66,26 +96,31 @@ migration. Behavior changes flagged below.
   across all paths. Differs only when same field name exists at different inheritance depths with
   different types.
 - Per-hop unresolved filter: paths through `__unresolved__` intermediate nodes are no longer
-  traversed (to be verified during Wave 0 ops, expected 0 such paths in production data — not yet
+  traversed (to be verified during Wave 0 ops, expected 0 such paths in production data - not yet
   counted at the time of this PR).
-- Lint: banner wording "V0 fuzzy" → "Hybrid matcher (V0.5)"; violation lines include
+- Lint: banner wording "V0 fuzzy" to "Hybrid matcher (V0.5)"; violation lines include
   `[pattern]`/`[fuzzy]` label. Empty-index now shows warning instead of empty tree.
+- `OrmOverloaded` now surfaces as a plain string (was `isError=true`); slot release is now tied to
+  thread completion (was coroutine cancellation).
 
 #### Environment variables added
 
-- `NEO4J_QUERY_TIMEOUT_SECONDS` (default `30`) — per-ORM-query driver timeout.
-- `ORM_QUERY_MAX_CONCURRENCY` (default `8`) — semaphore cap for ORM tools.
-- `ORM_SLOT_ACQUIRE_TIMEOUT` (default `5`) — fast-reject timeout for slot acquisition.
+- `NEO4J_QUERY_TIMEOUT_SECONDS` (default `30`) - per-ORM-query driver timeout (in `src/constants.py`).
+- `ORM_QUERY_MAX_CONCURRENCY` (default `8`) - semaphore cap for ORM tools (in `src/constants.py`).
+- `ORM_SLOT_ACQUIRE_TIMEOUT` (default `5`) - fast-reject timeout for slot acquisition (in `src/constants.py`).
+  All three fail-fast at startup if out-of-range (SystemExit). See `docs/operations/timeouts.md`.
 
 #### Ops notes (see deploy runbook)
 
 - **Wave 0 (before code deploy):** `CALL dbms.setConfigValue('db.transaction.timeout','600s')` +
-  persist in `neo4j.conf` (NOT 60s — indexer has long-running transactions). Kill 11 zombie
+  persist in `neo4j.conf` (NOT 60s - indexer has long-running transactions). Kill 11 zombie
   transactions. Create 2 indexes: `Model(name, odoo_version)` + `Field(model, odoo_version)`.
 - **After deploy:** run `ops/cleanup_same_name_inherits_mesh.cypher` off-peak (backup ADR-0018
   first); run `index-core` for all 12 versions to populate `code_pattern` on LintRule nodes.
 - **Prod smoke:** `resolve_orm_chain("product.product","categ_id","17.0")` < 5s;
-  lint SQL injection snippet → `[pattern]` W8140 hit; `/metrics` shows 2 new counter families.
+  `validate_relation("sale.order","partner_id","res.partner","17.0")` < 5s (MISMATCH case: TIMEOUT
+  before this fix, must now return in < 5s);
+  lint SQL injection snippet with `[pattern]` W8140 hit; `/metrics` shows 2 new counter families.
 - No Postgres migration. Tool count stays **25**.
 
 ---
