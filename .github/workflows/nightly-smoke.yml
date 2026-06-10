@@ -143,7 +143,11 @@ jobs:
           NEO4J_URI = 'bolt://localhost:7687'
           NEO4J_AUTH = ('neo4j', 'password')
           TEST_VERSION = '99.8'  # dedicated version avoids collision with index-core data
-          K = 60  # 60 same-name nodes -> K*(K-1)=3540 mesh edges if un-cleaned
+          # K=140 -> K*(K-1)=19460 mesh edges if un-cleaned. Sized so a revert to
+          # the old VLP all-K shape blows the 10s bound by a wide margin (VLP cost
+          # grows ~K^3 at depth 3; K=60 measured only ~2.3s and would slip under
+          # the tripwire), while the per-hop query stays sub-second.
+          K = 140
 
           driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
 

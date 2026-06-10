@@ -5,6 +5,7 @@ import functools
 import logging
 import math
 import os
+import re
 import threading
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
@@ -681,12 +682,17 @@ def _orm_call_context(args: tuple, kwargs: dict) -> str:
         model = args[0]
     # odoo_version: prefer kwargs (FastMCP always passes it by keyword). The
     # positional[2] fallback is correct for 3 of the 4 tools; for
-    # validate_relation positional[2] is target_model, so we only trust the
-    # positional fallback when the value looks like a version (has a dot) —
-    # otherwise leave it None rather than log target_model under the version
-    # label.
+    # validate_relation positional[2] is target_model. Model names also contain
+    # dots ('res.partner'), so only trust the positional fallback when the
+    # value is purely numeric like '17.0' — otherwise leave it None rather
+    # than log target_model under the version label.
     version = kwargs.get("odoo_version")
-    if version is None and len(args) >= 3 and isinstance(args[2], str) and "." in args[2]:
+    if (
+        version is None
+        and len(args) >= 3
+        and isinstance(args[2], str)
+        and re.fullmatch(r"\d+(\.\d+)?", args[2])
+    ):
         version = args[2]
     profile = kwargs.get("profile_name")
     return f"model={model!r} odoo_version={version!r} profile={profile!r}"
