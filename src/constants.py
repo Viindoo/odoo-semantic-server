@@ -263,6 +263,20 @@ EMBEDDER_MAX_CONCURRENCY: int = int(os.getenv("EMBEDDER_MAX_CONCURRENCY", "4"))
 # NEO4J_QUERY_TIMEOUT_SECONDS.
 NEO4J_QUERY_TIMEOUT_SECONDS: int = int(os.getenv("NEO4J_QUERY_TIMEOUT_SECONDS", "30"))
 
+# ORM_QUERY_MAX_CONCURRENCY caps in-flight ORM-validation tool queries (the 4
+# offload_bounded tools). A fan-out burst of dense ORM traversals must not drain
+# the shared asyncio.to_thread ThreadPoolExecutor that every @offload tool uses,
+# nor exhaust the Neo4j connection pool. Mirrors EMBEDDER_MAX_CONCURRENCY for the
+# embed path (ADR-0046). Default 8 sits comfortably below the ~24-connection
+# Neo4j pool, leaving headroom for non-ORM reads + the brief fast-reject window.
+ORM_QUERY_MAX_CONCURRENCY: int = int(os.getenv("ORM_QUERY_MAX_CONCURRENCY", "8"))
+
+# ORM_SLOT_ACQUIRE_TIMEOUT: max wait (seconds) for an ORM concurrency slot before
+# fast-reject. Must stay well below NEO4J_QUERY_TIMEOUT_SECONDS so an overloaded
+# server rejects quickly rather than holding a slot for the full traversal
+# window. Enforced at server startup (see server.py _validate_orm_env).
+ORM_SLOT_ACQUIRE_TIMEOUT: float = float(os.getenv("ORM_SLOT_ACQUIRE_TIMEOUT", "5"))
+
 # ---------------------------------------------------------------------------
 # PostgreSQL connection pool
 # ---------------------------------------------------------------------------
