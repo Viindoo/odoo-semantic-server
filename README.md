@@ -53,7 +53,7 @@ MCP server expose **25 tools** (4 ORM-validation tools added in v0.8 / M10.5 Pha
 - **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
 - **1 module overview tool (M9 Wave 1):** `describe_module`
 - **3 superset discriminator tools (M11 Wave D — ADR-0028):** `model_inspect`, `module_inspect`, `entity_lookup` — route to the right flat tool by kind/entity-type; uniform raw-text output (WI-5 #261/#265: `output_schema=None` on all tools, no `structuredContent` wrap)
-- **4 session tools (M11 Wave E - ADR-0029):** `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` - sticky context per live MCP session (keyed by `mcp-session-id`; single api-key/`_nosession` fallback for stdio/header-less callers), in-memory with a 24h idle TTL, resets on server restart; eliminates `odoo_version` repetition
+- **4 session tools (M11 Wave E - ADR-0029):** `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` - sticky context per live MCP session (keyed by `mcp-session-id`; single api-key/`_nosession` fallback for stdio/header-less callers), in-memory with a 24h write-anchored TTL (expiry measured from the last `set_active_*`, not sliding on reads), resets on server restart; eliminates `odoo_version` repetition
 - **1 profile introspection tool (Wave 2 WI-4 — ADR-0028, #260, #259):** `profile_inspect` — profile-level discriminator: summary (ancestor chain + children + repos + module_count), repos (deduped across ancestor chain), modules (paginated module list scoped to profile). Closes the introspection gap: "which repos/modules make up profile X?" now answerable in <=2 calls.
 - **2 stylesheet tools (M10A — ADR-0025):** `resolve_stylesheet`, `find_style_override` — CSS/SCSS chain + variable tracing across the indexed stylesheet graph
 - **4 ORM-validation tools (M10.5 Phase 2 — v0.8):** `resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation` — static ORM checks (dotted-path resolution, domain field + version-aware operator validity, `@api.depends` paths, relation comodel) against the indexed graph before an AI client suggests a domain/depends/relation
@@ -188,15 +188,19 @@ Different roles get the most value from different tools. Quick-start guides:
 
 ## Trạng Thái Hiện Tại
 
-**Active work — ORM hang + lint false-green fix wave (fix/#271-#273, ADR-0048):** Two production
+**Recently merged — ORM hang + lint false-green fix wave (fix/#271-#273, ADR-0048; PR #275/#278/#279):** Two production
 issues fixed in one wave. (1) Four ORM tools (`resolve_orm_chain` / `validate_domain` /
 `validate_depends` / `validate_relation`) hung indefinitely on dense inheritance graphs (11 zombie
 transactions, 19-24h on prod) — fixed by per-hop name-dedup read query + 30s driver timeout +
-semaphore (8 slots). (2) `lint_check` false-green on SQL injection — fixed by `code_pattern` regex
+thread-held `threading.BoundedSemaphore` (8 slots, cancel-safe). (2) `lint_check` false-green on SQL injection - fixed by `code_pattern` regex
 data + pattern-first hybrid matcher (V0.5). Writer same-name INHERITS topology changed to K×D
-(extender→definition only). Tool count stays **25**. No Postgres migration. Cleanup script
+(extender→definition only). PR #278 added a separate non-ORM read pool (`NONORM_READ_MAX_CONCURRENCY`)
+and bounded `impact_analysis` via `@offload_bounded_nonorm`. PR #279 (ADR-0049) added transport-layer
+`SESSION_IDLE_TIMEOUT` (default 3600s) via an Option B `http_app` bypass - `_build_streamable_http_app()`
+forwards `session_idle_timeout` to `StreamableHTTPSessionManager` to reap abandoned streamable-http
+sessions. Tool count stays **25**. No Postgres migration. Cleanup script
 `ops/cleanup_same_name_inherits_mesh.cypher` must be run off-peak after deploy (backup ADR-0018
-required first). See [ADR-0048](docs/adr/0048-inherits-topology-and-orm-read-bounds.md) and
+required first). See [ADR-0048](docs/adr/0048-inherits-topology-and-orm-read-bounds.md), [ADR-0049](docs/adr/0049-session-idle-timeout.md) and
 CHANGELOG.md `[Unreleased]`.
 
 **Latest release:** v0.13.1 (2026-05-28) — Self-host waitlist + post-v0.13.0 cleanup (PR #204). Adds `POST /api/waitlist` endpoint (5/min per-IP rate-limit, admin email notification), `src/web_ui/email.py` sender abstraction, migration `m13_008_waitlist_emails`. Tool count stays **24**. See CHANGELOG.md.
@@ -258,7 +262,9 @@ Token-bounded chunking + provider abstraction + MCP anti-hang. Three concerns ad
 3. **Fix #227 — MCP embed concurrency / anti-hang (ADR-0046):** root cause was FastMCP calling
    `sync def` tool handlers on the event loop thread — one blocking embed froze all requests for ~11h
    (production). Fix: async hot path (`embed_async` via `asyncio.to_thread`), 30s query timeout vs.
-   1200s batch timeout, `asyncio.Semaphore(EMBEDDER_MAX_CONCURRENCY)` cap, `EmbedOverloaded`
+   1200s batch timeout, an embed-slot cap (`#276/#279`: now a thread-held
+   `threading.BoundedSemaphore` via `_LazyBoundedSemaphore`, cancel-safe - replaced the original
+   `asyncio.Semaphore` whose slot released on coroutine cancellation), `EmbedOverloaded`
    fast-reject in 5s, uvicorn `limit_concurrency` backpressure. `/health` is now a pure liveness
    probe (no DB I/O); `/ready` is a new HTTP readiness endpoint (cached 60s, NOT an MCP tool).
 

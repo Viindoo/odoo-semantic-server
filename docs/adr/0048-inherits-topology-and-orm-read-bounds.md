@@ -341,8 +341,11 @@ with `neo4j.Query(timeout=...)`. This is an accepted, bounded risk:
 - A slow non-ORM traversal can pin a `asyncio.to_thread` pool thread for up to 600s under fan-out
   load, but this is degraded throughput, not a #273-class zombie wedge.
 
-Extending `_bounded()` to the hottest non-ORM read paths (`impact_analysis`, `_resolve_model`
-ranking) is a follow-up item - see TASKS.md.
+Extending `_bounded()` to the hottest non-ORM read paths is a follow-up item - see TASKS.md.
+`impact_analysis` is now done (#278 G5: each heavy read runs through `_data_bounded` /
+`_single_bounded`, and the tool is wrapped by `@offload_bounded_nonorm`). The `_resolve_model`
+ranking query (`src/mcp/server.py:1941`) remains a bare `session.run()` and is the remaining open
+item.
 
 **Thread-held semaphore (CRITICAL-2 fix):** The original D7 text described `asyncio.Semaphore`
 with `sem.release()` in the coroutine `finally` block. This was empirically shown to release the

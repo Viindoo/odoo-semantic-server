@@ -25,7 +25,7 @@ All notable changes to Odoo Semantic MCP are documented here.
   already fully fixed by `RequiredOdooVersion` hard-require (WI-4); profile race is authz-safe
   (ADR-0034 fail-closed); no customer signal; MCP protocol has no per-call header mechanism to
   deliver `context_id` from an LLM subagent without adding it as a tool parameter (schema noise on
-  all 19 tools). Re-open triggers: (1) customer bug report of concurrent same-session profile
+  all 20 version-required tools). Re-open triggers: (1) customer bug report of concurrent same-session profile
   bleed, (2) roadmap multi-subagent isolated-profile feature, (3) MCP protocol adds native
   `_meta.context_id`. See ADR-0029 Amendment (#279).
 
@@ -141,6 +141,41 @@ Two production issues fixed in one wave (10 work items + PR #275 review-round-3 
   before this fix, must now return in < 5s);
   lint SQL injection snippet with `[pattern]` W8140 hit; `/metrics` shows 2 new counter families.
 - No Postgres migration. Tool count stays **25**.
+
+---
+
+### Fixed - abandoned streamable-http session leak (#279, ADR-0049)
+
+Abandoned streamable-http MCP sessions accumulated until server restart because FastMCP 2.x does
+not forward a `session_idle_timeout` to its `StreamableHTTPSessionManager`. Fixed via an Option B
+`http_app` bypass: `main()` no longer calls `mcp.http_app()` and instead builds the Starlette app
+through a new module-level `_build_streamable_http_app()` helper (the SSOT shared with the smoke
+test). The helper forwards `session_idle_timeout` plus `json_response` / `stateless_http` / `debug`
+read off `mcp._deprecated_settings` for parity with the upstream constructor (stateless mode passes
+`None` for idle). The PIN TTL (ADR-0029, 24h write-anchored) is unrelated and unchanged. No tool
+change, no migration. Tool count stays **25**. Revert trigger: FastMCP forwards the kwarg natively.
+
+#### Environment variables added
+
+- `SESSION_IDLE_TIMEOUT` (default `3600`) - transport-layer idle TTL (seconds) for streamable-http
+  sessions; non-finite or `<= 0` falls back to the default (a guard logs a warning); ignored under
+  `--transport stdio`. See `docs/operations/timeouts.md`.
+
+### Changed - concurrency-pool internals consolidated (#279, no behavior change)
+
+The three lazily-built per-pool semaphore factories (embed / ORM / non-ORM) were unified behind a
+single `_LazyBoundedSemaphore` class, and the two bounded-offload decorators (`offload_bounded` /
+`offload_bounded_nonorm`) behind a single `_make_bounded_offload(pool, ...)` factory. Public wrapper
+names (`_get_embed_semaphore` / `_get_orm_semaphore` / `_get_nonorm_semaphore`, `offload_bounded`,
+`offload_bounded_nonorm`) are preserved. Pure refactor - all three pools keep the thread-held
+`threading.BoundedSemaphore` cancel-safe semantics. No behavior change, no migration.
+
+#### Environment variables added (PR #278 #276 G6)
+
+- `NONORM_READ_MAX_CONCURRENCY` (default `8`) - semaphore cap for non-ORM heavy reads
+  (`impact_analysis` fan-out), a SEPARATE pool from `ORM_QUERY_MAX_CONCURRENCY` (in `src/constants.py`).
+- `NONORM_SLOT_ACQUIRE_TIMEOUT` (default `5`) - fast-reject timeout for a non-ORM read slot
+  (in `src/constants.py`).
 
 ---
 
@@ -481,7 +516,7 @@ New env vars: `EMBEDDER_NUM_CTX` (default `4096`), `EMBEDDER_TOKEN_BUDGET` (defa
   than blocking a user for 20 minutes.
 - **`asyncio.Semaphore` cap (`EMBEDDER_MAX_CONCURRENCY`, default 4):** bounds concurrent in-flight
   embed requests. Semaphore constructed lazily on first use (must be inside the running event loop).
-- **Fast rejection (`EmbedOverloaded`):** callers wait at most `EMBEDDER_SLOT_ACQUIRE_TIMEOUT_S`
+- **Fast rejection (`EmbedOverloaded`):** callers wait at most `EMBEDDER_SLOT_ACQUIRE_TIMEOUT`
   (default 5s) for a slot. On timeout: raise `EmbedOverloaded` — surfaced as an actionable overload
   message instead of an unbounded queue.
 - **uvicorn `limit_concurrency`:** set to `EMBEDDER_MAX_CONCURRENCY * 16` at server startup. Beyond
