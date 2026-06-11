@@ -1471,3 +1471,139 @@ def test_resolve_method_returns_clean_string_on_tx_timeout(monkeypatch):
         f"_resolve_method must return the OrmQueryTimeout.user_message string "
         f"(ADR-0023 clean), got:\n{out!r}"
     )
+
+
+# ─── T21 — LIST path mirrors the detail-path tx-timeout contract (#284 follow-up) ──
+#
+# The detail resolvers (_resolve_field / _resolve_method) were hardened to map a
+# per-query Neo4j tx-timeout (OrmQueryTimeout) to a clean degraded English STRING.
+# The LIST path (_list_fields / _list_methods, method='fields'|'methods') began
+# traversing INHERITS edges in the WI-2 wave but was MISSED — a 30s tx-timeout on
+# a dense inheritance graph would ESCAPE _list_fields/_list_methods to FastMCP as
+# a protocol-level `isError`, violating the ADR-0023 raw-text contract. These
+# UNIT tests close that asymmetry. They monkeypatch the bounded helpers / driver
+# session to FORCE the timeout deterministically — NO real Neo4j/Postgres needed
+# (same no-Docker lane + mocking style as T20 above).
+
+def test_list_fields_returns_clean_string_on_tx_timeout(monkeypatch):
+    """_list_fields(method='fields') must surface a bounded tx-timeout as a clean
+    ADR-0023 STRING (the OrmQueryTimeout.user_message), never propagate the raw
+    exception that model_inspect/entity_lookup's plain @offload would turn into a
+    protocol-level 500. Mirrors the detail-path contract (_resolve_field)."""
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    sentinel = "Query timed out after 30s while listing fields"
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout(sentinel + " (simulated).")
+
+    class _NoopSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    class _NoopDriver:
+        def session(self):
+            return _NoopSession()
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _NoopDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TEST_VERSION)
+    # First bounded helper inside the session block raises the bounded timeout.
+    monkeypatch.setattr(srv, "_list_fields_with_inherited", _boom)
+
+    out = srv._list_fields(_CHILD, odoo_version=TEST_VERSION)
+
+    assert isinstance(out, str), "must return a string, not raise"
+    assert sentinel in out, (
+        f"_list_fields must return the OrmQueryTimeout.user_message string "
+        f"(ADR-0023 clean), got:\n{out!r}"
+    )
+    assert "MATCH" not in out and "Traceback" not in out, f"leak: {out!r}"
+
+
+def test_list_methods_returns_clean_string_on_tx_timeout(monkeypatch):
+    """_list_methods(method='methods') must surface a bounded tx-timeout from its
+    list/count helpers as a clean ADR-0023 STRING, mirroring _resolve_method."""
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    sentinel = "Query timed out after 30s while listing methods"
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout(sentinel + " (simulated).")
+
+    class _NoopSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    class _NoopDriver:
+        def session(self):
+            return _NoopSession()
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _NoopDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TEST_VERSION)
+    monkeypatch.setattr(srv, "_list_methods_with_inherited", _boom)
+
+    out = srv._list_methods(_CHILD, odoo_version=TEST_VERSION)
+
+    assert isinstance(out, str), "must return a string, not raise"
+    assert sentinel in out, (
+        f"_list_methods must return the OrmQueryTimeout.user_message string "
+        f"(ADR-0023 clean), got:\n{out!r}"
+    )
+    assert "MATCH" not in out and "Traceback" not in out, f"leak: {out!r}"
+
+
+def test_list_methods_override_rec_raw_clienterror_converted(monkeypatch):
+    """The override-marker query in _list_methods was a BARE
+    `session.run(_bounded(...)).single()` that raised a RAW neo4j ClientError on
+    timeout (NOT routed through orm.py's ClientError -> OrmQueryTimeout
+    conversion). It is now routed through `_single_bounded`, so a tx-timeout on
+    JUST that query must be converted and surfaced as the clean degraded STRING —
+    never escape as a raw ClientError. We let the list/count helpers succeed and
+    force ONLY the override_rec `session.run(...)` to raise the driver timeout
+    code, exercising the REAL _single_bounded conversion (not a stubbed boom)."""
+    from neo4j.exceptions import ClientError
+
+    import src.mcp.server as srv
+
+    # list/count helpers succeed (no inherited rows) so execution reaches the
+    # override_rec query — which is the ONLY thing that times out here.
+    monkeypatch.setattr(srv, "_list_methods_with_inherited", lambda *a, **k: [])
+    monkeypatch.setattr(srv, "_count_methods_with_inherited", lambda *a, **k: 0)
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TEST_VERSION)
+    # _scope must return the kwargs the bare query interpolates.
+    monkeypatch.setattr(srv, "_scope", lambda p=None: {"own": None, "shared": []})
+
+    class _TimingOutSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def run(self, *a, **k):
+            exc = ClientError("transaction timed out")
+            # Driver-set per-query timeout status code (matches _is_tx_timeout),
+            # the SAME code the detail-path T20 test uses.
+            exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+            raise exc
+
+    class _NoopDriver:
+        def session(self):
+            return _TimingOutSession()
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _NoopDriver())
+
+    out = srv._list_methods(_CHILD, odoo_version=TEST_VERSION)
+
+    assert isinstance(out, str), (
+        "override_rec raw ClientError must be converted + surfaced as a string, "
+        f"not raised; got: {out!r}"
+    )
+    assert "timed out" in out.lower(), (
+        f"override_rec timeout must surface the degraded English string, got:\n{out!r}"
+    )
+    assert "MATCH" not in out and "Traceback" not in out, f"Cypher/trace leaked: {out!r}"
