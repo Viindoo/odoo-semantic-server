@@ -550,7 +550,14 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
             # breaks for modules stamped with the full ancestor chain (e.g.
             # [child, parent_shared]). The caller-can-see-this-profile check is
             # already done above via _effective_allowed(name).
-            rec = neo_session.run(
+            # Routed through srv._single_bounded so a tx-timeout becomes
+            # OrmQueryTimeout (clean English, no Cypher leaked). The surrounding
+            # `except Exception` below catches it too — the count degrades to
+            # `unavailable` rather than failing the whole summary; the owning
+            # profile_inspect handler (@offload_neo4j) never sees this timeout
+            # because the summary swallows it here (graceful per-substep degrade).
+            rec = srv._single_bounded(
+                neo_session,
                 f"""
                 MATCH (m:Module)
                 WHERE m.odoo_version = $v
@@ -558,10 +565,11 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
                   AND $profile_name IN m.profile
                 RETURN count(m) AS cnt
                 """,
+                f"module count for profile '{name}' (Odoo {odoo_version})",
                 v=odoo_version,
                 profile_name=name,
                 **srv._scope(None),
-            ).single()
+            )
             module_count = rec["cnt"] if rec else 0
     except Exception:
         module_count = None  # graceful degradation if Neo4j unavailable
@@ -740,7 +748,13 @@ def _profile_modules(
         # _effective_allowed(name) above.
         scope_params = srv._scope(None)
 
-        total_rec = neo_session.run(
+        # Routed through srv._single_bounded / srv._data_bounded so a tx-timeout
+        # becomes OrmQueryTimeout (clean English, no Cypher leaked). _profile_modules
+        # has no internal catch, so the raise propagates to the owning
+        # profile_inspect handler (now @offload_neo4j) which records the metric +
+        # returns the clean string.
+        total_rec = srv._single_bounded(
+            neo_session,
             f"""
             MATCH (m:Module)
             WHERE m.odoo_version = $v
@@ -749,11 +763,12 @@ def _profile_modules(
               {repo_clause}
             RETURN count(m) AS total
             """,
+            f"module count for profile '{name or 'all visible'}' (Odoo {odoo_version})",
             v=odoo_version,
             profile_name=name,
             repo_filter=repo_filter or "",
             **scope_params,
-        ).single()
+        )
         total = total_rec["total"] if total_rec else 0
 
         if total == 0:
@@ -765,7 +780,8 @@ def _profile_modules(
                 "list_available_profiles to see indexed scope."
             )
 
-        rows = neo_session.run(
+        rows = srv._data_bounded(
+            neo_session,
             f"""
             MATCH (m:Module)
             WHERE m.odoo_version = $v
@@ -777,13 +793,14 @@ def _profile_modules(
             ORDER BY m.name ASC
             SKIP $skip LIMIT $lim
             """,
+            f"module list for profile '{name or 'all visible'}' (Odoo {odoo_version})",
             v=odoo_version,
             profile_name=name,
             repo_filter=repo_filter or "",
             skip=start_index,
             lim=effective_limit,
             **scope_params,
-        ).data()
+        )
 
     scope_label = f"name={name!r}" if name else "all visible"
     page_end = start_index + len(rows)

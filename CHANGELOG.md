@@ -11,7 +11,23 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
-_Nothing yet — see issue #287 (read-side timeout hardening, PR-1..3) landing toward v0.14.1._
+### Read-side timeout hardening (#287) — landing toward v0.14.1
+
+- **PR-1 (#289):** systemic ADR-0023 contract hardening across the highest-traffic
+  read surface. New pool-less `@offload_neo4j` decorator (catch `OrmQueryTimeout` →
+  emit `_metric_nonorm_query_timeout` once in-thread → return `exc.user_message`,
+  never a FastMCP protocol `isError`). Bare `session.run()` Neo4j reads in
+  `model_inspect` (views/extenders/`_resolve_field` primary), `describe_module`,
+  `module_inspect` (owl/qweb/js + the `DEPENDS_ON*1..20` dep-closure, now bounded),
+  `profile_inspect`, and `entity_lookup` (view) routed through `_data_bounded`/
+  `_single_bounded` (30s per-query bound + `ClientError`→`OrmQueryTimeout`
+  conversion). Fixed the `_list_fields` magic-dedup **RAW-ESCAPE** pair (the
+  #284/#286-class bug missed in the adjacent block). All 7 `odoo://` resources
+  unified to the model-resource contract: a transient timeout is **never cached**
+  (was poisoning the LRU for the full 300s TTL) → caught at the handler → metric
+  once → clean degraded body. Read-side only: no migration, no deps, wire contract
+  unchanged (25 tools / 7 resources). PR-2 (spec/lint/cli/style tools) and PR-3
+  (metric uniformity) remain per #287.
 
 ## [0.14.0] — 2026-06-11 — Billing P1 + Admin Settings + embedding provider + auth unify + ORM/lint/session hardening
 

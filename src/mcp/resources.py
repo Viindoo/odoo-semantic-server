@@ -328,40 +328,56 @@ def _render_model(version: str, name: str) -> tuple[str, str]:
 def _render_field(
     version: str, model: str, field: str,
 ) -> tuple[str, str]:
-    """Render the ``odoo://{version}/field/{model}/{field}`` body."""
+    """Render the ``odoo://{version}/field/{model}/{field}`` body.
+
+    Passes ``_reraise_timeout=True`` so a transient per-query timeout propagates
+    out of ``get_or_compute`` BEFORE the cache put — the timeout body is never
+    written to the LRU (a 30s blip would otherwise pin a stale error for the full
+    TTL). The field resource handler catches it, records the metric once, and
+    returns the clean message UNCACHED.
+    """
     from src.mcp import server as _srv
 
     v = _resolved_version_for(version)
-    text = _srv._resolve_field(model, field, v)
+    text = _srv._resolve_field(model, field, v, _reraise_timeout=True)
     return text, MIME_MARKDOWN
 
 
 def _render_method(
     version: str, model: str, method: str,
 ) -> tuple[str, str]:
-    """Render the ``odoo://{version}/method/{model}/{method}`` body."""
+    """Render the ``odoo://{version}/method/{model}/{method}`` body.
+
+    ``_reraise_timeout=True``: never cache a transient timeout (see _render_field).
+    """
     from src.mcp import server as _srv
 
     v = _resolved_version_for(version)
-    text = _srv._resolve_method(model, method, v)
+    text = _srv._resolve_method(model, method, v, _reraise_timeout=True)
     return text, MIME_MARKDOWN
 
 
 def _render_module(version: str, name: str) -> tuple[str, str]:
-    """Render the ``odoo://{version}/module/{name}`` body."""
+    """Render the ``odoo://{version}/module/{name}`` body.
+
+    ``_reraise_timeout=True``: never cache a transient timeout (see _render_field).
+    """
     from src.mcp import server as _srv
 
     v = _resolved_version_for(version)
-    text = _srv._describe_module(name, v)
+    text = _srv._describe_module(name, v, _reraise_timeout=True)
     return text, MIME_MARKDOWN
 
 
 def _render_view(version: str, xmlid: str) -> tuple[str, str]:
-    """Render the ``odoo://{version}/view/{xmlid}`` body."""
+    """Render the ``odoo://{version}/view/{xmlid}`` body.
+
+    ``_reraise_timeout=True``: never cache a transient timeout (see _render_field).
+    """
     from src.mcp import server as _srv
 
     v = _resolved_version_for(version)
-    text = _srv._resolve_view(xmlid, v)
+    text = _srv._resolve_view(xmlid, v, _reraise_timeout=True)
     return text, MIME_MARKDOWN
 
 
@@ -376,7 +392,15 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
 
     v = _resolved_version_for(version)
     with _srv._get_driver().session() as neo4j_session:
-        rec = neo4j_session.run(
+        # Routed through _single_bounded so a tx-timeout becomes OrmQueryTimeout.
+        # Because _render_pattern runs INSIDE get_or_compute (via the
+        # `lambda resolved: _render_pattern(...)`), a raised OrmQueryTimeout
+        # propagates out BEFORE the cache put — the no-poison guarantee, same as
+        # the model path. No _reraise_timeout flag is needed here; the raise IS the
+        # no-cache mechanism. The pattern resource handler's `except OrmQueryTimeout`
+        # records the metric once and returns the clean body.
+        rec = _srv._single_bounded(
+            neo4j_session,
             """
             MATCH (p:PatternExample {pattern_id: $pid})
             RETURN p.pattern_id AS id, p.intent_keywords AS kw,
@@ -384,8 +408,9 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
                    p.gotchas AS g, p.language AS lang,
                    p.odoo_version_min AS vmin
             """,
+            f"pattern '{pattern_id}'",
             pid=pattern_id,
-        ).single()
+        )
 
     if rec is None:
         text = (
@@ -489,7 +514,14 @@ def _render_stylesheet(
         # stylesheet via a crafted odoo://stylesheet URI.
         # repo_id (via DEFINED_IN → Module) lets us reconstruct the absolute
         # on-disk path from repos.local_path at serve time.
-        rec = neo4j_session.run(
+        # Routed through _single_bounded so a tx-timeout becomes OrmQueryTimeout.
+        # _render_stylesheet runs INSIDE get_or_compute, so a raised
+        # OrmQueryTimeout propagates out BEFORE the cache put (no-poison, same as
+        # the model path). No _reraise_timeout flag is needed; the raise IS the
+        # no-cache mechanism. The stylesheet resource handler records the metric
+        # once and returns the clean body.
+        rec = _srv._single_bounded(
+            neo4j_session,
             f"""
             MATCH (ss:Stylesheet {{module: $mod, odoo_version: $v}})
             WHERE (ss.file_path = $fp OR ss.file_path = $fp_abs)
@@ -499,9 +531,10 @@ def _render_stylesheet(
                    m.repo_id AS repo_id
             LIMIT 1
             """,
+            f"stylesheet '{module}/{file_path}'",
             mod=module, v=v, fp=file_path, fp_abs="/" + file_path,
             **_srv._scope(),
-        ).single()
+        )
 
     if rec is None:
         text = (
@@ -668,10 +701,18 @@ def register_resources(mcp_instance) -> None:
     async def _field_resource(version: str, model: str, field: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key prevents cross-tenant cache contamination.
-        return await _serve_resource(
-            cache, version, "field", f"{model}/{field}",
-            lambda resolved: _render_field(resolved, model, field),
-        )
+        # _render_field passes _reraise_timeout=True so a transient per-query
+        # timeout propagates out of get_or_compute BEFORE the cache put — never
+        # cached. We record the metric once here and return the clean message.
+        try:
+            return await _serve_resource(
+                cache, version, "field", f"{model}/{field}",
+                lambda resolved: _render_field(resolved, model, field),
+            )
+        except OrmQueryTimeout as exc:
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("model_inspect")
+            return exc.user_message
 
     # ---- method ---------------------------------------------------------
     @mcp_instance.resource(
@@ -684,11 +725,16 @@ def register_resources(mcp_instance) -> None:
     )
     async def _method_resource(version: str, model: str, method: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
-        # R1: tenant-scoped key.
-        return await _serve_resource(
-            cache, version, "method", f"{model}/{method}",
-            lambda resolved: _render_method(resolved, model, method),
-        )
+        # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
+        try:
+            return await _serve_resource(
+                cache, version, "method", f"{model}/{method}",
+                lambda resolved: _render_method(resolved, model, method),
+            )
+        except OrmQueryTimeout as exc:
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("model_inspect")
+            return exc.user_message
 
     # ---- module ---------------------------------------------------------
     @mcp_instance.resource(
@@ -701,11 +747,16 @@ def register_resources(mcp_instance) -> None:
     )
     async def _module_resource(version: str, name: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
-        # R1: tenant-scoped key.
-        return await _serve_resource(
-            cache, version, "module", name,
-            lambda resolved: _render_module(resolved, name),
-        )
+        # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
+        try:
+            return await _serve_resource(
+                cache, version, "module", name,
+                lambda resolved: _render_module(resolved, name),
+            )
+        except OrmQueryTimeout as exc:
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("module_inspect")
+            return exc.user_message
 
     # ---- view -----------------------------------------------------------
     @mcp_instance.resource(
@@ -718,11 +769,16 @@ def register_resources(mcp_instance) -> None:
     )
     async def _view_resource(version: str, xmlid: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
-        # R1: tenant-scoped key.
-        return await _serve_resource(
-            cache, version, "view", xmlid,
-            lambda resolved: _render_view(resolved, xmlid),
-        )
+        # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
+        try:
+            return await _serve_resource(
+                cache, version, "view", xmlid,
+                lambda resolved: _render_view(resolved, xmlid),
+            )
+        except OrmQueryTimeout as exc:
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("entity_lookup")
+            return exc.user_message
 
     # ---- pattern --------------------------------------------------------
     @mcp_instance.resource(
@@ -736,11 +792,19 @@ def register_resources(mcp_instance) -> None:
     async def _pattern_resource(version: str, pattern_id: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # pattern is global spec data — keyed by version alone (no tenant dim).
-        return await _serve_resource(
-            cache, version, "pattern", pattern_id,
-            lambda resolved: _render_pattern(resolved, pattern_id),
-            tenant_keyed=False,
-        )
+        # _render_pattern's inline Cypher is bounded via _single_bounded; a
+        # tx-timeout raises OrmQueryTimeout out of get_or_compute BEFORE the cache
+        # put (no-poison). Record the metric once + return the clean body.
+        try:
+            return await _serve_resource(
+                cache, version, "pattern", pattern_id,
+                lambda resolved: _render_pattern(resolved, pattern_id),
+                tenant_keyed=False,
+            )
+        except OrmQueryTimeout as exc:
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("suggest_pattern")
+            return exc.user_message
 
     # ---- stylesheet -----------------------------------------------------
     @mcp_instance.resource(
@@ -763,7 +827,15 @@ def register_resources(mcp_instance) -> None:
         # private-tenant stylesheet can exist. A plain per-URI key would let a
         # cache HIT bypass _render_stylesheet (and its _scope_pred filter),
         # leaking a foreign tenant's body. Same dimension as the other 5 kinds.
-        return await _serve_resource(
-            cache, version, "stylesheet", f"{module}/{file_path}",
-            lambda resolved: _render_stylesheet(resolved, module, file_path),
-        )
+        # _render_stylesheet's inline Cypher is bounded via _single_bounded; a
+        # tx-timeout raises OrmQueryTimeout out of get_or_compute BEFORE the cache
+        # put (no-poison). Record the metric once + return the clean body.
+        try:
+            return await _serve_resource(
+                cache, version, "stylesheet", f"{module}/{file_path}",
+                lambda resolved: _render_stylesheet(resolved, module, file_path),
+            )
+        except OrmQueryTimeout as exc:
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("resolve_stylesheet")
+            return exc.user_message
