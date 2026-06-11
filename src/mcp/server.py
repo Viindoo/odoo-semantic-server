@@ -5683,7 +5683,7 @@ def _list_methods(
                 WHERE modcount >= 2
                 RETURN collect([name, owner_model]) AS overrides
                 """,
-                f"listing methods (including inherited) on '{model}'"
+                f"method override markers (including inherited) for '{model}'"
                 f" (Odoo {odoo_version})",
                 mn=model, v=odoo_version, **_scope(profile_name),
             )
