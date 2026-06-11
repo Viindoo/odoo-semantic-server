@@ -377,7 +377,7 @@ main() {
     echo ""
     echo "3. Start databases: docker compose up -d"
     echo "4. Run migrations: $VENV_PATH/bin/python -m src.db.migrate"
-    echo "5. Start MCP server: $VENV_PATH/bin/python -m src.mcp.server"
+    echo "5. Start MCP server: $VENV_PATH/bin/python -m src.mcp"
     echo "6. Start Web UI: $VENV_PATH/bin/python -m src.web_ui  (port 8003)"
 
     if $do_systemd; then

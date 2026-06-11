@@ -62,7 +62,7 @@ make install   # Tạo venv tại ~/.venv/odoo-semantic-mcp/ + cài dependencies
 | Process | Cách chạy | Vòng đời |
 |---------|-----------|----------|
 | Indexer CLI | `python -m src.cli index ...` | One-shot, kết thúc khi xong |
-| MCP Server | `python -m src.mcp.server` | Long-running, cần giữ sống |
+| MCP Server | `python -m src.mcp` | Long-running, cần giữ sống |
 
 ### Giữ MCP Server sống với systemd
 
@@ -78,7 +78,7 @@ After=network.target docker.service
 User=<APP_USER>
 WorkingDirectory=/home/<APP_USER>/odoo-semantic-mcp
 EnvironmentFile=-/home/<APP_USER>/odoo-semantic-mcp/.env
-ExecStart=/home/<APP_USER>/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+ExecStart=/home/<APP_USER>/.venv/odoo-semantic-mcp/bin/python -m src.mcp
 Restart=on-failure
 RestartSec=5s
 

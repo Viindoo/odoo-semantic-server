@@ -855,7 +855,7 @@ KHÔNG sai data, nhưng thiếu module cho đến khi reindex):
 ```bash
 sudo -u odoo-semantic -H tmux new -d -s odoo-semantic-mcp \
     'ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf \
-    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server'
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp'
 sudo -u odoo-semantic tmux attach -t odoo-semantic-mcp   # để xem logs
 ```
 

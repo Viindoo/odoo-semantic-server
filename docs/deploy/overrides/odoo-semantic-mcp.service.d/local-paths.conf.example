@@ -10,7 +10,7 @@
 # Reset ExecStart= before redefining (systemd requires this for list-valued
 # directives that should be replaced rather than appended).
 ExecStart=
-ExecStart=/path/to/alt-venv/bin/python -m src.mcp.server
+ExecStart=/path/to/alt-venv/bin/python -m src.mcp
 
 # Single-valued — last assignment wins:
 User=alt-user

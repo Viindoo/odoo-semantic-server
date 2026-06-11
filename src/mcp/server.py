@@ -5016,7 +5016,24 @@ from src.mcp.tools.stylesheet import (  # noqa: E402,F401
     resolve_stylesheet,
 )
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Server startup entrypoint (invoked by ``python -m src.mcp``).
+
+    Lives in ``src/mcp/server.py`` as a plain importable function rather than an
+    ``if __name__ == "__main__"`` block on purpose: running this file directly
+    (``python -m src.mcp.server``) makes it ``__main__``, and the tool wrapper
+    modules then re-import it under its real name ``src.mcp.server`` — creating a
+    SECOND FastMCP ``mcp`` instance that carries all 25 ``@mcp.tool`` registrations
+    while ``__main__.mcp`` stays empty. The served app would then be built from the
+    0-tool ``__main__`` instance (MCP ``tools/list`` returns 0). Keeping startup in
+    ``main()`` and serving via ``python -m src.mcp`` (see ``src/mcp/__main__.py``)
+    loads this module exactly once under its real name, so the served ``mcp`` is the
+    one that owns the 25 tools.
+
+    Uses the module-global ``mcp`` — the instance the ``@mcp.tool`` decorators in
+    ``src/mcp/tools/*`` registered against when this module was imported.
+    """
     import logging as _logging
 
     from src import config as _config
@@ -5221,3 +5238,17 @@ if __name__ == "__main__":
         access_log=True,
         limit_concurrency=_limit_concurrency,
     )
+
+
+if __name__ == "__main__":
+    # Backward-compat: running `python -m src.mcp.server` makes THIS file
+    # __main__, so the tool wrapper modules re-import src.mcp.server under its
+    # real name and register the 25 @mcp.tool decorators onto a SECOND FastMCP
+    # instance, leaving __main__.mcp empty. Delegating to the real module's
+    # main() serves the instance that actually owns the tools (the import below
+    # binds main from src.mcp.server #2, whose module-global mcp has 25 tools).
+    # The clean entrypoint `python -m src.mcp` (src/mcp/__main__.py) avoids the
+    # double-instance entirely; this guard only keeps the old command working.
+    from src.mcp.server import main as _main
+
+    _main()

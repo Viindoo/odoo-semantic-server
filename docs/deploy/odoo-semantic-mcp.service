@@ -50,7 +50,7 @@ EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
 # that has not run the RLS cutover boots fine — mcp.env absent → PG_DSN stays owner.
 # webui/backup/indexer do NOT load this file and keep the owner DSN (writes + admin).
 EnvironmentFile=-/home/odoo-semantic/etc/mcp.env
-ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.mcp
 Restart=on-failure
 RestartSec=5
 # MCP server starts quickly (no indexing at startup). 60s is generous.

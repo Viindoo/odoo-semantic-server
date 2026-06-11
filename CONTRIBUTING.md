@@ -664,7 +664,7 @@ cd site && pnpm build && pnpm preview
 
 **Terminal C — MCP server (port 8002):**
 ```bash
-~/.venv/odoo-semantic-mcp/bin/python -m src.mcp.server
+~/.venv/odoo-semantic-mcp/bin/python -m src.mcp
 # → Server lắng nghe http://127.0.0.1:8002/mcp
 ```
 
