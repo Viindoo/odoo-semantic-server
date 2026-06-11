@@ -5349,17 +5349,28 @@ def _list_fields(
         # matching DISTINCT-name count below. Provenance fields owner_model /
         # inherit_depth / edge_kind are carried for the `inherited from` /
         # `delegated via` row labels. Bounded by _bounded() (issue #273).
-        rows = _list_fields_with_inherited(
-            model, odoo_version, session, profile_name,
-            module=module, kind=kind,
-            skip=start_index, limit=effective_limit,
-        )
+        #
+        # FIX (#284 follow-up): these two helpers are bounded + tx-timeout-mapped
+        # to OrmQueryTimeout on a dense inheritance graph. model_inspect /
+        # entity_lookup wrap _list_fields in plain @offload (no OrmQueryTimeout
+        # catch), so a tx-timeout here would ESCAPE as a FastMCP protocol
+        # `isError`, violating the ADR-0023 raw-text contract — exactly as the
+        # detail path (_resolve_field) was hardened to avoid. Mirror that catch:
+        # surface the clean degraded English string instead of raising.
+        try:
+            rows = _list_fields_with_inherited(
+                model, odoo_version, session, profile_name,
+                module=module, kind=kind,
+                skip=start_index, limit=effective_limit,
+            )
 
-        # Separate count query (same traversal + DISTINCT-name dedup) so the
-        # "Showing X of N" total always matches the paginated, deduped rows.
-        total = _count_fields_with_inherited(
-            model, odoo_version, session, profile_name, module=module, kind=kind
-        )
+            # Separate count query (same traversal + DISTINCT-name dedup) so the
+            # "Showing X of N" total always matches the paginated, deduped rows.
+            total = _count_fields_with_inherited(
+                model, odoo_version, session, profile_name, module=module, kind=kind
+            )
+        except OrmQueryTimeout as exc:
+            return exc.user_message
 
     # D2: Build magic-field prelude for page 0 only when no module filter suppresses them.
     # Magic fields are rendered as a FIXED <builtin> prelude block that is OUTSIDE the
@@ -5623,30 +5634,46 @@ def _list_methods(
         # Dedup + SKIP/LIMIT happen IN-QUERY so pagination matches the
         # DISTINCT-name count below. Carries owner_model for provenance labels
         # (edge_kind is always 'inherits' on the method path).
-        rows = _list_methods_with_inherited(
-            model, odoo_version, session, profile_name,
-            module=module, skip=start_index, limit=effective_limit,
-        )
-        # Map convention_kind → the `kind` key the existing renderer expects.
-        for _r in rows:
-            _r["kind"] = _r.get("convention_kind")
+        # FIX (#284 follow-up): the three acquisitions below are all bounded by
+        # the per-query Neo4j timeout. model_inspect / entity_lookup wrap
+        # _list_methods in plain @offload (no OrmQueryTimeout catch), so a
+        # tx-timeout on a dense inheritance graph would ESCAPE as a FastMCP
+        # protocol `isError`, violating the ADR-0023 raw-text contract (the same
+        # asymmetry the detail path _resolve_method already closed). Wrap the
+        # whole acquisition in `try/except OrmQueryTimeout: return exc.user_message`,
+        # mirroring _resolve_field. The override_rec query was a BARE
+        # `session.run(_bounded(...)).single()` that raises a RAW neo4j
+        # ClientError on timeout (NOT routed through orm.py's ClientError ->
+        # OrmQueryTimeout conversion), so it would not even reach this catch —
+        # route it through `_single_bounded` (the SAME conversion helper the
+        # codebase already uses) so its timeout becomes OrmQueryTimeout too.
+        try:
+            rows = _list_methods_with_inherited(
+                model, odoo_version, session, profile_name,
+                module=module, skip=start_index, limit=effective_limit,
+            )
+            # Map convention_kind → the `kind` key the existing renderer expects.
+            for _r in rows:
+                _r["kind"] = _r.get("convention_kind")
 
-        total = _count_methods_with_inherited(
-            model, odoo_version, session, profile_name, module=module
-        )
+            total = _count_methods_with_inherited(
+                model, odoo_version, session, profile_name, module=module
+            )
 
-        # Override-marker (GAP-2): a method is marked (*) when it is declared in
-        # >=2 modules ON ITS OWNER MODEL. For an INHERITED method the owner is the
-        # mixin, not the child — so counting modules only on {model: $m} would
-        # never mark an inherited method even when it is overridden N times on its
-        # owner. Compute the override set per (method_name, owner_model) over the
-        # SAME INHERITS-only ancestor set the method listing uses (NOT
-        # DELEGATES_TO — methods are not delegated, GAP-1), so an inherited method
-        # overridden across modules on its owner gets the (*) marker in the child
-        # listing. Keyed by (name, owner) so a same-named method on two different
-        # owners cannot cross-contaminate the marker.
-        override_rec = session.run(
-            _bounded(
+            # Override-marker (GAP-2): a method is marked (*) when it is declared
+            # in >=2 modules ON ITS OWNER MODEL. For an INHERITED method the owner
+            # is the mixin, not the child — so counting modules only on {model: $m}
+            # would never mark an inherited method even when it is overridden N
+            # times on its owner. Compute the override set per (method_name,
+            # owner_model) over the SAME INHERITS-only ancestor set the method
+            # listing uses (NOT DELEGATES_TO — methods are not delegated, GAP-1),
+            # so an inherited method overridden across modules on its owner gets
+            # the (*) marker in the child listing. Keyed by (name, owner) so a
+            # same-named method on two different owners cannot cross-contaminate
+            # the marker. Routed through _single_bounded so a tx-timeout becomes
+            # OrmQueryTimeout (not a raw ClientError) and joins the catch below.
+            override_rec = _single_bounded(
+                session,
                 _ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY + """
                 MATCH (mth:Method {model: owner_model, odoo_version: $v})
                 WHERE """ + _scope_pred("mth") + """
@@ -5655,10 +5682,13 @@ def _list_methods(
                      count(DISTINCT mth.module) AS modcount
                 WHERE modcount >= 2
                 RETURN collect([name, owner_model]) AS overrides
-                """
-            ),
-            mn=model, v=odoo_version, **_scope(profile_name),
-        ).single()
+                """,
+                f"listing methods (including inherited) on '{model}'"
+                f" (Odoo {odoo_version})",
+                mn=model, v=odoo_version, **_scope(profile_name),
+            )
+        except OrmQueryTimeout as exc:
+            return exc.user_message
         override_keys = {
             (name, owner) for name, owner in (override_rec["overrides"] or [])
         } if override_rec else set()
