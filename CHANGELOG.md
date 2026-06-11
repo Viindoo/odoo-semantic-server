@@ -11,6 +11,10 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+_Nothing yet — see issue #287 (read-side timeout hardening, PR-1..3) landing toward v0.14.1._
+
+## [0.14.0] — 2026-06-11 — Billing P1 + Admin Settings + embedding provider + auth unify + ORM/lint/session hardening
+
 ### Known caveats
 
 - **Concurrent same-session subagents share one profile pin (last-write-wins).** When two

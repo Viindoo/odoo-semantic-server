@@ -278,7 +278,7 @@ VN persona docs.
 
 **Next milestones (roadmap):**
 - **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). **Deploy order: m13_014 → m13_015 → m13_016 → m13_017 → (m13_018)** — four distinct billing migrations plus the embedding-provider migration. m13_014 = P1 base billing schema; m13_015/016 = pricing_model + min_seats (PR #223); m13_017 = CRD withdrawal consent (PR #224); m13_018 = embedding provider columns (PR #228). (m13_015/016/017 file numbers were reused after earlier drafts were folded into m13_014.) **Legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01). Live in prod: `billing.paid_checkout_enabled=true`. Still pending:** Polar KYB onboarding + Polar cancel-endpoint/webhook-field confirmation + webhook URL + product→plan map registration in Polar dashboard. **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
-- **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped and live in prod (pending v0.14.0 tag). Ops
+- **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped in v0.14.0. Ops
   tune RPM/quota/batch without SSH/redeploy. See [ADR-0042](docs/adr/0042-admin-settings-module.md).
   **fix/mfa-step-up-freshness** — Bug fix: fresh-MFA gate was permanently 403 because
   `mfa_verified_at` was never written. Fixed by writing the timestamp in `totp_login` and
@@ -288,9 +288,9 @@ VN persona docs.
 
 → [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
 
-### Admin Settings Module (ADR-0042 — Deployed, pending v0.14.0 tag)
+### Admin Settings Module (ADR-0042 — released in v0.14.0)
 
-**Admin Settings** has shipped and is live in prod ahead of a formal v0.14.0 tag — web UI cho phép admin +
+**Admin Settings** shipped in v0.14.0 — web UI cho phép admin +
 tenant_owner tinker 18 Tier-1 settings (auth + quota + embedding + indexer + mcp + support + analytics,
 incl. `auth.mfa_freshness_seconds` per ADR-0043, `support.helpdesk_url` PR #223,
 `analytics.ga_measurement_id` PR #225) + 4 plan tier + 16 EE module
