@@ -121,3 +121,29 @@ class TestSshKeysPage:
         page.on("dialog", lambda d: d.accept())
         page.locator('[data-testid^="delete-ssh-key-button-"]').first.click()
         expect(page.get_by_test_id("ssh-key-row")).not_to_be_visible(timeout=8000)
+
+    def test_import_invalid_pem_shows_readable_error_not_object_object(
+        self, astro_server, clean_browser, page
+    ):
+        """Business rule (ADR-0048): a rejected import surfaces the backend's
+        error as human-readable text in the flash banner — never the literal
+        "[object Object]". This is the generalised form of the original bug: any
+        API error ``detail`` (string, ``{error, message}`` object, or pydantic
+        validation list) must render as a readable message.
+
+        Behaviour-level: it fails if the error display regresses to dumping a raw
+        object, regardless of how the fetch/error plumbing is implemented.
+        """
+        page.goto(f"{astro_server}{SSH_KEYS_URL}")
+        page.wait_for_load_state("load")
+
+        page.get_by_test_id("ssh-import-name-input").fill("invalid-pem-key")
+        page.get_by_test_id("ssh-import-pem-input").fill("this-is-not-a-valid-private-key")
+        page.get_by_test_id("import-ssh-key-button").click()
+
+        banner = page.get_by_test_id("flash-banner")
+        expect(banner).to_be_visible(timeout=5000)
+        message = banner.inner_text().strip()
+        assert message, "error banner must carry a non-empty message"
+        assert "[object Object]" not in message
+        assert "[object Object]" not in page.locator("body").inner_text()

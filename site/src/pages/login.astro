@@ -228,6 +228,7 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
 
 <script>
   import { resolveAuthLanding } from '../lib/auth-landing';
+  import { submitJson } from '../lib/apiClient';
 
   document.querySelector('[data-testid="login-form"]')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -244,36 +245,31 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
     }
     if (errorEl) errorEl.setAttribute('hidden', '');
 
-    const res = await fetch('/api/auth/login', {
+    const r = await submitJson<Record<string, unknown>>('/api/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: fd.get('username'),
-        password: fd.get('password'),
-      }),
+      body: { username: fd.get('username'), password: fd.get('password') },
+      stepUp: false,
     });
 
-    const data = await res.json().catch(() => ({}));
-
-    if (res.ok) {
-      if (data.mfa_required) {
+    if (r.ok) {
+      if (r.data.mfa_required) {
         // Show MFA step
-        _currentMfaToken = data.mfa_token ?? '';
+        _currentMfaToken = r.data.mfa_token as string ?? '';
         loginSection?.setAttribute('hidden', '');
         mfaSection?.removeAttribute('hidden');
         if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = 'Sign in'; }
       } else {
         const rawReturn = new URLSearchParams(window.location.search).get('return');
-        window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
+        window.location.href = resolveAuthLanding(r.data.is_admin === true, rawReturn);
       }
     } else {
       if (errorEl) {
         const msg =
-          data.error === 'invalid_credentials'
+          r.data.error === 'invalid_credentials'
             ? 'Invalid username or password.'
-            : data.error === 'Too many failed login attempts; please wait before retrying'
+            : r.data.error === 'Too many failed login attempts; please wait before retrying'
               ? 'Too many failed attempts. Please wait a moment and try again.'
-              : data.error ?? 'Login failed.';
+              : r.error ?? 'Login failed.';
         errorEl.textContent = msg;
         errorEl.removeAttribute('hidden');
       }
@@ -307,23 +303,22 @@ const infoMsg: string | null = _rawInfo ? (INFO_MESSAGES[_rawInfo] ?? null) : nu
       body['code'] = totpCode;
     }
 
-    const res = await fetch('/api/auth/totp/login', {
+    const r = await submitJson<Record<string, unknown>>('/api/auth/totp/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body,
+      stepUp: false,
     });
-    const data = await res.json().catch(() => ({}));
 
-    if (res.ok) {
+    if (r.ok) {
       const rawReturn = new URLSearchParams(window.location.search).get('return');
-      window.location.href = resolveAuthLanding(data.is_admin === true, rawReturn);
+      window.location.href = resolveAuthLanding(r.data.is_admin === true, rawReturn);
     } else {
       if (mfaErrorEl) {
         const msg =
-          data.error === 'invalid_code' ? 'Invalid code. Try again.' :
-          data.error === 'invalid_backup_code' ? 'Invalid backup code. Try again.' :
-          data.error === 'mfa_token_expired' ? 'Session expired. Please log in again.' :
-          data.error ?? 'Verification failed.';
+          r.data.error === 'invalid_code' ? 'Invalid code. Try again.' :
+          r.data.error === 'invalid_backup_code' ? 'Invalid backup code. Try again.' :
+          r.data.error === 'mfa_token_expired' ? 'Session expired. Please log in again.' :
+          r.error ?? 'Verification failed.';
         mfaErrorEl.textContent = msg;
         mfaErrorEl.removeAttribute('hidden');
       }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Plan Tier Editor React island — admin plans CRUD (WI-10, ADR-0039)
 import { useState } from 'react';
-import { withStepUp } from '../../../lib/mfaStepUp';
+import { submitJson } from '../../../lib/apiClient';
+import { flash } from '../../../lib/flash';
 
 interface Plan {
   id: number;
@@ -26,17 +27,6 @@ interface Plan {
 
 interface Props {
   initialPlans: Plan[];
-}
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
 }
 
 function fmtQuota(n: number): string {
@@ -251,19 +241,16 @@ function EditModal({
 
     setSaving(true);
     try {
-      const res = await withStepUp(() => fetch(`/api/admin/plans/${encodeURIComponent(plan.slug)}`, {
+      const r = await submitJson(`/api/admin/plans/${encodeURIComponent(plan.slug)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      }));
-      const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-      if (res.ok) {
+        body: payload,
+      });
+      if (r.ok) {
         flash(`Plan "${plan.display_name}" updated. Changes propagate in ≤60 s.`);
         onSaved({ ...plan, ...payload, quota_calls_per_month: newQuota, rate_limit_rpm: newRpm });
         onClose();
       } else {
-        setFormError(String(data.detail ?? data.error ?? `HTTP ${res.status}`));
+        setFormError(r.error!);
       }
     } catch (e: unknown) {
       setFormError(String(e));

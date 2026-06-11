@@ -3,6 +3,8 @@
 // Handles: create/edit/deactivate/delete tenant, add/remove members,
 // assign profiles and repos to tenants.
 import { useState, useEffect } from 'react';
+import { submitJson } from '../../lib/apiClient';
+import { flash } from '../../lib/flash';
 
 type Tenant = {
   id: number;
@@ -48,29 +50,6 @@ interface Props {
   allUsers: User[];
 }
 
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
-}
-
-async function apiFetch(url: string, opts: RequestInit = {}): Promise<{ ok: boolean; data: unknown }> {
-  try {
-    const res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...(opts.headers ?? {}) },
-      ...opts,
-    });
-    const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, data };
-  } catch (e) {
-    return { ok: false, data: { error: String(e) } };
-  }
-}
 
 export default function TenantsIsland({ initialTenants, allUsers }: Props) {
   const [tenants, setTenants] = useState<Tenant[]>(initialTenants);
@@ -103,38 +82,38 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
   const [loadingProfiles, setLoadingProfiles] = useState(false);
 
   async function refreshTenants() {
-    const { ok, data } = await apiFetch('/api/tenants');
-    if (ok) setTenants((data as { tenants: Tenant[] }).tenants ?? []);
+    const r = await submitJson<{ tenants: Tenant[] }>('/api/tenants', { method: 'GET', stepUp: false });
+    if (r.ok) setTenants(r.data.tenants ?? []);
   }
 
   async function loadMembers(tenantId: number) {
     setLoadingMembers(true);
-    const { ok, data } = await apiFetch(`/api/tenants/${tenantId}/members`);
-    if (ok) setMembers((data as { members: Member[] }).members ?? []);
+    const r = await submitJson<{ members: Member[] }>(`/api/tenants/${tenantId}/members`, { method: 'GET', stepUp: false });
+    if (r.ok) setMembers(r.data.members ?? []);
     setLoadingMembers(false);
   }
 
   async function loadRepoAssignments(tenantId: number) {
     setLoadingRepos(true);
-    const { ok, data } = await apiFetch('/api/repos/profiles');
-    if (ok) {
-      const profiles = (data as { profiles: { tenant_id: number | null; repos: RepoItem[] }[] }).profiles ?? [];
+    const r = await submitJson<{ profiles: { tenant_id: number | null; repos: RepoItem[] }[] }>('/api/repos/profiles', { method: 'GET', stepUp: false });
+    if (r.ok) {
+      const profiles = r.data.profiles ?? [];
       const allRepos: RepoItem[] = profiles.flatMap(p =>
-        (p.repos ?? []).map(r => ({ ...r, tenant_id: r.tenant_id ?? null }))
+        (p.repos ?? []).map(rr => ({ ...rr, tenant_id: rr.tenant_id ?? null }))
       );
-      setAssignedRepos(allRepos.filter(r => r.tenant_id === tenantId));
-      setUnassignedRepos(allRepos.filter(r => r.tenant_id === null));
+      setAssignedRepos(allRepos.filter(rr => rr.tenant_id === tenantId));
+      setUnassignedRepos(allRepos.filter(rr => rr.tenant_id === null));
     }
     setLoadingRepos(false);
   }
 
   async function loadProfileAssignments(tenantId: number) {
     setLoadingProfiles(true);
-    const { ok, data } = await apiFetch('/api/repos/profiles');
-    if (ok) {
-      const allProfiles: ProfileItem[] = (
-        (data as { profiles: ProfileItem[] }).profiles ?? []
-      ).map(p => ({ id: p.id, name: p.name, odoo_version: p.odoo_version, tenant_id: p.tenant_id ?? null }));
+    const r = await submitJson<{ profiles: ProfileItem[] }>('/api/repos/profiles', { method: 'GET', stepUp: false });
+    if (r.ok) {
+      const allProfiles: ProfileItem[] = (r.data.profiles ?? []).map(p => ({
+        id: p.id, name: p.name, odoo_version: p.odoo_version, tenant_id: p.tenant_id ?? null,
+      }));
       setAssignedProfiles(allProfiles.filter(p => p.tenant_id === tenantId));
       setUnassignedProfiles(allProfiles.filter(p => p.tenant_id === null));
     }
@@ -143,63 +122,63 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
 
   async function handleAssignRepo() {
     if (!selectedTenant || !assignRepoId) return;
-    const { ok, data } = await apiFetch(`/api/repos/${assignRepoId}/tenant`, {
+    const r = await submitJson(`/api/repos/${assignRepoId}/tenant`, {
       method: 'PATCH',
-      body: JSON.stringify({ tenant_id: selectedTenant.id }),
+      body: { tenant_id: selectedTenant.id },
     });
-    if (ok) {
+    if (r.ok) {
       flash('Repo assigned');
       setAssignRepoId('');
       await loadRepoAssignments(selectedTenant.id);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to assign repo', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleUnassignRepo(repoId: number) {
     if (!selectedTenant) return;
-    const { ok, data } = await apiFetch(`/api/repos/${repoId}/tenant`, {
+    const r = await submitJson(`/api/repos/${repoId}/tenant`, {
       method: 'PATCH',
-      body: JSON.stringify({ tenant_id: null }),
+      body: { tenant_id: null },
     });
-    if (ok) {
+    if (r.ok) {
       flash('Repo unassigned');
       await loadRepoAssignments(selectedTenant.id);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to unassign repo', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleAssignProfile() {
     if (!selectedTenant || !assignProfileId) return;
-    const { ok, data } = await apiFetch(`/api/profiles/${assignProfileId}/tenant`, {
+    const r = await submitJson(`/api/profiles/${assignProfileId}/tenant`, {
       method: 'PATCH',
-      body: JSON.stringify({ tenant_id: selectedTenant.id }),
+      body: { tenant_id: selectedTenant.id },
     });
-    if (ok) {
+    if (r.ok) {
       flash('Profile assigned');
       setAssignProfileId('');
       await loadProfileAssignments(selectedTenant.id);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to assign profile', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleUnassignProfile(profileId: number) {
     if (!selectedTenant) return;
-    const { ok, data } = await apiFetch(`/api/profiles/${profileId}/tenant`, {
+    const r = await submitJson(`/api/profiles/${profileId}/tenant`, {
       method: 'PATCH',
-      body: JSON.stringify({ tenant_id: null }),
+      body: { tenant_id: null },
     });
-    if (ok) {
+    if (r.ok) {
       flash('Profile unassigned');
       await loadProfileAssignments(selectedTenant.id);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to unassign profile', true);
+      flash(r.error!, { error: true });
     }
   }
 
@@ -215,27 +194,27 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
     e.preventDefault();
     if (!newTenantName.trim()) return;
     setCreating(true);
-    const { ok, data } = await apiFetch('/api/tenants', {
+    const r = await submitJson('/api/tenants', {
       method: 'POST',
-      body: JSON.stringify({ name: newTenantName.trim() }),
+      body: { name: newTenantName.trim() },
     });
     setCreating(false);
-    if (ok) {
+    if (r.ok) {
       flash('Tenant created');
       setNewTenantName('');
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to create tenant', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleUpdateTenant(tenantId: number) {
     if (!editName.trim()) return;
-    const { ok, data } = await apiFetch(`/api/tenants/${tenantId}`, {
+    const r = await submitJson(`/api/tenants/${tenantId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: editName.trim() }),
+      body: { name: editName.trim() },
     });
-    if (ok) {
+    if (r.ok) {
       flash('Tenant updated');
       setEditingId(null);
       await refreshTenants();
@@ -244,63 +223,63 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
         if (updated) setSelectedTenant({ ...updated, name: editName.trim() });
       }
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to update tenant', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleToggleActive(tenant: Tenant) {
-    const { ok, data } = await apiFetch(`/api/tenants/${tenant.id}`, {
+    const r = await submitJson(`/api/tenants/${tenant.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ active: !tenant.active }),
+      body: { active: !tenant.active },
     });
-    if (ok) {
+    if (r.ok) {
       flash(`Tenant ${tenant.active ? 'deactivated' : 'activated'}`);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to update tenant', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleDeleteTenant(tenant: Tenant) {
     if (!confirm(`Delete tenant "${tenant.name}"? This cannot be undone.`)) return;
-    const { ok, data } = await apiFetch(`/api/tenants/${tenant.id}`, { method: 'DELETE' });
-    if (ok) {
+    const r = await submitJson(`/api/tenants/${tenant.id}`, { method: 'DELETE' });
+    if (r.ok) {
       flash('Tenant deleted');
       if (selectedTenant?.id === tenant.id) setSelectedTenant(null);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to delete tenant', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleAddMember(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedTenant || !addMemberUserId) return;
-    const { ok, data } = await apiFetch(`/api/tenants/${selectedTenant.id}/members`, {
+    const r = await submitJson(`/api/tenants/${selectedTenant.id}/members`, {
       method: 'POST',
-      body: JSON.stringify({ user_id: Number(addMemberUserId), role: addMemberRole }),
+      body: { user_id: Number(addMemberUserId), role: addMemberRole },
     });
-    if (ok) {
+    if (r.ok) {
       flash('Member added');
       setAddMemberUserId('');
       await loadMembers(selectedTenant.id);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to add member', true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleRemoveMember(userId: number) {
     if (!selectedTenant) return;
-    const { ok, data } = await apiFetch(`/api/tenants/${selectedTenant.id}/members/${userId}`, {
+    const r = await submitJson(`/api/tenants/${selectedTenant.id}/members/${userId}`, {
       method: 'DELETE',
     });
-    if (ok) {
+    if (r.ok) {
       flash('Member removed');
       await loadMembers(selectedTenant.id);
       await refreshTenants();
     } else {
-      flash((data as { error?: string }).error ?? 'Failed to remove member', true);
+      flash(r.error!, { error: true });
     }
   }
 

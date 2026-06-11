@@ -335,16 +335,8 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
 </AdminLayout>
 
 <script>
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
+  import { submitJson } from '../../lib/apiClient';
+  import { flash } from '../../lib/flash';
 
   // C-1 post-reload: if a raw key was stashed before a reload (key just created),
   // pop it and reveal the copy-once banner. The Active Keys table is now fresh.
@@ -379,13 +371,9 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const res = await fetch('/api/api-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fd.get('name') }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.raw_key) {
+    const r = await submitJson('/api/api-keys', { method: 'POST', body: { name: fd.get('name') } });
+    if (r.ok && (r.data as { raw_key?: string }).raw_key) {
+      const data = r.data as { raw_key: string };
       // C-1: previously the Active Keys table stayed stale until a manual F5
       // (no reload, to avoid losing the raw key to a timeout). Fix: stash the
       // raw key in sessionStorage and reload so the server re-renders the table
@@ -416,7 +404,7 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
         }
       }
     } else {
-      showFlash(data.error ?? 'Failed to create key.', 'error');
+      flash(r.error ?? 'Failed to create key.', { error: true });
     }
   });
 
@@ -466,7 +454,7 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
         setTimeout(() => { label.textContent = prev; }, 1500);
       }
     } else {
-      showFlash('Copy failed — select the key manually and press Ctrl+C.', 'error');
+      flash('Copy failed — select the key manually and press Ctrl+C.', { error: true });
     }
   });
 
@@ -475,20 +463,12 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
     btn.addEventListener('click', async () => {
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Deactivate this API key? All tools using it will lose access.')) return;
-      // Content-Type: application/json is required to bypass Astro's default
-      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
-      // form-like content types (none, urlencoded, multipart, text/plain) as
-      // "Cross-site form submission". JSON requests are exempt from that check.
-      const res = await fetch(`/api/api-keys/${keyId}/deactivate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        showFlash('API key deactivated.', 'success');
+      const r = await submitJson(`/api/api-keys/${keyId}/deactivate`, { method: 'POST', body: {} });
+      if (r.ok) {
+        flash('API key deactivated.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.error ?? 'Deactivation failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -502,20 +482,18 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
       const select = row?.querySelector('.plan-select') as HTMLSelectElement | null;
       const planId = select?.value;
       if (!planId) {
-        showFlash('Please select a plan first.', 'error');
+        flash('Please select a plan first.', { error: true });
         return;
       }
-      const res = await fetch(`/api/admin/api-keys/${keyId}/plan`, {
+      const r = await submitJson(`/api/admin/api-keys/${keyId}/plan`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_id: parseInt(planId, 10) }),
+        body: { plan_id: parseInt(planId, 10) },
       });
-      if (res.ok) {
-        showFlash('Plan updated.', 'success');
+      if (r.ok) {
+        flash('Plan updated.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.detail ?? data.error ?? 'Failed to update plan.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -548,16 +526,12 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
     btn.addEventListener('click', async () => {
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Reactivate this API key? It will immediately be able to authenticate again.')) return;
-      const res = await fetch(`/api/api-keys/${keyId}/reactivate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        showFlash('API key reactivated.', 'success');
+      const r = await submitJson(`/api/api-keys/${keyId}/reactivate`, { method: 'POST', body: {} });
+      if (r.ok) {
+        flash('API key reactivated.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.error ?? 'Reactivation failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -570,20 +544,18 @@ const nullOwnerCount = activeKeys.filter((k) => k.user_id === null).length;
       const select = row?.querySelector('.assign-owner-select') as HTMLSelectElement | null;
       const userId = select?.value;
       if (!userId) {
-        showFlash('Please select a user to assign.', 'error');
+        flash('Please select a user to assign.', { error: true });
         return;
       }
-      const res = await fetch(`/api/admin/api-keys/${keyId}/owner`, {
+      const r = await submitJson(`/api/admin/api-keys/${keyId}/owner`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: parseInt(userId, 10) }),
+        body: { user_id: parseInt(userId, 10) },
       });
-      if (res.ok) {
-        showFlash('Owner assigned.', 'success');
+      if (r.ok) {
+        flash('Owner assigned.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.detail ?? data.error ?? 'Failed to assign owner.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });

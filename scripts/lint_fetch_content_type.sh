@@ -20,6 +20,17 @@ for file in $(find site/src -name "*.astro" -o -name "*.ts" 2>/dev/null); do
         # Inspect a 6-line window around the fetch options.
         end=$((lineno + 5))
         window=$(sed -n "${lineno},${end}p" "$file")
+        # Exemption 0: submitJson() wrapper. The shared helper in
+        # site/src/lib/apiClient.ts sets `Content-Type: application/json` for every
+        # non-binary body (and even bodyless mutations) centrally — call sites
+        # intentionally omit the header. This behavior is protected by its own unit
+        # tests (apiClient.test.ts cases (d) and (d3)), a stronger guarantee than this
+        # grep. The opening `submitJson(` is typically 1-3 lines ABOVE the `method:`
+        # line, so look backward a few lines too.
+        prestart=$((lineno > 4 ? lineno - 4 : 1))
+        if sed -n "${prestart},${end}p" "$file" | grep -q "submitJson"; then
+            continue
+        fi
         # Exemption 1: FormData body — Content-Type set automatically by browser.
         if echo "$window" | grep -qE "body:\s*(new\s+)?FormData|body:\s*\w*[Ff]ormData|body:\s*[a-zA-Z_]+Fd|body:\s*fd\b"; then
             continue

@@ -2,21 +2,9 @@
 // Setting Editor React island — generic widget dispatcher for admin settings (WI-10)
 // Handles: NumberSlider, DurationPicker, ToggleSwitch, TextInput, TagListInput
 import { useState, useCallback } from 'react';
-import { withStepUp } from '../../../lib/mfaStepUp';
+import { submitJson } from '../../../lib/apiClient';
+import { flash } from '../../../lib/flash';
 import type { SettingDef } from '../../../lib/settings-types';
-
-// ─── Flash helper ────────────────────────────────────────────────────────────
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
-}
 
 // ─── Restart badge ───────────────────────────────────────────────────────────
 
@@ -307,30 +295,32 @@ function HistoryDrawer({
 
   useState(() => {
     setLoading(true);
-    fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/history?limit=50`)
-      .then((r) => r.json())
-      .then((data) => { setEntries(Array.isArray(data) ? data : []); setLoading(false); })
-      .catch((e) => { setError(String(e)); setLoading(false); });
+    submitJson<HistoryEntry[]>(
+      `/api/admin/settings/${encodeURIComponent(settingKey)}/history?limit=50`,
+      { method: 'GET', stepUp: false },
+    ).then((r) => {
+      if (r.ok) setEntries(Array.isArray(r.data) ? r.data : []);
+      else setError(r.error ?? `HTTP ${r.status}`);
+      setLoading(false);
+    });
   });
 
   const handleUndo = async () => {
     if (!confirm('Undo last change to this setting? This will revert to the previous value.')) return;
     setUndoing(true);
     try {
-      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
+      const r = await submitJson(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
         method: 'POST',
-        credentials: 'include',
-      }));
-      if (res.ok) {
+      });
+      if (r.ok) {
         flash(`Setting ${settingKey} reverted.`);
         onClose();
         setTimeout(() => location.reload(), 600);
       } else {
-        const d = await res.json().catch(() => ({})) as { detail?: string };
-        flash(d.detail ?? 'Undo failed.', true);
+        flash(r.error!, { error: true });
       }
     } catch (e) {
-      flash(String(e), true);
+      flash(String(e), { error: true });
     } finally {
       setUndoing(false);
     }
@@ -445,15 +435,13 @@ export default function SettingEditorIsland({ settings }: Props) {
     setSaving((prev) => ({ ...prev, [s.key]: true }));
     setErrors((prev) => ({ ...prev, [s.key]: '' }));
     try {
-      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(s.key)}`, {
+      const r = await submitJson(`/api/admin/settings/${encodeURIComponent(s.key)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ value, reason }),
-      }));
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { detail?: string };
-        throw new Error(d.detail ?? `HTTP ${res.status}`);
+        body: { value, reason },
+      });
+      if (!r.ok) {
+        setErrors((prev) => ({ ...prev, [s.key]: r.error! }));
+        return;
       }
       flash(`Setting ${s.key} saved. Effective in ≤60 s.`);
       setEditingKey(null);
@@ -470,19 +458,17 @@ export default function SettingEditorIsland({ settings }: Props) {
     if (!confirm(`Reset "${s.key}" to default value (${JSON.stringify(s.default_value)})?`)) return;
     setResettingKey(s.key);
     try {
-      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(s.key)}/reset`, {
+      const r = await submitJson(`/api/admin/settings/${encodeURIComponent(s.key)}/reset`, {
         method: 'POST',
-        credentials: 'include',
-      }));
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({})) as { detail?: string };
-        flash(d.detail ?? 'Reset failed.', true);
+      });
+      if (!r.ok) {
+        flash(r.error!, { error: true });
       } else {
         flash(`Setting ${s.key} reset to default.`);
         setTimeout(() => location.reload(), 600);
       }
     } catch (e: unknown) {
-      flash(String(e), true);
+      flash(String(e), { error: true });
     } finally {
       setResettingKey(null);
     }

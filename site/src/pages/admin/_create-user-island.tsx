@@ -3,17 +3,8 @@
 // Modal form: username, email, is_admin, optional password.
 // Displays temp_password once if the API returns it.
 import { useState, useEffect } from 'react';
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
-}
+import { submitJson } from '../../lib/apiClient';
+import { flash } from '../../lib/flash';
 
 export default function CreateUserIsland() {
   const [open, setOpen] = useState(false);
@@ -59,23 +50,21 @@ export default function CreateUserIsland() {
     if (password.trim()) body.password = password.trim();
 
     try {
-      const res = await fetch('/api/admin/users', {
+      const r = await submitJson<Record<string, unknown>>('/api/admin/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body,
       });
-      const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-      if (res.ok) {
-        if (data.temp_password) {
+      if (r.ok) {
+        if (r.data.temp_password) {
           // Show temp password — once only
-          setTempPassword(String(data.temp_password));
+          setTempPassword(String(r.data.temp_password));
         } else {
           flash(`User "${username}" created.`);
           handleClose();
           setTimeout(() => location.reload(), 800);
         }
       } else {
-        setFormError(String((data as { detail?: string; error?: string }).detail ?? (data as { detail?: string; error?: string }).error ?? `Error ${res.status}`));
+        setFormError(r.error!);
       }
     } catch (err) {
       setFormError(String(err));

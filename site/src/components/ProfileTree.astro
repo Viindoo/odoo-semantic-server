@@ -163,18 +163,9 @@ const rows = flatten(buildTree(profiles));
    * No document.createElement / tree DOM construction.
    */
 
-  function showFlashTree(msg: string, type: 'success' | 'error') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error'
-        ? 'bg-red-100 text-red-800 border-red-300'
-        : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
+  import { submitJson } from '../lib/apiClient';
+  import { flash } from '../lib/flash';
+  import { extractApiError } from '../lib/apiError';
 
   const container = document.getElementById('profile-tree-container');
   if (container) {
@@ -184,22 +175,20 @@ const rows = flatten(buildTree(profiles));
         const select = sel as HTMLSelectElement;
         const profileId = (select as HTMLElement).dataset.profileId;
         const parentId = select.value ? Number(select.value) : null;
-        const res = await fetch(`/api/repos/profiles/${profileId}/parent`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ parent_id: parentId }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-          showFlashTree('Parent updated.', 'success');
-        } else if (res.status === 404) {
-          showFlashTree(data.error ?? 'Profile not found.', 'error');
-        } else if (res.status === 422) {
-          showFlashTree(data.detail ?? data.error ?? 'Validation error.', 'error');
-        } else if (res.status === 400) {
-          showFlashTree(data.error ?? 'Invalid parent selection.', 'error');
+        const r = await submitJson<{ error?: string }>(
+          `/api/repos/profiles/${profileId}/parent`,
+          { method: 'PATCH', body: { parent_id: parentId } },
+        );
+        if (r.ok) {
+          flash('Parent updated.');
+        } else if (r.status === 404) {
+          flash(extractApiError(r.data, 'Profile not found.'), { error: true });
+        } else if (r.status === 422) {
+          flash(extractApiError(r.data, 'Validation error.'), { error: true });
+        } else if (r.status === 400) {
+          flash(extractApiError(r.data, 'Invalid parent selection.'), { error: true });
         } else {
-          showFlashTree(data.error ?? 'Failed to update parent.', 'error');
+          flash(extractApiError(r.data, 'Failed to update parent.'), { error: true });
         }
       });
     });
@@ -210,20 +199,19 @@ const rows = flatten(buildTree(profiles));
         const profileId = (btn as HTMLElement).dataset.profileId;
         (btn as HTMLButtonElement).disabled = true;
 
-        const res = await fetch(`/api/repos/profiles/${profileId}/clone-all`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-        const data = await res.json().catch(() => ({}));
+        const r = await submitJson<{ error?: string; total?: number; spawned?: number; short_circuited?: number }>(
+          `/api/repos/profiles/${profileId}/clone-all`,
+          { method: 'POST' },
+        );
 
-        if (res.ok) {
-          const total: number = data.total ?? 0;
+        if (r.ok) {
+          const total: number = r.data.total ?? 0;
           if (total === 0) {
-            showFlashTree('No pending repos to clone.', 'success');
+            flash('No pending repos to clone.');
             (btn as HTMLButtonElement).disabled = false;
             return;
           }
-          showFlashTree(`Clone-all started: ${total} repo(s) processing.`, 'success');
+          flash(`Clone-all started: ${total} repo(s) processing.`);
 
           const statusDiv = container.querySelector(
             `[data-testid="profile-tree-clone-all-status-${profileId}"]`
@@ -232,14 +220,14 @@ const rows = flatten(buildTree(profiles));
             statusDiv.removeAttribute('hidden');
             const badge = statusDiv.querySelector('[data-testid^="clone-all-job-"]') as HTMLElement | null;
             if (badge) {
-              badge.textContent = `Spawned: ${data.spawned ?? 0}, Short-circuited: ${data.short_circuited ?? 0}`;
+              badge.textContent = `Spawned: ${r.data.spawned ?? 0}, Short-circuited: ${r.data.short_circuited ?? 0}`;
               badge.removeAttribute('hidden');
             }
           }
-        } else if (res.status === 404) {
-          showFlashTree('Profile not found.', 'error');
+        } else if (r.status === 404) {
+          flash('Profile not found.', { error: true });
         } else {
-          showFlashTree(data.error ?? 'Clone-all failed.', 'error');
+          flash(r.error ?? 'Clone-all failed.', { error: true });
         }
         (btn as HTMLButtonElement).disabled = false;
       });
@@ -250,16 +238,15 @@ const rows = flatten(buildTree(profiles));
       btn.addEventListener('click', async () => {
         const profileId = (btn as HTMLElement).dataset.profileId;
         if (!confirm('Delete this profile and ALL its repos? This cannot be undone.')) return;
-        const res = await fetch(`/api/repos/profiles/${profileId}`, {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok) {
-          showFlashTree('Profile deleted.', 'success');
+        const r = await submitJson<{ error?: string }>(
+          `/api/repos/profiles/${profileId}`,
+          { method: 'DELETE' },
+        );
+        if (r.ok) {
+          flash('Profile deleted.');
           setTimeout(() => location.reload(), 800);
         } else {
-          showFlashTree(data.error ?? 'Delete failed.', 'error');
+          flash(r.error ?? 'Delete failed.', { error: true });
         }
       });
     });

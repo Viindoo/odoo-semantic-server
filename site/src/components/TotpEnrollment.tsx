@@ -9,6 +9,7 @@
  */
 
 import { useState, useCallback } from 'react';
+import { submitJson } from '../lib/apiClient';
 
 type Step = 'idle' | 'scanning' | 'verifying' | 'backup_codes' | 'done' | 'error';
 
@@ -33,14 +34,17 @@ export default function TotpEnrollment() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/auth/totp/setup', { method: 'POST' });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? 'Setup failed. Please try again.');
+      const r = await submitJson<SetupData | Record<string, unknown>>('/api/auth/totp/setup', {
+        method: 'POST',
+        stepUp: false,
+      });
+      if (!r.ok) {
+        const errSlug = (r.data as Record<string, unknown>)?.error;
+        setError(typeof errSlug === 'string' ? errSlug : r.error ?? 'Setup failed. Please try again.');
         setStep('error');
         return;
       }
-      setSetupData(data);
+      setSetupData(r.data as SetupData);
       setStep('scanning');
     } catch {
       setError('Network error. Please try again.');
@@ -56,23 +60,23 @@ export default function TotpEnrollment() {
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/auth/totp/verify', {
+      const r = await submitJson<{ backup_codes?: string[] } | Record<string, unknown>>('/api/auth/totp/verify', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: code.trim() }),
+        body: { code: code.trim() },
+        stepUp: false,
       });
-      const data = await res.json();
-      if (!res.ok) {
+      if (!r.ok) {
+        const errSlug = (r.data as Record<string, unknown>)?.error;
         const msg =
-          data.error === 'invalid_code'
+          errSlug === 'invalid_code'
             ? 'Invalid code. Check your authenticator app and try again.'
-            : data.error === 'totp_not_setup'
+            : errSlug === 'totp_not_setup'
             ? 'Session expired. Please start over.'
-            : data.error ?? 'Verification failed.';
+            : r.error ?? 'Verification failed.';
         setError(msg);
         return;
       }
-      setBackupCodes(data.backup_codes ?? []);
+      setBackupCodes((r.data as { backup_codes?: string[] }).backup_codes ?? []);
       setStep('backup_codes');
     } catch {
       setError('Network error. Please try again.');

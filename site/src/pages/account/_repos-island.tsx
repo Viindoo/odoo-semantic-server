@@ -3,6 +3,8 @@
 // Handles: add repo, trigger index, delete repo — all tenant-scoped.
 // IMPORTANT: use className= and htmlFor= (NOT class= or for=) — this is a .tsx React island.
 import { useState } from 'react';
+import { flash } from '../../lib/flash';
+import { submitJson } from '../../lib/apiClient';
 
 type Repo = {
   id: number;
@@ -33,34 +35,6 @@ interface Props {
   isAdmin: boolean;
 }
 
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  // Ensure live-region semantics are present so screen readers announce the message.
-  el.setAttribute('role', 'status');
-  el.setAttribute('aria-live', 'polite');
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError
-      ? 'bg-red-50 border-red-300 text-red-800'
-      : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
-}
-
-async function apiFetch(url: string, opts: RequestInit = {}): Promise<{ ok: boolean; data: unknown }> {
-  try {
-    const res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...(opts.headers ?? {}) },
-      ...opts,
-    });
-    const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, data };
-  } catch (e) {
-    return { ok: false, data: { error: String(e) } };
-  }
-}
 
 export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }: Props) {
   const [profiles, setProfiles] = useState<Profile[]>(initialProfiles);
@@ -90,9 +64,9 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
   );
 
   async function refreshProfiles() {
-    const { ok, data } = await apiFetch('/api/repos/profiles');
-    if (ok) {
-      const d = data as { profiles?: Profile[] };
+    const r = await submitJson('/api/repos/profiles', { method: 'GET', stepUp: false });
+    if (r.ok) {
+      const d = r.data as { profiles?: Profile[] };
       setProfiles(d.profiles ?? []);
     }
   }
@@ -101,20 +75,19 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
     e.preventDefault();
     if (!addProfile || !addUrl || !addBranch) return;
     setAdding(true);
-    const { ok, data } = await apiFetch('/api/repos/repos', {
+    const r = await submitJson('/api/repos/repos', {
       method: 'POST',
-      body: JSON.stringify({ profile: addProfile, url: addUrl, branch: addBranch }),
+      body: { profile: addProfile, url: addUrl, branch: addBranch },
     });
     setAdding(false);
-    if (ok) {
+    if (r.ok) {
       flash('Repository added successfully.');
       setAddUrl('');
       setAddBranch('');
       setShowAddForm(false);
       await refreshProfiles();
     } else {
-      const err = (data as { error?: string }).error ?? 'Failed to add repository.';
-      flash(err, true);
+      flash(r.error!, { error: true });
     }
   }
 
@@ -128,12 +101,12 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
     let consecutiveFailures = 0;
     const MAX_FAILURES = 3;
     const tick = async () => {
-      const { ok, data } = await apiFetch(`/api/jobs/${jobId}/status`);
-      if (!ok) {
+      const r = await submitJson(`/api/jobs/${jobId}/status`, { method: 'GET', stepUp: false });
+      if (!r.ok) {
         consecutiveFailures += 1;
         if (consecutiveFailures >= MAX_FAILURES) {
           setIndexJobStatus(prev => ({ ...prev, [repoId]: 'error' }));
-          flash('Lost track of the index job status — refresh to check.', true);
+          flash('Lost track of the index job status — refresh to check.', { error: true });
           return;
         }
         // Transient lookup failure — keep the badge as-is and retry.
@@ -141,15 +114,15 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
         return;
       }
       consecutiveFailures = 0;
-      const status = (data as { status?: string }).status ?? 'unknown';
+      const status = (r.data as { status?: string }).status ?? 'unknown';
       setIndexJobStatus(prev => ({ ...prev, [repoId]: status }));
       if (status === 'running' || status === 'queued') {
         setTimeout(tick, 5000);
       } else if (status === 'done') {
         flash('Index completed.');
       } else if (status === 'error') {
-        const msg = (data as { error_msg?: string }).error_msg;
-        flash(msg ? `Index failed: ${msg}` : 'Index failed.', true);
+        const msg = (r.data as { error_msg?: string }).error_msg;
+        flash(msg ? `Index failed: ${msg}` : 'Index failed.', { error: true });
       }
     };
     setTimeout(tick, 5000);
@@ -157,13 +130,13 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
 
   async function handleIndex(repoId: number) {
     setIndexingId(repoId);
-    const { ok, data } = await apiFetch(`/api/repos/repos/${repoId}/index`, {
+    const r = await submitJson(`/api/repos/repos/${repoId}/index`, {
       method: 'POST',
-      body: JSON.stringify({ max_workers: '1' }),
+      body: { max_workers: '1' },
     });
     setIndexingId(null);
-    if (ok) {
-      const jobId = (data as { job_id?: number }).job_id;
+    if (r.ok) {
+      const jobId = (r.data as { job_id?: number }).job_id;
       if (typeof jobId === 'number') {
         setIndexJobStatus(prev => ({ ...prev, [repoId]: 'running' }));
         flash('Index started.');
@@ -173,22 +146,20 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
         flash('Index triggered successfully.');
       }
     } else {
-      const err = (data as { error?: string }).error ?? 'Failed to trigger index.';
-      flash(err, true);
+      flash(r.error!, { error: true });
     }
   }
 
   async function handleDelete(repoId: number, repoUrl: string) {
     if (!confirm(`Delete repository "${repoUrl}"? This cannot be undone.`)) return;
     setDeletingId(repoId);
-    const { ok, data } = await apiFetch(`/api/repos/repos/${repoId}`, { method: 'DELETE' });
+    const r = await submitJson(`/api/repos/repos/${repoId}`, { method: 'DELETE' });
     setDeletingId(null);
-    if (ok) {
+    if (r.ok) {
       flash('Repository deleted.');
       await refreshProfiles();
     } else {
-      const err = (data as { error?: string }).error ?? 'Failed to delete repository.';
-      flash(err, true);
+      flash(r.error!, { error: true });
     }
   }
 

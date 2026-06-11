@@ -3,6 +3,7 @@
 // and CRD-compliant checkout consent pre-redirect (m13_017, ADR-0039 D2).
 // IMPORTANT: use className= and htmlFor= (NOT class= or for=) — this is a .tsx React island.
 import { useEffect, useState } from 'react';
+import { submitJson } from '../../lib/apiClient';
 
 // The cancel-error box renders via dangerouslySetInnerHTML (it shows a clickable
 // portal link). Any server-supplied text put into it must be escaped, and any
@@ -163,25 +164,24 @@ function ConsentModal({ planSlug, planName, checkoutUrl, userEmail, onClose }: C
     setSubmitting(true);
     setConsentError(null);
     try {
-      const res = await fetch('/api/account/checkout-consent', {
+      const r = await submitJson('/api/account/checkout-consent', {
         method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: {
           plan_slug: planSlug,
           buyer_type: buyerType,
           waiver_accepted: isConsumer ? waiverAccepted : false,
-        }),
+        },
       });
 
-      if (res.status === 401) {
+      if (r.status === 401) {
         window.location.href = `/login?return=/account/billing`;
         return;
       }
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({})) as { detail?: string };
-        setConsentError(data.detail ?? 'Failed to record consent. Please try again.');
+      if (!r.ok) {
+        // OBJ-RISK fix: use r.error (already through extractApiError) instead of
+        // data.detail cast which could render [object Object] on pydantic 422.
+        setConsentError(r.error!);
         return;
       }
 
@@ -367,36 +367,28 @@ export default function BillingDashboard() {
   useEffect(() => {
     const loadAll = async () => {
       try {
-        const [subRes, usageRes, checkoutRes] = await Promise.allSettled([
-          fetch('/api/account/subscription', { credentials: 'include' }),
-          fetch('/api/account/usage', { credentials: 'include' }),
-          fetch('/api/account/checkout-config', { credentials: 'include' }),
+        const [subR, usageR, checkoutR] = await Promise.all([
+          submitJson<SubscriptionResponse>('/api/account/subscription', { method: 'GET', stepUp: false }),
+          submitJson<UsageResponse>('/api/account/usage', { method: 'GET', stepUp: false }),
+          submitJson<CheckoutConfig>('/api/account/checkout-config', { method: 'GET', stepUp: false }),
         ]);
 
-        if (subRes.status === 'fulfilled') {
-          const res = subRes.value;
-          if (res.status === 401) {
-            window.location.href = '/login?return=/account/billing';
-            return;
-          }
-          if (res.ok) {
-            const d = await res.json() as SubscriptionResponse;
-            setSubData(d);
-          } else {
-            setError(`Failed to load subscription data (${res.status}).`);
-          }
+        if (subR.status === 401) {
+          window.location.href = '/login?return=/account/billing';
+          return;
+        }
+        if (subR.ok) {
+          setSubData(subR.data);
         } else {
-          setError('Could not connect to API server.');
+          setError(subR.error ?? `Failed to load subscription data (${subR.status}).`);
         }
 
-        if (usageRes.status === 'fulfilled' && usageRes.value.ok) {
-          const d = await usageRes.value.json() as UsageResponse;
-          setUsageData(d);
+        if (usageR.ok) {
+          setUsageData(usageR.data);
         }
 
-        if (checkoutRes.status === 'fulfilled' && checkoutRes.value.ok) {
-          const d = await checkoutRes.value.json() as CheckoutConfig;
-          setCheckoutConfig(d);
+        if (checkoutR.ok) {
+          setCheckoutConfig(checkoutR.data);
         }
       } finally {
         setLoading(false);
@@ -413,15 +405,10 @@ export default function BillingDashboard() {
     setCancelLoading(true);
     setCancelError(null);
     try {
-      const res = await fetch('/api/account/subscription/cancel', {
-        // Content-Type required so Astro's checkOrigin guard (dev/preview/CI
-        // proxy) doesn't 403 the cancel before it reaches FastAPI. Harmless in
-        // prod (nginx bypasses the proxy); the cancel POST carries no body.
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-      });
-      const data = await res.json() as {
+      // submitJson sends Content-Type: application/json, which bypasses Astro's
+      // checkOrigin guard (dev/preview/CI proxy). Cancel POST carries no body.
+      const r = await submitJson('/api/account/subscription/cancel', { method: 'POST' });
+      const data = r.data as {
         status?: string;
         access_until?: string;
         manage_url?: string;
@@ -429,28 +416,30 @@ export default function BillingDashboard() {
         detail?: string;
       };
 
-      if (res.ok) {
+      if (r.ok) {
         setCancelSuccess(true);
         setShowCancelDialog(false);
         // Refresh subscription state to show updated badge
-        const refreshRes = await fetch('/api/account/subscription', { credentials: 'include' });
-        if (refreshRes.ok) {
-          const d = await refreshRes.json() as SubscriptionResponse;
-          setSubData(d);
+        const refreshR = await submitJson<SubscriptionResponse>('/api/account/subscription', {
+          method: 'GET',
+          stepUp: false,
+        });
+        if (refreshR.ok) {
+          setSubData(refreshR.data);
         }
-      } else if (res.status === 503 || res.status === 502) {
+      } else if (r.status === 503 || r.status === 502) {
         // Polar API unavailable — surface manage_url
         const portalUrl = safeHttpsUrl(data.manage_url ?? subData?.manage_url, 'https://polar.sh/');
         setCancelError(
           `Online cancellation is temporarily unavailable. Please cancel from the ` +
           `<a href="${portalUrl}" target="_blank" rel="noopener" class="underline text-viindoo-primary-text">Polar customer portal</a>.`
         );
-      } else if (res.status === 404) {
+      } else if (r.status === 404) {
         setCancelError('No active subscription found to cancel.');
       } else {
-        // Server-supplied detail is plain text but rendered via innerHTML — escape it.
-        const detail = data.detail || data.error || 'Cancellation failed. Please try again.';
-        setCancelError(escapeHtml(detail));
+        // r.error is already through extractApiError — safe to escapeHtml and render via innerHTML.
+        // OBJ-RISK fix: use extractApiError (via r.error) instead of data.detail cast.
+        setCancelError(escapeHtml(r.error!));
       }
     } catch {
       setCancelError('Network error. Please try again or use the Polar portal.');

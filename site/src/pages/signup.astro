@@ -239,11 +239,19 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
 </AuthLayout>
 
 <script define:vars={{ hcaptchaSiteKey }}>
-  const form = document.querySelector('[data-testid="signup-form"]');
-  const successDiv = document.querySelector('[data-testid="signup-success"]');
-  const errorEl = document.querySelector('[data-testid="signup-error"]');
-  const submitBtn = document.querySelector('[data-testid="signup-submit-button"]');
-  const consentCb = document.querySelector('[data-testid="signup-consent-checkbox"]');
+  // Expose site key to the module script via a data attribute on the form.
+  const _form = document.querySelector('[data-testid="signup-form"]');
+  if (_form && hcaptchaSiteKey) _form.dataset.hcaptchaSiteKey = hcaptchaSiteKey;
+</script>
+
+<script>
+  import { submitJson } from '../lib/apiClient';
+
+  const form = document.querySelector('[data-testid="signup-form"]') as HTMLFormElement | null;
+  const successDiv = document.querySelector('[data-testid="signup-success"]') as HTMLElement | null;
+  const errorEl = document.querySelector('[data-testid="signup-error"]') as HTMLElement | null;
+  const submitBtn = document.querySelector('[data-testid="signup-submit-button"]') as HTMLButtonElement | null;
+  const consentCb = document.querySelector('[data-testid="signup-consent-checkbox"]') as HTMLInputElement | null;
 
   // Disable submit until consent is checked (D4 client-side guard).
   function _syncSubmitDisabled() {
@@ -254,7 +262,7 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
   _syncSubmitDisabled(); // initial state
   consentCb?.addEventListener('change', _syncSubmitDisabled);
 
-  function showError(msg) {
+  function showError(msg: string) {
     if (errorEl) {
       errorEl.textContent = msg;
       errorEl.removeAttribute('hidden');
@@ -265,18 +273,19 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
     if (errorEl) errorEl.setAttribute('hidden', '');
   }
 
-  function setLoading(loading) {
+  function setLoading(loading: boolean) {
     if (submitBtn) {
       submitBtn.disabled = loading;
       submitBtn.textContent = loading ? 'Creating account…' : 'Create Account';
     }
   }
 
-  function getHcaptchaToken() {
-    // When hcaptcha widget is rendered, retrieve its response token.
-    if (!hcaptchaSiteKey) return '';
-    if (typeof hcaptcha === 'undefined') return '';
-    return hcaptcha.getResponse() || '';
+  function getHcaptchaToken(): string {
+    // Site key was stashed by the define:vars script above.
+    const siteKey = form?.dataset.hcaptchaSiteKey ?? '';
+    if (!siteKey) return '';
+    if (typeof (window as unknown as Record<string, unknown>).hcaptcha === 'undefined') return '';
+    return (window as unknown as { hcaptcha: { getResponse: () => string; reset: () => void } }).hcaptcha.getResponse() || '';
   }
 
   form?.addEventListener('submit', async (e) => {
@@ -284,9 +293,9 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
     clearError();
     setLoading(true);
 
-    const fd = new FormData(form);
-    const password = fd.get('password');
-    const confirm = fd.get('confirm_password');
+    const fd = new FormData(form!);
+    const password = fd.get('password') as string;
+    const confirm = fd.get('confirm_password') as string;
 
     if (password !== confirm) {
       showError('Passwords do not match.');
@@ -297,24 +306,22 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
     const payload = {
       email: fd.get('email'),
       username: fd.get('username'),
-      password: password,
+      password,
       confirm_password: confirm,
       hcaptcha_token: getHcaptchaToken(),
       consent: consentCb?.checked === true,
     };
 
     try {
-      const res = await fetch('/api/auth/register', {
+      const r = await submitJson('/api/auth/register', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: payload,
+        stepUp: false,
       });
 
-      const data = await res.json().catch(() => ({}));
-
-      if (res.ok) {
+      if (r.ok) {
         // Show success state, hide form
-        form.setAttribute('hidden', '');
+        form!.setAttribute('hidden', '');
         successDiv?.removeAttribute('hidden');
         const msgEl = document.querySelector('[data-testid="signup-success-msg"]');
         if (msgEl) {
@@ -322,10 +329,11 @@ const hcaptchaSiteKey = import.meta.env.PUBLIC_HCAPTCHA_SITE_KEY ?? '';
             `We sent a verification link to ${payload.email}. Click it to activate your account.`;
         }
       } else {
-        showError(data.error ?? 'Signup failed. Please try again.');
+        showError(r.error ?? 'Signup failed. Please try again.');
         // Reset hcaptcha on failure
-        if (hcaptchaSiteKey && typeof hcaptcha !== 'undefined') {
-          hcaptcha.reset();
+        const siteKey = form?.dataset.hcaptchaSiteKey ?? '';
+        if (siteKey && typeof (window as unknown as Record<string, unknown>).hcaptcha !== 'undefined') {
+          (window as unknown as { hcaptcha: { reset: () => void } }).hcaptcha.reset();
         }
         setLoading(false);
       }

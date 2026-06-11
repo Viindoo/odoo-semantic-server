@@ -685,6 +685,8 @@ const faqJsonLd = JSON.stringify({
 </BaseLayout>
 
 <script>
+  import { submitJson } from '../lib/apiClient';
+
   // ---- Waitlist form ----
   const form = document.getElementById('waitlist-form') as HTMLFormElement | null;
   const emailInput = document.getElementById('waitlist-email') as HTMLInputElement | null;
@@ -699,34 +701,31 @@ const faqJsonLd = JSON.stringify({
       msgEl.className = 'text-sm mt-3 hidden';
 
       try {
-        const res = await fetch('/api/waitlist', {
+        const r = await submitJson('/api/waitlist', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: emailInput.value.trim() }),
+          body: { email: emailInput.value.trim() },
+          stepUp: false,
         });
 
-        const data = await res.json() as { status?: string; error?: string; detail?: string };
-
-        if (res.status === 201) {
+        if (r.status === 201) {
           form.classList.add('hidden');
           msgEl.textContent = "You're on the list! We'll notify you when paid plans launch.";
           msgEl.classList.remove('hidden');
           msgEl.classList.add('text-viindoo-success');
-        } else if (res.status === 409) {
+        } else if (r.status === 409) {
           msgEl.textContent = "You're already on the waitlist — we'll be in touch!";
           msgEl.classList.remove('hidden');
           msgEl.classList.add('text-viindoo-warning');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
-        } else if (res.status === 429) {
+        } else if (r.status === 429) {
           msgEl.textContent = 'Too many attempts. Please try again in a minute.';
           msgEl.classList.remove('hidden');
           msgEl.classList.add('text-viindoo-danger');
           submitBtn.disabled = false;
           submitBtn.textContent = 'Notify Me';
         } else {
-          const detail = data.detail || data.error || 'Something went wrong. Please try again.';
-          msgEl.textContent = detail;
+          msgEl.textContent = r.error ?? 'Something went wrong. Please try again.';
           msgEl.classList.remove('hidden');
           msgEl.classList.add('text-viindoo-danger');
           submitBtn.disabled = false;

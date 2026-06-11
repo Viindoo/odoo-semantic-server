@@ -256,33 +256,24 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
 </AdminLayout>
 
 <script>
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
+  import { submitJson } from '../../lib/apiClient';
+  import { flash } from '../../lib/flash';
+  import { extractApiError } from '../../lib/apiError';
 
   // Add profile
   document.querySelector('[data-testid="add-profile-form"]')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const res = await fetch('/api/repos/profiles', {
+    const r = await submitJson('/api/repos/profiles', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fd.get('name'), version: fd.get('version') }),
+      body: { name: fd.get('name'), version: fd.get('version') },
     });
-    if (res.ok) {
-      showFlash('Profile created.', 'success');
+    if (r.ok) {
+      flash('Profile created.');
       setTimeout(() => location.reload(), 800);
     } else {
-      const data = await res.json().catch(() => ({}));
-      showFlash(data.error ?? 'Failed to create profile.', 'error');
+      flash(r.error!, { error: true });
     }
   });
 
@@ -292,22 +283,20 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       const select = sel as HTMLSelectElement;
       const profileId = (select as HTMLElement).dataset.profileId;
       const parentId = select.value ? Number(select.value) : null;
-      const res = await fetch(`/api/repos/profiles/${profileId}/parent`, {
+      const r = await submitJson(`/api/repos/profiles/${profileId}/parent`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parent_id: parentId }),
+        body: { parent_id: parentId },
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        showFlash('Parent updated.', 'success');
-      } else if (res.status === 404) {
-        showFlash(data.error ?? 'Profile not found.', 'error');
-      } else if (res.status === 422) {
-        showFlash(data.detail ?? data.error ?? 'Validation error.', 'error');
-      } else if (res.status === 400) {
-        showFlash(data.error ?? 'Invalid parent selection.', 'error');
+      if (r.ok) {
+        flash('Parent updated.');
+      } else if (r.status === 404) {
+        flash(extractApiError(r.data, 'Profile not found.'), { error: true });
+      } else if (r.status === 422) {
+        flash(extractApiError(r.data, 'Validation error.'), { error: true });
+      } else if (r.status === 400) {
+        flash(extractApiError(r.data, 'Invalid parent selection.'), { error: true });
       } else {
-        showFlash(data.error ?? 'Failed to update parent.', 'error');
+        flash(extractApiError(r.data, 'Failed to update parent.'), { error: true });
       }
     });
   });
@@ -318,20 +307,17 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
       const profileId = (btn as HTMLElement).dataset.profileId;
       (btn as HTMLButtonElement).disabled = true;
 
-      const res = await fetch(`/api/repos/profiles/${profileId}/clone-all`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json().catch(() => ({}));
+      const r = await submitJson(`/api/repos/profiles/${profileId}/clone-all`, { method: 'POST', body: {} });
+      const data = r.data as { total?: number; spawned?: number; short_circuited?: number };
 
-      if (res.ok) {
+      if (r.ok) {
         const total: number = data.total ?? 0;
         if (total === 0) {
-          showFlash('No pending repos to clone.', 'success');
+          flash('No pending repos to clone.');
           (btn as HTMLButtonElement).disabled = false;
           return;
         }
-        showFlash(`Clone-all started: ${total} repo(s) processing.`, 'success');
+        flash(`Clone-all started: ${total} repo(s) processing.`);
 
         // Show the JobStatus widget for this profile
         const statusDiv = document.querySelector(
@@ -346,10 +332,10 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
             badge.removeAttribute('hidden');
           }
         }
-      } else if (res.status === 404) {
-        showFlash('Profile not found.', 'error');
+      } else if (r.status === 404) {
+        flash('Profile not found.', { error: true });
       } else {
-        showFlash(data.error ?? 'Clone-all failed.', 'error');
+        flash(extractApiError(r.data, 'Clone-all failed.'), { error: true });
       }
       (btn as HTMLButtonElement).disabled = false;
     });
@@ -401,15 +387,13 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
         description: (fd.get('description') as string).trim(),
       };
 
-      const res = await fetch(`/api/repos/profiles/${profileId}`, {
+      const r = await submitJson(`/api/repos/profiles/${profileId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: payload,
       });
-      const data = await res.json().catch(() => ({}));
 
-      if (res.ok) {
-        showFlash('Profile updated.', 'success');
+      if (r.ok) {
+        flash('Profile updated.');
         setTimeout(() => location.reload(), 800);
       } else {
         // Save was rejected (404 not-found / 409 name conflict / 422 version
@@ -418,14 +402,14 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
         // last committed DB state — instead of leaving the rejected edit on
         // screen, which would falsely imply the rename/version change stuck.
         form.reset();
-        if (res.status === 404) {
-          showFlash(data.detail ?? 'Profile not found.', 'error');
-        } else if (res.status === 409) {
-          showFlash(data.detail ?? 'Name already taken by another profile.', 'error');
-        } else if (res.status === 422) {
-          showFlash(data.detail ?? 'Version conflicts with a descendant profile.', 'error');
+        if (r.status === 404) {
+          flash(extractApiError(r.data, 'Profile not found.'), { error: true });
+        } else if (r.status === 409) {
+          flash(extractApiError(r.data, 'Name already taken by another profile.'), { error: true });
+        } else if (r.status === 422) {
+          flash(extractApiError(r.data, 'Version conflicts with a descendant profile.'), { error: true });
         } else {
-          showFlash(data.error ?? data.detail ?? 'Failed to update profile.', 'error');
+          flash(extractApiError(r.data, 'Failed to update profile.'), { error: true });
         }
       }
     });
@@ -436,20 +420,12 @@ if (repos.length === 0 && profilesData.profiles.length > 0) {
     btn.addEventListener('click', async () => {
       const profileId = (btn as HTMLElement).dataset.profileId;
       if (!confirm('Delete this profile and ALL its repos? This cannot be undone.')) return;
-      // Content-Type: application/json is required to bypass Astro's default
-      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
-      // form-like content types (none, urlencoded, multipart, text/plain) as
-      // "Cross-site form submission". JSON requests are exempt from that check.
-      const res = await fetch(`/api/repos/profiles/${profileId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        showFlash('Profile deleted.', 'success');
+      const r = await submitJson(`/api/repos/profiles/${profileId}`, { method: 'DELETE', body: {} });
+      if (r.ok) {
+        flash('Profile deleted.');
         setTimeout(() => location.reload(), 800);
       } else {
-        showFlash(data.error ?? 'Delete failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });

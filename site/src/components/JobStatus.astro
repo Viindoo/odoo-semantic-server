@@ -57,7 +57,7 @@ const badgeClass = badgeColor[safeStatus] ?? 'bg-gray-100 text-gray-600 border-g
       if (!container) return;
 
       function poll() {
-        fetch(`/api/jobs/${jobId}/status`)
+        fetch(`/api/jobs/${jobId}/status`, { credentials: 'include' })
           .then((r) => r.json())
           .then((data) => {
             const badge = container.querySelector(`[data-testid="${testid}-badge"]`);

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Patterns Editor React island — admin pattern catalogue CRUD (WI-10, ADR-0009)
 import { useState } from 'react';
-import { withStepUp } from '../../../lib/mfaStepUp';
+import { submitJson } from '../../../lib/apiClient';
+import { flash } from '../../../lib/flash';
 
 type Language = 'python' | 'xml' | 'js';
 
@@ -24,17 +25,6 @@ interface Pattern {
 interface Props {
   initialPatterns: Pattern[];
   initialTotal: number;
-}
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
 }
 
 const LANG_COLORS: Record<Language, string> = {
@@ -82,19 +72,16 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
     };
 
     try {
-      const res = await withStepUp(() => fetch(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
+      const res = await submitJson(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(payload),
-      }));
-      const data = await res.json().catch(() => ({})) as { detail?: string; sentinel_sha?: string };
+        body: payload,
+      });
       if (res.ok) {
         flash(`Pattern "${pattern.pattern_id}" updated. Re-embed pending (≤5 min).`);
         onSaved();
         onClose();
       } else {
-        setFormError(String(data.detail ?? `HTTP ${res.status}`));
+        setFormError(res.error!);
       }
     } catch (e: unknown) {
       setFormError(String(e));
@@ -105,17 +92,15 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
 
   const handleSoftDelete = async () => {
     if (!confirm(`Soft-delete pattern "${pattern.pattern_id}"? It will be excluded from search results and the active catalogue.`)) return;
-    const res = await withStepUp(() => fetch(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
+    const r = await submitJson(`/api/admin/patterns/${encodeURIComponent(pattern.pattern_id)}`, {
       method: 'DELETE',
-      credentials: 'include',
-    }));
-    if (res.ok) {
+    });
+    if (r.ok) {
       flash(`Pattern "${pattern.pattern_id}" soft-deleted.`);
       onSaved();
       onClose();
     } else {
-      const d = await res.json().catch(() => ({})) as { detail?: string };
-      flash(d.detail ?? 'Delete failed.', true);
+      flash(r.error!, { error: true });
     }
   };
 
@@ -348,11 +333,9 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
     if (!r || r.length < 3) { setFormError('Reason required (min 3 chars).'); return; }
     setSaving(true);
     try {
-      const res = await withStepUp(() => fetch('/api/admin/patterns', {
+      const result = await submitJson('/api/admin/patterns', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
+        body: {
           pattern_id: patternId.trim(),
           language,
           file_ref: fileRef.trim(),
@@ -361,15 +344,14 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
           odoo_version_min: versionMin.trim(),
           odoo_version_max: versionMax.trim() || null,
           reason: r,
-        }),
-      }));
-      const data = await res.json().catch(() => ({})) as { detail?: string };
-      if (res.ok) {
+        },
+      });
+      if (result.ok) {
         flash(`Pattern "${patternId}" created. Re-embed pending.`);
         onSuccess();
         onClose();
       } else {
-        setFormError(String(data.detail ?? `HTTP ${res.status}`));
+        setFormError(result.error!);
       }
     } catch (e: unknown) {
       setFormError(String(e));
@@ -487,15 +469,12 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
     if (lang) qs.set('language', lang);
     if (deleted) qs.set('include_deleted', 'true');
 
-    try {
-      const res = await fetch(`/api/admin/patterns?${qs.toString()}`);
-      if (res.ok) {
-        const data = await res.json() as { patterns: Pattern[]; total: number };
-        setPatterns(data.patterns);
-        setTotal(data.total);
-      }
-    } catch { /* silent */ }
-    finally { setLoading(false); }
+    const r = await submitJson<{ patterns: Pattern[]; total: number }>(`/api/admin/patterns?${qs.toString()}`, { method: 'GET', stepUp: false });
+    if (r.ok) {
+      setPatterns(r.data.patterns);
+      setTotal(r.data.total);
+    }
+    setLoading(false);
   };
 
   const handleReloadAfterMutation = async () => {
@@ -509,32 +488,25 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
     if (languageFilter) qs.set('language', languageFilter);
     if (includeDeleted) qs.set('include_deleted', 'true');
     let landed = false;
-    try {
-      const res = await fetch(`/api/admin/patterns?${qs.toString()}`);
-      if (res.ok) {
-        const data = await res.json() as { patterns: Pattern[]; total: number };
-        if (data.patterns.length === 0 && offset > 0) {
-          // Current page is now empty (likely a delete) — step back one page.
-          const prevOffset = Math.max(0, offset - PAGE_SIZE);
-          setOffset(prevOffset);
-          landed = true;
-          setLoading(false);
-          load({ offset: prevOffset });  // fire-and-forget; load() manages its own loading state
-        } else {
-          setPatterns(data.patterns);
-          setTotal(data.total);
-        }
+    const r = await submitJson<{ patterns: Pattern[]; total: number }>(`/api/admin/patterns?${qs.toString()}`, { method: 'GET', stepUp: false });
+    if (r.ok) {
+      if (r.data.patterns.length === 0 && offset > 0) {
+        // Current page is now empty (likely a delete) — step back one page.
+        const prevOffset = Math.max(0, offset - PAGE_SIZE);
+        setOffset(prevOffset);
+        landed = true;
+        setLoading(false);
+        load({ offset: prevOffset });  // fire-and-forget; load() manages its own loading state
       } else {
-        // The mutation itself succeeded, but the refresh failed — tell the user
-        // the list may be stale instead of silently showing pre-mutation data.
-        flash(`Saved, but the list could not be refreshed (HTTP ${res.status}). Refresh the page to see current data.`, true);
+        setPatterns(r.data.patterns);
+        setTotal(r.data.total);
       }
-    } catch (e: unknown) {
-      flash(`Saved, but the list could not be refreshed: ${String(e)}. Refresh the page to see current data.`, true);
+    } else {
+      // The mutation itself succeeded, but the refresh failed — tell the user
+      // the list may be stale instead of silently showing pre-mutation data.
+      flash(`Saved, but the list could not be refreshed (HTTP ${r.status}). Refresh the page to see current data.`, { error: true });
     }
-    finally {
-      if (!landed) setLoading(false);
-    }
+    if (!landed) setLoading(false);
   };
 
   const totalPages = Math.ceil(total / PAGE_SIZE);

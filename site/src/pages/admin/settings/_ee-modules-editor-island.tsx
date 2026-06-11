@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // EE Modules Editor React island — admin CRUD for ee_modules guard list (WI-10)
 import { useEffect, useState } from 'react';
-import { withStepUp } from '../../../lib/mfaStepUp';
+import { submitJson } from '../../../lib/apiClient';
+import { flash } from '../../../lib/flash';
 
 interface EEModule {
   id: number;
@@ -17,17 +18,6 @@ interface EEModule {
 interface Props {
   initialModules: EEModule[];
   includeDeprecated: boolean;
-}
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
 }
 
 interface AddEditModalProps {
@@ -68,19 +58,13 @@ function AddEditModal({ existing, onClose, onSuccess }: AddEditModalProps) {
     try {
       const url = isEdit ? `/api/admin/ee-modules/${existing!.id}` : '/api/admin/ee-modules';
       const method = isEdit ? 'PATCH' : 'POST';
-      const res = await withStepUp(() => fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      }));
-      const data = await res.json().catch(() => ({})) as { detail?: string; error?: string };
-      if (res.ok) {
+      const r = await submitJson(url, { method, body });
+      if (r.ok) {
         flash(isEdit ? `Module "${existing!.name}" updated.` : `Module "${name}" added to EE guard list.`);
         onSuccess();
         onClose();
       } else {
-        setFormError(String(data.detail ?? data.error ?? `HTTP ${res.status}`));
+        setFormError(r.error!);
       }
     } catch (e: unknown) {
       setFormError(String(e));
@@ -204,20 +188,14 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
 
   const reload = async (withDeprecated: boolean) => {
     setLoading(true);
-    try {
-      const res = await fetch(`/api/admin/ee-modules?include_deprecated=${withDeprecated}`);
-      if (res.ok) {
-        const data = await res.json() as EEModule[];
-        setModules(data);
-        setSelectedIds(new Set());
-      } else {
-        flash(`Failed to refresh module list (HTTP ${res.status}). Data shown may be stale — refresh the page.`, true);
-      }
-    } catch (e: unknown) {
-      flash(`Failed to refresh module list: ${String(e)}. Data shown may be stale — refresh the page.`, true);
-    } finally {
-      setLoading(false);
+    const r = await submitJson<EEModule[]>(`/api/admin/ee-modules?include_deprecated=${withDeprecated}`, { method: 'GET', stepUp: false });
+    if (r.ok) {
+      setModules(Array.isArray(r.data) ? r.data : []);
+      setSelectedIds(new Set());
+    } else {
+      flash(`Failed to refresh module list (HTTP ${r.status}). Data shown may be stale — refresh the page.`, { error: true });
     }
+    setLoading(false);
   };
 
   const handleDeprecatedToggle = (checked: boolean) => {
@@ -227,20 +205,12 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
 
   const handleDelete = async (mod: EEModule) => {
     if (!confirm(`Soft-delete "${mod.name}"? It will be marked deprecated and hidden from the active guard list.`)) return;
-    const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${mod.id}`, {
-      method: 'DELETE',
-      // Content-Type required so Astro's checkOrigin guard (dev/preview/CI proxy)
-      // doesn't 403 this before it reaches FastAPI. Harmless in prod (nginx
-      // bypasses the proxy); DELETE carries no body.
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-    }));
-    if (res.ok) {
+    const r = await submitJson(`/api/admin/ee-modules/${mod.id}`, { method: 'DELETE' });
+    if (r.ok) {
       flash(`Module "${mod.name}" soft-deleted.`);
       reload(includeDeprecated);
     } else {
-      const d = await res.json().catch(() => ({})) as { detail?: string };
-      flash(d.detail ?? 'Delete failed.', true);
+      flash(r.error!, { error: true });
     }
   };
 
@@ -251,12 +221,12 @@ export default function EEModulesEditorIsland({ initialModules, includeDeprecate
     setBulkDeleting(true);
     let failCount = 0;
     for (const id of selectedIds) {
-      const res = await withStepUp(() => fetch(`/api/admin/ee-modules/${id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, credentials: 'include' }));
-      if (!res.ok) failCount++;
+      const r = await submitJson(`/api/admin/ee-modules/${id}`, { method: 'DELETE' });
+      if (!r.ok) failCount++;
     }
     setBulkDeleting(false);
     if (failCount > 0) {
-      flash(`${failCount} deletion(s) failed. Others succeeded.`, true);
+      flash(`${failCount} deletion(s) failed. Others succeeded.`, { error: true });
     } else {
       flash(`${selectedIds.size} module(s) soft-deleted.`);
     }

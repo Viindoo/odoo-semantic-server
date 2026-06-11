@@ -168,39 +168,42 @@ const subtitle = subtitleMap[status];
       window.location.href = verifyLanding;
     }, 1500);
   }
+</script>
+
+<script>
+  import { submitJson } from '../lib/apiClient';
 
   // Resend form handler
-  const resendForm = document.querySelector('[data-testid="resend-form"]');
+  const resendForm = document.querySelector('[data-testid="resend-form"]') as HTMLFormElement | null;
   resendForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const form = e.currentTarget;
+    const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const errorEl = document.querySelector('[data-testid="resend-error"]');
-    const successEl = document.querySelector('[data-testid="resend-success"]');
-    const submitBtn = document.querySelector('[data-testid="resend-submit-button"]');
+    const errorEl = document.querySelector('[data-testid="resend-error"]') as HTMLElement | null;
+    const successEl = document.querySelector('[data-testid="resend-success"]') as HTMLElement | null;
+    const submitBtn = document.querySelector('[data-testid="resend-submit-button"]') as HTMLButtonElement | null;
 
     if (errorEl) errorEl.setAttribute('hidden', '');
     if (successEl) successEl.setAttribute('hidden', '');
     if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = 'Sending…'; }
 
     try {
-      const res = await fetch('/api/auth/resend-verification', {
+      const r = await submitJson('/api/auth/resend-verification', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: fd.get('email') }),
+        body: { email: fd.get('email') },
+        stepUp: false,
       });
-      const data = await res.json().catch(() => ({}));
 
-      if (res.status === 429) {
+      if (r.status === 429) {
         if (errorEl) {
-          errorEl.textContent = data.error ?? 'Too many attempts. Try again later.';
+          errorEl.textContent = r.error ?? 'Too many attempts. Try again later.';
           errorEl.removeAttribute('hidden');
         }
-      } else if (res.ok) {
+      } else if (r.ok) {
         if (successEl) successEl.removeAttribute('hidden');
       } else {
         if (errorEl) {
-          errorEl.textContent = data.error ?? 'Failed to resend email. Try again.';
+          errorEl.textContent = r.error ?? 'Failed to resend email. Try again.';
           errorEl.removeAttribute('hidden');
         }
       }

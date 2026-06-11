@@ -2,6 +2,7 @@
 // Audit Log React island — admin-only viewer (W3 C)
 // Handles: filter by action/actor, pagination.
 import { useState } from 'react';
+import { submitJson } from '../../lib/apiClient';
 
 type AuditEntry = {
   id: number;
@@ -29,12 +30,12 @@ async function fetchAuditLog(
   qs.set('limit', String(params.limit));
   qs.set('offset', String(params.offset));
   try {
-    const res = await fetch(`/api/admin/audit-log?${qs.toString()}`);
-    if (!res.ok) {
-      const d = await res.json().catch(() => ({}));
-      return { error: (d as { error?: string }).error ?? `HTTP ${res.status}` };
-    }
-    return await res.json() as { entries: AuditEntry[]; total: number };
+    const r = await submitJson<{ entries: AuditEntry[]; total: number }>(
+      `/api/admin/audit-log?${qs.toString()}`,
+      { method: 'GET', stepUp: false },
+    );
+    if (!r.ok) return { error: r.error! };
+    return r.data;
   } catch (e) {
     return { error: String(e) };
   }

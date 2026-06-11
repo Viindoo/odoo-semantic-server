@@ -6,8 +6,9 @@
 // attributes; this island listens for clicks, reads those attrs, and shows the
 // correct modal (Grant, Update, Revoke confirm).
 //
-// ALL mutations go through `withStepUp()` — the backend's grant/update/revoke
-// routes require fresh MFA (require_admin_with_fresh_mfa).
+// ALL mutations go through `submitJson()` (stepUp default true → withStepUp) —
+// the backend's grant/update/revoke routes require fresh MFA
+// (require_admin_with_fresh_mfa).
 //
 // APIs:
 //   POST   /api/admin/entitlements                       body: GrantBody
@@ -15,21 +16,8 @@
 //   POST   /api/admin/entitlements/{external_ref}/revoke (no body)
 
 import { useState, useEffect } from 'react';
-import { withStepUp } from '../../lib/mfaStepUp';
-
-// ---------------------------------------------------------------------------
-// Flash helper (shared doc-level flash banner rendered by the Astro page)
-// ---------------------------------------------------------------------------
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
-}
+import { submitJson } from '../../lib/apiClient';
+import { flash } from '../../lib/flash';
 
 // ---------------------------------------------------------------------------
 // Supported plan slugs (static list for the dropdown — admin context only)
@@ -138,26 +126,21 @@ export default function EntitlementsIsland() {
     setLoading(true);
     setFormError(null);
     try {
-      const res = await withStepUp(() =>
-        fetch('/api/admin/entitlements', {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: grant.email.trim(),
-            plan_slug: grant.plan_slug.trim(),
-            seats,
-            source: grant.source,
-          }),
-        })
-      );
-      if (res.ok) {
+      const r = await submitJson('/api/admin/entitlements', {
+        method: 'POST',
+        body: {
+          email: grant.email.trim(),
+          plan_slug: grant.plan_slug.trim(),
+          seats,
+          source: grant.source,
+        },
+      });
+      if (r.ok) {
         flash('Entitlement granted.');
         handleClose();
         setTimeout(() => window.location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({})) as { detail?: string; error?: string };
-        setFormError(data.detail ?? data.error ?? `Error ${res.status}`);
+        setFormError(r.error!);
       }
     } catch (err) {
       setFormError(String(err));
@@ -188,21 +171,16 @@ export default function EntitlementsIsland() {
     setFormError(null);
     try {
       const ref = encodeURIComponent(update.external_ref);
-      const res = await withStepUp(() =>
-        fetch(`/api/admin/entitlements/${ref}`, {
-          method: 'PATCH',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        })
-      );
-      if (res.ok) {
+      const r = await submitJson(`/api/admin/entitlements/${ref}`, {
+        method: 'PATCH',
+        body,
+      });
+      if (r.ok) {
         flash('Subscription updated.');
         handleClose();
         setTimeout(() => window.location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({})) as { detail?: string; error?: string };
-        setFormError(data.detail ?? data.error ?? `Error ${res.status}`);
+        setFormError(r.error!);
       }
     } catch (err) {
       setFormError(String(err));
@@ -217,22 +195,17 @@ export default function EntitlementsIsland() {
   async function handleRevoke(externalRef: string) {
     try {
       const ref = encodeURIComponent(externalRef);
-      const res = await withStepUp(() =>
-        fetch(`/api/admin/entitlements/${ref}/revoke`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-        })
-      );
-      if (res.ok) {
+      const r = await submitJson(`/api/admin/entitlements/${ref}/revoke`, {
+        method: 'POST',
+      });
+      if (r.ok) {
         flash('Subscription revoked.');
         setTimeout(() => window.location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({})) as { detail?: string; error?: string };
-        flash(data.detail ?? data.error ?? `Revoke failed (${res.status})`, true);
+        flash(r.error!, { error: true });
       }
     } catch (err) {
-      flash(String(err), true);
+      flash(String(err), { error: true });
     }
   }
 
