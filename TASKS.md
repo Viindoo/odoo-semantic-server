@@ -765,7 +765,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 - [x] **W5 — Customer billing dashboard** — `/account/billing` Astro page + `BillingDashboard` React island: plan/status/seats/renewal/cancel_at_period_end display, cancel button, Polar portal link. `/pricing` page `prerender=false` + data-driven from `GET /api/plans` (USD; multi-currency display deferred to P2), `paid_checkout_enabled` gate on CTA. Usage auto-refresh every 60s. (tool count stays 24)
 - [x] **W6 — Legal pages + consent gate** — `/terms`, `/refund`, `/privacy` Astro pages; DRAFT badge removed per CEO sign-off 2026-06-01 (PR #224); external counsel pass recommended post-launch; `paid_checkout_enabled` was planned to stay `False` until KYB + Polar confirmation — **subsequently flipped to `true` in prod (2026-06); Polar KYB + cancel-endpoint/webhook confirmation still pending**. Footer links. Required signup consent checkbox (`data-testid="signup-consent-checkbox"`) — submit disabled until checked; backend records `terms_accepted_at = NOW()` for password signup (`routes/signup.py`) and OAuth account-creation (`routes/oauth.py`). (tool count stays 24)
 
-**P1.5 — Admin Settings module (ADR-0042) — SHIPPED (merged to master, live in prod; pending v0.14.0 tag)**
+**P1.5 — Admin Settings module (ADR-0042) — SHIPPED in v0.14.0**
 - [x] **M10B P1.5: Admin Settings module** (ADR-0042) — runtime config UI for
       15 Tier-1 + 4 plans + 16 EE + 115 patterns. Tenant `quota.*` override
       Phase 1. 14 WIs shipped via wave orchestration. Hot-reload ≤60s. Audit +
