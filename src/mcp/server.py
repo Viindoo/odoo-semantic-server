@@ -1110,6 +1110,75 @@ offload_bounded_nonorm = _make_bounded_offload(
 )
 
 
+# --- Pool-less Neo4j offload for the read-surface discriminator tools --------
+# `@offload_neo4j` = `@offload` + an OrmQueryTimeout catch that records the
+# non-ORM timeout metric + returns the clean English `user_message` string
+# (ADR-0023 raw-text contract — never a protocol-level isError). It is the
+# backstop that turns a *raised* OrmQueryTimeout into a clean string; the
+# per-query work (routing bare `session.run(...)` through `_data_bounded` /
+# `_single_bounded`, which wrap the Cypher in neo4j.Query(timeout=...) and
+# convert a tx-timeout ClientError → OrmQueryTimeout) still happens at every
+# query site. Both halves are required — see the timeout-hardening design §1.1.
+#
+# Kept SEPARATE from `@offload` (not a retrofit): `@offload` also wraps handlers
+# that do non-Neo4j work (Postgres reads, on-disk file reads) and embed-then-
+# offload handlers (find_style_override embeds on the event loop BEFORE the
+# to_thread hop) — catching OrmQueryTimeout there would be pointless (no Neo4j)
+# or wrong (would swallow / mislabel a timeout from a different subsystem).
+#
+# POOL-LESS by design (NO semaphore). The tools this wraps are single bounded
+# queries or small fixed multi-query helpers, each individually 30s-bounded by
+# the per-query Neo4j timeout — not the heavy fan-out drain the bounded pools
+# (offload_bounded / offload_bounded_nonorm) were built to contain. Putting them
+# behind the 8-slot non-ORM pool would create a NEW starvation surface and make
+# them newly emit the "server busy" string (a client-visible wire change these
+# tools never had). Concurrency containment is already provided by the 30s
+# per-query bound + uvicorn limit_concurrency + the shared to_thread executor.
+# A future profiling pass can PROMOTE any single tool to @offload_bounded_nonorm
+# with a one-line decorator swap if it turns out to be a genuine fan-out drain.
+def offload_neo4j(fn):
+    """Offload a sync Neo4j-read handler off the event loop, clean on timeout.
+
+    Mechanism notes (mirrors :func:`offload` + the in-thread metric invariant of
+    :func:`_make_bounded_offload`):
+      * ``functools.wraps`` preserves ``__wrapped__`` so FastMCP introspects the
+        ORIGINAL handler signature (the generic ``*a, **k`` wrapper is invisible
+        to ``inspect.signature``).
+      * ``asyncio.to_thread`` copies the current ``contextvars.Context`` so the
+        per-request ContextVars (api_key_id, tenant, profile) propagate into the
+        worker thread unchanged.
+      * The OrmQueryTimeout metric is recorded IN-THREAD (in ``_run``) so it is
+        counted even if the awaiting coroutine was already cancelled by a client
+        disconnect (the #276 / CRITICAL-2 cancel-path invariant). The exception
+        re-raises to the async wrapper which only *returns* ``user_message`` —
+        it does NOT re-record, so the metric fires exactly once.
+      * A non-OrmQueryTimeout exception propagates unchanged — we never swallow
+        an unrelated error.
+    """
+    tool_name = getattr(fn, "__name__", "neo4j_read")
+
+    def _run(a, k):
+        try:
+            return fn(*a, **k)
+        except OrmQueryTimeout:
+            # Record in-thread so a cancelled coroutine still counts it (#276).
+            _metric_nonorm_query_timeout(tool_name)
+            raise
+
+    @functools.wraps(fn)
+    async def wrapper(*a, **k):
+        try:
+            return await asyncio.to_thread(_run, a, k)
+        except OrmQueryTimeout as exc:
+            # Metric already recorded in-thread; return the clean str (no Cypher).
+            return getattr(
+                exc, "user_message",
+                "Query timed out — narrow the entity/version and retry.",
+            )
+
+    return wrapper
+
+
 def _nonorm_timeout(label: str) -> "OrmQueryTimeout":
     """Build an OrmQueryTimeout for a bounded non-ORM read (#276 G5, ADR-0023 tone)."""
     return OrmQueryTimeout(
@@ -2239,6 +2308,8 @@ def _resolve_field(
     odoo_version: str = "auto",
     profile_name: str | None = None,
     from_module: str | None = None,
+    *,
+    _reraise_timeout: bool = False,
 ) -> str:
     """Return detail about a field, optionally scoped to a single declaring module.
 
@@ -2258,12 +2329,29 @@ def _resolve_field(
         etc.) it is declared in ``"<builtin>"``; setting ``from_module`` will
         suppress magic-field synthetic rows since ``"<builtin>"`` will not match
         any real module name.  Default ``None`` preserves existing behaviour.
+    _reraise_timeout:
+        When ``True``, a per-query timeout re-raises ``OrmQueryTimeout`` instead
+        of being converted to a clean string. The ``odoo://`` field resource
+        handler sets this so a *transient* timeout body is never written to the
+        resource LRU cache (mirrors ``_resolve_model``). The default ``False``
+        keeps the model_inspect / entity_lookup tool path returning a clean
+        ``str`` (those handlers run under ``@offload_neo4j``, which catches the
+        raised OrmQueryTimeout, records the metric, and returns the message).
     """
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        # 5-tier ranking via m_node proxy — see docs/adr/0013
-        records = session.run(f"""
+        # 5-tier ranking via m_node proxy — see docs/adr/0013.
+        # Routed through `_data_bounded` so a tx-timeout on a dense field ranking
+        # becomes OrmQueryTimeout (clean English, no Cypher leaked). The PRIMARY
+        # query is intentionally NOT caught here — it propagates so the owning
+        # @offload_neo4j handler (model_inspect / entity_lookup) records the
+        # metric + returns the clean string (tool path), or the field resource
+        # handler records + returns it UNCACHED (resource path). The only inner
+        # catch is the inherited-fallback below, which honours _reraise_timeout.
+        records = _data_bounded(
+            session,
+            f"""
             MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
             WHERE ($own IS NULL OR (size(f.profile) > 0
                    AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
@@ -2282,8 +2370,11 @@ def _resolve_field(
             RETURN f, f.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
-        """, fn=field_name, mn=model_name, v=odoo_version, **_scope(profile_name),
-            from_module=from_module).data()
+            """,
+            f"field detail for '{model_name}.{field_name}' (Odoo {odoo_version})",
+            fn=field_name, mn=model_name, v=odoo_version, **_scope(profile_name),
+            from_module=from_module,
+        )
 
     # D2: If not found in graph, check whether it's a magic field.
     # Magic fields are synthetic — not in Neo4j — so we build a synthetic record.
@@ -2324,15 +2415,24 @@ def _resolve_field(
         # doesn't match we keep the "not found" path — the user asked specifically
         # for that module and the field isn't there.
         # FIX-1 (review #283): _resolve_field_inherited is bounded + tx-timeout-
-        # mapped; entity_lookup/model_inspect wrap this in plain @offload (no
-        # OrmQueryTimeout catch), so surface the bounded timeout as a clean
-        # ADR-0023 string rather than a protocol-level 500.
+        # mapped. The owning tool handlers now wrap this in @offload_neo4j (PR-1),
+        # which catches OrmQueryTimeout at the boundary; the tool-path catch here
+        # still returns the clean ADR-0023 string directly (and the resource path
+        # re-raises so the transient body is never cached — see below).
         try:
             with _get_driver().session() as session:
                 inh = _resolve_field_inherited(
                     model_name, field_name, odoo_version, session, profile_name
                 )
         except OrmQueryTimeout as exc:
+            # Resource path (_reraise_timeout=True): re-raise so the transient
+            # body is never cached (the field resource handler records the metric
+            # once and returns the message uncached). Tool path: returning the
+            # clean string here means this inherited-fallback timeout is NOT
+            # counted by @offload_neo4j (the decorator only counts a RAISED
+            # OrmQueryTimeout); adding that metric is Phase 3 / PR-3 (design M1).
+            if _reraise_timeout:
+                raise
             return exc.user_message
         if inh is not None:
             if from_module is None or inh.get("module") == from_module:
@@ -2530,12 +2630,20 @@ def _resolve_method(
     method_name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
+    *,
+    _reraise_timeout: bool = False,
 ) -> str:
     # FIX-1 (review #283): _method_override_chain + _resolve_method_inherited are
-    # now bounded and tx-timeout-mapped to OrmQueryTimeout. model_inspect /
-    # entity_lookup wrap this handler in plain @offload (no OrmQueryTimeout catch),
-    # so surface the bounded timeout as a clean ADR-0023 string here rather than
-    # letting it propagate to a protocol-level 500.
+    # bounded and tx-timeout-mapped to OrmQueryTimeout.
+    #
+    # _reraise_timeout: the ``odoo://`` method resource handler sets this so a
+    # transient timeout body is never written to the resource LRU (mirrors
+    # _resolve_model). The default False keeps the model_inspect / entity_lookup
+    # tool path returning a clean ADR-0023 string — but now via the owning
+    # @offload_neo4j handler: we RE-RAISE here so the decorator records the
+    # metric once and returns the clean message (no double-count). The pre-PR-1
+    # behaviour caught + returned here under plain @offload; the decorator swap
+    # moves the catch to the boundary so the timeout is observable in the metric.
     try:
         with _get_driver().session() as session:
             odoo_version = _resolve_version(odoo_version, session)
@@ -2551,8 +2659,7 @@ def _resolve_method(
             # on a mixin (e.g. `_compute_res_ref` declared on a mixin model, not on
             # `viin.approval.request` itself). Methods are inherited via INHERITS only
             # — `_inherits` delegation never carries methods (GAP-1). Exact-first fast
-            # path is preserved — own methods never pay the BFS cost. find_override_point
-            # (which calls _resolve_method) inherits this fix automatically.
+            # path is preserved — own methods never pay the BFS cost.
             with _get_driver().session() as session:
                 inh = _resolve_method_inherited(
                     model_name, method_name, odoo_version, session, profile_name
@@ -2574,8 +2681,15 @@ def _resolve_method(
                 f"Method '{method_name}' not found on model"
                 f" '{model_name}' in Odoo {odoo_version}."
             )
-    except OrmQueryTimeout as exc:
-        return exc.user_message
+    except OrmQueryTimeout:
+        # Re-raise on BOTH paths so the timeout is observable + uncached:
+        #   * tool path → the owning @offload_neo4j handler records the metric
+        #     once and returns exc.user_message (clean ADR-0023 string).
+        #   * resource path (_reraise_timeout=True) → propagates out of
+        #     get_or_compute before the cache put; the method resource handler
+        #     records the metric once and returns the message uncached.
+        # No double-count: this inner resolver never records the metric itself.
+        raise
 
     base_mth = records[0]["mth"]
     lines = [
@@ -2629,11 +2743,26 @@ def _resolve_method(
 def _resolve_view(
     xmlid: str, odoo_version: str = "auto",
     profile_name: str | None = None,
+    *,
+    _reraise_timeout: bool = False,
 ) -> str:
+    # The three view queries are routed through `_single_bounded` / `_data_bounded`
+    # so a tx-timeout on a dense view-inheritance chain becomes OrmQueryTimeout
+    # (clean English, no Cypher leaked) instead of escaping as a raw ClientError.
+    # There is no internal catch here: the raise propagates out so the owning
+    # entity_lookup handler (now @offload_neo4j) records the metric + returns the
+    # clean string (tool path), or the view resource handler records + returns it
+    # UNCACHED (resource path). The `_reraise_timeout` parameter exists for
+    # signature parity with _resolve_model/_resolve_field/_resolve_method (the
+    # resource render passes it); because nothing here converts the timeout to a
+    # string, both paths already propagate identically.
+    _ = _reraise_timeout  # parity-only flag; the timeout always propagates here.
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        view_rec = session.run("""
+        view_rec = _single_bounded(
+            session,
+            """
             MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
             WHERE ($own IS NULL OR (size(v.profile) > 0
                    AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
@@ -2641,7 +2770,10 @@ def _resolve_view(
             AND v.module <> '__unresolved__'
             OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
             RETURN v, mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
-        """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
+            """,
+            f"view detail for '{xmlid}' (Odoo {odoo_version})",
+            xmlid=xmlid, ver=odoo_version, **_scope(profile_name),
+        )
 
         if not view_rec:
             return f"View '{xmlid}' not found in Odoo {odoo_version}."
@@ -2649,16 +2781,23 @@ def _resolve_view(
         # WG-3t WRONG-TARGET fix: this returns parent.xmlid, so the tenant
         # predicate must gate the RETURNED node (parent), not just the child v.
         # Filtering only v would leak a foreign tenant's parent view xmlid.
-        parent_rec = session.run(f"""
+        parent_rec = _single_bounded(
+            session,
+            f"""
             MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
                   -[r:{REL_INHERITS_VIEW}]->(parent:View {{odoo_version: $ver}})
             WHERE NOT coalesce(r.unresolved, false)
             AND {_scope_pred("v")}
             AND {_scope_pred("parent")}
             RETURN parent.xmlid AS parent_xmlid
-        """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
+            """,
+            f"parent view for '{xmlid}' (Odoo {odoo_version})",
+            xmlid=xmlid, ver=odoo_version, **_scope(profile_name),
+        )
 
-        extensions = session.run(f"""
+        extensions = _data_bounded(
+            session,
+            f"""
             MATCH (ext:View {{odoo_version: $ver}})-[:{REL_INHERITS_VIEW}]->
                   (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             WHERE NOT coalesce(ext.unresolved, false)
@@ -2669,7 +2808,10 @@ def _resolve_view(
                    ext.xpaths_exprs AS xpaths_exprs,
                    ext.xpaths_positions AS xpaths_positions,
                    mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
-        """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).data()
+            """,
+            f"view extension chain for '{xmlid}' (Odoo {odoo_version})",
+            xmlid=xmlid, ver=odoo_version, **_scope(profile_name),
+        )
 
     v_props = view_rec["v"]
     repo_str = f"[{view_rec['repo']}] " if view_rec.get("repo") else ""
@@ -4992,6 +5134,8 @@ def _describe_module(
     name: str,
     odoo_version: str = "auto",
     profile_name: str | None = None,
+    *,
+    _reraise_timeout: bool = False,
 ) -> str:
     """Layer-0 module overview: manifest + model/view/JS counts.
 
@@ -4999,11 +5143,24 @@ def _describe_module(
     tool returns the full architecture tree (~10–15 lines) per ADR-0023 §1.7.
     Runs 1 Module query + 4 aggregate queries (Models defined, Models
     extended, Views by type, JS patches).
+
+    Each query is routed through ``_data_bounded`` / ``_single_bounded`` with
+    its OWN sub-step label so a tx-timeout becomes OrmQueryTimeout (clean
+    English, no Cypher leaked) and the timeout message names which sub-step
+    died. There is no internal catch: the raise propagates so the owning
+    describe_module / module_inspect handler (now ``@offload_neo4j``) records the
+    metric + returns the clean string (tool path), or the module resource
+    handler records + returns it UNCACHED (resource path). ``_reraise_timeout``
+    is signature parity with the sibling resolvers (the module resource render
+    passes it); nothing here converts the timeout to a string, so both paths
+    already propagate identically.
     """
+    _ = _reraise_timeout  # parity-only flag; the timeout always propagates here.
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        mod_rec = session.run(
+        mod_rec = _single_bounded(
+            session,
             """
             MATCH (m:Module {name: $n, odoo_version: $v})
             WHERE ($own IS NULL OR (size(m.profile) > 0
@@ -5021,8 +5178,9 @@ def _describe_module(
                    m.external_python AS external_python,
                    m.external_bin AS external_bin
             """,
+            f"module manifest for '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_scope(profile_name),
-        ).single()
+        )
 
         if not mod_rec:
             return (
@@ -5040,17 +5198,20 @@ def _describe_module(
         # Filtering names here would only hide a dep the tenant itself declared when
         # its name collides with another tenant's private module (ADR-0034 A3) — no
         # confidentiality gain, real UX loss.
-        depends = session.run(
+        depends = _data_bounded(
+            session,
             f"""
             MATCH (m:Module {{name: $n, odoo_version: $v}})
                   -[:{REL_DEPENDS_ON}]->(d:Module)
             RETURN d.name AS name
             ORDER BY d.name ASC
             """,
+            f"dependencies for '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version,
-        ).data()
+        )
 
-        defines = session.run(
+        defines = _data_bounded(
+            session,
             """
             MATCH (model:Model {module: $n, odoo_version: $v})
             WHERE coalesce(model.is_definition, false) = true
@@ -5060,10 +5221,12 @@ def _describe_module(
             RETURN model.name AS name
             ORDER BY model.name ASC
             """,
+            f"models defined in '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_scope(profile_name),
-        ).data()
+        )
 
-        extends = session.run(
+        extends = _data_bounded(
+            session,
             """
             MATCH (model:Model {module: $n, odoo_version: $v})
             WHERE coalesce(model.is_definition, false) = false
@@ -5073,10 +5236,12 @@ def _describe_module(
             RETURN model.name AS name
             ORDER BY model.name ASC
             """,
+            f"models extended in '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_scope(profile_name),
-        ).data()
+        )
 
-        view_breakdown = session.run(
+        view_breakdown = _data_bounded(
+            session,
             """
             MATCH (view:View {module: $n, odoo_version: $v})
             WHERE ($own IS NULL OR (size(view.profile) > 0
@@ -5084,18 +5249,22 @@ def _describe_module(
             RETURN view.type AS type, count(view) AS c
             ORDER BY c DESC, type ASC
             """,
+            f"view breakdown for '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_scope(profile_name),
-        ).data()
+        )
 
-        js_count = session.run(
+        js_rec = _single_bounded(
+            session,
             """
             MATCH (j:JSPatch {module: $n, odoo_version: $v})
             WHERE ($own IS NULL OR (size(j.profile) > 0
                    AND all(__p IN j.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN count(j) AS c
             """,
+            f"JS patch count for '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_scope(profile_name),
-        ).single()["c"]
+        )
+        js_count = js_rec["c"] if js_rec else 0
 
     lines = [f"{name} (Odoo {odoo_version})"]
 
@@ -5259,19 +5428,31 @@ def _module_dep_closure(
         odoo_version = _resolve_version(odoo_version, session)
 
         # Verify the module exists first.
-        exists = session.run(
+        exists_rec = _single_bounded(
+            session,
             "MATCH (m:Module {name: $n, odoo_version: $v}) "
             f"WHERE {_scope_pred('m')} "
             "RETURN count(m) AS c",
+            f"module existence for '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_scope(profile_name),
-        ).single()["c"]
+        )
+        exists = exists_rec["c"] if exists_rec else 0
         if not exists:
             return f"No module named '{name}' indexed for Odoo {odoo_version}."
 
         # Collect full transitive closure with min path-length (Dijkstra-style)
         # and repo/repo_url for each dependency.
         # PATHS(p) gives the variable-length path; length(p) = hop count.
-        dep_rows = session.run(f"""
+        # §2.4: this is a VLP (`DEPENDS_ON*1..20`) — the #273-class risk. We only
+        # BOUND it here (the 30s per-query timeout is the load-bearing protection);
+        # a per-hop name-dedup rewrite is OUT of scope for this hardening wave. If
+        # nonorm_query_timeout_total{tool="module_inspect"} spikes on this path,
+        # escalate to the per-hop rewrite. `DEPENDS_ON` is a manifest-dependency
+        # DAG (far less dense than the same-name INHERITS mesh), so the depth-20
+        # cap + 30s bound make it safe now.
+        dep_rows = _data_bounded(
+            session,
+            f"""
             MATCH path = (:Module {{name: $n, odoo_version: $v}})
                          -[:{REL_DEPENDS_ON}*1..20]->(dep:Module {{odoo_version: $v}})
             WHERE ($own IS NULL OR (size(dep.profile) > 0
@@ -5282,7 +5463,10 @@ def _module_dep_closure(
                    dep.repo_url AS repo_url,
                    min_depth
             ORDER BY min_depth DESC, dep.name ASC
-        """, n=name, v=odoo_version, **_scope(profile_name)).data()
+            """,
+            f"dependency closure for '{name}' (Odoo {odoo_version})",
+            n=name, v=odoo_version, **_scope(profile_name),
+        )
 
     if not dep_rows:
         lines = [f"{name} dependency closure (Odoo {odoo_version})"]
@@ -5399,41 +5583,50 @@ def _list_fields(
                 owner_names = _ancestor_owner_names(
                     model, odoo_version, _dedup_session, profile_name
                 )
-                _dedup_rec = _dedup_session.run(
-                    _bounded(
-                        """
-                        UNWIND $owners AS owner_model
-                        MATCH (f:Field {model: owner_model, odoo_version: $v})
-                        WHERE f.name IN $magic_names
-                          AND ($own IS NULL OR (size(f.profile) > 0
-                               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-                          AND f.module <> '__unresolved__'
-                        RETURN collect(DISTINCT f.name) AS names
-                        """
-                    ),
+                # RAW-ESCAPE fix: this was a BARE `_dedup_session.run(_bounded(...))`
+                # — timeout-bounded but raising a RAW neo4j ClientError, so the
+                # `except OrmQueryTimeout` below was BLIND to it (the same bug
+                # class as the #286 override_rec fix). Route through
+                # `_single_bounded` so a tx-timeout becomes OrmQueryTimeout and the
+                # existing degrade-to-flat fallback actually fires.
+                _dedup_rec = _single_bounded(
+                    _dedup_session,
+                    """
+                    UNWIND $owners AS owner_model
+                    MATCH (f:Field {model: owner_model, odoo_version: $v})
+                    WHERE f.name IN $magic_names
+                      AND ($own IS NULL OR (size(f.profile) > 0
+                           AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                      AND f.module <> '__unresolved__'
+                    RETURN collect(DISTINCT f.name) AS names
+                    """,
+                    f"magic-field dedup for '{model}'",
                     owners=owner_names, v=odoo_version,
                     magic_names=magic_names_list, **_scope(profile_name),
-                ).single()
+                )
             existing_names = set(_dedup_rec["names"]) if _dedup_rec else set()
         except OrmQueryTimeout:
             # Degrade to flat own-model magic dedup — never crash the list.
             try:
                 with _get_driver().session() as _flat_session:
-                    _flat_rec = _flat_session.run(
-                        _bounded(
-                            """
-                            MATCH (f:Field {model: $m, odoo_version: $v})
-                            WHERE f.name IN $magic_names
-                              AND ($own IS NULL OR (size(f.profile) > 0
-                                   AND all(__p IN f.profile
-                                           WHERE __p IN $own OR __p IN $shared)))
-                              AND f.module <> '__unresolved__'
-                            RETURN collect(DISTINCT f.name) AS names
-                            """
-                        ),
+                    # RAW-ESCAPE fix: same bare-`_bounded` → `_single_bounded`
+                    # conversion so the inner `except OrmQueryTimeout` below
+                    # actually catches a tx-timeout on the flat fallback too.
+                    _flat_rec = _single_bounded(
+                        _flat_session,
+                        """
+                        MATCH (f:Field {model: $m, odoo_version: $v})
+                        WHERE f.name IN $magic_names
+                          AND ($own IS NULL OR (size(f.profile) > 0
+                               AND all(__p IN f.profile
+                                       WHERE __p IN $own OR __p IN $shared)))
+                          AND f.module <> '__unresolved__'
+                        RETURN collect(DISTINCT f.name) AS names
+                        """,
+                        f"magic-field flat dedup for '{model}'",
                         m=model, v=odoo_version,
                         magic_names=magic_names_list, **_scope(profile_name),
-                    ).single()
+                    )
                 existing_names = set(_flat_rec["names"]) if _flat_rec else set()
             except OrmQueryTimeout:
                 existing_names = set()
@@ -5822,7 +6015,8 @@ def _list_extenders(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        rows = session.run(
+        rows = _data_bounded(
+            session,
             f"""
             MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
             WHERE NOT coalesce(m.is_definition, false)
@@ -5840,11 +6034,13 @@ def _list_extenders(
             SKIP $skip
             LIMIT $limit
             """,
+            f"extenders for '{model}' (Odoo {odoo_version})",
             name=model, v=odoo_version, **_scope(profile_name),
             skip=start_index, limit=effective_limit,
-        ).data()
+        )
 
-        total_rec = session.run(
+        total_rec = _single_bounded(
+            session,
             """
             MATCH (m:Model {name: $name, odoo_version: $v})-[:DEFINED_IN]->(:Module)
             WHERE NOT coalesce(m.is_definition, false)
@@ -5852,8 +6048,9 @@ def _list_extenders(
                    AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN count(m) AS c
             """,
+            f"extender count for '{model}' (Odoo {odoo_version})",
             name=model, v=odoo_version, **_scope(profile_name),
-        ).single()
+        )
         total = total_rec["c"] if total_rec else 0
 
     header = f"Extenders of {model} (Odoo {odoo_version})"
@@ -5956,8 +6153,10 @@ def _list_views_core(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
+        scope_noun = f"'{model}'" if is_model_scoped else f"module '{module}'"
         if is_model_scoped:
-            rows = session.run(
+            rows = _data_bounded(
+                session,
                 f"""
                 MATCH (v:View {{model: $filter_val, odoo_version: $ver}})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
@@ -5975,11 +6174,13 @@ def _list_views_core(
                 SKIP $skip
                 LIMIT $limit
                 """,
+                f"view list for {scope_noun} (Odoo {odoo_version})",
                 filter_val=model, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name), skip=start_index, limit=effective_limit,
-            ).data()
+            )
 
-            total_rec = session.run(
+            total_rec = _single_bounded(
+                session,
                 """
                 MATCH (v:View {model: $filter_val, odoo_version: $ver})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
@@ -5988,11 +6189,13 @@ def _list_views_core(
                   AND v.module <> '__unresolved__'
                 RETURN count(v) AS c
                 """,
+                f"view count for {scope_noun} (Odoo {odoo_version})",
                 filter_val=model, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name),
-            ).single()
+            )
         else:
-            rows = session.run(
+            rows = _data_bounded(
+                session,
                 f"""
                 MATCH (v:View {{module: $filter_val, odoo_version: $ver}})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
@@ -6010,11 +6213,13 @@ def _list_views_core(
                 SKIP $skip
                 LIMIT $limit
                 """,
+                f"view list for {scope_noun} (Odoo {odoo_version})",
                 filter_val=module, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name), skip=start_index, limit=effective_limit,
-            ).data()
+            )
 
-            total_rec = session.run(
+            total_rec = _single_bounded(
+                session,
                 """
                 MATCH (v:View {module: $filter_val, odoo_version: $ver})
                 WHERE ($own IS NULL OR (size(v.profile) > 0
@@ -6023,9 +6228,10 @@ def _list_views_core(
                   AND v.module <> '__unresolved__'
                 RETURN count(v) AS c
                 """,
+                f"view count for {scope_noun} (Odoo {odoo_version})",
                 filter_val=module, ver=odoo_version, view_types=view_types,
                 **_scope(profile_name),
-            ).single()
+            )
 
         total = total_rec["c"] if total_rec else 0
 
@@ -6226,7 +6432,8 @@ def _list_owl_components(
                 + next_line
             )
 
-        rows = session.run(
+        rows = _data_bounded(
+            session,
             """
             MATCH (c:OWLComp {module: $mod, odoo_version: $v})
             WHERE ($own IS NULL OR (size(c.profile) > 0
@@ -6239,11 +6446,13 @@ def _list_owl_components(
             SKIP $skip
             LIMIT $limit
             """,
+            f"OWL components in '{module}' (Odoo {odoo_version})",
             mod=module, v=odoo_version, bound_model=bound_model,
             **_scope(profile_name), skip=start_index, limit=effective_limit,
-        ).data()
+        )
 
-        total_rec = session.run(
+        total_rec = _single_bounded(
+            session,
             """
             MATCH (c:OWLComp {module: $mod, odoo_version: $v})
             WHERE ($own IS NULL OR (size(c.profile) > 0
@@ -6252,9 +6461,10 @@ def _list_owl_components(
               AND c.module <> '__unresolved__'
             RETURN count(c) AS c
             """,
+            f"OWL component count in '{module}' (Odoo {odoo_version})",
             mod=module, v=odoo_version, bound_model=bound_model,
             **_scope(profile_name),
-        ).single()
+        )
         total = total_rec["c"] if total_rec else 0
 
     header = f"OWL components of {module} (Odoo {odoo_version})"
@@ -6366,7 +6576,8 @@ def _list_qweb_templates(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        rows = session.run(
+        rows = _data_bounded(
+            session,
             f"""
             MATCH (t:QWebTmpl {{module: $mod, odoo_version: $v}})
             WHERE {_scope_pred("t")}
@@ -6379,11 +6590,13 @@ def _list_qweb_templates(
             SKIP $skip
             LIMIT $limit
             """,
+            f"QWeb templates in '{module}' (Odoo {odoo_version})",
             mod=module, v=odoo_version, **_scope(profile_name),
             skip=start_index, limit=effective_limit,
-        ).data()
+        )
 
-        total_rec = session.run(
+        total_rec = _single_bounded(
+            session,
             """
             MATCH (t:QWebTmpl {module: $mod, odoo_version: $v})
             WHERE ($own IS NULL OR (size(t.profile) > 0
@@ -6391,8 +6604,9 @@ def _list_qweb_templates(
               AND t.module <> '__unresolved__'
             RETURN count(t) AS c
             """,
+            f"QWeb template count in '{module}' (Odoo {odoo_version})",
             mod=module, v=odoo_version, **_scope(profile_name),
-        ).single()
+        )
         total = total_rec["c"] if total_rec else 0
 
     header = f"QWeb templates of {module} (Odoo {odoo_version})"
@@ -6505,7 +6719,11 @@ def _list_js_patches(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        rows = session.run(
+        _js_label_noun = f"'{module}'" if module else (
+            f"target '{target}'" if target else "all modules"
+        )
+        rows = _data_bounded(
+            session,
             f"""
             MATCH (j:JSPatch {{odoo_version: $v}})
             WHERE ($own IS NULL OR (size(j.profile) > 0
@@ -6526,11 +6744,13 @@ def _list_js_patches(
             SKIP $skip
             LIMIT $limit
             """,
+            f"JS patches for {_js_label_noun} (Odoo {odoo_version})",
             v=odoo_version, target=target, module=module, era=era_filter,
             **_scope(profile_name), skip=start_index, limit=effective_limit,
-        ).data()
+        )
 
-        total_rec = session.run(
+        total_rec = _single_bounded(
+            session,
             """
             MATCH (j:JSPatch {odoo_version: $v})
             WHERE ($own IS NULL OR (size(j.profile) > 0
@@ -6541,9 +6761,10 @@ def _list_js_patches(
               AND j.module <> '__unresolved__'
             RETURN count(j) AS c
             """,
+            f"JS patch count for {_js_label_noun} (Odoo {odoo_version})",
             v=odoo_version, target=target, module=module, era=era_filter,
             **_scope(profile_name),
-        ).single()
+        )
         total = total_rec["c"] if total_rec else 0
 
     parent = target or module or "all targets"
@@ -7081,7 +7302,7 @@ def find_override_point(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def describe_module(
     name: str,
     odoo_version: RequiredOdooVersion,
@@ -7132,7 +7353,7 @@ def describe_module(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def model_inspect(
     model: str,
     method: str,
@@ -7191,7 +7412,7 @@ def model_inspect(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def module_inspect(
     name: str,
     method: str,
@@ -7311,21 +7532,37 @@ async def entity_lookup(
         except Exception:
             _embedder = None
             _query_vec = None
-    text = await asyncio.to_thread(
-        _entity_lookup,
-        kind=kind,
-        odoo_version=odoo_version,
-        profile_name=profile_name,
-        model=model,
-        field=field,
-        method_name=method_name,
-        xmlid=xmlid,
-        name=name,
-        api_key_id=api_key_id,
-        from_module=from_module,
-        _embedder=_embedder,
-        _query_vec=_query_vec,
-    )
+    # entity_lookup is async (it pre-embeds the pattern intent on the loop before
+    # the to_thread hop), so it CANNOT be wrapped by the sync-bodied @offload_neo4j
+    # (design §6 embed-aware exception). Instead we add a SCOPED `except
+    # OrmQueryTimeout` around just the Neo4j dispatch: the converted resolvers
+    # (_resolve_field / _resolve_method / _resolve_view / _resolve_model /
+    # _describe_module) now RAISE OrmQueryTimeout on a tx-timeout, which would
+    # otherwise escape this async handler as a protocol-level isError. Record the
+    # metric once (the resolvers never count it) + return the clean message. The
+    # kind='pattern' path routes to _suggest_pattern (PR-2 scope) which does not
+    # raise OrmQueryTimeout, so this catch only fires for the converted kinds.
+    try:
+        text = await asyncio.to_thread(
+            _entity_lookup,
+            kind=kind,
+            odoo_version=odoo_version,
+            profile_name=profile_name,
+            model=model,
+            field=field,
+            method_name=method_name,
+            xmlid=xmlid,
+            name=name,
+            api_key_id=api_key_id,
+            from_module=from_module,
+            _embedder=_embedder,
+            _query_vec=_query_vec,
+        )
+    except OrmQueryTimeout as exc:
+        _metric_nonorm_query_timeout("entity_lookup")
+        return ToolResult(
+            content=[TextContent(type="text", text=exc.user_message)]
+        )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
 
@@ -7685,7 +7922,7 @@ def list_available_profiles() -> ToolResult:
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def profile_inspect(
     method: str,
     odoo_version: RequiredOdooVersion,
