@@ -58,13 +58,12 @@ backstops all. A slow non-ORM traversal can pin a `asyncio.to_thread` pool threa
 fan-out, but this is degraded throughput, not a #273-class zombie. Extending `_bounded()` to hot
 non-ORM paths is a follow-up item (TASKS.md).
 
-**Ops recommendation — Neo4j `db.transaction.timeout`:**
+**Neo4j `db.transaction.timeout` — now wired into IaC (ADR-0048 D7 / issue #276):**
 
-Set to **600s** (not 60s) in `neo4j.conf` and apply dynamically:
-
-```cypher
-CALL dbms.setConfigValue('db.transaction.timeout', '600s')
-```
+`NEO4J_db_transaction_timeout=600s` is set in `docker-compose.yml` (`services.neo4j.environment`)
+and mirrored in `.github/workflows/nightly-smoke.yml` (all three Neo4j service containers). Any
+`docker compose up` or `docker compose recreate` now applies the backstop automatically — it is no
+longer a manual pre-deploy ops step.
 
 **Why 600s, not 60s:** The 30s per-query driver timeout (above) handles ORM tool runaway.
 The global `db.transaction.timeout` must accommodate legitimate long-running indexer transactions:
@@ -81,6 +80,14 @@ The global `db.transaction.timeout` must accommodate legitimate long-running ind
 headroom. For an exceptionally large repo delete or the one-off mesh-cleanup script, temporarily
 raise/disable the timeout (`CALL dbms.setConfigValue('db.transaction.timeout','0')`, re-enable
 after) rather than relying on the 600s ceiling.
+
+**Bare-metal / systemd deployments (no Docker Compose):** apply dynamically and persist:
+
+```cypher
+CALL dbms.setConfigValue('db.transaction.timeout', '600s')
+```
+
+Then add `db.transaction.timeout=600s` to `neo4j.conf` so the value survives a service restart.
 
 ### Web UI operations
 

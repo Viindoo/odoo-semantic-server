@@ -34,6 +34,9 @@ jobs:
         image: neo4j:5.26.25
         env:
           NEO4J_AUTH: neo4j/password
+          # Mirror docker-compose.yml NEO4J_db_transaction_timeout (ADR-0048 D7 / #276).
+          # Actions parse services before any step, so this must be hardcoded here.
+          NEO4J_db_transaction_timeout: "600s"
         ports:
           - 7687:7687
         options: >-
@@ -452,6 +455,9 @@ jobs:
         image: neo4j:5.26.25
         env:
           NEO4J_AUTH: neo4j/password
+          # Mirror docker-compose.yml NEO4J_db_transaction_timeout (ADR-0048 D7 / #276).
+          # Actions parse services before any step, so this must be hardcoded here.
+          NEO4J_db_transaction_timeout: "600s"
         ports:
           - 7687:7687
         options: >-
@@ -580,6 +586,9 @@ jobs:
         image: neo4j:5.26.25
         env:
           NEO4J_AUTH: neo4j/password
+          # Mirror docker-compose.yml NEO4J_db_transaction_timeout (ADR-0048 D7 / #276).
+          # Actions parse services before any step, so this must be hardcoded here.
+          NEO4J_db_transaction_timeout: "600s"
         ports:
           - 7687:7687
         options: >-

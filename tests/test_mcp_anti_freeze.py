@@ -1,21 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Anti-freeze guards for the MCP query-embed hot path (issue #227).
+"""Anti-freeze guards for the MCP query-embed hot path (issue #227 + #276 G7).
 
 Business rules under test (mechanism, not output):
   1. The query-embed tools (find_examples / suggest_pattern / find_style_override)
-     embed on the event loop WITHOUT blocking it — a slow embed must not stall a
+     embed OFF the event loop WITHOUT blocking it — a slow embed must not stall a
      concurrent cheap coroutine (proxy for /health staying responsive).
   2. A burst of concurrent embeds beyond EMBEDDER_MAX_CONCURRENCY fails fast
      (EmbedOverloaded) rather than queueing unbounded.
   3. A giant query is truncated to the token budget BEFORE it is embedded.
   4. The /ready route is wired and returns 200 with cache metadata.
-  5. The three hot-path tools are async coroutine functions and route through
-     embed_async (not the blocking sync embed()).
+  5. The three hot-path tools are async coroutine functions; the actual embed
+     runs in a worker thread holding a thread-bound BoundedSemaphore slot so a
+     client-cancel cannot free the slot mid-embed (#276 G7).
+
+#276 G7 note: the embed worker thread now calls the SYNC embed path DIRECTLY
+(``_embed_with_timeout`` → query client, or ``embed`` fallback) rather than
+``embed_async`` — calling ``embed_async`` inside the already-offloaded thread
+would nest a second to_thread / child loop. These tests therefore record the
+embed on the SYNC ``embed`` method (the path the hot loop now exercises) and
+assert the EVENT LOOP stays responsive, not which embed method name was used.
 
 No DB containers required — these are pure-unit tests with the embedder stubbed.
 """
 import asyncio
 import inspect
+import threading
 import time
 
 import pytest
@@ -29,7 +38,15 @@ from src.mcp import server as srv
 
 
 class _SlowAsyncEmbedder:
-    """Records embed_async calls; sleeps to simulate a slow upstream embed."""
+    """Records SYNC embed calls; sleeps to simulate a slow upstream embed.
+
+    #276 G7: the hot path now calls the SYNC embed path inside a worker thread
+    (NOT embed_async). This stub deliberately does NOT define _embed_with_timeout
+    so _embed_sync_query exercises its ``embed`` fallback, and the delay is a
+    blocking sleep in ``embed`` so the slot is genuinely held for the duration
+    (mirroring a slow Ollama round-trip). ``embed_async`` is kept for Protocol
+    parity but must NOT be hit on the hot path.
+    """
 
     model = "stub"
     chars_per_token = 4.0
@@ -39,24 +56,32 @@ class _SlowAsyncEmbedder:
         self.async_calls = 0
         self.sync_calls = 0
         self.embedded_texts: list[str] = []
+        self._lock = threading.Lock()
 
-    def embed(self, texts):  # pragma: no cover - must NOT be called on hot path
-        self.sync_calls += 1
-        return [[0.0] * 8 for _ in texts]
-
-    async def embed_async(self, texts, *, read_timeout=None):
-        self.async_calls += 1
-        self.embedded_texts.extend(texts)
-        await asyncio.sleep(self.delay)
+    def embed(self, texts):
+        with self._lock:
+            self.sync_calls += 1
+            self.embedded_texts.extend(texts)
+        if self.delay:
+            time.sleep(self.delay)  # blocking — holds the thread-bound slot
         return [[0.1] * 8 for _ in texts]
+
+    async def embed_async(self, texts, *, read_timeout=None):  # pragma: no cover
+        # Protocol parity only — the #276 G7 hot path must not call this.
+        self.async_calls += 1
+        return self.embed(texts)
 
 
 @pytest.fixture(autouse=True)
 def _reset_embed_semaphore():
-    """Each test gets a fresh module-level semaphore (loop-bound)."""
+    """Each test gets a fresh module-level (thread-bound) embed semaphore."""
     srv._embed_semaphore = None
+    srv._embed_cap_in_use = None
+    srv._embed_slot_timeout_in_use = None
     yield
     srv._embed_semaphore = None
+    srv._embed_cap_in_use = None
+    srv._embed_slot_timeout_in_use = None
 
 
 # ---------------------------------------------------------------------------
@@ -88,11 +113,18 @@ async def test_slow_embed_does_not_block_event_loop():
     await embed_task
 
     # Heartbeat finished its 3 ticks (~0.03s) long before the 0.3s embed.
+    # This is the LOAD-BEARING assertion: the event loop stayed responsive while
+    # the embed ran in a worker thread (#227 + #276 G7).
     assert heartbeat_done - start < 0.2, (
         "cheap coroutine was blocked behind the slow embed — event loop froze"
     )
-    assert embedder.async_calls == 1
-    assert embedder.sync_calls == 0, "hot path must use embed_async, never sync embed"
+    # The embed ran exactly once, off the loop, via the SYNC embed path (#276 G7
+    # runs sync embed directly in the worker thread, never embed_async).
+    assert embedder.sync_calls == 1, "the query must be embedded exactly once"
+    assert embedder.async_calls == 0, (
+        "hot path must call the SYNC embed in the worker thread, not embed_async"
+        " (avoids a nested to_thread / child loop — #276 G7 R-A6)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +136,14 @@ async def test_slow_embed_does_not_block_event_loop():
 async def test_embed_semaphore_fails_fast_when_saturated(monkeypatch):
     """Once EMBEDDER_MAX_CONCURRENCY slots are held, the next embed rejects fast.
 
-    We shrink the acquire timeout to make the test quick and hold all slots with
-    long-running embeds, then assert the overflow caller raises EmbedOverloaded
-    instead of waiting for a slot.
+    We shrink the acquire timeout (via the env knob the thread-bound semaphore
+    reads at build time, #276 G7) and hold all slots with long-running embeds,
+    then assert the overflow caller raises EmbedOverloaded instead of waiting for
+    a slot.
     """
-    monkeypatch.setattr(srv, "_EMBED_SLOT_ACQUIRE_TIMEOUT_S", 0.05)
+    # The autouse fixture reset the semaphore to None, so it rebuilds from this
+    # env on first use, picking up the short acquire timeout.
+    monkeypatch.setenv("EMBEDDER_SLOT_ACQUIRE_TIMEOUT", "0.05")
     embedder = _SlowAsyncEmbedder(delay=5.0)  # holds its slot for the whole test
 
     # Saturate every slot.
@@ -116,7 +151,19 @@ async def test_embed_semaphore_fails_fast_when_saturated(monkeypatch):
         asyncio.create_task(srv._embed_query(embedder, "I:", f"q{i}"))
         for i in range(EMBEDDER_MAX_CONCURRENCY)
     ]
-    await asyncio.sleep(0.02)  # let them all acquire
+    # Barrier: wait until every holder has acquired its thread-bound slot and
+    # entered embed. ``sync_calls`` increments INSIDE embed, which runs only
+    # AFTER the slot is acquired in _embed_query_in_thread — so sync_calls == N
+    # proves all N slots are held. Deterministic, unlike a fixed sleep that
+    # races thread-pool startup latency on a loaded host.
+    deadline = time.monotonic() + 5.0
+    while embedder.sync_calls < EMBEDDER_MAX_CONCURRENCY:
+        if time.monotonic() > deadline:  # pragma: no cover - CI watchdog
+            raise AssertionError(
+                "holders did not saturate the embed pool: "
+                f"{embedder.sync_calls}/{EMBEDDER_MAX_CONCURRENCY} slots acquired"
+            )
+        await asyncio.sleep(0.01)
 
     start = time.monotonic()
     with pytest.raises(srv.EmbedOverloaded):
@@ -224,8 +271,13 @@ def test_hot_path_tools_are_coroutine_functions():
 
 
 @pytest.mark.asyncio
-async def test_find_examples_tool_uses_embed_async_not_sync(monkeypatch):
-    """find_examples tool embeds via embed_async and never calls sync embed().
+async def test_find_examples_tool_embeds_offloop_and_passes_vector(monkeypatch):
+    """find_examples embeds the query off the loop, then hands the vector to the
+    blocking impl so it does not re-embed inside the worker thread.
+
+    Business rule (#227 + #276 G7): the embed happens before the blocking DB body
+    and its result is passed down as ``_query_vec``. The embed runs via the SYNC
+    embed path in a worker thread (#276 G7), never the unbounded sync-on-loop path.
 
     The blocking DB body is short-circuited by stubbing _find_examples so this
     stays a pure-unit test (no DB).
@@ -243,9 +295,12 @@ async def test_find_examples_tool_uses_embed_async_not_sync(monkeypatch):
 
     out = await srv.find_examples.fn(query="confirm sale order", odoo_version="17.0")
     assert "find_examples" in out
-    assert embedder.async_calls == 1, "tool must embed via embed_async"
-    assert embedder.sync_calls == 0, "tool must NOT call the blocking sync embed()"
-    # The async-computed vector is handed to the blocking impl so it does not
+    # Exactly one embed, via the SYNC path the #276 G7 worker thread uses.
+    assert embedder.sync_calls == 1, "tool must embed the query exactly once"
+    assert embedder.async_calls == 0, (
+        "tool must NOT call embed_async on the hot path (#276 G7 R-A6)"
+    )
+    # The pre-computed vector is handed to the blocking impl so it does not
     # re-embed inside the worker thread.
     assert captured["query_vec"] is not None
 

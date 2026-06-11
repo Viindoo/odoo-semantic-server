@@ -465,3 +465,99 @@ session*, not durable state.
   ADR-0034 choke).
 - No migration. `api_key_session_state` is vestigial (kept, not dropped). Tool
   count stays **24**.
+
+---
+
+## Amendment (#274) — Canonical pattern under concurrency: explicit-per-call
+
+### The requirement
+
+Two concurrency shapes must resolve the **right** Odoo version / profile for each
+actor, with no silent cross-contamination:
+
+- **R1 — multi-version in one flow.** A single session legitimately needs more
+  than one version at once: a version-diff (v16 vs v17), an upgrade walk-through
+  (v16 → v17), or a migration chain (v15 → v16 → v17). Each step targets a
+  different version *within the same live MCP session*.
+- **R2 — concurrent sub-actors, one key, one session.** Several Claude Code
+  subagents fan out under one API key. Over the stateful streamable-HTTP
+  transport they can share **one** `mcp-session-id` (the parent's), each working a
+  different version (principal on v19, sub-agents on v17 / v18). Each must resolve
+  its own version.
+
+### Why the pin alone cannot satisfy this
+
+The #251 pin is keyed `(api_key_id, mcp_session_id)`. That fixes the *parallel
+sessions* case (distinct `mcp-session-id`s never clobber). But it does **not**
+distinguish two concurrent actors that **share one** `mcp-session-id`: the server
+sees one pin slot, and a deliberate `'auto'` / sentinel reflects *whoever pinned
+last* (last-write-wins). For R1 a single session physically has one pin at a time;
+for R2 sub-actors under a shared id share that one slot. So **`'auto'` is a
+single-actor convenience, never a concurrency-safe selector.**
+
+### The canonical contract — pass an explicit `odoo_version` (and `profile_name`) per call
+
+The resolver is **race-free by construction** for both shapes because **Tier-1
+(explicit) ALWAYS wins over the pin** — the pin (Tier-2) and latest fallback
+(Tier-3) are read *only* when the explicit arg is `None`/sentinel
+(`resolve_version_v2`, `resolve_profile_v2` in `src/mcp/session.py`). Therefore:
+
+- **R1 (multi-version flow):** pass the concrete version on each step
+  (`odoo_version="16.0"` then `"17.0"`). The pin is irrelevant; no step can be
+  poisoned by another. This dovetails with the WI-4 amendment above, which makes
+  `odoo_version` **hard-required** on the 19 version-bearing tools — the model is
+  *forced* to name a version, so the common R1 path is correct by default.
+- **R2 (concurrent sub-actors):** each actor passes its own explicit version on
+  every call. Sharing one `mcp-session-id` is then harmless — the pin is never
+  consulted, so last-write-wins on the shared slot cannot affect any actor that
+  passes explicit. `'auto'` is reserved for a true single-actor session that
+  deliberately opts into the convenience.
+
+**Profile is symmetric.** An explicit `profile_name` is Tier-1 and likewise wins
+over the pin, so concurrent actors needing distinct profiles pass `profile_name`
+per call. The crucial extra guarantee for profile is **authz**: the profile pin is
+data-segmentation convenience, *not* authorization (v0.6 amendment), and the #251
+profile read path is re-validated at read time through the ADR-0034 tenant choke
+(`_scope` / `_effective_allowed`). So even a stale or wrong pinned profile under
+concurrency can only ever **narrow** within `own ∪ shared` or deny-all
+(fail-closed) — it can never widen access or cross a tenant boundary. A
+concurrency race on the profile pin is thus a *convenience* defect (a narrower-
+than-intended view, self-correcting by passing `profile_name`), never a
+*security* defect.
+
+### Fail-loud, not silent-default (R-A2)
+
+When a sentinel / omitted version has **no resolvable pin AND the index is empty**,
+`resolve_version_v2` raises a **loud, actionable** `ValueError` naming the explicit
+`odoo_version=` contract, rather than inventing a default. The **deliberate-
+sentinel-to-latest** fallback is preserved for its documented consumers (Resources
+`odoo://auto/...` per ADR-0030; the WI-4/#248 backward-compat path; the underscore
+helpers called directly by unit tests) — a non-empty index resolves `'auto'` to the
+latest indexed version as before. Any *policy* that would reject `'auto'`-with-no-pin
+on the **tool** path (vs. the Resource / helper / backward-compat path) belongs at
+the tool-body layer (`server.py`, alongside the `RequiredOdooVersion` schema), not
+in the shared resolver — the shared resolver must keep the fallback that Resources
+and deliberate sentinels depend on.
+
+### Scope of this amendment
+
+Documentation + resolver-message hardening only. `resolve_version_v2` /
+`resolve_profile_v2` keep their Tier-1-always-wins ordering (no behaviour change for
+explicit or for deliberate sentinels); the empty-index `ValueError` message is made
+explicit about the per-call contract. No new parameter, no migration, tool count
+stays **24/25**.
+
+### References
+
+- `src/mcp/session.py` — `resolve_version_v2` / `resolve_profile_v2` docstrings
+  (explicit-Tier-1-wins + single-actor-pin notes) and the hardened empty-index
+  `ValueError`.
+- `tests/test_mcp_session_pin_clobber.py` — N-actor matrix: explicit overrides the
+  pin under shared-`mcp_session_id` last-write-wins (version + profile); distinct
+  sessions stay isolated; sentinel-with-no-pin-and-empty-index fails loud.
+- WI-4 amendment (above) — `odoo_version` hard-required on 19 tools makes the R1
+  common path explicit by default.
+- ADR-0034 — the tenant choke that re-validates a pinned profile (narrowing-only,
+  fail-closed), making a profile-pin race a convenience defect, not a security one.
+- ADR-0030 — Resources keep sentinel support; the reason the shared resolver must
+  retain its latest-fallback.

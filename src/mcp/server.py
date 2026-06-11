@@ -24,6 +24,7 @@ from src.constants import (
     EDITION_PRIORITY,
     EDITION_PRIORITY_ELSE,
     EMBEDDER_MAX_CONCURRENCY,
+    EMBEDDER_SLOT_ACQUIRE_TIMEOUT,
     EMBEDDER_TOKEN_BUDGET,
     FIND_EXAMPLES_ANN_LIMIT,
     GLOBAL_PROFILE,
@@ -36,6 +37,8 @@ from src.constants import (
     LIST_PREVIEW_PATCHES_MAX,
     MAGIC_FIELDS,
     NEO4J_QUERY_TIMEOUT_SECONDS,
+    NONORM_READ_MAX_CONCURRENCY,
+    NONORM_SLOT_ACQUIRE_TIMEOUT,
     ORM_QUERY_MAX_CONCURRENCY,
     ORM_SLOT_ACQUIRE_TIMEOUT,
     PG_POOL_MAX_CONN,
@@ -74,6 +77,8 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
 from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect, _profile_inspect
 from src.mcp.orm import (
     OrmQueryTimeout,
+    _bounded,
+    _is_tx_timeout,
     _resolve_orm_chain,
     _validate_depends,
     _validate_domain,
@@ -399,9 +404,15 @@ RequiredOdooVersion = Annotated[
     str,
     Field(
         description=(
-            "REQUIRED — pass the concrete Odoo version (e.g. '17.0'), "
-            "or 'auto' to reuse the session pin set by set_active_version. "
-            "Use list_available_versions if unsure which versions are indexed."
+            "REQUIRED — pass the concrete Odoo version explicitly on every call "
+            "(e.g. '17.0'). Passing it per call is the correct, race-free choice "
+            "under concurrency: parallel sessions or concurrent sub-agents that "
+            "share one MCP session each get the version they pass, regardless of "
+            "any session pin. 'auto' is a single-actor convenience that reuses "
+            "the pin set by set_active_version; it is NOT safe when multiple "
+            "actors share a session (the pin is last-write-wins) — pass the "
+            "version explicitly instead. Use list_available_versions if unsure "
+            "which versions are indexed."
         ),
     ),
 ]
@@ -411,25 +422,36 @@ _embedder_instance = None
 _version_checked = False
 _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
 
-# --- Anti-freeze hot-path embed guards (#227) -------------------------------
+# --- Anti-freeze hot-path embed guards (#227 + #276 G7) ---------------------
 # FastMCP runs sync `def` tool handlers DIRECTLY on the asyncio event-loop
 # thread (no to_thread). A single blocking embedder.embed() call therefore
 # freezes the whole server (including /health). The three query-embed tools
-# (find_examples, suggest_pattern, find_style_override) now embed via
-# embedder.embed_async() on the event loop, bounded by a module-level
-# Semaphore so a burst of concurrent embeds cannot exhaust the upstream
-# Ollama connection pool / queue unboundedly.
+# (find_examples, suggest_pattern, find_style_override) embed off the loop via
+# a worker thread, bounded by a module-level semaphore so a burst of concurrent
+# embeds cannot exhaust the upstream Ollama connection pool / queue unboundedly.
+#
+# #276 G7 — CANCEL-SAFE SLOT: the original guard used an asyncio.Semaphore whose
+# slot was released in a coroutine `finally`. When a client disconnected mid-embed
+# FastMCP cancelled the coroutine; the `finally: sem.release()` ran on cancel —
+# but the underlying embed thread (inside embed_async's own to_thread) kept
+# running and STILL held the Ollama connection. The slot freed early → the exact
+# #276 pool-drain. Fixed by porting the offload_bounded thread-held
+# BoundedSemaphore pattern: acquire()/release() now happen INSIDE the worker
+# thread, so the slot's lifetime is tied to the THREAD, not the coroutine. A
+# cancel can no longer free a slot while a thread is still embedding. In the
+# worker thread we call the SYNC embed path DIRECTLY (NOT embed_async — that
+# would double-to_thread / spin a child event loop, R-A6), routing through the
+# short-timeout query client so a hung query never inherits the 1200s batch
+# read timeout.
 #
 # EMBEDDER_MAX_CONCURRENCY caps in-flight query embeds. Callers that cannot
-# acquire a slot within _EMBED_SLOT_ACQUIRE_TIMEOUT_S fail fast (a 503-style
-# overloaded error) instead of queueing forever — the whole point of #227.
-_embed_semaphore: asyncio.Semaphore | None = None
+# acquire a slot within EMBEDDER_SLOT_ACQUIRE_TIMEOUT (constants SSOT, validated
+# < EMBEDDER_TIMEOUT_READ_QUERY at startup) fail fast (EmbedOverloaded) instead
+# of queueing forever.
+_embed_semaphore: "threading.BoundedSemaphore | None" = None
 _embed_sem_lock = threading.Lock()  # guards lazy Semaphore construction
-# Short bound: if we cannot start an embed within this window we are already
-# saturated; reject quickly rather than pile up an unbounded backlog. Read
-# from env at call time (no constants.py edit per WI-C scope) with a small
-# default. Must stay < the embed read timeout so the reject is genuinely fast.
-_EMBED_SLOT_ACQUIRE_TIMEOUT_S = float(os.getenv("EMBEDDER_SLOT_ACQUIRE_TIMEOUT", "5"))
+_embed_cap_in_use: "int | None" = None
+_embed_slot_timeout_in_use: "float | None" = None
 
 
 class EmbedOverloaded(RuntimeError):
@@ -440,20 +462,28 @@ class EmbedOverloaded(RuntimeError):
     """
 
 
-def _get_embed_semaphore() -> asyncio.Semaphore:
-    """Lazily build the embed Semaphore inside the running event loop.
+def _get_embed_semaphore() -> threading.BoundedSemaphore:
+    """Return the embed threading BoundedSemaphore, building it once on first use.
 
-    asyncio.Semaphore binds to the loop running when it is first awaited, so
-    we must NOT construct it at import time (no loop yet) — build it on first
-    use from within a handler coroutine. Double-checked under a thread lock so
-    concurrent first-callers share one instance.
+    #276 G7: a *threading* BoundedSemaphore (NOT asyncio.Semaphore) so the slot
+    is acquired/released inside the worker thread — no event-loop affinity, no
+    released-on-cancel hazard. Lazy + post-dotenv so the cap honours a .env-only
+    EMBEDDER_MAX_CONCURRENCY; a module reload (tests) resets the globals to None
+    so the next call rebuilds from the freshly-set env. The cap + acquire-timeout
+    the live semaphore was built with are cached so the hot path logs the value
+    the semaphore was actually sized for.
     """
-    global _embed_semaphore
-    if _embed_semaphore is not None:
-        return _embed_semaphore
-    with _embed_sem_lock:
-        if _embed_semaphore is None:
-            _embed_semaphore = asyncio.Semaphore(EMBEDDER_MAX_CONCURRENCY)
+    global _embed_semaphore, _embed_cap_in_use, _embed_slot_timeout_in_use
+    if _embed_semaphore is None:
+        with _embed_sem_lock:
+            if _embed_semaphore is None:
+                _embed_cap_in_use = _resolve_orm_int(
+                    "EMBEDDER_MAX_CONCURRENCY", EMBEDDER_MAX_CONCURRENCY
+                )
+                _embed_slot_timeout_in_use = _resolve_orm_float(
+                    "EMBEDDER_SLOT_ACQUIRE_TIMEOUT", EMBEDDER_SLOT_ACQUIRE_TIMEOUT
+                )
+                _embed_semaphore = threading.BoundedSemaphore(_embed_cap_in_use)
     return _embed_semaphore
 
 
@@ -472,34 +502,73 @@ def _cap_query_text(embedder, text: str) -> str:
     return split_by_token_budget(text, EMBEDDER_TOKEN_BUDGET, chars_per_token)[0]
 
 
-async def _embed_query(embedder, instruct: str, text: str) -> list[float]:
-    """Embed a single query string off the event-loop's blocking path (#227).
+def _embed_sync_query(embedder, payload: list[str]) -> list[list[float]]:
+    """Run a SINGLE query embed SYNCHRONOUSLY, routed through the short-timeout client.
 
-    - Caps `text` to the token budget before prepending `instruct`.
-    - Acquires the bounded Semaphore with a short timeout → fail fast on
-      overload (EmbedOverloaded) instead of an unbounded queue.
-    - Runs embed via embed_async with the SHORT query read timeout (30s) so a
-      single hung query never inherits the 1200s batch timeout.
-
-    Returns the embedding vector. Raises on embed failure (caller maps to the
-    tool's existing "embedding query failed" message to preserve behaviour).
+    Called only from inside the embed worker thread (#276 G7). Prefers the HTTP
+    base's ``_embed_with_timeout`` so the query goes through the dedicated
+    short-timeout (TIMEOUT_EMBEDDER_READ_QUERY) client — never the 1200s batch
+    client. Falls back to the Protocol-guaranteed sync ``embed`` for embedders
+    without that method (e.g. FakeEmbedder in tests). We deliberately do NOT call
+    ``embed_async`` here — that would nest a second to_thread / child loop inside
+    this already-offloaded thread (R-A6).
     """
-    capped = _cap_query_text(embedder, text)
+    fn = getattr(embedder, "_embed_with_timeout", None)
+    if callable(fn):
+        return fn(payload, TIMEOUT_EMBEDDER_READ_QUERY)
+    return embedder.embed(payload)
+
+
+def _embed_query_in_thread(embedder, payload: list[str]) -> list[float]:
+    """Worker-thread body for a single query embed — thread-held slot (#276 G7).
+
+    Acquires the embed BoundedSemaphore HERE (on the worker thread) so the slot
+    lives with the thread, not the caller coroutine. On acquire-timeout: fast
+    fail with EmbedOverloaded. The sync embed runs while the slot is held and the
+    slot is released only in this thread's ``finally`` — a cancelled coroutine
+    can never free it early while the embed is still in flight.
+    """
     sem = _get_embed_semaphore()
-    try:
-        await asyncio.wait_for(sem.acquire(), timeout=_EMBED_SLOT_ACQUIRE_TIMEOUT_S)
-    except TimeoutError as e:
+    cap = (
+        _embed_cap_in_use
+        if _embed_cap_in_use is not None
+        else EMBEDDER_MAX_CONCURRENCY
+    )
+    slot_timeout = (
+        _embed_slot_timeout_in_use
+        if _embed_slot_timeout_in_use is not None
+        else EMBEDDER_SLOT_ACQUIRE_TIMEOUT
+    )
+    if not sem.acquire(timeout=slot_timeout):
         raise EmbedOverloaded(
             "server busy — too many concurrent embedding requests"
-            f" (max {EMBEDDER_MAX_CONCURRENCY}); retry shortly"
-        ) from e
-    try:
-        vecs = await embedder.embed_async(
-            [instruct + capped], read_timeout=TIMEOUT_EMBEDDER_READ_QUERY
+            f" (max {cap}); retry shortly"
         )
+    try:
+        vecs = _embed_sync_query(embedder, payload)
     finally:
         sem.release()
     return vecs[0]
+
+
+async def _embed_query(embedder, instruct: str, text: str) -> list[float]:
+    """Embed a single query string off the event-loop's blocking path (#227 + #276 G7).
+
+    - Caps `text` to the token budget before prepending `instruct`.
+    - Offloads the whole acquire→embed→release sequence to ONE worker thread, so
+      the bounded-slot lifetime is tied to that thread (cancel-safe, #276 G7) and
+      the event loop never blocks on the embed.
+    - The embed runs through the SHORT query read timeout (30s) so a single hung
+      query never inherits the 1200s batch timeout.
+
+    Returns the embedding vector. Raises EmbedOverloaded on slot saturation, or
+    re-raises any embed failure (caller maps to the tool's existing "embedding
+    query failed" message to preserve behaviour).
+    """
+    capped = _cap_query_text(embedder, text)
+    return await asyncio.to_thread(
+        _embed_query_in_thread, embedder, [instruct + capped]
+    )
 
 
 def offload(fn):
@@ -634,6 +703,40 @@ def _get_orm_semaphore() -> threading.BoundedSemaphore:
     return _orm_semaphore
 
 
+# --- Bounded offload for NON-ORM heavy reads (#276 G6) ----------------------
+# A SEPARATE threading BoundedSemaphore pool for non-ORM heavy reads (currently
+# impact_analysis — a 6-query fan-out over TARGETS_MODEL / DEPENDS_ON / BOUND_TO
+# / PATCHES that can run long on a dense graph). Kept distinct from the ORM pool
+# so a fan-out burst of one class cannot starve the other (#276 G6). Built lazily
+# on first use under its own lock, post-dotenv, exactly like the ORM semaphore.
+_nonorm_semaphore: "threading.BoundedSemaphore | None" = None
+_nonorm_semaphore_lock = threading.Lock()
+_nonorm_cap_in_use: "int | None" = None
+_nonorm_slot_timeout_in_use: "float | None" = None
+
+
+def _get_nonorm_semaphore() -> threading.BoundedSemaphore:
+    """Return the non-ORM threading BoundedSemaphore, building it once on first use.
+
+    Peer of :func:`_get_orm_semaphore` for the non-ORM read pool (#276 G6). Lazy
+    so the cap honours a .env-only NONORM_READ_MAX_CONCURRENCY (resolved after
+    init_dotenv() settles, not at import). A module reload (tests) resets the
+    globals to None so the next call rebuilds from the freshly-set env.
+    """
+    global _nonorm_semaphore, _nonorm_cap_in_use, _nonorm_slot_timeout_in_use
+    if _nonorm_semaphore is None:
+        with _nonorm_semaphore_lock:
+            if _nonorm_semaphore is None:
+                _nonorm_cap_in_use = _resolve_orm_int(
+                    "NONORM_READ_MAX_CONCURRENCY", NONORM_READ_MAX_CONCURRENCY
+                )
+                _nonorm_slot_timeout_in_use = _resolve_orm_float(
+                    "NONORM_SLOT_ACQUIRE_TIMEOUT", NONORM_SLOT_ACQUIRE_TIMEOUT
+                )
+                _nonorm_semaphore = threading.BoundedSemaphore(_nonorm_cap_in_use)
+    return _nonorm_semaphore
+
+
 def offload_bounded(fn):
     """Move a blocking sync ORM tool body off the loop, bounded by a Semaphore.
 
@@ -745,6 +848,77 @@ def offload_bounded(fn):
     return wrapper
 
 
+def offload_bounded_nonorm(fn):
+    """Bounded offload for a NON-ORM heavy read (#276 G6).
+
+    Identical machinery to :func:`offload_bounded` — a thread-held
+    ``threading.BoundedSemaphore`` whose slot is acquired/released INSIDE the
+    worker thread, so a cancelled coroutine (client disconnect) can never free a
+    slot while the worker thread is still pinning a Neo4j connection (the #276
+    cancel-safety invariant). The ONLY differences are a SEPARATE semaphore pool
+    (``_get_nonorm_semaphore``, sized by ``NONORM_READ_MAX_CONCURRENCY``) so a
+    burst of one read class cannot starve the other, and the
+    ``nonorm_overloaded_total`` metric.
+
+    The underlying per-query Neo4j timeout still comes from ``_bounded`` /
+    ``neo4j.Query(timeout=...)`` wrapped around the heavy queries in the handler
+    body (G5); an ``OrmQueryTimeout`` raised there is surfaced to the client the
+    same way as for the ORM tools, but recorded under the SEPARATE
+    ``nonorm_query_timeout_total`` counter so ops can tell the pools apart.
+    """
+    tool_name = getattr(fn, "__name__", "nonorm_tool")
+
+    def _run_in_thread(a, k):
+        # Slot acquired + released on THIS worker thread → lifetime bound to the
+        # thread, never the (possibly cancelled) caller coroutine. See #276 G6.
+        sem = _get_nonorm_semaphore()
+        cap = (
+            _nonorm_cap_in_use
+            if _nonorm_cap_in_use is not None
+            else NONORM_READ_MAX_CONCURRENCY
+        )
+        slot_timeout = (
+            _nonorm_slot_timeout_in_use
+            if _nonorm_slot_timeout_in_use is not None
+            else NONORM_SLOT_ACQUIRE_TIMEOUT
+        )
+        if not sem.acquire(timeout=slot_timeout):
+            _metric_nonorm_overloaded(tool_name)
+            logger.warning(
+                "non-ORM read overloaded — semaphore full (max %d): tool=%s",
+                cap,
+                tool_name,
+            )
+            raise OrmOverloaded(
+                "server busy — too many concurrent heavy read requests"
+                f" (max {cap}); retry shortly"
+            )
+        try:
+            return fn(*a, **k)
+        except OrmQueryTimeout:
+            _metric_nonorm_query_timeout(tool_name)
+            logger.warning("non-ORM read query timed out: tool=%s", tool_name)
+            raise
+        finally:
+            sem.release()
+
+    @functools.wraps(fn)
+    async def wrapper(*a, **k):
+        try:
+            return await asyncio.to_thread(_run_in_thread, a, k)
+        except OrmOverloaded as exc:
+            return str(exc)
+        except OrmQueryTimeout as exc:
+            return getattr(
+                exc,
+                "user_message",
+                "Query timed out — the request was too expensive to"
+                " complete; narrow the model/version and retry.",
+            )
+
+    return wrapper
+
+
 def _validate_orm_env() -> None:
     """Fail-fast guard for the ORM concurrency / timeout env knobs (HIGH #3).
 
@@ -764,6 +938,16 @@ def _validate_orm_env() -> None:
         no longer "fast", so an overloaded server pins a worker-thread slot for
         as long as the query itself would run. The .env.example states this
         constraint; this enforces it.
+      * NONORM_READ_MAX_CONCURRENCY <= 0 / NONORM_SLOT_ACQUIRE_TIMEOUT >=
+        NEO4J_QUERY_TIMEOUT_SECONDS — same two foot-guns for the separate
+        non-ORM heavy-read pool (#276 G6).
+      * EMBEDDER_MAX_CONCURRENCY <= 0 — BoundedSemaphore(0) can never be
+        acquired, so every query-embed fast-rejects forever (#276 G7); same
+        foot-gun the ORM/non-ORM pools already guard.
+      * EMBEDDER_SLOT_ACQUIRE_TIMEOUT >= EMBEDDER_TIMEOUT_READ_QUERY — the
+        query-embed fast-reject is no longer "fast", so an overloaded embedder
+        pins a worker-thread slot for as long as the embed itself would run
+        (#276 G7). Must stay strictly below the query read timeout.
     """
     neo4j_timeout = int(
         os.getenv("NEO4J_QUERY_TIMEOUT_SECONDS", str(NEO4J_QUERY_TIMEOUT_SECONDS))
@@ -773,6 +957,21 @@ def _validate_orm_env() -> None:
     )
     orm_acquire = float(
         os.getenv("ORM_SLOT_ACQUIRE_TIMEOUT", str(ORM_SLOT_ACQUIRE_TIMEOUT))
+    )
+    nonorm_max = int(
+        os.getenv("NONORM_READ_MAX_CONCURRENCY", str(NONORM_READ_MAX_CONCURRENCY))
+    )
+    nonorm_acquire = float(
+        os.getenv("NONORM_SLOT_ACQUIRE_TIMEOUT", str(NONORM_SLOT_ACQUIRE_TIMEOUT))
+    )
+    embed_acquire = float(
+        os.getenv("EMBEDDER_SLOT_ACQUIRE_TIMEOUT", str(EMBEDDER_SLOT_ACQUIRE_TIMEOUT))
+    )
+    embed_read_query = int(
+        os.getenv("EMBEDDER_TIMEOUT_READ_QUERY", str(TIMEOUT_EMBEDDER_READ_QUERY))
+    )
+    embed_max = int(
+        os.getenv("EMBEDDER_MAX_CONCURRENCY", str(EMBEDDER_MAX_CONCURRENCY))
     )
     if neo4j_timeout <= 0:
         raise SystemExit(
@@ -792,6 +991,33 @@ def _validate_orm_env() -> None:
             f"({orm_acquire}) must be < NEO4J_QUERY_TIMEOUT_SECONDS "
             f"({neo4j_timeout}) so an overloaded server rejects fast instead "
             "of pinning a worker-thread slot for the whole traversal window."
+        )
+    if nonorm_max <= 0:
+        raise SystemExit(
+            "FATAL: NONORM_READ_MAX_CONCURRENCY must be > 0 "
+            f"(got {nonorm_max}); 0 makes every non-ORM heavy read fast-reject "
+            "forever (#276 G6)."
+        )
+    if nonorm_acquire >= neo4j_timeout:
+        raise SystemExit(
+            "FATAL: NONORM_SLOT_ACQUIRE_TIMEOUT "
+            f"({nonorm_acquire}) must be < NEO4J_QUERY_TIMEOUT_SECONDS "
+            f"({neo4j_timeout}) so an overloaded server rejects fast instead "
+            "of pinning a worker-thread slot for the whole query window (#276 G6)."
+        )
+    if embed_max <= 0:
+        raise SystemExit(
+            "FATAL: EMBEDDER_MAX_CONCURRENCY must be > 0 "
+            f"(got {embed_max}); 0 makes every query-embed fast-reject forever "
+            "(BoundedSemaphore(0) can never be acquired) — #276 G7."
+        )
+    if embed_acquire >= embed_read_query:
+        raise SystemExit(
+            "FATAL: EMBEDDER_SLOT_ACQUIRE_TIMEOUT "
+            f"({embed_acquire}) must be < EMBEDDER_TIMEOUT_READ_QUERY "
+            f"({embed_read_query}) so an overloaded embedder rejects fast "
+            "instead of pinning a worker-thread slot for the whole query-embed "
+            "window (#276 G7)."
         )
 
 
@@ -848,6 +1074,82 @@ def _metric_orm_overloaded(tool: str) -> None:
         orm_overloaded_total.labels(tool=tool).inc()
     except Exception:  # pragma: no cover - observability must not break the tool
         pass
+
+
+def _metric_nonorm_overloaded(tool: str) -> None:
+    """Increment the non-ORM overload counter; never raise on metrics failure (#276 G6)."""
+    try:
+        from src.metrics import nonorm_overloaded_total
+
+        nonorm_overloaded_total.labels(tool=tool).inc()
+    except Exception:  # pragma: no cover - observability must not break the tool
+        pass
+
+
+def _metric_nonorm_query_timeout(tool: str) -> None:
+    """Increment the non-ORM query-timeout counter; never raise (#276 G5).
+
+    Kept separate from ``orm_query_timeout_total`` so ops can distinguish which
+    pool's queries are hitting the per-query Neo4j timeout (the non-ORM pool is
+    dominated by impact_analysis fan-outs, not the ORM-validation tools).
+    """
+    try:
+        from src.metrics import nonorm_query_timeout_total
+
+        nonorm_query_timeout_total.labels(tool=tool).inc()
+    except Exception:  # pragma: no cover - observability must not break the tool
+        pass
+
+
+def _nonorm_timeout(label: str) -> "OrmQueryTimeout":
+    """Build an OrmQueryTimeout for a bounded non-ORM read (#276 G5, ADR-0023 tone)."""
+    return OrmQueryTimeout(
+        f"Query timed out after {NEO4J_QUERY_TIMEOUT_SECONDS}s while computing "
+        f"{label}. The dependency graph may be unusually dense - try a more "
+        f"specific entity or retry later."
+    )
+
+
+def _data_bounded(session, text: str, label: str, **params) -> list[dict]:
+    """Run a NON-ORM read under the per-query Neo4j timeout, return ``.data()`` (#276 G5).
+
+    The Cypher is wrapped in ``neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)``
+    via the shared ``_bounded`` helper (reused from src.mcp.orm — a peer module
+    server already imports — so there is NO duplicate timeout helper). Neo4j
+    Result consumption is LAZY, so the transaction-timeout ``ClientError`` fires
+    during ``.data()``, not during ``session.run`` — both are therefore inside
+    the try here. A tx-timeout ``ClientError`` becomes ``OrmQueryTimeout`` so the
+    ``offload_bounded_nonorm`` wrapper records the metric in-thread and surfaces a
+    clean English message; any other ``ClientError`` propagates unchanged.
+
+    ``label`` is a short English noun phrase naming what was being resolved (e.g.
+    "impact analysis for 'sale.order'"), used only in the timeout message — never
+    leaks Cypher.
+    """
+    from neo4j.exceptions import ClientError
+
+    try:
+        return session.run(_bounded(text), **params).data()
+    except ClientError as exc:
+        if _is_tx_timeout(exc):
+            raise _nonorm_timeout(label) from exc
+        raise
+
+
+def _single_bounded(session, text: str, label: str, **params):
+    """Run a NON-ORM read under the per-query Neo4j timeout, return ``.single()`` (#276 G5).
+
+    Peer of :func:`_data_bounded` for single-row queries (the impact_analysis
+    existence checks). Same lazy-consumption + tx-timeout conversion contract.
+    """
+    from neo4j.exceptions import ClientError
+
+    try:
+        return session.run(_bounded(text), **params).single()
+    except ClientError as exc:
+        if _is_tx_timeout(exc):
+            raise _nonorm_timeout(label) from exc
+        raise
 
 
 def _get_api_key_id() -> str:
@@ -2605,39 +2907,50 @@ def _impact_analysis(
         # ------------------------------------------------------------------ #
         # Query 1: verify entity exists                                        #
         # ------------------------------------------------------------------ #
+        # G5 (#276): every heavy read below runs through _data_bounded /
+        # _single_bounded, which wrap the Cypher in neo4j.Query(timeout=...) so a
+        # runaway traversal (TARGETS_MODEL fan-out, DEPENDS_ON / BOUND_TO chains)
+        # surfaces as a bounded OrmQueryTimeout instead of a zombie transaction.
+        _label = f"impact analysis for '{entity_name}' (Odoo {odoo_version})"
         if entity_type == "field":
-            exists = session.run(
+            exists = _single_bounded(
+                session,
                 "MATCH (f:Field {name: $fn, model: $mn, odoo_version: $v}) "
                 f"WHERE {_scope_pred('f')} "
                 "RETURN count(f) AS c",
+                _label,
                 fn=member_name, mn=model_name, v=odoo_version,
                 **_scope(profile_name),
-            ).single()["c"]
+            )["c"]
             if not exists:
                 return (
                     f"Entity '{entity_name}' not found in Odoo {odoo_version}."
                 )
         elif entity_type == "method":
-            exists = session.run(
+            exists = _single_bounded(
+                session,
                 "MATCH (mth:Method {name: $mn, model: $model, odoo_version: $v}) "
                 f"WHERE {_scope_pred('mth')} "
                 "RETURN count(mth) AS c",
+                _label,
                 mn=member_name, model=model_name, v=odoo_version,
                 **_scope(profile_name),
-            ).single()["c"]
+            )["c"]
             if not exists:
                 return (
                     f"Entity '{entity_name}' not found in Odoo {odoo_version}."
                 )
         else:  # model
-            exists = session.run(
+            exists = _single_bounded(
+                session,
                 "MATCH (m:Model {name: $mn, odoo_version: $v}) "
                 "WHERE coalesce(m.unresolved, false) = false "
                 "AND m.module <> '__unresolved__' "
                 f"AND {_scope_pred('m')} "
                 "RETURN count(m) AS c",
+                _label,
                 mn=model_name, v=odoo_version, **_scope(profile_name),
-            ).single()["c"]
+            )["c"]
             if not exists:
                 return (
                     f"Entity '{entity_name}' not found in Odoo {odoo_version}."
@@ -2646,49 +2959,49 @@ def _impact_analysis(
         # ------------------------------------------------------------------ #
         # Query 2: views targeting model (DISTINCT to avoid TARGETS_MODEL fan-out)
         # ------------------------------------------------------------------ #
-        views = session.run(f"""
+        views = _data_bounded(session, f"""
             MATCH (m:Model {{name: $mn, odoo_version: $v}})<-[:{REL_TARGETS_MODEL}]-(view:View)
             WHERE ($own IS NULL OR (size(view.profile) > 0
                    AND all(__p IN view.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN DISTINCT view.xmlid AS xmlid, view.module AS module
             ORDER BY view.module, view.xmlid
-        """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
+        """, _label, mn=model_name, v=odoo_version, **_scope(profile_name))
 
         # ------------------------------------------------------------------ #
         # Query 3: methods on this model (with super call filter for field;   #
         #          all overrides for method entity_type)                       #
         # ------------------------------------------------------------------ #
         if entity_type == "field":
-            methods = session.run("""
+            methods = _data_bounded(session, """
                 MATCH (mth:Method {model: $mn, odoo_version: $v})
                 WHERE mth.has_super_call = true
                 AND ($own IS NULL OR (size(mth.profile) > 0
                      AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.module AS module
                 ORDER BY mth.module, mth.name
-            """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
+            """, _label, mn=model_name, v=odoo_version, **_scope(profile_name))
         elif entity_type == "method":
-            methods = session.run("""
+            methods = _data_bounded(session, """
                 MATCH (mth:Method {name: $mn2, model: $mn, odoo_version: $v})
                 WHERE ($own IS NULL OR (size(mth.profile) > 0
                        AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.module AS module
                 ORDER BY mth.module
-            """, mn2=member_name, mn=model_name, v=odoo_version,
-                **_scope(profile_name)).data()
+            """, _label, mn2=member_name, mn=model_name, v=odoo_version,
+                **_scope(profile_name))
         else:  # model
-            methods = session.run("""
+            methods = _data_bounded(session, """
                 MATCH (mth:Method {model: $mn, odoo_version: $v})
                 WHERE ($own IS NULL OR (size(mth.profile) > 0
                        AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT mth.name AS name, mth.module AS module
                 ORDER BY mth.module, mth.name
-            """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
+            """, _label, mn=model_name, v=odoo_version, **_scope(profile_name))
 
         # ------------------------------------------------------------------ #
         # Query 4: JS patches on components bound to this model               #
         # ------------------------------------------------------------------ #
-        js_patches = session.run("""
+        js_patches = _data_bounded(session, """
             MATCH (m:Model {name: $mn, odoo_version: $v})<-[:BOUND_TO]-(comp:OWLComp)
                   <-[:PATCHES]-(jp:JSPatch)
             WHERE ($own IS NULL OR (size(jp.profile) > 0
@@ -2696,29 +3009,29 @@ def _impact_analysis(
             RETURN DISTINCT jp.target AS target, jp.patch_name AS patch_name,
                    jp.module AS module, jp.era AS era
             ORDER BY jp.module, jp.target
-        """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
+        """, _label, mn=model_name, v=odoo_version, **_scope(profile_name))
 
         # ------------------------------------------------------------------ #
         # Query 5: dependent modules of all modules defining this model       #
         # ------------------------------------------------------------------ #
-        dep_modules = session.run(f"""
+        dep_modules = _data_bounded(session, f"""
             MATCH (m:Model {{name: $mn, odoo_version: $v}})-[:DEFINED_IN]->(defmod:Module)
                   <-[:{REL_DEPENDS_ON}]-(depmod:Module)
             WHERE ($own IS NULL OR (size(depmod.profile) > 0
                    AND all(__p IN depmod.profile WHERE __p IN $own OR __p IN $shared)))
             RETURN DISTINCT depmod.name AS dep_name
             ORDER BY depmod.name
-        """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
+        """, _label, mn=model_name, v=odoo_version, **_scope(profile_name))
 
         # For model entity_type: also collect defining modules as "extensions"
         if entity_type == "model":
-            def_modules = session.run("""
+            def_modules = _data_bounded(session, """
                 MATCH (m:Model {name: $mn, odoo_version: $v})-[:DEFINED_IN]->(mod:Module)
                 WHERE ($own IS NULL OR (size(m.profile) > 0
                        AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
                 RETURN DISTINCT m.module AS module_name
                 ORDER BY m.module
-            """, mn=model_name, v=odoo_version, **_scope(profile_name)).data()
+            """, _label, mn=model_name, v=odoo_version, **_scope(profile_name))
         else:
             def_modules = []
 
@@ -2729,7 +3042,8 @@ def _impact_analysis(
         uses_field_methods: list[dict] = []
         depends_on_field_methods: list[dict] = []
         if entity_type == "field":
-            uses_field_methods = session.run(
+            uses_field_methods = _data_bounded(
+                session,
                 f"""
                 MATCH (mth:Method {{odoo_version: $v}})
                       -[:{REL_USES_FIELD}]->(f:Field {{name: $fn, model: $mn, odoo_version: $v}})
@@ -2738,10 +3052,12 @@ def _impact_analysis(
                 RETURN DISTINCT mth.name AS name, mth.model AS model, mth.module AS module
                 ORDER BY mth.module, mth.model, mth.name
                 """,
+                _label,
                 fn=member_name, mn=model_name, v=odoo_version,
                 **_scope(profile_name),
-            ).data()
-            depends_on_field_methods = session.run(
+            )
+            depends_on_field_methods = _data_bounded(
+                session,
                 f"""
                 MATCH (mth:Method {{odoo_version: $v}})
                       -[:{REL_DEPENDS_ON_FIELD}]->(f:Field {{name: $fn, model: $mn,
@@ -2751,9 +3067,10 @@ def _impact_analysis(
                 RETURN DISTINCT mth.name AS name, mth.model AS model, mth.module AS module
                 ORDER BY mth.module, mth.model, mth.name
                 """,
+                _label,
                 fn=member_name, mn=model_name, v=odoo_version,
                 **_scope(profile_name),
-            ).data()
+            )
 
     # ---------------------------------------------------------------------- #
     # Build output tree — G1: all sections capped + disclosure (ADR-0023 §3) #
@@ -2957,7 +3274,7 @@ def _impact_analysis(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_bounded_nonorm
 def impact_analysis(
     entity_type: str,
     entity_name: str,
@@ -7072,21 +7389,26 @@ async def entity_lookup(
 @mcp.tool(**MUTATING_TOOL_KWARGS)
 @offload
 def set_active_version(odoo_version: str) -> ToolResult:
-    """Pin the active Odoo version for this API key (ADR-0029 implicit context).
+    """Pin the active Odoo version for this MCP session (ADR-0029 implicit context).
 
-    TRIGGER when: starting a work session focused on a specific Odoo version
-    and you want to drop odoo_version= from every subsequent tool call.
-    PREFER over: passing odoo_version='17.0' to every individual tool call;
-    this scopes the version once per session with a 24h sliding TTL.
-    SKIP when: hopping between multiple versions mid-session — pass
-    odoo_version= explicitly to each call instead to avoid confusion.
+    TRIGGER when: a single actor works one Odoo version for a while and wants the
+    'auto' convenience of dropping odoo_version= on subsequent calls.
+    PREFER over: passing odoo_version='17.0' to every individual tool call ONLY
+    when one actor drives this session; this scopes the version once per MCP
+    session with a 24h write-anchored idle TTL.
+    SKIP when: hopping between multiple versions mid-session, OR when concurrent
+    sub-agents / parallel sessions may share this MCP session — pass
+    odoo_version= explicitly to each call instead. The pin is single-actor
+    convenience and last-write-wins; concurrent actors sharing one session MUST
+    pass an explicit odoo_version= so each resolves its own version safely.
 
     Args:
         odoo_version: Concrete version string to pin, e.g. '17.0', '16.0'.
             Sentinel values ('auto', 'default', 'latest', 'any', '') are
             rejected here — you cannot pin a sentinel as the active version.
-            After a successful pin, subsequent tool calls accept 'auto' as
-            odoo_version to reuse this pin (ADR-0029).
+            After a successful pin, a single-actor session may pass 'auto' as
+            odoo_version to reuse this pin (ADR-0029); under concurrency pass the
+            version explicitly instead.
 
     Returns:
         Confirmation receipt with the pinned version and TTL duration.
@@ -7178,14 +7500,18 @@ def set_active_version(odoo_version: str) -> ToolResult:
 @mcp.tool(**MUTATING_TOOL_KWARGS)
 @offload
 def set_active_profile(profile_name: str | None) -> ToolResult:
-    """Pin the active profile for this API key (ADR-0029 implicit context).
+    """Pin the active profile for this MCP session (ADR-0029 implicit context).
 
-    TRIGGER when: working exclusively within one customer profile and you
-    want profile filtering applied automatically to all subsequent queries.
-    PREFER over: passing profile_name='my-erp-prod' to every tool call;
-    this scopes the profile once per session with a 24h sliding TTL.
-    SKIP when: comparing across multiple profiles mid-session — pass
-    profile_name= explicitly to each call instead.
+    TRIGGER when: a single actor works exclusively within one customer profile
+    and wants profile filtering applied automatically to subsequent queries.
+    PREFER over: passing profile_name='my-erp-prod' to every tool call ONLY when
+    one actor drives this session; this scopes the profile once per MCP session
+    with a 24h write-anchored idle TTL.
+    SKIP when: comparing across multiple profiles mid-session, OR when concurrent
+    sub-agents / parallel sessions may share this MCP session — pass
+    profile_name= explicitly to each call instead. The pin is single-actor
+    convenience and last-write-wins; concurrent actors sharing one session MUST
+    pass an explicit profile_name= so each resolves its own profile safely.
 
     Args:
         profile_name: Profile name such as 'internal_17' or
@@ -8411,17 +8737,25 @@ if __name__ == "__main__":
     # #227 backpressure: cap the number of concurrent connections uvicorn will
     # service. Beyond this, uvicorn returns HTTP 503 immediately instead of
     # letting the accept-backlog grow unbounded (which turns overload into
-    # latency + OOM). There are now TWO independent inner bounds — the embed
-    # semaphore (EMBEDDER_MAX_CONCURRENCY) and the ORM semaphore
-    # (ORM_QUERY_MAX_CONCURRENCY). The connection ceiling is a multiple of their
-    # SUM so that both bounded pools can be fully saturated and there is still
-    # ample headroom for cheap non-embed/non-ORM tools + /health while the two
+    # latency + OOM). There are now THREE independent inner bounds — the embed
+    # semaphore (EMBEDDER_MAX_CONCURRENCY), the ORM semaphore
+    # (ORM_QUERY_MAX_CONCURRENCY) and the non-ORM heavy-read semaphore
+    # (NONORM_READ_MAX_CONCURRENCY, #276 G6). The connection ceiling is a
+    # multiple of their SUM so that all bounded pools can be fully saturated and
+    # there is still ample headroom for cheap tools + /health while the three
     # semaphores independently bound the expensive slots. Tunable via
     # MCP_LIMIT_CONCURRENCY.
     _limit_concurrency = int(
         os.getenv(
             "MCP_LIMIT_CONCURRENCY",
-            str((EMBEDDER_MAX_CONCURRENCY + ORM_QUERY_MAX_CONCURRENCY) * 16),
+            str(
+                (
+                    EMBEDDER_MAX_CONCURRENCY
+                    + ORM_QUERY_MAX_CONCURRENCY
+                    + NONORM_READ_MAX_CONCURRENCY
+                )
+                * 16
+            ),
         )
     )
     _uvicorn.run(

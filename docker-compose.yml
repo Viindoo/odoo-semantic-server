@@ -12,6 +12,12 @@ services:
       # để bolt client redirect đúng host (không bị redirect về container hostname):
       NEO4J_server_bolt_advertised__address: ${NEO4J_ADVERTISED_HOST:-localhost}:7687
       NEO4J_dbms_security_auth__max__failed__attempts: "10"
+      # Global transaction timeout backstop (ADR-0048 D7 / issue #276).
+      # 600s > per-query driver timeout (NEO4J_QUERY_TIMEOUT_SECONDS=30s default)
+      # to backstop zombie transactions while allowing long-running indexer txs.
+      # NOT 60s: delete_modules_scoped / gc_stale_modules / _write_parse_result
+      # all legitimately exceed 60s on large repos. See docs/operations/timeouts.md.
+      NEO4J_db_transaction_timeout: "600s"
     ports:
       # Same-server default — DB localhost only. Reverse proxy / SSH tunnel
       # for split-tier deploy: change to "7687:7687" + firewall app-server IP.
