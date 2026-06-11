@@ -35,6 +35,11 @@ from src.mcp.hints import NEXT_STEP_HINTS, TERMINAL_TOOLS
 # Repo root is parent-of-parent of this file (tests/test_grammar_consistency.py).
 _REPO = Path(__file__).resolve().parent.parent
 _SERVER_PY = _REPO / "src" / "mcp" / "server.py"
+# Tool bodies were split out of the server god-file into src/mcp/tools/*.py
+# (refactor/mcp-tool-split).  A terminal tool's @mcp.tool wrapper + private impl
+# may now live in any of these modules, so the no-footer static check searches
+# the server hub AND every tool module.
+_TOOL_SOURCE_FILES = [_SERVER_PY, *sorted((_REPO / "src" / "mcp" / "tools").glob("*.py"))]
 
 
 def _collect_static_strings(path: Path) -> list[tuple[int, str]]:
@@ -83,12 +88,19 @@ def test_language_policy_static_strings():
     """
     pat = re.compile(r"[À-ỹ]")
     offenders: list[str] = []
-    for lineno, value in _collect_static_strings(_SERVER_PY):
-        if pat.search(value):
-            preview = value[:60].replace("\n", "\\n")
-            offenders.append(f"  src/mcp/server.py:{lineno}  {preview!r}")
+    # Tool bodies were split out of server.py into src/mcp/tools/*.py
+    # (refactor/mcp-tool-split). The English-only policy applies to tool output
+    # strings wherever they now live, so scan the server hub AND every tool
+    # module — not server.py alone (which would silently drop coverage of the
+    # moved tools).
+    for source_file in _TOOL_SOURCE_FILES:
+        rel = source_file.relative_to(_REPO)
+        for lineno, value in _collect_static_strings(source_file):
+            if pat.search(value):
+                preview = value[:60].replace("\n", "\\n")
+                offenders.append(f"  {rel}:{lineno}  {preview!r}")
     assert not offenders, (
-        "Static strings in src/mcp/server.py contain non-ASCII Latin Extended "
+        "Static strings in tool source files contain non-ASCII Latin Extended "
         "characters (likely Vietnamese). Per ADR-0023 §2, tool output strings "
         "must be English-only (docstrings are exempt).\n"
         + "\n".join(offenders)
@@ -107,26 +119,30 @@ def test_next_step_no_footer_terminal_tools(tool_name: str):
     # Source-level: the tool's function body must not call format_next_step
     # or hints_for. Search the public @mcp.tool wrapper AND its private
     # underscore-prefixed implementation (e.g. `lint_check` + `_lint_check`).
+    # Bodies may live in the server hub or any src/mcp/tools/*.py module.
     found_at_least_one = False
     for candidate in (tool_name, f"_{tool_name}"):
-        body = _function_body_source(_SERVER_PY, candidate)
-        if body is None:
-            continue
-        found_at_least_one = True
-        assert "format_next_step(" not in body, (
-            f"Terminal tool {candidate!r} body in src/mcp/server.py calls "
-            "format_next_step — must not emit a Next: footer per ADR-0023 §4.4."
-        )
-        assert "hints_for(" not in body, (
-            f"Terminal tool {candidate!r} body in src/mcp/server.py calls "
-            "hints_for — must not emit a Next: footer per ADR-0023 §4.4."
-        )
+        for source_file in _TOOL_SOURCE_FILES:
+            body = _function_body_source(source_file, candidate)
+            if body is None:
+                continue
+            found_at_least_one = True
+            rel = source_file.relative_to(_REPO)
+            assert "format_next_step(" not in body, (
+                f"Terminal tool {candidate!r} body in {rel} calls "
+                "format_next_step — must not emit a Next: footer per ADR-0023 §4.4."
+            )
+            assert "hints_for(" not in body, (
+                f"Terminal tool {candidate!r} body in {rel} calls "
+                "hints_for — must not emit a Next: footer per ADR-0023 §4.4."
+            )
     # Guard against silent no-op if BOTH `tool_name` and `_tool_name` get
     # renamed (would previously make this test trivially pass).
     assert found_at_least_one, (
         f"Terminal tool {tool_name!r} — neither '{tool_name}' nor "
-        f"'_{tool_name}' found as top-level def in src/mcp/server.py. "
-        "If the tool was renamed, update TERMINAL_TOOLS in src/mcp/hints.py."
+        f"'_{tool_name}' found as top-level def in src/mcp/server.py or any "
+        "src/mcp/tools/*.py module. If the tool was renamed, update "
+        "TERMINAL_TOOLS in src/mcp/hints.py."
     )
 
 
