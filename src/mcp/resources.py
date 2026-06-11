@@ -46,6 +46,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.constants import STYLESHEET_RESOURCE_MAX_BYTES
+from src.mcp.orm import OrmQueryTimeout
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +318,9 @@ def _render_model(version: str, name: str) -> tuple[str, str]:
     from src.mcp import server as _srv
 
     v = _resolved_version_for(version)
-    text = _srv._resolve_model(name, v)
+    # _reraise_timeout=True: a transient per-query timeout must NOT be written to
+    # the resource LRU (get_or_compute stores unconditionally) — #284 review.
+    text = _srv._resolve_model(name, v, _reraise_timeout=True)
     return text, MIME_MARKDOWN
 
 
@@ -582,9 +585,15 @@ def register_resources(mcp_instance) -> None:
         # served from an admin's (or another tenant's) cached body.
         resolved = _resolved_version_for(version)
         key = _tenant_cache_key(resolved, "model", name)
-        return cache.get_or_compute(
-            key, lambda: _render_model(resolved, name),
-        )[0]
+        try:
+            return cache.get_or_compute(
+                key, lambda: _render_model(resolved, name),
+            )[0]
+        except OrmQueryTimeout as exc:
+            # #284 review: surface the clean English timeout message UNCACHED so a
+            # 30s blip on a dense-mesh model never pins a stale error in the LRU
+            # for the full TTL. The next read re-resolves once Neo4j recovers.
+            return exc.user_message
 
     # ---- field ----------------------------------------------------------
     @mcp_instance.resource(

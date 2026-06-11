@@ -293,6 +293,97 @@ def test_unknown_model_returns_not_found_tree(mcp_with_resources) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 5b (#284 review) — a TRANSIENT _resolve_model timeout is NEVER cached.
+#
+#   Business invariant: get_or_compute stores its compute_fn return value
+#   UNCONDITIONALLY. _resolve_model now (per #279) converts a per-query Neo4j
+#   timeout into a clean string. If the model resource cached that string, a 30s
+#   blip would pin the error in the LRU for the full TTL (300s) — a momentary
+#   slow-query becomes a 5-minute stale-error outage on that URI. The fix makes
+#   _render_model pass `_reraise_timeout=True` so the OrmQueryTimeout propagates
+#   and _model_resource returns the message UNCACHED. This test fails (the error
+#   body would be cached → second read returns the stale error) without the fix.
+#
+#   Fully patches _render_model, so it needs no live Neo4j despite the module
+#   neo4j marker; an explicit version short-circuits _resolved_version_for.
+# ---------------------------------------------------------------------------
+
+
+def test_transient_timeout_is_not_cached(fresh_resources_module) -> None:
+    """A timeout on the first read must not poison the cache for the second.
+
+    Patches the REAL ``_resolve_model`` (not ``_render_model``) with a stub that
+    honours the ``_reraise_timeout`` contract — raises ``OrmQueryTimeout`` only
+    when the caller opts in, else returns the clean string. That makes BOTH
+    halves of the fix load-bearing for this test:
+
+      * If ``_render_model`` stops passing ``_reraise_timeout=True``, the stub
+        returns the timeout STRING, ``get_or_compute`` caches it, and the second
+        read serves the stale error -> ``body2 == good_body`` fails RED.
+      * If ``_model_resource`` stops catching ``OrmQueryTimeout``, the first read
+        raises out of the handler -> ``_read`` errors RED.
+
+    Verified red-before-green against both reverts.
+    """
+    from src.mcp import server as _srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    cache = fresh_resources_module.get_cache()
+    cache.clear()
+    assert len(cache) == 0
+
+    uri = f"odoo://{F1_VERSION}/model/{F1_MODEL}"
+    good_body = f"{F1_MODEL} (Odoo {F1_VERSION})\nFields: 3"
+    timeout_msg = (
+        "Query timed out after 30s while computing model resolution for "
+        f"'{F1_MODEL}'. The dependency graph may be unusually dense - try a "
+        "more specific entity or retry later."
+    )
+
+    calls = {"n": 0}
+
+    def _fake_resolve_model(
+        name, odoo_version="auto", profile_name=None, from_module=None,
+        *, _reraise_timeout=False,
+    ):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # First read times out — mirror the real _resolve_model contract.
+            if _reraise_timeout:
+                raise OrmQueryTimeout(timeout_msg)
+            return timeout_msg
+        return good_body
+
+    with patch.object(_srv, "_resolve_model", _fake_resolve_model):
+        from fastmcp import FastMCP
+        mcp = FastMCP("timeout-nocache-test")
+        fresh_resources_module.register_resources(mcp)
+
+        body1 = _read(mcp, uri)
+        body2 = _read(mcp, uri)
+
+    # First read surfaces the clean timeout message (no Cypher leaked).
+    assert "timed out" in body1.lower(), f"expected timeout body; got {body1[:120]!r}"
+    assert "MATCH" not in body1, f"Cypher leaked into resource body: {body1[:200]!r}"
+    # The transient error was NOT cached: the second read re-resolved and now
+    # returns the recovered, good body (proving _resolve_model ran twice).
+    assert body2 == good_body, (
+        f"second read must return the recovered body, not the cached error; "
+        f"got {body2[:120]!r}"
+    )
+    assert calls["n"] == 2, (
+        f"_resolve_model must run on BOTH reads (error uncached); got {calls['n']}"
+    )
+    # Cache holds only the good body now — never the timeout string.
+    expected_key = uri + "::t_admin"
+    assert expected_key in cache, "recovered body must be cached after the 2nd read"
+    cached_body, _ = cache.get(expected_key)
+    assert "timed out" not in cached_body.lower(), (
+        f"timeout string must never be cached; cache held: {cached_body[:120]!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Test 6 (AC-F1-5) — sentinel 'auto' resolves via session state
 # ---------------------------------------------------------------------------
 

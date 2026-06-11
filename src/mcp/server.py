@@ -1907,6 +1907,8 @@ def _resolve_model(
     odoo_version: str = "auto",
     profile_name: str | None = None,
     from_module: str | None = None,
+    *,
+    _reraise_timeout: bool = False,
 ) -> str:
     """Return a tree overview of a model, optionally scoped to a single declaring module.
 
@@ -1919,6 +1921,14 @@ def _resolve_model(
         indexed version.
     profile_name:
         Optional profile filter.
+    _reraise_timeout:
+        When ``True``, an INHERITS-heavy query timeout re-raises ``OrmQueryTimeout``
+        instead of being converted to the clean string. The ``odoo://`` model
+        resource handler sets this so a *transient* timeout body is never written
+        to the resource LRU cache (``get_or_compute`` stores unconditionally — a
+        30s blip would otherwise pin the error for the full TTL). The default
+        ``False`` keeps the model_inspect tool path returning a clean ``str``
+        (it runs under a plain ``@offload`` that does not catch the exception).
     from_module:
         When set, restrict the inheritance-chain layers to rows where the
         declaring module equals this value. Layers from other modules are
@@ -2052,6 +2062,16 @@ def _resolve_model(
         # exception escape to FastMCP as a protocol-level isError. The metric is
         # not recorded here (this path is outside the bounded-offload pools); the
         # 30s driver timeout itself is the load-bearing #279 protection.
+        #
+        # #284 review: the odoo:// model resource caches this return value via
+        # ResourceCache.get_or_compute, which stores UNCONDITIONALLY. Returning
+        # the (transient) timeout string there would poison the LRU entry for the
+        # full TTL — a 30s blip becomes a 300s stale-error outage on that URI.
+        # The resource handler therefore passes `_reraise_timeout=True` so the
+        # exception propagates and is rendered uncached; the sibling field/method
+        # resolvers already raise their raw ClientError for the same reason.
+        if _reraise_timeout:
+            raise
         return exc.user_message
 
     # ADR-0023 §1.1: header = "{entity} (Odoo {version})", no decoration.
