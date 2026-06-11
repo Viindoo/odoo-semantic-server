@@ -89,7 +89,7 @@ Two production issues fixed in one wave (10 work items + PR #275 review-round-3 
   docstrings visible to MCP clients.
 - **`limit_concurrency` formula:** headroom formula now accounts for both `EMBEDDER_MAX_CONCURRENCY`
   and `ORM_QUERY_MAX_CONCURRENCY`.
-- **CSP (hCaptcha):** allow `https://hcaptcha.com https://*.hcaptcha.com` in `connect-src`, `script-src`, and `frame-src` so the rotating hCaptcha asset subdomains (`*.w.hcaptcha.com`, e.g. `logo.png`) stop tripping CSP on `/signup`. Pinned subdomains break per hCaptcha's CSP docs. Updated in Astro middleware + nginx + Caddy templates; `test_csp_headers.py` + `test_nginx_csp_ga_sync.py` updated.
+- **CSP (hCaptcha):** allow `https://hcaptcha.com https://*.hcaptcha.com` in `connect-src`, `script-src`, and `frame-src` so the rotating hCaptcha asset subdomains (`*.w.hcaptcha.com`, e.g. `logo.png`) stop tripping CSP on `/signup`. Pinned subdomains break per hCaptcha's CSP docs. Updated in Astro middleware + nginx + Caddy templates; `test_csp_headers.py` + `test_nginx_csp_ga_sync.py` updated. `Caddyfile.example` brought to GA-origin parity with nginx (was missing `https://www.googletagmanager.com` in script-src and `https://www.google-analytics.com https://www.googletagmanager.com` in connect-src); drift-guard tests added for Caddy GA/hCaptcha origins and middleware hCaptcha wildcards.
 
 #### Behavior changes (flagged)
 

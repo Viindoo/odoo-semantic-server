@@ -177,7 +177,10 @@ class TestNonHcaptchaPathsDoNotLeakAllowlist:
         )
         assert "api.hcaptcha.com" not in csp
         assert "newassets.hcaptcha.com" not in csp
-        # Wildcards are /signup-only; they must also be absent on /login.
+        # Wildcards are /signup-only; both apex and subdomain wildcard must be absent on /login.
+        assert "https://hcaptcha.com" not in csp, (
+            f"hCaptcha apex must NOT appear on /login: {csp!r}"
+        )
         assert "https://*.hcaptcha.com" not in csp, (
             f"hCaptcha wildcard must NOT appear on /login: {csp!r}"
         )

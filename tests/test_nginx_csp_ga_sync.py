@@ -57,10 +57,10 @@ def test_nginx_still_unions_hcaptcha_origins():
     )
     # hCaptcha asset subdomains rotate; the wildcard is required per their CSP docs.
     assert "https://hcaptcha.com" in csp, (
-        "nginx-m8.conf connect-src must include https://hcaptcha.com (hCaptcha wildcard)."
+        "nginx-m8.conf CSP must include https://hcaptcha.com (hCaptcha wildcard)."
     )
     assert "https://*.hcaptcha.com" in csp, (
-        "nginx-m8.conf connect-src must include https://*.hcaptcha.com (hCaptcha wildcard)."
+        "nginx-m8.conf CSP must include https://*.hcaptcha.com (hCaptcha wildcard)."
     )
 
 
@@ -70,4 +70,48 @@ def test_middleware_default_csp_grants_ga_origins():
     assert GA_SCRIPT_SRC in ts and "https://www.google-analytics.com" in ts, (
         "middleware.ts must grant the GA origins the nginx baseline mirrors — if this "
         "fails the two sources have drifted."
+    )
+
+
+def test_middleware_grants_hcaptcha_wildcards():
+    # Confirm middleware.ts contains the new hCaptcha wildcards added in PR #281.
+    ts = MIDDLEWARE_TS.read_text(encoding="utf-8")
+    assert "https://hcaptcha.com" in ts, (
+        "middleware.ts must contain https://hcaptcha.com (hCaptcha apex wildcard)."
+    )
+    assert "https://*.hcaptcha.com" in ts, (
+        "middleware.ts must contain https://*.hcaptcha.com (hCaptcha subdomain wildcard)."
+    )
+
+
+CADDYFILE = REPO_ROOT / "docs" / "deploy" / "Caddyfile.example"
+
+
+def _caddyfile_csp_line() -> str:
+    text = CADDYFILE.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if "Content-Security-Policy" in line:
+            return line
+    raise AssertionError("No Content-Security-Policy found in Caddyfile.example")
+
+
+def test_caddyfile_unions_ga_origins():
+    csp = _caddyfile_csp_line()
+    assert "https://www.google-analytics.com" in csp, (
+        "Caddyfile.example CSP must include https://www.google-analytics.com (GA4 beacon) — "
+        "must stay in parity with nginx-m8.conf."
+    )
+    assert "https://www.googletagmanager.com" in csp, (
+        "Caddyfile.example CSP must include https://www.googletagmanager.com (GA4 loader) — "
+        "must stay in parity with nginx-m8.conf."
+    )
+
+
+def test_caddyfile_unions_hcaptcha_origins():
+    csp = _caddyfile_csp_line()
+    assert "https://hcaptcha.com" in csp, (
+        "Caddyfile.example CSP must include https://hcaptcha.com (hCaptcha apex wildcard)."
+    )
+    assert "https://*.hcaptcha.com" in csp, (
+        "Caddyfile.example CSP must include https://*.hcaptcha.com (hCaptcha subdomain wildcard)."
     )
