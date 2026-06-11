@@ -441,6 +441,146 @@ locked by test" claim in the prior CHANGELOG entry is now accurate (it was previ
 
 ---
 
+## Amendment - Read-side list/detail now inheritance-aware (fields INHERITS|DELEGATES_TO; methods INHERITS-only)
+
+**Date:** 2026-06-11
+
+### Background
+
+After the D2 per-hop name-dedup rewrite made the four ORM-validation tools
+(`resolve_orm_chain` / `validate_domain` / `validate_depends` / `validate_relation`)
+correctly traverse INHERITS edges via `_lookup_field` (orm.py), a read-side
+asymmetry remained: `model_inspect(method='fields')`, `entity_lookup(kind='field')`,
+`model_inspect(method='methods')`, and `find_override_point` all used flat exact-match
+queries (`MATCH (f:Field {model: $m, ...})`) that could not see fields or methods
+declared on mixin ancestors.
+
+Live confirmation: `entity_lookup(kind='field', model='viin.approval.request', field='res_ref')`
+returned "not found" while `resolve_orm_chain('viin.approval.request', 'res_ref')`
+resolved the same field correctly. The field was indexed under
+`Field.model='abstract.approval.request.fields'` (one INHERITS hop from the child) -
+data was correct, only the read path was wrong.
+
+### Fix
+
+The read-side list/detail helpers (`_list_fields`, `_resolve_field`, `_list_methods`,
+`_resolve_method` in `server.py`) now use the same **per-hop name-dedup depth-3** shape
+that `_lookup_field` (orm.py) established in D2:
+
+1. **Shape reused verbatim** from `_lookup_field` (orm.py:210-251): per-hop `collect(DISTINCT
+   hX.name)` aggregates ancestors by name before each expansion; `hX.name <> prev` pruning
+   ensures the BFS never re-enters a same-name mesh; `_bounded()` 30s driver timeout applies
+   to all traversal queries. No VLP (`*1..N`) introduced. This is the SSOT shape that
+   eliminated the 86M-path enumeration (D2/D8 amendment).
+
+2. **Depth cap = 3** (same as `_lookup_field`). Live verification: `res_ref` resolves at
+   depth-1; `analytic_distribution` resolves at depth-2 (child -> abstract -> analytic.mixin);
+   `analytic.mixin` itself has no further `Inherits from` chain, confirming depth-3 provides
+   one full hop of headroom for the deepest known production mixin stack.
+
+3. **Field-name dedup** (depth-first, nearest ancestor wins): when a field exists on both the
+   child model (depth 0) and an ancestor, the child's version is returned. This matches the
+   Odoo runtime override semantic and is consistent with `_lookup_field`'s tiebreak order
+   (`depth ASC, pn ASC, f.module ASC`).
+
+4. **DELEGATES_TO included — FIELDS ONLY** (same as `_lookup_field`): fields exposed through
+   `_inherits` delegation (e.g., `res.users` delegating to `res.partner`) are now visible in
+   list and detail. This is an intentional semantic expansion matching the ORM-validation tools.
+   Provenance labels distinguish the two traversal kinds (see ADR-0023 amendment below).
+
+5. **Summary count INHERITS-aware**: the `Fields: N` and `Methods: N` lines in
+   `model_inspect(method='summary')` previously came from a flat exact-match COUNT and would
+   diverge from the paginated list after this fix. Both counts now use the same traversal +
+   name dedup before counting, keeping summary and list consistent (fields traverse
+   INHERITS|DELEGATES_TO; methods traverse INHERITS only — see point 6).
+
+6. **Method symmetry — but INHERITS ONLY** (correction, 2026-06-11): `_list_methods` and
+   `_resolve_method` receive the same shape fix as the field path. Live confirmation:
+   `model_inspect(method='methods', method_name='_compute_res_ref')` on `viin.approval.request`
+   returned "not found" before this fix; methods declared on mixin ancestors are now listed and
+   resolvable. `find_override_point` resolves via `_resolve_method` and inherits the fix without
+   code changes. **However, methods are inherited via `INHERITS` ONLY — they are NOT carried by
+   `_inherits`/DELEGATES_TO delegation.** Python MRO inherits methods through `_inherit`, but
+   `_inherits` delegation gives the child the parent's FIELDS ONLY (related proxy on a separate
+   table); methods are NEVER forwarded (unanimous across Odoo v8→v19; v9 core `orm.rst:942-943`
+   states fields-only explicitly). The earlier draft of this amendment described the method path
+   as "INHERITS|DELEGATES_TO-aware" — that was WRONG and would have advertised every method of a
+   delegated parent (e.g. every `res.partner` method on `res.users`) as inherited on the child,
+   active misinformation to an AI client. Corrected: the method helpers
+   (`_list_methods_with_inherited` / `_count_methods_with_inherited` / `_resolve_method_inherited`)
+   use a dedicated `_ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY` (built by `_ancestor_tagged_prologue("INHERITS")`);
+   the field helpers keep `_ANCESTOR_TAGGED_PROLOGUE` (built with `"INHERITS|DELEGATES_TO"`). On
+   the method path `edge_kind` is always `inherits` and there is no delegation label.
+
+7. **Override marker / chain on inherited methods** (2026-06-11): the `(*)` override marker in
+   `_list_methods` previously counted distinct modules per method name on the CHILD model only,
+   so an inherited method (whose owner is a mixin) was never marked even when overridden N times
+   on its owner. It now computes the override set per `(method_name, owner_model)` over the same
+   INHERITS-only ancestor set (NOT DELEGATES_TO), keyed by owner so a same-named method on two
+   different owners cannot cross-contaminate the marker. Correspondingly, the inherited-method
+   DETAIL (`_resolve_method` → `_render_inherited_method`) previously printed a hardcoded
+   `Override chain (1)` naming only the owner's single declaring module; it now renders the REAL
+   multi-module override chain on the owner model, using the same ADR-0013 5-tier ranking as own
+   methods (extracted to the shared `_method_override_chain` helper, SSOT for the ranking).
+
+8. **Code-review hardening (review #283, 2026-06-11):** a follow-up review of PR #283 closed six
+   findings without changing any read semantics:
+
+   - **`_method_override_chain` is now bounded (FIX-1, availability).** It previously ran a raw
+     `session.run(...).data()` with NO `_bounded()` wrapper and NO tx-timeout mapping — the exact
+     unbounded INHERITS/COUNT-heavy query class #273/#276 closed elsewhere, and it is called up to
+     2× per inherited-method resolve (own + GAP-3 owner chain). It now wraps the query text in
+     `_bounded()` and maps a tx-timeout `ClientError` to `OrmQueryTimeout` via the shared
+     `_is_tx_timeout` gate. Its callers `_resolve_method` (own + inherited fallback) and
+     `_resolve_field` (inherited fallback) now catch `OrmQueryTimeout` and return its
+     `user_message` as a clean ADR-0023 string — because `model_inspect` / `entity_lookup` wrap
+     these handlers in plain `@offload` (which, unlike `@offload_bounded`, does not catch the
+     timeout), an uncaught raise would otherwise surface as a protocol-level 500.
+   - **Magic-field dedup BFS deduplicated + crash-safe (FIX-2).** The inline 3-hop BFS in
+     `_list_fields` (magic-name dedup) was a hand-rolled re-implementation of the field-listing
+     prologue and, although `_bounded()`, had no `try/except` — a tx-timeout `ClientError` crashed
+     the whole list. It now calls the new shared `_ancestor_owner_names(model, version, session,
+     profile)` helper (orm.py — same `_ANCESTOR_TAGGED_PROLOGUE`, `_bounded`, `ClientError →
+     OrmQueryTimeout`) and on timeout degrades to a flat own-model magic dedup rather than
+     crashing.
+   - **Inherited-entity next-step hints target the OWNER model (FIX-3).** `_render_inherited_field`
+     and `_render_inherited_method` previously keyed their `impact_analysis` /
+     `find_override_point` / `find_examples` drill-down hints by the CHILD model. The field/method
+     NODE lives on the owner (the mixin), where `impact_analysis` flat-matches it — so a
+     child-keyed hint returned an EMPTY blast radius and misled the agent into "no impact". The
+     hints are now keyed by `owner` (the model the entity is actually declared on); the tree
+     header still names the child (what the user asked about).
+   - **Provenance wording SSOT (FIX-6) + edition-rank SSOT (FIX-5).** The list-row provenance token
+     wording (`inherited from …` / `delegated via … (separate table, fields-only)`) is now a single
+     `_provenance_token(owner_model, model, edge_kind, via_field)` helper called from both
+     `_fmt_field_row` and `_fmt_method` (grammar byte-identical to before). The duplicate
+     `_edition_rank_cypher` definition in `server.py` was deleted; `server.py` now imports the
+     `orm.py` copy (the documented SSOT, sourced from `EDITION_PRIORITY`).
+
+### No reindex required
+
+INHERITS edges and Field/Method nodes were already correctly indexed - the gap was
+purely in the read queries. No Postgres migration. No changes to
+`parser_python.py` or `writer_neo4j.py`.
+
+### Performance account
+
+The list-gom query is heavier than a flat exact-match (3 per-hop traversals + dedup
+before SKIP/LIMIT). Mitigation:
+
+- The per-hop prune+aggregate shape (D2 structural fix) bounds each hop to one pass
+  over the distinct ancestor NAME set (typically <=16 names on production), not K anchor
+  rows. Measured: 443ms on K=120 un-cleaned same-name mesh for a single-field lookup.
+- The two Ops indexes recommended in this ADR's Ops Notes (`model_name_version_idx`,
+  `field_model_version_idx`) directly serve the ancestor expansion and the Field join,
+  respectively. These should be present before deploying this read-side change on models
+  with deep inheritance (e.g., `account.move`, `sale.order`).
+- For `_resolve_field` and `_resolve_method` (single-entity detail), an exact-first fast
+  path is tried first; the traversal query runs only on a MISS. Native fields (depth-0)
+  are unaffected in latency.
+
+---
+
 ## Amendment - IaC wiring of db.transaction.timeout backstop (issue #276)
 
 **Date:** 2026-06-11

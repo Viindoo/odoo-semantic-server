@@ -29,6 +29,118 @@ All notable changes to Odoo Semantic MCP are documented here.
   bleed, (2) roadmap multi-subagent isolated-profile feature, (3) MCP protocol adds native
   `_meta.context_id`. See ADR-0029 Amendment (#279).
 
+### Fixed - Read-side symmetry: inherited field/method listing (ADR-0048 read-side amendment + ADR-0023 §D)
+
+Read-side asymmetry eliminated: `model_inspect(method='fields')`, `entity_lookup(kind='field')`,
+`model_inspect(method='methods')`, and `find_override_point` now traverse the inheritance graph
+using the same per-hop name-dedup depth-3 shape that `_lookup_field` (orm.py) established in
+ADR-0048 D2 — FIELDS over `INHERITS|DELEGATES_TO`, METHODS over `INHERITS` only (`_inherits`
+delegation never carries methods; see the method-semantics correction below). Previously, only
+the four ORM-validation tools (`resolve_orm_chain` /
+`validate_domain` / `validate_depends` / `validate_relation`) could see inherited fields;
+list and detail tools returned "not found" for the same entities. Tool count stays **25**.
+No Postgres migration. No reindex.
+
+#### Root cause
+
+`_list_fields`, `_resolve_field`, `_list_methods`, `_resolve_method` used flat exact-match
+queries (`MATCH (f:Field {model: $m})`) that could not cross INHERITS edges. Fields and
+methods indexed under a mixin ancestor (e.g., `Field.model='abstract.approval.request.fields'`)
+were invisible to list/detail tools on the child model, while `resolve_orm_chain` on the same
+child resolved the same field correctly via BFS.
+
+#### Fixes
+
+- **Field listing** (`_list_fields`): now gathers own fields (depth 0) + ancestor fields (depth
+  1-3 via INHERITS|DELEGATES_TO) using the per-hop prune+aggregate shape. Field-name dedup:
+  child version shadows mixin version (depth-first, nearest ancestor wins). Count query uses
+  the same traversal + `count(DISTINCT fname)` so the "Showing X of N" total matches the
+  paginated rows.
+- **Field detail** (`_resolve_field`): exact-match fast path retained for native fields (no
+  latency regression). On a MISS, a full-record inherited-fallback query runs over the same
+  depth-3 ancestor set and returns the nearest ancestor's field record. `_lookup_field` (orm.py)
+  is NOT modified - its mhín return set is kept for the four ORM tools.
+- **Method listing + detail** (`_list_methods`, `_resolve_method`): the same per-hop name-dedup
+  depth-3 shape is applied, but over `INHERITS` ONLY (see method-semantics correction below —
+  `_inherits` delegation never carries methods). `find_override_point` resolves via
+  `_resolve_method` and inherits the fix.
+- **Summary count** (`model_inspect(method='summary')`): `Fields: N` and `Methods: N` counts
+  are now INHERITS-aware. Before this fix, summary could report "Fields: 150" while the
+  paginated list yielded ~263 rows (150 own + 113 inherited).
+- **DELEGATES_TO included**: fields exposed through `_inherits` delegation are visible in both
+  list and detail, matching the behavior of the four ORM-validation tools (full symmetry).
+- **Provenance labels** (ADR-0023 §D): list rows append ` | inherited from <owner>` (INHERITS)
+  or ` | delegated via <field> from <owner> (separate table, fields-only)` (DELEGATES_TO) for
+  non-own entities. Detail trees add a `├─ Inherited from:` / `├─ Delegated via ... :` branch
+  before `Declared in:`. Own fields/methods carry no provenance token (backward-compatible).
+
+#### Method-semantics correction (GAP-1/2/3 + GAP-5, 2026-06-11)
+
+A follow-up review corrected the method path of the read-side amendment and tightened the
+delegation provenance. The earlier draft described the method listing/detail as
+"INHERITS|DELEGATES_TO-aware" — that was WRONG.
+
+- **Methods are INHERITS-only — never delegated (GAP-1, critical correctness fix).** `_inherits`
+  delegation gives the child the parent's FIELDS ONLY (related proxy on a separate table);
+  methods are NEVER forwarded (unanimous Odoo v8→v19; v9 core `orm.rst:942-943`). The method
+  helpers (`_list_methods_with_inherited` / `_count_methods_with_inherited` /
+  `_resolve_method_inherited`) now traverse a dedicated INHERITS-only prologue
+  (`_ancestor_tagged_prologue("INHERITS")`); the field helpers keep `INHERITS|DELEGATES_TO`.
+  Before the fix, e.g. `model_inspect(methods, res.users)` would have advertised every
+  `res.partner` method (`message_post`, …) as inherited on `res.users` — active misinformation.
+  An inherited method row can only read `inherited from <owner>`, never `delegated`.
+- **`(*)` override marker now covers inherited methods (GAP-2).** The marker is computed per
+  `(method_name, owner_model)` over the INHERITS-only ancestor set, so an inherited method
+  overridden in ≥2 modules on its OWNER mixin is correctly marked in the child listing (it was
+  previously counted only on the child model → never marked).
+- **Inherited method detail shows the REAL override chain (GAP-3).** `_render_inherited_method`
+  previously printed a hardcoded `Override chain (1)` (owner module only). It now renders the
+  full multi-module override chain on the owner model using the same ADR-0013 5-tier ranking as
+  own methods (extracted to the shared `_method_override_chain` helper).
+- **Delegation provenance is now unambiguous (GAP-5).** Delegated field rows and detail append
+  `(separate table, fields-only)` to the `delegated via <fk> from <owner>` label so an AI client
+  understands the field lives in the owner's separate table and that delegation carries fields,
+  not methods.
+
+#### Behavior changes (flagged)
+
+- `entity_lookup(kind='field', ...)` and `model_inspect(method='fields', ...)` on a model
+  with mixin ancestors now return fields declared on those ancestors. Clients that hard-matched
+  the "not found" string to conclude field absence will see different behavior - prior behavior
+  was a false negative (the field IS part of Odoo's effective schema for the model).
+- Summary `Fields: N` / `Methods: N` counts increase to include inherited entities. This is
+  a correction, not a regression.
+- DELEGATES_TO field listing is a semantic expansion (consistent with ORM-validation tools;
+  provenance label distinguishes it from INHERITS).
+
+#### Code-review hardening (review #283, 2026-06-11)
+
+Six review findings on PR #283 closed without changing read semantics. Tool count stays **25**;
+no migration; no reindex. See ADR-0048 amendment item 8.
+
+- **`_method_override_chain` is now bounded (availability — same class as #273/#276).** It ran a
+  raw unbounded `session.run(...)` (no `_bounded()`, no tx-timeout mapping) and is called up to 2×
+  per inherited-method resolve, so on a dense graph it could hang. It is now wrapped in `_bounded()`
+  and maps a transaction-timeout `ClientError` to `OrmQueryTimeout`. Its callers `_resolve_method`
+  (own + inherited fallback) and `_resolve_field` (inherited fallback) catch `OrmQueryTimeout` and
+  return its `user_message` as a clean ADR-0023 string — `model_inspect` / `entity_lookup` wrap
+  these in plain `@offload`, which does not catch the timeout, so an uncaught raise would otherwise
+  be a protocol-level 500.
+- **Magic-field dedup in `_list_fields` no longer crashes on a dense graph.** The hand-rolled 3-hop
+  BFS (bounded but with no `try/except`) now reuses the shared `_ancestor_owner_names` helper
+  (orm.py, same prologue + `_bounded` + `ClientError → OrmQueryTimeout`) and degrades to a flat
+  own-model magic dedup on timeout instead of crashing the whole list.
+- **Inherited field/method detail next-step hints now target the OWNER model.** `impact_analysis`,
+  `find_override_point` and `find_examples` hints on an inherited entity were keyed by the CHILD
+  model; the entity NODE lives on the owner, so `impact_analysis` returned an empty blast radius
+  and misled the agent into "no impact". The hints are now keyed by the owner.
+- **De-duplication (boil-the-lake):** the list-row provenance wording is now a single
+  `_provenance_token` helper (SSOT for `_fmt_field_row` + `_fmt_method`, grammar unchanged), and the
+  duplicate `_edition_rank_cypher` in `server.py` was removed in favour of importing the `orm.py`
+  SSOT copy.
+- **Comment correctness:** the `_list_methods` traversal comment now correctly states INHERITS-only
+  (it had a copy-pasted `INHERITS|DELEGATES_TO`), guarding the GAP-1 invariant.
+
 ### Fixed — ORM tools hang on dense inheritance + lint_check false-green (#271 #273, ADR-0048)
 
 Two production issues fixed in one wave (10 work items + PR #275 review-round-3 fixes). Tool count
