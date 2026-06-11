@@ -11,6 +11,24 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
+### Known caveats
+
+- **Concurrent same-session subagents share one profile pin (last-write-wins).** When two
+  subagents run under the same `mcp-session-id` and both omit `profile_name`, they share a single
+  pin slot - the last `set_active_profile` call wins. This is authz-safe: the ADR-0034 tenant
+  choke re-validates the pinned profile at read time (narrowing-only, fail-closed - a stale or
+  wrong pin can only narrow the visible set, never widen access or cross a tenant boundary). To
+  disambiguate, pass `profile_name` explicitly on each call. See ADR-0029 Amendment (#274).
+
+- **`context_id` per-call pin keying (issue #279 Option D) closed WONTFIX.** Keying the session
+  pin by `(api_key_id, mcp_session_id, context_id)` was evaluated and declined: version race is
+  already fully fixed by `RequiredOdooVersion` hard-require (WI-4); profile race is authz-safe
+  (ADR-0034 fail-closed); no customer signal; MCP protocol has no per-call header mechanism to
+  deliver `context_id` from an LLM subagent without adding it as a tool parameter (schema noise on
+  all 19 tools). Re-open triggers: (1) customer bug report of concurrent same-session profile
+  bleed, (2) roadmap multi-subagent isolated-profile feature, (3) MCP protocol adds native
+  `_meta.context_id`. See ADR-0029 Amendment (#279).
+
 ### Fixed — ORM tools hang on dense inheritance + lint_check false-green (#271 #273, ADR-0048)
 
 Two production issues fixed in one wave (10 work items + PR #275 review-round-3 fixes). Tool count

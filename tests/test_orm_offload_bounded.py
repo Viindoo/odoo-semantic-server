@@ -508,3 +508,175 @@ def test_embed_fast_reject_when_saturated():
     finally:
         gate.set()  # release any still-blocked embed thread
         _restore(["EMBEDDER_MAX_CONCURRENCY", "EMBEDDER_SLOT_ACQUIRE_TIMEOUT"])
+
+
+# ---------------------------------------------------------------------------
+# (8) #279 — the SAME cancel/overload/timeout behaviour must hold for BOTH the
+#     ORM and non-ORM bounded-offload pools. After consolidating the two
+#     decorators into one factory (_make_bounded_offload), this single
+#     parametrized test guards BOTH paths at once: a future cancel-safety fix
+#     that regresses one pool but not the other now fails here instead of
+#     slipping through (the missed-fix class that bit the embed path in #275).
+# ---------------------------------------------------------------------------
+
+# (decorator attr, getter attr, cap env, slot-timeout env, busy-class attr)
+_POOLS = [
+    pytest.param(
+        "offload_bounded",
+        "_get_orm_semaphore",
+        "ORM_QUERY_MAX_CONCURRENCY",
+        "ORM_SLOT_ACQUIRE_TIMEOUT",
+        id="orm_pool",
+    ),
+    pytest.param(
+        "offload_bounded_nonorm",
+        "_get_nonorm_semaphore",
+        "NONORM_READ_MAX_CONCURRENCY",
+        "NONORM_SLOT_ACQUIRE_TIMEOUT",
+        id="nonorm_pool",
+    ),
+]
+
+
+@pytest.mark.parametrize("decorator,getter,cap_env,timeout_env", _POOLS)
+def test_cancel_safety_identical_across_pools(decorator, getter, cap_env, timeout_env):
+    """Cancel-safety + fast-reject + in-thread timeout-metric are IDENTICAL for
+    the ORM and non-ORM pools (the #279 consolidation invariant)."""
+    srv = _reload_server_with({cap_env: "2", timeout_env: "5"})
+    try:
+        from src import metrics
+
+        bound = getattr(srv, decorator)
+        sem = getattr(srv, getter)()
+
+        def free_permits(cap):
+            grabbed = 0
+            for _ in range(cap):
+                if sem.acquire(blocking=False):
+                    grabbed += 1
+                else:
+                    break
+            for _ in range(grabbed):
+                sem.release()
+            return grabbed
+
+        # --- (a) CANCELLATION: slot held until the thread exits, not on cancel.
+        started = threading.Event()
+        finish = threading.Event()
+        exited = threading.Event()
+
+        @bound
+        def long_running(model, odoo_version="auto"):
+            started.set()
+            try:
+                finish.wait(5.0)
+                return "done"
+            finally:
+                exited.set()
+
+        async def drive_cancel():
+            assert free_permits(2) == 2
+            task = asyncio.create_task(long_running("m", "99.0"))
+            await asyncio.to_thread(started.wait, 5.0)
+            assert free_permits(2) == 1, "worker thread should hold one slot"
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            # Thread still running -> slot still held (the CRITICAL-2 invariant).
+            assert not exited.is_set(), "thread should still be running"
+            assert free_permits(2) == 1, (
+                f"{getter}: cancel must NOT free the slot while the thread runs"
+            )
+            finish.set()
+            await asyncio.to_thread(exited.wait, 5.0)
+            for _ in range(50):
+                if free_permits(2) == 2:
+                    break
+                await asyncio.sleep(0.02)
+            assert free_permits(2) == 2, "slot not reclaimed after thread exit"
+
+        _run(drive_cancel())
+
+        # --- (b) FAST-REJECT past the cap returns a 'busy' STRING (ADR-0023).
+        srv2 = _reload_server_with({cap_env: "1", timeout_env: "0.1"})
+        bound2 = getattr(srv2, decorator)
+        gate = threading.Event()
+
+        @bound2
+        def blocker(model, odoo_version="auto"):
+            gate.wait(2.0)
+            return "done"
+
+        async def drive_reject():
+            holder = asyncio.create_task(blocker("m", "99.0"))
+            await asyncio.sleep(0.05)
+            rejected = await blocker("m", "99.0")
+            gate.set()
+            await holder
+            return rejected
+
+        rejected = _run(drive_reject())
+        assert isinstance(rejected, str), type(rejected)
+        assert "busy" in rejected and "retry" in rejected, rejected
+
+        # --- (c) TIMEOUT metric is recorded IN-THREAD even after a cancel, and
+        #     ONLY on this pool's counter (never the other pool's).
+        srv3 = _reload_server_with({cap_env: "2", timeout_env: "5"})
+        bound3 = getattr(srv3, decorator)
+        this_counter = (
+            metrics.orm_query_timeout_total
+            if decorator == "offload_bounded"
+            else metrics.nonorm_query_timeout_total
+        )
+        other_counter = (
+            metrics.nonorm_query_timeout_total
+            if decorator == "offload_bounded"
+            else metrics.orm_query_timeout_total
+        )
+
+        def _count(counter):
+            total = 0.0
+            for m in counter.collect():
+                for s in m.samples:
+                    if s.name.endswith("_total"):
+                        total += s.value
+            return total
+
+        this_before = _count(this_counter)
+        other_before = _count(other_counter)
+
+        started3 = threading.Event()
+        proceed3 = threading.Event()
+
+        @bound3
+        def timing_out(model, odoo_version="auto"):
+            started3.set()
+            proceed3.wait(5.0)
+            raise OrmQueryTimeout("query timed out — narrow and retry.")
+
+        async def drive_timeout():
+            task = asyncio.create_task(timing_out("m", "99.0"))
+            await asyncio.to_thread(started3.wait, 5.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            proceed3.set()
+
+        _run(drive_timeout())
+
+        import time
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and _count(this_counter) <= this_before:
+            time.sleep(0.02)
+        assert _count(this_counter) == this_before + 1, (
+            f"{decorator}: timeout metric must increment in-thread even after cancel"
+        )
+        assert _count(other_counter) == other_before, (
+            f"{decorator}: timeout must NOT touch the other pool's counter"
+        )
+    finally:
+        finish.set()
+        gate.set()
+        proceed3.set()
+        _restore([cap_env, timeout_env])

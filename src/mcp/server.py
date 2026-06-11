@@ -7,6 +7,7 @@ import math
 import os
 import re
 import threading
+from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import Annotated
@@ -422,6 +423,100 @@ _embedder_instance = None
 _version_checked = False
 _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
 
+
+def _resolve_orm_int(name: str, default: int) -> int:
+    """Post-dotenv int knob: env wins over the (possibly stale) import constant."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _resolve_orm_float(name: str, default: float) -> float:
+    """Post-dotenv float knob: env wins over the (possibly stale) import constant."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+class _LazyBoundedSemaphore:
+    """Lazily-built ``threading.BoundedSemaphore`` for one concurrency pool (#279).
+
+    One instance per pool (embed / orm / nonorm). The single source of the
+    double-check-locked lazy-build logic the three pools used to duplicate as 12
+    module globals + 3 near-identical factory functions (#273/#275/#276). A
+    *threading* (NOT asyncio) BoundedSemaphore so acquire()/release() can run
+    INSIDE the worker thread — the slot's lifetime is tied to the THREAD, never
+    the (possibly cancelled) caller coroutine. That is the #276 / CRITICAL-2
+    cancel-safety invariant: a client disconnect cancels the wrapper coroutine
+    but the worker thread keeps the slot until its own ``finally`` releases it.
+
+    Built once on first ``.get()`` — lazily and post-dotenv, so a ``.env``-only
+    cap is honoured (``config.init_dotenv()`` runs in __main__ AFTER this module
+    imports; the import-time constant can be stale — ADR-0031). ``cap_in_use`` /
+    ``timeout_in_use`` are cached so the hot path logs exactly the value the
+    semaphore was sized for (#276 G6/G7). ``importlib.reload(server)`` re-runs the
+    module body → a fresh instance with ``_sem=None`` → the next ``.get()``
+    rebuilds from the freshly-set env, keeping test reconfiguration honest (the
+    15 safety-net tests reload the module then call the thin wrappers directly).
+
+    BoundedSemaphore (not plain) turns any over-release into an immediate
+    ValueError instead of silent permit inflation (HIGH #4).
+    """
+
+    def __init__(
+        self,
+        cap_env: str,
+        default_cap: int,
+        timeout_env: str,
+        default_timeout: float,
+    ):
+        self._cap_env = cap_env
+        self._default_cap = default_cap
+        self._timeout_env = timeout_env
+        self._default_timeout = default_timeout
+        self._lock = threading.Lock()
+        self._sem: threading.BoundedSemaphore | None = None
+        # Cached so the hot path reads exactly the cap/timeout the live semaphore
+        # was sized with (post-dotenv). None until the first .get() builds it.
+        self.cap_in_use: int | None = None
+        self.timeout_in_use: float | None = None
+
+    def get(self) -> "threading.BoundedSemaphore":
+        """Return the BoundedSemaphore, building it once (double-check-locked)."""
+        if self._sem is None:
+            with self._lock:
+                if self._sem is None:
+                    self.cap_in_use = _resolve_orm_int(
+                        self._cap_env, self._default_cap
+                    )
+                    self.timeout_in_use = _resolve_orm_float(
+                        self._timeout_env, self._default_timeout
+                    )
+                    self._sem = threading.BoundedSemaphore(self.cap_in_use)
+        return self._sem
+
+    def reset(self) -> None:
+        """Drop the built semaphore so the next ``.get()`` rebuilds from env.
+
+        Used by tests that reconfigure the pool in-process (set a new env knob
+        then expect the next call to honour it) WITHOUT a full module reload.
+        ``importlib.reload(server)`` resets implicitly (fresh instance), so the
+        reload-based tests do not need this; the in-process tests do.
+        """
+        with self._lock:
+            self._sem = None
+            self.cap_in_use = None
+            self.timeout_in_use = None
+
+
 # --- Anti-freeze hot-path embed guards (#227 + #276 G7) ---------------------
 # FastMCP runs sync `def` tool handlers DIRECTLY on the asyncio event-loop
 # thread (no to_thread). A single blocking embedder.embed() call therefore
@@ -448,12 +543,6 @@ _init_lock = threading.Lock()  # guards _driver + _embedder_instance lazy init
 # acquire a slot within EMBEDDER_SLOT_ACQUIRE_TIMEOUT (constants SSOT, validated
 # < EMBEDDER_TIMEOUT_READ_QUERY at startup) fail fast (EmbedOverloaded) instead
 # of queueing forever.
-_embed_semaphore: "threading.BoundedSemaphore | None" = None
-_embed_sem_lock = threading.Lock()  # guards lazy Semaphore construction
-_embed_cap_in_use: "int | None" = None
-_embed_slot_timeout_in_use: "float | None" = None
-
-
 class EmbedOverloaded(RuntimeError):
     """Raised when the bounded embed semaphore cannot be acquired in time.
 
@@ -462,29 +551,20 @@ class EmbedOverloaded(RuntimeError):
     """
 
 
-def _get_embed_semaphore() -> threading.BoundedSemaphore:
-    """Return the embed threading BoundedSemaphore, building it once on first use.
+# #276 G7: a *threading* BoundedSemaphore (NOT asyncio.Semaphore) so the slot is
+# acquired/released inside the worker thread — no event-loop affinity, no
+# released-on-cancel hazard. Built once on first .get() (lazy + post-dotenv so
+# the cap honours a .env-only EMBEDDER_MAX_CONCURRENCY); a module reload (tests)
+# yields a fresh instance so the next .get() rebuilds from the freshly-set env.
+_embed_pool = _LazyBoundedSemaphore(
+    "EMBEDDER_MAX_CONCURRENCY", EMBEDDER_MAX_CONCURRENCY,
+    "EMBEDDER_SLOT_ACQUIRE_TIMEOUT", EMBEDDER_SLOT_ACQUIRE_TIMEOUT,
+)
 
-    #276 G7: a *threading* BoundedSemaphore (NOT asyncio.Semaphore) so the slot
-    is acquired/released inside the worker thread — no event-loop affinity, no
-    released-on-cancel hazard. Lazy + post-dotenv so the cap honours a .env-only
-    EMBEDDER_MAX_CONCURRENCY; a module reload (tests) resets the globals to None
-    so the next call rebuilds from the freshly-set env. The cap + acquire-timeout
-    the live semaphore was built with are cached so the hot path logs the value
-    the semaphore was actually sized for.
-    """
-    global _embed_semaphore, _embed_cap_in_use, _embed_slot_timeout_in_use
-    if _embed_semaphore is None:
-        with _embed_sem_lock:
-            if _embed_semaphore is None:
-                _embed_cap_in_use = _resolve_orm_int(
-                    "EMBEDDER_MAX_CONCURRENCY", EMBEDDER_MAX_CONCURRENCY
-                )
-                _embed_slot_timeout_in_use = _resolve_orm_float(
-                    "EMBEDDER_SLOT_ACQUIRE_TIMEOUT", EMBEDDER_SLOT_ACQUIRE_TIMEOUT
-                )
-                _embed_semaphore = threading.BoundedSemaphore(_embed_cap_in_use)
-    return _embed_semaphore
+
+def _get_embed_semaphore() -> threading.BoundedSemaphore:
+    """Return the embed threading BoundedSemaphore (built once on first use)."""
+    return _embed_pool.get()
 
 
 def _cap_query_text(embedder, text: str) -> str:
@@ -528,17 +608,12 @@ def _embed_query_in_thread(embedder, payload: list[str]) -> list[float]:
     slot is released only in this thread's ``finally`` — a cancelled coroutine
     can never free it early while the embed is still in flight.
     """
-    sem = _get_embed_semaphore()
-    cap = (
-        _embed_cap_in_use
-        if _embed_cap_in_use is not None
-        else EMBEDDER_MAX_CONCURRENCY
-    )
-    slot_timeout = (
-        _embed_slot_timeout_in_use
-        if _embed_slot_timeout_in_use is not None
-        else EMBEDDER_SLOT_ACQUIRE_TIMEOUT
-    )
+    sem = _get_embed_semaphore()  # builds the pool → populates cap_in_use below
+    # _get_embed_semaphore() (just called, same thread) always populates
+    # cap_in_use / timeout_in_use under the pool lock before returning, so these
+    # are never None here — read them directly (no default-constant fallback).
+    cap = _embed_pool.cap_in_use
+    slot_timeout = _embed_pool.timeout_in_use
     if not sem.acquire(timeout=slot_timeout):
         raise EmbedOverloaded(
             "server busy — too many concurrent embedding requests"
@@ -641,34 +716,6 @@ def offload(fn):
 # needs). Resolving the cap + acquire-timeout here too means the live semaphore,
 # the fast-reject window, and _validate_orm_env() all read the SAME post-dotenv
 # value — there is no import-time/.env mismatch to warn about (#275 LOW).
-_orm_semaphore: "threading.BoundedSemaphore | None" = None
-_orm_semaphore_lock = threading.Lock()
-_orm_cap_in_use: "int | None" = None
-_orm_slot_timeout_in_use: "float | None" = None
-
-
-def _resolve_orm_int(name: str, default: int) -> int:
-    """Post-dotenv int knob: env wins over the (possibly stale) import constant."""
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
-def _resolve_orm_float(name: str, default: float) -> float:
-    """Post-dotenv float knob: env wins over the (possibly stale) import constant."""
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
 class OrmOverloaded(RuntimeError):
     """Raised when the bounded ORM semaphore cannot be acquired in time.
 
@@ -679,28 +726,19 @@ class OrmOverloaded(RuntimeError):
     """
 
 
-def _get_orm_semaphore() -> threading.BoundedSemaphore:
-    """Return the ORM threading BoundedSemaphore, building it once on first use.
+# Built LAZILY on first ORM call (after init_dotenv() settles), NOT at import, so
+# the cap honours a .env-only ORM_QUERY_MAX_CONCURRENCY (ADR-0031). cap_in_use /
+# timeout_in_use are cached on the pool so the hot path (_run_in_thread), the
+# fast-reject window, and the logged max all read the SAME post-dotenv value.
+_orm_pool = _LazyBoundedSemaphore(
+    "ORM_QUERY_MAX_CONCURRENCY", ORM_QUERY_MAX_CONCURRENCY,
+    "ORM_SLOT_ACQUIRE_TIMEOUT", ORM_SLOT_ACQUIRE_TIMEOUT,
+)
 
-    Lazy so the cap honours a .env-only ORM_QUERY_MAX_CONCURRENCY (resolved after
-    init_dotenv() settles, not at import). The cap + acquire-timeout the live
-    semaphore was built with are cached in module globals so the hot path
-    (_run_in_thread) reads exactly the value the semaphore was sized for. A module
-    reload (as the tests do) resets the globals to None, so the next call rebuilds
-    from the freshly-set env — keeping test reconfiguration honest.
-    """
-    global _orm_semaphore, _orm_cap_in_use, _orm_slot_timeout_in_use
-    if _orm_semaphore is None:
-        with _orm_semaphore_lock:
-            if _orm_semaphore is None:
-                _orm_cap_in_use = _resolve_orm_int(
-                    "ORM_QUERY_MAX_CONCURRENCY", ORM_QUERY_MAX_CONCURRENCY
-                )
-                _orm_slot_timeout_in_use = _resolve_orm_float(
-                    "ORM_SLOT_ACQUIRE_TIMEOUT", ORM_SLOT_ACQUIRE_TIMEOUT
-                )
-                _orm_semaphore = threading.BoundedSemaphore(_orm_cap_in_use)
-    return _orm_semaphore
+
+def _get_orm_semaphore() -> threading.BoundedSemaphore:
+    """Return the ORM threading BoundedSemaphore (built once on first use)."""
+    return _orm_pool.get()
 
 
 # --- Bounded offload for NON-ORM heavy reads (#276 G6) ----------------------
@@ -709,214 +747,154 @@ def _get_orm_semaphore() -> threading.BoundedSemaphore:
 # / PATCHES that can run long on a dense graph). Kept distinct from the ORM pool
 # so a fan-out burst of one class cannot starve the other (#276 G6). Built lazily
 # on first use under its own lock, post-dotenv, exactly like the ORM semaphore.
-_nonorm_semaphore: "threading.BoundedSemaphore | None" = None
-_nonorm_semaphore_lock = threading.Lock()
-_nonorm_cap_in_use: "int | None" = None
-_nonorm_slot_timeout_in_use: "float | None" = None
+# A distinct pool object from _orm_pool (#276 G6) so a fan-out burst of one read
+# class cannot starve the other. Same lazy / post-dotenv build as the ORM pool.
+_nonorm_pool = _LazyBoundedSemaphore(
+    "NONORM_READ_MAX_CONCURRENCY", NONORM_READ_MAX_CONCURRENCY,
+    "NONORM_SLOT_ACQUIRE_TIMEOUT", NONORM_SLOT_ACQUIRE_TIMEOUT,
+)
 
 
 def _get_nonorm_semaphore() -> threading.BoundedSemaphore:
-    """Return the non-ORM threading BoundedSemaphore, building it once on first use.
+    """Return the non-ORM threading BoundedSemaphore (built once on first use).
 
-    Peer of :func:`_get_orm_semaphore` for the non-ORM read pool (#276 G6). Lazy
-    so the cap honours a .env-only NONORM_READ_MAX_CONCURRENCY (resolved after
-    init_dotenv() settles, not at import). A module reload (tests) resets the
-    globals to None so the next call rebuilds from the freshly-set env.
+    Peer of :func:`_get_orm_semaphore` for the non-ORM read pool (#276 G6); a
+    distinct pool object so one read class cannot starve the other.
     """
-    global _nonorm_semaphore, _nonorm_cap_in_use, _nonorm_slot_timeout_in_use
-    if _nonorm_semaphore is None:
-        with _nonorm_semaphore_lock:
-            if _nonorm_semaphore is None:
-                _nonorm_cap_in_use = _resolve_orm_int(
-                    "NONORM_READ_MAX_CONCURRENCY", NONORM_READ_MAX_CONCURRENCY
+    return _nonorm_pool.get()
+
+
+def _make_bounded_offload(
+    pool: "_LazyBoundedSemaphore",
+    metric_overloaded: "Callable[[str], None]",
+    metric_timeout: "Callable[[str], None]",
+    log_label: str,
+    overload_phrase: str,
+    timeout_log_prefix: str,
+    tool_name_default: str,
+    timeout_msg_default: str,
+    call_context_fn=None,
+):
+    """Build a bounded-offload decorator for ONE concurrency pool (#279).
+
+    Single source of the thread-held-semaphore offload machinery the ORM and
+    non-ORM decorators used to duplicate (~70 LOC each). Consolidating them means
+    a future cancel-safety fix lands in ONE place and cannot silently regress one
+    pool while patching the other — the exact missed-fix class that bit the embed
+    path in #275 (fixed late in #278).
+
+    THREAD-LIFETIME RELEASE (the #276 / CRITICAL-2 invariant — preserved verbatim):
+      ``acquire()``/``release()`` run INSIDE the worker thread, so a slot's
+      lifetime is bound to the THREAD, never the (possibly cancelled) caller
+      coroutine. When a client disconnects mid-call FastMCP cancels the wrapper
+      coroutine and the awaited ``to_thread`` future raises ``CancelledError``
+      immediately — but the worker thread keeps running and STILL HOLDS the slot
+      until its own ``finally`` releases it. Overload + timeout metric/log
+      bookkeeping also runs in-thread, so it is recorded even after a cancel.
+      ``functools.wraps`` preserves ``__wrapped__`` so FastMCP introspects the
+      ORIGINAL handler signature; ``asyncio.to_thread`` copies the current
+      ``contextvars.Context`` so per-request ContextVars propagate into the thread.
+
+    The four observable strings that differ between the ORM and non-ORM pools are
+    parameters so the log lines (ops grep them) and the client-facing busy string
+    stay byte-identical to the pre-consolidation behaviour:
+      * ``log_label``         — overload-log prefix ("ORM tool" | "non-ORM read").
+      * ``overload_phrase``   — exception text ("ORM-validation requests" |
+                                "heavy read requests").
+      * ``timeout_log_prefix``— timeout-log prefix ("ORM query" | "non-ORM read
+                                query").
+      * ``timeout_msg_default``— wrapper fallback when the timeout exc has no
+                                ``user_message``.
+    ``call_context_fn`` (the ORM model/version/profile context, ``None`` for the
+    non-ORM pool whose tools have a different signature) decides whether the log
+    lines append a trailing context string — when ``None`` the format strings
+    omit the trailing ``%s`` entirely, so a non-ORM log line carries NO trailing
+    space (observable byte-identical to the old non-ORM decorator).
+    """
+    def decorator(fn):
+        tool_name = getattr(fn, "__name__", tool_name_default)
+
+        def _run_in_thread(a, k):
+            # Runs entirely on the worker thread. The slot is acquired and
+            # released here so its lifetime is bound to THIS thread, never to the
+            # (possibly cancelled) caller coroutine. pool.get() also resolves the
+            # cap + acquire-timeout the semaphore was sized with (post-dotenv), so
+            # the reject window and the logged max match the live semaphore.
+            sem = pool.get()
+            # pool.get() (just called, same thread) always populates cap_in_use /
+            # timeout_in_use under its lock before returning, so these are never
+            # None here — read them directly (no _default_* fallback needed).
+            cap = pool.cap_in_use
+            slot_timeout = pool.timeout_in_use
+            if not sem.acquire(timeout=slot_timeout):
+                # Saturated: fast-reject. Record metric + log here so cancel-storms
+                # are never invisible (the coroutine may already be gone).
+                metric_overloaded(tool_name)
+                if call_context_fn is not None:
+                    logger.warning(
+                        "%s overloaded — semaphore full (max %d): tool=%s %s",
+                        log_label,
+                        cap,
+                        tool_name,
+                        call_context_fn(a, k),
+                    )
+                else:
+                    logger.warning(
+                        "%s overloaded — semaphore full (max %d): tool=%s",
+                        log_label,
+                        cap,
+                        tool_name,
+                    )
+                raise OrmOverloaded(
+                    f"server busy — too many concurrent {overload_phrase}"
+                    f" (max {cap}); retry shortly"
                 )
-                _nonorm_slot_timeout_in_use = _resolve_orm_float(
-                    "NONORM_SLOT_ACQUIRE_TIMEOUT", NONORM_SLOT_ACQUIRE_TIMEOUT
-                )
-                _nonorm_semaphore = threading.BoundedSemaphore(_nonorm_cap_in_use)
-    return _nonorm_semaphore
+            try:
+                return fn(*a, **k)
+            except OrmQueryTimeout:
+                # Record the timeout metric + log IN-THREAD so it is observed even
+                # if the awaiting coroutine was already cancelled (MED cancel-path
+                # blind spot). Re-raise so the wrapper can return user_message to a
+                # still-connected client.
+                metric_timeout(tool_name)
+                if call_context_fn is not None:
+                    logger.warning(
+                        "%s timed out: tool=%s %s",
+                        timeout_log_prefix,
+                        tool_name,
+                        call_context_fn(a, k),
+                    )
+                else:
+                    logger.warning(
+                        "%s timed out: tool=%s",
+                        timeout_log_prefix,
+                        tool_name,
+                    )
+                raise
+            finally:
+                sem.release()
+
+        @functools.wraps(fn)
+        async def wrapper(*a, **k):
+            try:
+                return await asyncio.to_thread(_run_in_thread, a, k)
+            except OrmOverloaded as exc:
+                # Uniform with the embed path + ADR-0023: return the overload
+                # message as a normal str, never a protocol-level isError.
+                return str(exc)
+            except OrmQueryTimeout as exc:
+                # Metric/log already recorded in-thread; return the normal str
+                # result. We never leak the Cypher / user code here.
+                return getattr(exc, "user_message", timeout_msg_default)
+
+        return wrapper
+
+    return decorator
 
 
-def offload_bounded(fn):
-    """Move a blocking sync ORM tool body off the loop, bounded by a Semaphore.
-
-    Like ``offload`` (which it mirrors), but bounds the number of concurrent
-    dense ORM traversals so a fan-out burst cannot drain the shared
-    ThreadPoolExecutor that ``asyncio.to_thread`` uses, nor exhaust the Neo4j
-    connection pool (#273 / #276 / ADR-0046).
-
-    Behaviour (all overload/timeout bookkeeping happens INSIDE the worker
-    thread, so it is recorded even after the coroutine is cancelled):
-      * On semaphore-acquire timeout: increment ``orm_overloaded_total`` + log a
-        WARNING in-thread, then raise ``OrmOverloaded``. The async wrapper
-        catches it and returns the message as a normal ``str`` (uniform with the
-        embed path + ADR-0023 raw-text; never ``isError=true``).
-      * On ``OrmQueryTimeout`` (raised by WI-1's orm.py when the Neo4j query
-        timeout fires): increment ``orm_query_timeout_total`` + log in-thread,
-        then re-raise; the wrapper returns ``exc.user_message`` to the client.
-
-    THREAD-LIFETIME RELEASE (the #276 / CRITICAL-2 fix):
-      acquire()/release() run INSIDE the thread function, so the slot is tied to
-      the WORKER THREAD, not the coroutine. ``threading.BoundedSemaphore`` is
-      thread-safe and is released only in the thread's own ``finally``. When a
-      client disconnects mid-call FastMCP cancels the wrapper coroutine and the
-      awaited ``to_thread`` future raises ``CancelledError`` immediately — but
-      the worker thread keeps running and STILL HOLDS the slot until it exits.
-      Cancellation can therefore no longer free a slot while a thread is still
-      pinning a Neo4j connection (the exact #276 drain the old loop-bound
-      ``asyncio.Semaphore`` released-on-cancel implementation failed to prevent).
-      The slot is freed only when the thread finishes or the Neo4j-side timeout
-      (NEO4J_QUERY_TIMEOUT_SECONDS) ends the query.
-
-      Accepted trade-off: a fast-reject now occupies one ThreadPoolExecutor slot
-      for up to ORM_SLOT_ACQUIRE_TIMEOUT seconds while it blocks on acquire().
-      This is acceptable — the Neo4j pool (~24) comfortably exceeds the ORM cap
-      (8) plus this brief reject headroom, and rejecting from inside the thread
-      is what makes the slot accounting cancellation-safe.
-
-    ``functools.wraps`` preserves ``__wrapped__`` so FastMCP introspects the
-    ORIGINAL handler signature (the 4 tools' signatures are unchanged — clients
-    have cached the schema). ``asyncio.to_thread`` copies the current
-    ``contextvars.Context``, so per-request ContextVars (api_key, tenant,
-    profile) propagate into the worker thread exactly as with ``offload``.
-    """
-    tool_name = getattr(fn, "__name__", "orm_tool")
-
-    def _run_in_thread(a, k):
-        # Runs entirely on the worker thread. The slot is acquired and released
-        # here so its lifetime is bound to THIS thread, never to the (possibly
-        # cancelled) caller coroutine. See THREAD-LIFETIME RELEASE above.
-        # _get_orm_semaphore() also resolves the cap + acquire-timeout the
-        # semaphore was sized with (post-dotenv), so the reject window and the
-        # logged max match the live semaphore exactly.
-        sem = _get_orm_semaphore()
-        cap = _orm_cap_in_use if _orm_cap_in_use is not None else ORM_QUERY_MAX_CONCURRENCY
-        slot_timeout = (
-            _orm_slot_timeout_in_use
-            if _orm_slot_timeout_in_use is not None
-            else ORM_SLOT_ACQUIRE_TIMEOUT
-        )
-        if not sem.acquire(timeout=slot_timeout):
-            # Saturated: fast-reject. Record metric + log here so cancel-storms
-            # are never invisible (the coroutine may already be gone).
-            _metric_orm_overloaded(tool_name)
-            logger.warning(
-                "ORM tool overloaded — semaphore full (max %d): tool=%s %s",
-                cap,
-                tool_name,
-                _orm_call_context(a, k),
-            )
-            raise OrmOverloaded(
-                "server busy — too many concurrent ORM-validation requests"
-                f" (max {cap}); retry shortly"
-            )
-        try:
-            return fn(*a, **k)
-        except OrmQueryTimeout:
-            # Record the timeout metric + log IN-THREAD so it is observed even
-            # if the awaiting coroutine was already cancelled (MED cancel-path
-            # blind spot). Re-raise so the wrapper can return user_message to a
-            # still-connected client.
-            _metric_orm_query_timeout(tool_name)
-            logger.warning(
-                "ORM query timed out: tool=%s %s",
-                tool_name,
-                _orm_call_context(a, k),
-            )
-            raise
-        finally:
-            sem.release()
-
-    @functools.wraps(fn)
-    async def wrapper(*a, **k):
-        try:
-            return await asyncio.to_thread(_run_in_thread, a, k)
-        except OrmOverloaded as exc:
-            # Uniform with the embed path + ADR-0023: return the overload
-            # message as a normal str, never a protocol-level isError.
-            return str(exc)
-        except OrmQueryTimeout as exc:
-            # Metric/log already recorded in-thread; return the normal str
-            # result. We never leak the Cypher / user code here.
-            return getattr(
-                exc,
-                "user_message",
-                "ORM query timed out — the request was too expensive to"
-                " complete; narrow the model/version and retry.",
-            )
-
-    return wrapper
-
-
-def offload_bounded_nonorm(fn):
-    """Bounded offload for a NON-ORM heavy read (#276 G6).
-
-    Identical machinery to :func:`offload_bounded` — a thread-held
-    ``threading.BoundedSemaphore`` whose slot is acquired/released INSIDE the
-    worker thread, so a cancelled coroutine (client disconnect) can never free a
-    slot while the worker thread is still pinning a Neo4j connection (the #276
-    cancel-safety invariant). The ONLY differences are a SEPARATE semaphore pool
-    (``_get_nonorm_semaphore``, sized by ``NONORM_READ_MAX_CONCURRENCY``) so a
-    burst of one read class cannot starve the other, and the
-    ``nonorm_overloaded_total`` metric.
-
-    The underlying per-query Neo4j timeout still comes from ``_bounded`` /
-    ``neo4j.Query(timeout=...)`` wrapped around the heavy queries in the handler
-    body (G5); an ``OrmQueryTimeout`` raised there is surfaced to the client the
-    same way as for the ORM tools, but recorded under the SEPARATE
-    ``nonorm_query_timeout_total`` counter so ops can tell the pools apart.
-    """
-    tool_name = getattr(fn, "__name__", "nonorm_tool")
-
-    def _run_in_thread(a, k):
-        # Slot acquired + released on THIS worker thread → lifetime bound to the
-        # thread, never the (possibly cancelled) caller coroutine. See #276 G6.
-        sem = _get_nonorm_semaphore()
-        cap = (
-            _nonorm_cap_in_use
-            if _nonorm_cap_in_use is not None
-            else NONORM_READ_MAX_CONCURRENCY
-        )
-        slot_timeout = (
-            _nonorm_slot_timeout_in_use
-            if _nonorm_slot_timeout_in_use is not None
-            else NONORM_SLOT_ACQUIRE_TIMEOUT
-        )
-        if not sem.acquire(timeout=slot_timeout):
-            _metric_nonorm_overloaded(tool_name)
-            logger.warning(
-                "non-ORM read overloaded — semaphore full (max %d): tool=%s",
-                cap,
-                tool_name,
-            )
-            raise OrmOverloaded(
-                "server busy — too many concurrent heavy read requests"
-                f" (max {cap}); retry shortly"
-            )
-        try:
-            return fn(*a, **k)
-        except OrmQueryTimeout:
-            _metric_nonorm_query_timeout(tool_name)
-            logger.warning("non-ORM read query timed out: tool=%s", tool_name)
-            raise
-        finally:
-            sem.release()
-
-    @functools.wraps(fn)
-    async def wrapper(*a, **k):
-        try:
-            return await asyncio.to_thread(_run_in_thread, a, k)
-        except OrmOverloaded as exc:
-            return str(exc)
-        except OrmQueryTimeout as exc:
-            return getattr(
-                exc,
-                "user_message",
-                "Query timed out — the request was too expensive to"
-                " complete; narrow the model/version and retry.",
-            )
-
-    return wrapper
+# The two decorators (`offload_bounded` / `offload_bounded_nonorm`) are bound
+# from this factory just below the metric + call-context helpers they reference
+# (those are defined a little further down — the bindings must come after them).
 
 
 def _validate_orm_env() -> None:
@@ -1099,6 +1077,51 @@ def _metric_nonorm_query_timeout(tool: str) -> None:
         nonorm_query_timeout_total.labels(tool=tool).inc()
     except Exception:  # pragma: no cover - observability must not break the tool
         pass
+
+
+# Bounded offload for the 4 ORM-validation tools (#273): a thread-held
+# BoundedSemaphore so a fan-out burst of dense ORM traversals cannot drain the
+# shared ThreadPoolExecutor / Neo4j pool. The slot is thread-bound (#276
+# CRITICAL-2 cancel-safety — see _make_bounded_offload). Accepted trade-off: a
+# fast-reject occupies one executor slot for up to ORM_SLOT_ACQUIRE_TIMEOUT while
+# it blocks on acquire(); the Neo4j pool (~24) comfortably exceeds the ORM cap (8)
+# plus that headroom, and rejecting in-thread is what makes the accounting
+# cancellation-safe. Bound here (not at the factory def) so the metric +
+# call-context helpers above are already defined.
+offload_bounded = _make_bounded_offload(
+    pool=_orm_pool,
+    metric_overloaded=_metric_orm_overloaded,
+    metric_timeout=_metric_orm_query_timeout,
+    log_label="ORM tool",
+    overload_phrase="ORM-validation requests",
+    timeout_log_prefix="ORM query",
+    tool_name_default="orm_tool",
+    timeout_msg_default=(
+        "ORM query timed out — the request was too expensive to"
+        " complete; narrow the model/version and retry."
+    ),
+    call_context_fn=_orm_call_context,
+)
+
+
+# Bounded offload for NON-ORM heavy reads (#276 G6, currently impact_analysis — a
+# 6-query fan-out). Identical machinery, but a SEPARATE pool so a burst of one
+# read class cannot starve the other, distinct metrics, and no call-context (the
+# non-ORM tools have a different signature than the ORM tools).
+offload_bounded_nonorm = _make_bounded_offload(
+    pool=_nonorm_pool,
+    metric_overloaded=_metric_nonorm_overloaded,
+    metric_timeout=_metric_nonorm_query_timeout,
+    log_label="non-ORM read",
+    overload_phrase="heavy read requests",
+    timeout_log_prefix="non-ORM read query",
+    tool_name_default="nonorm_tool",
+    timeout_msg_default=(
+        "Query timed out — the request was too expensive to"
+        " complete; narrow the model/version and retry."
+    ),
+    call_context_fn=None,
+)
 
 
 def _nonorm_timeout(label: str) -> "OrmQueryTimeout":
@@ -7510,8 +7533,14 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
     SKIP when: comparing across multiple profiles mid-session, OR when concurrent
     sub-agents / parallel sessions may share this MCP session — pass
     profile_name= explicitly to each call instead. The pin is single-actor
-    convenience and last-write-wins; concurrent actors sharing one session MUST
-    pass an explicit profile_name= so each resolves its own profile safely.
+    convenience: concurrent same-session subagents that need DISTINCT profiles
+    must pass profile_name= explicitly per call, because the pin is shared per
+    (api_key_id, mcp_session_id) and is last-write-wins — one subagent's
+    set_active_profile clobbers another's. (Authz-safe regardless: the pinned
+    profile is re-validated at read time through the ADR-0034 tenant choke,
+    narrowing-only and fail-closed, so a clobber can only narrow a view, never
+    widen or leak — but it can silently return a narrower-than-intended result,
+    hence pass profile_name= explicitly when subagents diverge. See #279.)
 
     Args:
         profile_name: Profile name such as 'internal_17' or
@@ -8570,6 +8599,126 @@ async def metrics_endpoint(request: Request):
     return _Response(content=output, media_type=CONTENT_TYPE_LATEST)
 
 
+def _resolve_session_idle_timeout() -> float:
+    """Resolve SESSION_IDLE_TIMEOUT (seconds) with a fail-safe value guard (#279).
+
+    Reuses ``_resolve_orm_float`` for the post-dotenv + ValueError-fallback
+    semantics (a bad ``SESSION_IDLE_TIMEOUT=abc`` falls back to the default
+    instead of crashing startup with a raw ``float()`` ValueError).
+
+    The MCP SDK's ``StreamableHTTPSessionManager`` raises ``ValueError`` for any
+    ``session_idle_timeout <= 0`` (it has no "0 = disable" affordance — that is
+    expressed as ``None``, which Option B never passes). A misconfigured ``<= 0``
+    would therefore crash startup AND, if it didn't, silently disable reaping —
+    re-opening the #279 leak. We are NOT offering an intentional opt-out here, so
+    clamp any ``<= 0`` back to the 3600s default and log a warning.
+
+    ``_resolve_orm_float`` parses ``SESSION_IDLE_TIMEOUT=nan`` / ``=inf`` to a
+    float without raising (Python ``float()`` accepts both), and ``nan <= 0`` is
+    ``False`` — so a bare ``<= 0`` guard would let a non-finite value through to
+    the SDK. ``nan`` yields a deadline that never compares true, ``inf`` a
+    never-expiring one: either silently disables reaping and re-opens #279. We
+    therefore reject any non-finite value the same way as ``<= 0``.
+    """
+    resolved = _resolve_orm_float("SESSION_IDLE_TIMEOUT", 3600.0)
+    if not math.isfinite(resolved) or resolved <= 0:
+        logging.getLogger(__name__).warning(
+            "SESSION_IDLE_TIMEOUT=%s is non-finite or <= 0 — that would disable "
+            "streamable-http session reaping (re-opening the #279 leak) and is "
+            "rejected by the MCP SDK. Falling back to the 3600s (1h) default.",
+            resolved,
+        )
+        return 3600.0
+    return resolved
+
+
+def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=None):
+    """Build the Option B streamable-http app core (#279 item 1, ADR-0049).
+
+    Single source of truth for the manual ``create_streamable_http_app()``
+    reproduction — both ``main()`` and ``tests/test_session_idle_timeout.py``
+    call this so the construction can never drift out of lockstep (FIX 3).
+
+    Returns ``(app, session_manager)``. The caller (``main()``) is responsible
+    for the steps that are NOT part of the Option B core: wrapping the router
+    lifespan with ``_lifespan_with_pg``, mounting ``/install`` + the feedback
+    sub-app, and running uvicorn.
+
+    FastMCP's ``mcp.http_app()`` / ``create_streamable_http_app()`` do NOT forward
+    ``session_idle_timeout`` to ``StreamableHTTPSessionManager`` (still
+    ``DON'T MERGE`` upstream while we pin fastmcp<3.0), so we reproduce that
+    factory here and add the one kwarg. The MCP SDK's manager DOES accept it.
+
+    FRAGILE — depends on FastMCP private internals (``mcp._mcp_server``,
+    ``mcp._lifespan_manager()``, ``mcp._get_additional_http_routes()``,
+    ``mcp._deprecated_settings``) plus the public-but-undocumented
+    ``StreamableHTTPASGIApp`` / ``create_base_app``. The smoke test guards drift.
+    """
+    from contextlib import asynccontextmanager as _asynccontextmanager
+
+    from fastmcp.server.http import (
+        StreamableHTTPASGIApp as _StreamableHTTPASGIApp,
+    )
+    from fastmcp.server.http import (
+        create_base_app as _create_base_app,
+    )
+    from mcp.server.streamable_http_manager import (
+        StreamableHTTPSessionManager as _StreamableHTTPSessionManager,
+    )
+    from starlette.routing import Route as _Route
+
+    _mcp = mcp_server if mcp_server is not None else mcp
+
+    # FIX 2: forward json_response / stateless from FastMCP's settings so an
+    # operator who sets FASTMCP_JSON_RESPONSE / FASTMCP_STATELESS_HTTP gets the
+    # same behaviour http_app() would have given them (both default False, so
+    # prod is unaffected). Read from the same source FastMCP.http_app() reads.
+    _settings = _mcp._deprecated_settings
+    _json_response = bool(_settings.json_response)
+    _stateless = bool(_settings.stateless_http)
+    # FIX C: forward debug the same way FastMCP.http_app() does
+    # (debug=self._deprecated_settings.debug). getattr fallback keeps us safe if
+    # a future fastmcp drops the attr — create_base_app(debug=) is a public kwarg.
+    _debug = bool(getattr(_settings, "debug", False))
+    # The SDK rejects session_idle_timeout in stateless mode (no sessions to
+    # reap). Pass None there so an operator opting into stateless mode does not
+    # hit a startup RuntimeError; reaping is moot when there is no session state.
+    _idle = None if _stateless else idle_timeout
+
+    session_manager = _StreamableHTTPSessionManager(
+        app=_mcp._mcp_server,
+        json_response=_json_response,
+        stateless=_stateless,
+        session_idle_timeout=_idle,
+    )
+    streamable_asgi = _StreamableHTTPASGIApp(session_manager)
+
+    @_asynccontextmanager
+    async def _mcp_session_lifespan(app):
+        # Inner lifespan (becomes _existing_lifespan in main(), wrapped by
+        # _lifespan_with_pg). Starts/stops the session manager — mirrors the
+        # lifespan FastMCP's create_streamable_http_app() would have built.
+        async with _mcp._lifespan_manager(), session_manager.run():
+            yield
+
+    app = _create_base_app(
+        routes=[
+            _Route(
+                "/mcp",
+                endpoint=streamable_asgi,
+                methods=["GET", "POST", "DELETE"],
+            ),
+            *_mcp._get_additional_http_routes(),
+        ],
+        middleware=middleware,
+        debug=_debug,
+        lifespan=_mcp_session_lifespan,
+    )
+    app.state.fastmcp_server = _mcp
+    app.state.path = "/mcp"
+    return app, session_manager
+
+
 if __name__ == "__main__":
     import logging as _logging
 
@@ -8584,6 +8733,15 @@ if __name__ == "__main__":
     from src.logging_config import configure_logging as _configure_logging
     _configure_logging(level=_logging.INFO)
 
+    # --- Option B: build the streamable-http app directly so we can pass
+    # session_idle_timeout (#279 item 1, ADR-0049) ------------------------------
+    # The core construction lives in the module-level _build_streamable_http_app()
+    # helper (single source of truth — tests/test_session_idle_timeout.py calls
+    # the SAME helper so the two can never drift). main() owns the wrapping:
+    # lifespan compose with _lifespan_with_pg, /install + feedback mounts, uvicorn.
+    # ADR-0049 records the 3 triggers to revert to the http_app() kwarg once
+    # upstream forwards session_idle_timeout. SESSION_IDLE_TIMEOUT (default 3600s
+    # = 1h, value-guarded) reaps abandoned streamable-http sessions (#279).
     from pathlib import Path as _Path
 
     import uvicorn as _uvicorn
@@ -8592,10 +8750,9 @@ if __name__ == "__main__":
 
     from src.mcp.middleware import AuthMiddleware
 
-    # Replace mcp.run(...) with explicit app+uvicorn so we can mount /install StaticFiles.
-    _app = mcp.http_app(
-        transport="streamable-http",
-        path="/mcp",
+    _session_idle_timeout = _resolve_session_idle_timeout()
+    _app, _session_manager = _build_streamable_http_app(
+        idle_timeout=_session_idle_timeout,
         middleware=[_Middleware(AuthMiddleware)],
     )
 
