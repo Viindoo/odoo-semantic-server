@@ -590,6 +590,77 @@ return f"Error querying {model}: internal server error (check server logs)."
 
 This rule applies to all future tools added to `src/mcp/server.py` and `src/mcp/resources.py`.
 
+### §D Provenance tokens for inherited and delegated fields/methods (ADR-0048 read-side amendment)
+
+**Decision (normative):** Following the ADR-0048 read-side symmetry fix, `model_inspect(method='fields')`,
+`entity_lookup(kind='field')`, `model_inspect(method='methods')`, and `find_override_point` now
+surface fields and methods declared on mixin ancestors and delegation targets, not only those
+owned directly by the queried model. Two new provenance tokens are introduced to let AI clients
+distinguish origin:
+
+**In list-tool rows** (`_list_fields`, `_list_methods` row format per §5.3), an additional
+token is appended at the end of the line when the entity is not directly owned by the
+queried model:
+
+```
+{name} : {ttype} | inherited from {owner_model}
+{name} : {ttype} | delegated via {field_name} from {owner_model} (separate table, fields-only)
+```
+
+- `inherited from <owner_model>` - field/method reached via an `INHERITS` edge (mixin
+  or `_inherit`-based extension without `_name`). Applies to BOTH fields and methods.
+- `delegated via <field> from <owner_model> (separate table, fields-only)` - field reached
+  via a `DELEGATES_TO` edge (`_inherits`-based delegation; the field physically belongs to the
+  delegated model, stored in its SEPARATE table and reached through the FK). The
+  `(separate table, fields-only)` suffix (GAP-5, 2026-06-11) makes the delegation semantics
+  unambiguous so an AI client does not mistake a delegated field for an ordinary in-place
+  inherited one.
+
+**Methods are INHERITS-only — there is NO `delegated` token on a method row.** `_inherits`
+delegation gives the child the parent's FIELDS ONLY (related proxy, separate table); methods are
+NEVER forwarded through delegation (unanimous Odoo v8→v19; v9 core `orm.rst:942-943`). The method
+helpers therefore traverse `INHERITS` only — an inherited method row can only read
+`| inherited from <owner_model>`, never `delegated`. See ADR-0048 amendment point 6.
+
+Rows for fields/methods owned directly by the queried model carry no provenance token
+(backward-compatible: existing output for own entities is unchanged).
+
+**In detail-tool output** (`_resolve_field`, `_resolve_method` tree), when the entity
+is inherited or delegated, a branch line is inserted before `Declared in:`:
+
+```
+├─ Inherited from:    {owner_model}
+```
+
+or (fields only)
+
+```
+├─ Delegated via {field_name} from: {owner_model} (separate table, fields-only)
+```
+
+`Declared in:` continues to show the module that actually declares the field/method
+(e.g., `viin_approval`), preserving its existing semantics. For an INHERITED METHOD detail,
+the `Override chain (N):` block now renders the REAL multi-module override chain on the OWNER
+model (GAP-3, 2026-06-11) — every module declaring the method on its owner, in the ADR-0013
+ranked order — instead of a hardcoded `Override chain (1)`. The `(*)` override marker in the
+method LIST (§5.3) likewise now covers inherited methods overridden in ≥2 modules on their
+owner model (GAP-2), computed per `(method_name, owner_model)`.
+
+**Token grammar note:** the new tokens are additive - they extend existing row and
+detail-tree formats without changing the connector grammar (§1.2) or the row
+delimiter (§1.4 ` | `). The language-policy CI test (§2) must not match these tokens
+as Vietnamese (they are ASCII English). The `[ref=fN]` pagination token (Amendment
+2026-05-19) appears after the provenance token when both are present.
+
+**Contract change - "not found" now "found" for inherited entities:** before this fix,
+`entity_lookup(kind='field', model=X, field=F)` returned the literal string
+`"Field 'F' not found on model 'X'..."` for any field F declared on a mixin ancestor
+of X. After this fix, such fields return a full detail tree with an `Inherited from:`
+branch. AI clients that hard-matched the "not found" substring to conclude a field does
+not exist will see different behavior - this is accepted because the prior behavior was
+a false negative (the field is present in Odoo's effective schema for model X). The same
+applies to inherited methods.
+
 ### §C Pagination continuation — start_index NEVER raises the per-page cap
 
 **Clarification (normative):** When the `Next:` continuation hint suggests `start_index=Y` for the next page, the hint MUST use the same `limit` (or cap) as the current page. Callers MUST NOT interpret a multi-page response as a signal to increase `limit` beyond the documented per-tool cap. Caps exist for context-window budget reasons and are enforced server-side (`effective_limit = min(limit, cap)`) regardless of the `limit` value passed by the caller.

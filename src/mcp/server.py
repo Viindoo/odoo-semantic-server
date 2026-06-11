@@ -16,14 +16,13 @@ from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 from neo4j import GraphDatabase
+from neo4j.exceptions import ClientError
 from pydantic import Field
 from starlette.requests import Request
 
 from src.constants import (
     CODE_PREVIEW_MAX_CHARS,
     DEFAULT_EMBEDDER_MODEL,
-    EDITION_PRIORITY,
-    EDITION_PRIORITY_ELSE,
     EMBEDDER_MAX_CONCURRENCY,
     EMBEDDER_SLOT_ACQUIRE_TIMEOUT,
     EMBEDDER_TOKEN_BUDGET,
@@ -77,9 +76,18 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
 )
 from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect, _profile_inspect
 from src.mcp.orm import (
+    _ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY,
     OrmQueryTimeout,
+    _ancestor_owner_names,
     _bounded,
+    _count_fields_with_inherited,
+    _count_methods_with_inherited,
+    _edition_rank_cypher,
     _is_tx_timeout,
+    _list_fields_with_inherited,
+    _list_methods_with_inherited,
+    _resolve_field_inherited,
+    _resolve_method_inherited,
     _resolve_orm_chain,
     _validate_depends,
     _validate_domain,
@@ -96,15 +104,6 @@ logger = logging.getLogger(__name__)
 # Sentinel api_key_id for direct _impl calls (tests, CLI) — refs are scoped
 # to this namespace and do not collide with production tenant refs.
 _ANONYMOUS_API_KEY_ID = "anonymous"
-
-
-def _edition_rank_cypher(node_alias: str = "mod") -> str:
-    """Build Cypher CASE expression for edition priority from EDITION_PRIORITY."""
-    cases = " ".join(
-        f"WHEN '{ed}' THEN {rank}"
-        for ed, rank in sorted(EDITION_PRIORITY.items(), key=lambda x: x[1])
-    )
-    return f"CASE {node_alias}.edition {cases} ELSE {EDITION_PRIORITY_ELSE} END AS edition_rank"
 
 
 # Render-only edition label — WG-5 T1.
@@ -1985,8 +1984,29 @@ def _resolve_model(
         # would return, which is the parity contract M2 requires.
         base = layers[0]
         extensions = [row for row in layers if not row["is_definition"]]
-        fields_count = base["fields_count"]
-        methods_count = base["methods_count"]
+        # INHERITS-aware counts (issue: summary must agree with _list_fields /
+        # _list_methods totals). The flat per-layer `fields_count` /
+        # `methods_count` only counts entities declared directly on this model
+        # name; it MISSES fields/methods inherited from a mixin (e.g. `res_ref`
+        # on `viin.approval.request` lives under `abstract.approval.request.
+        # fields`). Use the same per-hop-dedup traversal + DISTINCT-name count
+        # as the list tools so the summary never contradicts the enumeration.
+        # from_module scoping is intentionally NOT applied here — the summary
+        # count reflects the model as a whole, and the inherited helpers count
+        # the deduped own+inherited name set for the model.
+        try:
+            fields_count = _count_fields_with_inherited(
+                model_name, odoo_version, session, profile_name
+            )
+            methods_count = _count_methods_with_inherited(
+                model_name, odoo_version, session, profile_name
+            )
+        except OrmQueryTimeout:
+            # Dense-graph fallback: a timed-out inherited count must not blank the
+            # whole summary. Degrade to the flat own-model count (the pre-fix
+            # behaviour) rather than failing the entire model overview.
+            fields_count = base["fields_count"]
+            methods_count = base["methods_count"]
 
         # DISTINCT on p.name only — the same parent (e.g. mail.thread) is reachable
         # via multiple INHERITS edges (one per module that declares _inherit), and
@@ -2036,6 +2056,121 @@ def _resolve_model(
         " for full field list",
         f"model_inspect(model='{model_name}', method='methods', odoo_version='{odoo_version}')"
         " for behavior",
+    ]))
+    return "\n".join(lines)
+
+
+def _provenance_token(
+    owner_model: str | None,
+    model: str,
+    edge_kind: str | None,
+    via_field: str | None,
+) -> str | None:
+    """SSOT for the list-row provenance token (ADR-0023 §D, token-additive).
+
+    Returns the trailing token appended to an inherited/delegated field- or
+    method-row (e.g. ``inherited from sale.mixin`` or
+    ``delegated via partner_id from res.partner (separate table, fields-only)``),
+    or ``None`` for an OWN entity (``owner_model`` equals ``model``, or no owner /
+    depth-0) so the caller appends nothing — output for own entities stays
+    byte-identical to the pre-inherited behaviour.
+
+    Single source for the wording across :func:`_list_fields._fmt_field_row` and
+    :func:`_list_methods._fmt_method` (FIX-6, review #283). The two detail
+    renderers (:func:`_render_inherited_field` / :func:`_render_inherited_method`)
+    use a distinct capitalised ``├─`` branch grammar and are intentionally NOT
+    routed through this helper. ``edge_kind == 'delegates'`` only ever occurs on
+    the FIELD path — methods are INHERITS-only (GAP-1), so the method caller
+    always lands on the ``inherited from`` branch.
+    """
+    if not owner_model or owner_model == model:
+        return None
+    if edge_kind == "delegates":
+        # GAP-5: `_inherits` delegation gives the child the owner's FIELDS ONLY,
+        # stored in the owner's SEPARATE table via the FK — signal it explicitly
+        # so an AI client does not mistake it for ordinary in-place inheritance.
+        if via_field:
+            return (
+                f"delegated via {via_field} from {owner_model}"
+                " (separate table, fields-only)"
+            )
+        return f"delegated from {owner_model} (separate table, fields-only)"
+    return f"inherited from {owner_model}"
+
+
+def _render_inherited_field(
+    model_name: str, field_name: str, odoo_version: str, inh: dict
+) -> str:
+    """Render the detail tree for a field resolved via inheritance.
+
+    ``inh`` is the full record from :func:`orm._resolve_field_inherited`
+    (``{ttype, compute, stored, required, related, comodel_name,
+    effective_readonly, module, repo, owner_model, edge_kind, ...}``). The tree
+    mirrors the own-field detail in :func:`_resolve_field`, with an extra
+    provenance branch (``Inherited from`` / ``Delegated from``) before the
+    ``Declared in`` line. ``Declared in`` stays the REAL declaring module so the
+    AI client can locate the source, while the provenance branch names the
+    mixin/owner model the field is reached through.
+    """
+    owner = inh.get("owner_model") or "?"
+    lines = [
+        f"{model_name}.{field_name} (Odoo {odoo_version})",
+        f"├─ Type:     {inh.get('ttype', '?')}",
+        f"├─ Computed: {'Yes' if inh.get('compute') else 'No'}"
+        + (f" ({inh['compute']})" if inh.get('compute') else ""),
+        f"├─ Stored:   {'Yes' if inh.get('stored', True) else 'No'}",
+        f"├─ Required: {'Yes' if inh.get('required', False) else 'No'}",
+        f"├─ Related:  {inh.get('related') or '—'}",
+    ]
+    if inh.get("comodel_name"):
+        lines.append(f"├─ Comodel:  {inh['comodel_name']}")
+    # A2-followup: label + help parity with own-field detail (V3 fix — ADR-0023).
+    # Populated after reindex; absent on pre-reindex graphs — omit gracefully.
+    if inh.get("string"):
+        lines.append(f"├─ Label:    {inh['string']}")
+    if inh.get("help"):
+        lines.append(f"├─ Help:     {inh['help']}")
+    _eff_ro = inh.get("effective_readonly")
+    if _eff_ro is not None:
+        lines.append(f"├─ Readonly: {'Yes' if _eff_ro else 'No'}")
+        lines.append(
+            "│   └─ note: readonly reflects the Python field definition only "
+            "(view-level/states/attrs readonly not captured)"
+        )
+    # Provenance branch - distinguish INHERITS mixin vs _inherits delegation.
+    # GAP-5: delegation gives the child the owner's FIELDS ONLY, stored in the
+    # owner's SEPARATE table via the FK — signal that explicitly so the AI client
+    # does not mistake it for ordinary in-place inheritance.
+    if inh.get("edge_kind") == "delegates":
+        via = inh.get("via_field")
+        if via:
+            lines.append(
+                f"├─ Delegated via {via} from: {owner}"
+                " (separate table, fields-only)"
+            )
+        else:
+            lines.append(
+                f"├─ Delegated from: {owner} (separate table, fields-only)"
+            )
+    else:
+        lines.append(f"├─ Inherited from: {owner}")
+    # "Declared in" stays the real declaring module of the field on the owner.
+    lines.append("├─ Declared in:")
+    repo_str = f"[{inh['repo']}] " if inh.get("repo") else ""
+    lines.append(f"│   └─ {repo_str}{inh.get('module') or '?'}")
+    # FIX-3 (review #283): the field NODE lives on `owner` (the mixin), not the
+    # child `model_name`. impact_analysis flat-matches the field on its declaring
+    # model, so a hint keyed by `{child}.{field}` returns an EMPTY blast radius
+    # and the AI client wrongly concludes "no impact". Key the impact_analysis +
+    # find_examples hints by `owner` (where the field is actually declared) so
+    # they resolve. The header above still names the child (that is what the user
+    # asked about), but the drill-downs point at the real owner.
+    lines.append(format_next_step([
+        f"find_examples(query='{owner}.{field_name} usage'"
+        f", odoo_version='{odoo_version}') for real-world patterns",
+        f"impact_analysis(entity_type='field'"
+        f", entity_name='{owner}.{field_name}'"
+        f", odoo_version='{odoo_version}') for blast radius",
     ]))
     return "\n".join(lines)
 
@@ -2117,6 +2252,33 @@ def _resolve_field(
                 f", odoo_version='{odoo_version}') for blast radius",
             ]))
             return "\n".join(lines)
+        # Inherited fallback: the flat exact-match on the child model MISSED and
+        # it is not a magic field. Walk INHERITS|DELEGATES_TO (depth 1-3) to find
+        # the field on a mixin (e.g. `res_ref` declared on a mixin model, not on
+        # `viin.approval.request` itself). Keeps the exact-first fast path —
+        # native fields never pay the BFS cost.
+        #
+        # from_module semantics (V2 fix): when from_module is set we still run the
+        # inherited fallback — the field may be declared on a mixin model that
+        # BELONGS to from_module (e.g. `abstract.approval.request.fields` lives in
+        # module `viin_approval`). After the BFS we post-filter: only surface the
+        # inherited hit if its declaring module matches from_module. If the module
+        # doesn't match we keep the "not found" path — the user asked specifically
+        # for that module and the field isn't there.
+        # FIX-1 (review #283): _resolve_field_inherited is bounded + tx-timeout-
+        # mapped; entity_lookup/model_inspect wrap this in plain @offload (no
+        # OrmQueryTimeout catch), so surface the bounded timeout as a clean
+        # ADR-0023 string rather than a protocol-level 500.
+        try:
+            with _get_driver().session() as session:
+                inh = _resolve_field_inherited(
+                    model_name, field_name, odoo_version, session, profile_name
+                )
+        except OrmQueryTimeout as exc:
+            return exc.user_message
+        if inh is not None:
+            if from_module is None or inh.get("module") == from_module:
+                return _render_inherited_field(model_name, field_name, odoo_version, inh)
         return (
             f"Field '{field_name}' not found on model"
             f" '{model_name}' in Odoo {odoo_version}."
@@ -2167,17 +2329,28 @@ def _resolve_field(
     return "\n".join(lines)
 
 
-def _resolve_method(
-    model_name: str,
-    method_name: str,
-    odoo_version: str = "auto",
+def _method_override_chain(
+    session, model: str, method: str, odoo_version: str,
     profile_name: str | None = None,
-) -> str:
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
+) -> list[dict]:
+    """Ranked override-chain records for ``method`` declared on ``model``.
 
-        # 5-tier ranking via m_node proxy — see docs/adr/0013
-        records = session.run(f"""
+    The 5-tier ADR-0013 ranking (is_definition → field_count → dependents →
+    edition → module name) shared by :func:`_resolve_method` (own-method detail)
+    and the GAP-3 inherited-method detail (where ``model`` is the OWNER model).
+    Each record is ``{mth, module_name, repo}``. SSOT for the ranking so the two
+    call-sites never drift.
+
+    Bounded by :func:`_bounded` and tx-timeout-mapped to :class:`OrmQueryTimeout`
+    (FIX-1, review #283): this query carries a ``COUNT {{ ... INHERITS-adjacent
+    DEPENDS_ON }}`` subquery and is called up to 2× per inherited-method resolve
+    (own-method detail + the GAP-3 owner-model chain). On a dense graph it could
+    hang exactly like the unbounded-traversal class #273/#276 closed; the bound +
+    timeout mapping make every INHERITS/COUNT-heavy read in this wave bounded.
+    """
+    try:
+        return session.run(
+            _bounded(f"""
             MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
             WHERE ($own IS NULL OR (size(mth.profile) > 0
                    AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
@@ -2195,14 +2368,156 @@ def _resolve_method(
             RETURN mth, mth.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
             ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
                      edition_rank ASC, mod_name ASC
-        """, mn=method_name, model=model_name, v=odoo_version,
-            **_scope(profile_name)).data()
+        """),
+            mn=method, model=model, v=odoo_version, **_scope(profile_name),
+        ).data()
+    except ClientError as exc:
+        if _is_tx_timeout(exc):
+            raise OrmQueryTimeout(
+                f"Query timed out after {NEO4J_QUERY_TIMEOUT_SECONDS}s while "
+                f"resolving the override chain of '{model}.{method}' (Odoo "
+                f"{odoo_version}). The inheritance graph may be unusually dense "
+                f"- try a more specific model or retry later."
+            ) from exc
+        raise
 
-    if not records:
-        return (
-            f"Method '{method_name}' not found on model"
-            f" '{model_name}' in Odoo {odoo_version}."
+
+def _render_inherited_method(
+    model_name: str, method_name: str, odoo_version: str, inh: dict,
+    owner_chain: list[dict] | None = None,
+) -> str:
+    """Render the detail tree for a method resolved via inheritance.
+
+    ``inh`` is the full record from :func:`orm._resolve_method_inherited`
+    (``{name, convention_kind, module, repo, signature, docstring, decorators,
+    has_super_call, depends, owner_model, edge_kind, ...}``). Mirrors the
+    own-method detail in :func:`_resolve_method` with an ``Inherited from``
+    provenance branch.
+
+    Methods are inherited via INHERITS only (Python MRO) — ``_inherits``
+    delegation NEVER carries methods (GAP-1) — so the provenance is always
+    "Inherited from", never "Delegated".
+
+    ``owner_chain`` is the REAL multi-module override chain on the OWNER model
+    (GAP-3): the records (``{mth, module_name, repo}``) of every module that
+    declares ``method_name`` on ``owner_model``, in the same MRO/last-loaded
+    ranked order as :func:`_resolve_method`. When provided (and non-empty) it
+    renders the full chain with the true count; when ``None``/empty (defensive)
+    it falls back to the single owner entry from ``inh``.
+    """
+    owner = inh.get("owner_model") or "?"
+    lines = [f"{model_name}.{method_name}() (Odoo {odoo_version})"]
+    if inh.get("signature"):
+        lines.append(f"├─ Signature:   ({inh['signature']})")
+    if inh.get("convention_kind"):
+        lines.append(f"├─ Convention:  {inh['convention_kind']}")
+    if inh.get("docstring"):
+        first_line = inh["docstring"].strip().splitlines()[0][:120]
+        lines.append(f"├─ Docstring:   {first_line}")
+    lines.append(f"├─ Inherited from: {owner}")
+
+    def _fmt_owner_override(r: dict) -> str:
+        mth = r["mth"]
+        super_info = "✓ calls super()" if mth.get("has_super_call") else "✗ no super()"
+        decs = ", ".join(mth.get("decorators") or []) or "—"
+        repo_str = f"[{r['repo']}] " if r.get("repo") else ""
+        return f"{repo_str}{r['module_name']} — {super_info} — decorators: {decs}"
+
+    if owner_chain:
+        # GAP-3: render the REAL override chain on the owner model — every module
+        # that declares this method on its owner, MRO/last-loaded ranked, capped
+        # with ADR-0023 §3 disclosure. No more misleading hardcoded "(1)".
+        chain_total = len(owner_chain)
+        lines.append(f"├─ Override chain ({chain_total}):")
+        capped_chain = _render_capped(
+            owner_chain[:LIST_PREVIEW_MAX_ITEMS],
+            _fmt_owner_override,
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            total=chain_total,
+            more_hint=(
+                f"find_override_point(model='{owner}', method='{method_name}'"
+                f", odoo_version='{odoo_version}') for full override chain"
+            ),
         )
+        lines.extend(render_list_block(capped_chain, prefix="│   "))
+    else:
+        # Defensive fallback: no owner chain supplied — render the single owner
+        # entry from `inh` (pre-GAP-3 behaviour, but no longer the normal path).
+        lines.append("├─ Override chain (1):")
+        super_info = "✓ calls super()" if inh.get("has_super_call") else "✗ no super()"
+        decs = ", ".join(inh.get("decorators") or []) or "—"
+        repo_str = f"[{inh['repo']}] " if inh.get("repo") else ""
+        lines.append(
+            f"│   └─ {repo_str}{inh.get('module') or '?'} — {super_info}"
+            f" — decorators: {decs}"
+        )
+    # FIX-3 (review #283, symmetric to _render_inherited_field): the method NODE
+    # and its whole override chain live on `owner` (the mixin), not the child
+    # `model_name`. find_override_point + impact_analysis flat-match on the
+    # declaring model, so hints keyed by `{child}.{method}` return EMPTY — wrongly
+    # signalling "no override point / no impact". Key both drill-downs by `owner`
+    # so they resolve. The header still names the child (what the user asked).
+    lines.append(format_next_step([
+        f"find_override_point(model='{owner}', method='{method_name}'"
+        f", odoo_version='{odoo_version}') for safe hook spot",
+        f"impact_analysis(entity_type='method'"
+        f", entity_name='{owner}.{method_name}'"
+        f", odoo_version='{odoo_version}') for blast radius",
+    ]))
+    return "\n".join(lines)
+
+
+def _resolve_method(
+    model_name: str,
+    method_name: str,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
+    # FIX-1 (review #283): _method_override_chain + _resolve_method_inherited are
+    # now bounded and tx-timeout-mapped to OrmQueryTimeout. model_inspect /
+    # entity_lookup wrap this handler in plain @offload (no OrmQueryTimeout catch),
+    # so surface the bounded timeout as a clean ADR-0023 string here rather than
+    # letting it propagate to a protocol-level 500.
+    try:
+        with _get_driver().session() as session:
+            odoo_version = _resolve_version(odoo_version, session)
+
+            # 5-tier ranking via m_node proxy — see docs/adr/0013
+            records = _method_override_chain(
+                session, model_name, method_name, odoo_version, profile_name
+            )
+
+        if not records:
+            # Inherited fallback (symmetric to _resolve_field): the flat exact-match
+            # on the child model MISSED. Walk INHERITS (depth 1-3) to find the method
+            # on a mixin (e.g. `_compute_res_ref` declared on a mixin model, not on
+            # `viin.approval.request` itself). Methods are inherited via INHERITS only
+            # — `_inherits` delegation never carries methods (GAP-1). Exact-first fast
+            # path is preserved — own methods never pay the BFS cost. find_override_point
+            # (which calls _resolve_method) inherits this fix automatically.
+            with _get_driver().session() as session:
+                inh = _resolve_method_inherited(
+                    model_name, method_name, odoo_version, session, profile_name
+                )
+                owner_chain: list[dict] = []
+                if inh is not None and inh.get("owner_model"):
+                    # GAP-3: fetch the REAL multi-module override chain on the OWNER
+                    # model (same ranking as own methods) so the inherited detail
+                    # shows every declaring module, not a misleading hardcoded "(1)".
+                    owner_chain = _method_override_chain(
+                        session, inh["owner_model"], method_name,
+                        odoo_version, profile_name,
+                    )
+            if inh is not None:
+                return _render_inherited_method(
+                    model_name, method_name, odoo_version, inh, owner_chain
+                )
+            return (
+                f"Method '{method_name}' not found on model"
+                f" '{model_name}' in Odoo {odoo_version}."
+            )
+    except OrmQueryTimeout as exc:
+        return exc.user_message
 
     base_mth = records[0]["mth"]
     lines = [
@@ -4969,48 +5284,24 @@ def _list_fields(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        rows = session.run(
-            f"""
-            MATCH (f:Field {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR (size(f.profile) > 0
-                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR f.module = $module)
-              AND ($kind IS NULL OR f.ttype = $kind)
-              AND f.module <> '__unresolved__'
-            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
-            WITH f, mod,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN f.name AS name, f.ttype AS ttype,
-                   f.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
-                   f.stored AS stored, f.compute AS compute,
-                   f.comodel_name AS comodel_name,
-                   f.related AS related, f.required AS required,
-                   f.effective_readonly AS effective_readonly,
-                   edition_rank, mod_name
-            ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
-            SKIP $skip
-            LIMIT $limit
-            """,
-            m=model, v=odoo_version, module=module, kind=kind,
-            **_scope(profile_name), skip=start_index, limit=effective_limit,
-        ).data()
+        # INHERITS-aware enumeration: own fields (depth 0) + fields inherited
+        # from mixins (depth 1-3 via INHERITS|DELEGATES_TO), deduped by name
+        # with the nearest owner winning (child overrides mixin). The dedup +
+        # SKIP/LIMIT happen IN-QUERY, so pagination is consistent with the
+        # matching DISTINCT-name count below. Provenance fields owner_model /
+        # inherit_depth / edge_kind are carried for the `inherited from` /
+        # `delegated via` row labels. Bounded by _bounded() (issue #273).
+        rows = _list_fields_with_inherited(
+            model, odoo_version, session, profile_name,
+            module=module, kind=kind,
+            skip=start_index, limit=effective_limit,
+        )
 
-        # Separate count query so we know the true total when Cypher SKIP/LIMIT trims.
-        total_rec = session.run(
-            """
-            MATCH (f:Field {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(f.profile) > 0
-                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR f.module = $module)
-              AND ($kind IS NULL OR f.ttype = $kind)
-              AND f.module <> '__unresolved__'
-            RETURN count(f) AS c
-            """,
-            m=model, v=odoo_version, module=module, kind=kind,
-            **_scope(profile_name),
-        ).single()
-        total = total_rec["c"] if total_rec else 0
+        # Separate count query (same traversal + DISTINCT-name dedup) so the
+        # "Showing X of N" total always matches the paginated, deduped rows.
+        total = _count_fields_with_inherited(
+            model, odoo_version, session, profile_name, module=module, kind=kind
+        )
 
     # D2: Build magic-field prelude for page 0 only when no module filter suppresses them.
     # Magic fields are rendered as a FIXED <builtin> prelude block that is OUTSIDE the
@@ -5022,20 +5313,61 @@ def _list_fields(
     magic_prelude_rows: list[dict] = []
     if start_index == 0 and module is None:
         magic_names_list = list(MAGIC_FIELDS.keys())
-        with _get_driver().session() as _dedup_session:
-            _dedup_rec = _dedup_session.run(
-                """
-                MATCH (f:Field {model: $m, odoo_version: $v})
-                WHERE f.name IN $magic_names
-                  AND ($own IS NULL OR (size(f.profile) > 0
-                       AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-                  AND f.module <> '__unresolved__'
-                RETURN collect(DISTINCT f.name) AS names
-                """,
-                m=model, v=odoo_version, magic_names=magic_names_list,
-                **_scope(profile_name),
-            ).single()
-        existing_names: set[str] = set(_dedup_rec["names"]) if _dedup_rec else set()
+        # Dedup magic names against own AND inherited owners. A mixin can declare
+        # a magic-named field (e.g. `display_name`), so the flat own-model check
+        # alone would double-show it once the inherited rows surface it in the
+        # paginated list. FIX-2 (review #283): reuse the shared bounded owner-set
+        # helper (`_ancestor_owner_names`, the SAME _ANCESTOR_TAGGED_PROLOGUE the
+        # listing uses) instead of a hand-rolled re-implementation of the 3-hop
+        # BFS — one SSOT, both bounded. On a tx-timeout the magic check degrades
+        # to the flat own-model dedup (existing_names from the model alone) so a
+        # dense graph never crashes the whole list (it can at worst double-show a
+        # magic-named field that a mixin also declares — a cosmetic degradation,
+        # not a failure).
+        existing_names: set[str] = set()
+        try:
+            with _get_driver().session() as _dedup_session:
+                owner_names = _ancestor_owner_names(
+                    model, odoo_version, _dedup_session, profile_name
+                )
+                _dedup_rec = _dedup_session.run(
+                    _bounded(
+                        """
+                        UNWIND $owners AS owner_model
+                        MATCH (f:Field {model: owner_model, odoo_version: $v})
+                        WHERE f.name IN $magic_names
+                          AND ($own IS NULL OR (size(f.profile) > 0
+                               AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
+                          AND f.module <> '__unresolved__'
+                        RETURN collect(DISTINCT f.name) AS names
+                        """
+                    ),
+                    owners=owner_names, v=odoo_version,
+                    magic_names=magic_names_list, **_scope(profile_name),
+                ).single()
+            existing_names = set(_dedup_rec["names"]) if _dedup_rec else set()
+        except OrmQueryTimeout:
+            # Degrade to flat own-model magic dedup — never crash the list.
+            try:
+                with _get_driver().session() as _flat_session:
+                    _flat_rec = _flat_session.run(
+                        _bounded(
+                            """
+                            MATCH (f:Field {model: $m, odoo_version: $v})
+                            WHERE f.name IN $magic_names
+                              AND ($own IS NULL OR (size(f.profile) > 0
+                                   AND all(__p IN f.profile
+                                           WHERE __p IN $own OR __p IN $shared)))
+                              AND f.module <> '__unresolved__'
+                            RETURN collect(DISTINCT f.name) AS names
+                            """
+                        ),
+                        m=model, v=odoo_version,
+                        magic_names=magic_names_list, **_scope(profile_name),
+                    ).single()
+                existing_names = set(_flat_rec["names"]) if _flat_rec else set()
+            except OrmQueryTimeout:
+                existing_names = set()
         magic_prelude_rows = [
             {
                 "name": fname,
@@ -5127,6 +5459,15 @@ def _list_fields(
                 parts.append("readonly")
             if r.get("required"):
                 parts.append("required")
+            # Provenance token (ADR-0023 token-additive): tag fields that come
+            # from a mixin so the AI client knows they are inherited, not own.
+            # Own fields (owner_model == model) get no token — output unchanged.
+            # _provenance_token is the SSOT for the wording (FIX-6, review #283).
+            token = _provenance_token(
+                r.get("owner_model"), model, r.get("edge_kind"), r.get("via_field")
+            )
+            if token:
+                parts.append(token)
             return " | ".join(parts)
 
         rendered_strs = _render_capped(
@@ -5217,56 +5558,52 @@ def _list_methods(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        rows = session.run(
-            f"""
-            MATCH (mth:Method {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR mth.module = $module)
-              AND mth.module <> '__unresolved__'
-            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
-            WITH mth, mod,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN mth.name AS name, mth.convention_kind AS kind,
-                   mth.module AS module, coalesce(mod.repo_url, mod.repo) AS repo,
-                   edition_rank, mod_name
-            ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
-            SKIP $skip
-            LIMIT $limit
-            """,
-            m=model, v=odoo_version, module=module,
-            **_scope(profile_name), skip=start_index, limit=effective_limit,
-        ).data()
+        # INHERITS-aware enumeration (symmetric to _list_fields): own methods
+        # (depth 0) + methods inherited from mixins (depth 1-3 via INHERITS ONLY
+        # — `_inherits` delegation NEVER carries methods, GAP-1; DELEGATES_TO is
+        # the field-only path), deduped by name with the nearest owner winning.
+        # Dedup + SKIP/LIMIT happen IN-QUERY so pagination matches the
+        # DISTINCT-name count below. Carries owner_model for provenance labels
+        # (edge_kind is always 'inherits' on the method path).
+        rows = _list_methods_with_inherited(
+            model, odoo_version, session, profile_name,
+            module=module, skip=start_index, limit=effective_limit,
+        )
+        # Map convention_kind → the `kind` key the existing renderer expects.
+        for _r in rows:
+            _r["kind"] = _r.get("convention_kind")
 
-        total_rec = session.run(
-            """
-            MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR mth.module = $module)
-              AND mth.module <> '__unresolved__'
-            RETURN count(mth) AS c
-            """,
-            m=model, v=odoo_version, module=module,
-            **_scope(profile_name),
-        ).single()
-        total = total_rec["c"] if total_rec else 0
+        total = _count_methods_with_inherited(
+            model, odoo_version, session, profile_name, module=module
+        )
 
-        # Override-marker: count distinct modules per method name on this model.
+        # Override-marker (GAP-2): a method is marked (*) when it is declared in
+        # >=2 modules ON ITS OWNER MODEL. For an INHERITED method the owner is the
+        # mixin, not the child — so counting modules only on {model: $m} would
+        # never mark an inherited method even when it is overridden N times on its
+        # owner. Compute the override set per (method_name, owner_model) over the
+        # SAME INHERITS-only ancestor set the method listing uses (NOT
+        # DELEGATES_TO — methods are not delegated, GAP-1), so an inherited method
+        # overridden across modules on its owner gets the (*) marker in the child
+        # listing. Keyed by (name, owner) so a same-named method on two different
+        # owners cannot cross-contaminate the marker.
         override_rec = session.run(
-            """
-            MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-              AND mth.module <> '__unresolved__'
-            WITH mth.name AS name, count(DISTINCT mth.module) AS modcount
-            WHERE modcount >= 2
-            RETURN collect(name) AS overrides
-            """,
-            m=model, v=odoo_version, **_scope(profile_name),
+            _bounded(
+                _ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY + """
+                MATCH (mth:Method {model: owner_model, odoo_version: $v})
+                WHERE """ + _scope_pred("mth") + """
+                  AND mth.module <> '__unresolved__'
+                WITH mth.name AS name, owner_model,
+                     count(DISTINCT mth.module) AS modcount
+                WHERE modcount >= 2
+                RETURN collect([name, owner_model]) AS overrides
+                """
+            ),
+            mn=model, v=odoo_version, **_scope(profile_name),
         ).single()
-        override_names = set(override_rec["overrides"]) if override_rec else set()
+        override_keys = {
+            (name, owner) for name, owner in (override_rec["overrides"] or [])
+        } if override_rec else set()
 
     header = f"Methods of {model} (Odoo {odoo_version})"
     if total == 0:
@@ -5303,9 +5640,20 @@ def _list_methods(
         raw_rows = [r for r, _ in sub_items]
 
         def _fmt_method(r):
-            marker = "(*)" if r["name"] in override_names else ""
+            marker = "(*)" if (r["name"], r.get("owner_model") or model) in override_keys else ""
             kind_str = r.get("kind") or "private"
-            return f"{r['name']}{marker} : {kind_str}"
+            base = f"{r['name']}{marker} : {kind_str}"
+            # Provenance token (ADR-0023 token-additive): tag inherited methods.
+            # Methods are inherited via INHERITS only (Python MRO) — _inherits
+            # delegation NEVER carries methods (GAP-1), so edge_kind is always
+            # 'inherits' here and the token can only read "inherited from".
+            # _provenance_token is the SSOT for the wording (FIX-6, review #283).
+            token = _provenance_token(
+                r.get("owner_model"), model, r.get("edge_kind"), r.get("via_field")
+            )
+            if token:
+                base += f" | {token}"
+            return base
 
         rendered = _render_capped(raw_rows, _fmt_method, cap=cap, more_hint=more_hint)
         # Inject [ref=mN] prefix for non-hint rows.
