@@ -79,6 +79,14 @@ class TestSignupCspHcaptcha:
         assert "https://newassets.hcaptcha.com" in connect_src, (
             f"connect-src must allow newassets.hcaptcha.com on /signup; got: {connect_src!r}"
         )
+        # hCaptcha serves assets (e.g. logo.png) from rotating *.w.hcaptcha.com subdomains;
+        # the official CSP docs require the wildcard — pinned subdomains break.
+        assert "https://hcaptcha.com" in connect_src, (
+            f"connect-src must allow https://hcaptcha.com on /signup; got: {connect_src!r}"
+        )
+        assert "https://*.hcaptcha.com" in connect_src, (
+            f"connect-src must allow https://*.hcaptcha.com on /signup; got: {connect_src!r}"
+        )
 
     def test_signup_frame_src_includes_hcaptcha_iframe(self, astro_server):
         csp = _get_headers(f"{astro_server}/signup")["content-security-policy"]

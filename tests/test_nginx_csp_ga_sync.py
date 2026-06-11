@@ -55,6 +55,13 @@ def test_nginx_still_unions_hcaptcha_origins():
     assert "https://js.hcaptcha.com" in csp and "https://api.hcaptcha.com" in csp, (
         "nginx-m8.conf CSP must still carry the hCaptcha origins."
     )
+    # hCaptcha asset subdomains rotate; the wildcard is required per their CSP docs.
+    assert "https://hcaptcha.com" in csp, (
+        "nginx-m8.conf connect-src must include https://hcaptcha.com (hCaptcha wildcard)."
+    )
+    assert "https://*.hcaptcha.com" in csp, (
+        "nginx-m8.conf connect-src must include https://*.hcaptcha.com (hCaptcha wildcard)."
+    )
 
 
 def test_middleware_default_csp_grants_ga_origins():
