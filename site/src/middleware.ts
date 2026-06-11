@@ -62,18 +62,21 @@ function _defaultCspDirectives(): Record<string, string[]> {
  *
  * hCaptcha origins (https://docs.hcaptcha.com/configuration#content-security-policy-settings):
  *   - script-src   https://js.hcaptcha.com https://newassets.hcaptcha.com
+ *                  https://hcaptcha.com https://*.hcaptcha.com
  *   - connect-src  https://api.hcaptcha.com https://newassets.hcaptcha.com
+ *                  https://hcaptcha.com https://*.hcaptcha.com
  *   - frame-src    https://newassets.hcaptcha.com
+ *                  https://hcaptcha.com https://*.hcaptcha.com
  *   - style-src    already permits 'unsafe-inline' (hcaptcha widget needs)
  *   - img-src      already permits https: (hcaptcha widget assets)
  */
 export function _buildCspForPath(pathname: string): string {
   const directives = _defaultCspDirectives();
   if (_HCAPTCHA_PATHS.has(pathname)) {
+    // hCaptcha rotates asset/script/frame subdomains (e.g. *.w.hcaptcha.com);
+    // pinning specific subdomains breaks — wildcard required across all three directives
+    // per their official CSP docs: https://docs.hcaptcha.com/configuration#content-security-policy-settings
     directives['script-src'].push('https://js.hcaptcha.com', 'https://newassets.hcaptcha.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com');
-    // hCaptcha serves assets (e.g. logo.png) from rotating *.w.hcaptcha.com subdomains;
-    // pinning specific subdomains breaks per their official CSP docs — wildcard is required.
-    // https://docs.hcaptcha.com/configuration#content-security-policy-settings
     directives['connect-src'].push('https://api.hcaptcha.com', 'https://newassets.hcaptcha.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com');
     directives['frame-src'].push('https://newassets.hcaptcha.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com');
   }
