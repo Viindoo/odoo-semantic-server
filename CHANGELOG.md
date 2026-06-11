@@ -268,6 +268,16 @@ leaked) so the plain-`@offload` callers never surface a raw `ClientError` as a p
 Closes the last non-ORM hot-read-path gap from #273/#276 G5. No tool change, no migration. Tool
 count stays **25**.
 
+PR #284 review follow-up: the `odoo://{version}/model/{name}` resource caches `_resolve_model`'s
+return value via `ResourceCache.get_or_compute`, which stores **unconditionally** — so the new
+clean-string timeout return would have pinned a *transient* error body in the LRU for the full TTL
+(a 30s blip → a 300s stale-error outage on that URI). Fixed by a keyword-only `_reraise_timeout`
+on `_resolve_model`: the resource handler (`_render_model`) opts in so the `OrmQueryTimeout`
+propagates and `_model_resource` renders it **uncached** (matching the sibling field/method
+resolvers, which already raise on a DB error and are therefore never cached). The `model_inspect`
+tool path keeps the default (clean string). Regression test `test_transient_timeout_is_not_cached`
+verified red-before-green against reverting either half of the fix.
+
 ### Fixed - abandoned streamable-http session leak (#279, ADR-0049)
 
 Abandoned streamable-http MCP sessions accumulated until server restart because FastMCP 2.x does
