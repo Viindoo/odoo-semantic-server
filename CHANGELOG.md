@@ -278,6 +278,48 @@ resolvers, which already raise on a DB error and are therefore never cached). Th
 tool path keeps the default (clean string). Regression test `test_transient_timeout_is_not_cached`
 verified red-before-green against reverting either half of the fix.
 
+### Removed - retired dual-channel structured subsystem (#284, ADR-0028)
+
+The 6 `_X_structured` helpers (`_resolve_model/field/method/view_structured`,
+`_list_fields/methods_structured`) and their 6 `*Output` DTOs (`src/mcp/dto.py`) had zero production
+callers after WI-5 (#261/#265) made every tool text-only (`output_schema=None`, no
+`structuredContent`). They were physically removed, along with their dead-code-snapshot tests. The
+live business invariants those tests touched - cross-tenant parent/view no-leak and
+effective-readonly surfacing - stay protected by the LIVE text-path tests (`_resolve_model` /
+`_resolve_view` / `_resolve_field` / `_list_fields`), per ETHOS #11 (tests protect behavior, not a
+snapshot of a deleted helper). The `*Ref` composite-key DTOs and their tests are kept. No tool
+change, no migration. Tool count stays **25**.
+
+### Fixed - `_latest_version` tx-timeout no longer escapes `_resolve_model` (#284)
+
+`_latest_version` (the implicit-version Tier-3 fallback) ran a bare `session.run().single()`. On the
+`odoo_version='auto'`/`None` path it executes INSIDE `_resolve_model`'s try block (via
+`_resolve_version` -> `resolve_version_v2`), so a tx-timeout `ClientError` ESCAPED the existing
+`except OrmQueryTimeout` (ADR-0023 violation - a raw driver error surfaced to FastMCP). Fixed by
+wrapping the query via `_single_bounded(...)` so a tx-timeout becomes `OrmQueryTimeout`, caught by
+`_resolve_model` and rendered as a clean string. The query touches only Module nodes (no INHERITS
+traversal) so a timeout is low-probability, but the conversion keeps the clean-text contract intact.
+No other `_latest_version` caller breaks (they previously let a raw `ClientError` escape; they now
+get the cleaner `OrmQueryTimeout`). No tool change, no migration.
+
+### Fixed - odoo:// resource handlers offload off the event loop (#284, ADR-0046 class)
+
+FastMCP 2.14.7 calls sync `@mcp.resource` handlers directly on the event loop thread, so a
+cache-miss on a dense model blocked the loop for up to the per-query Neo4j timeout - the same
+anti-pattern that caused the #227 wedge. All 7 resource handlers (model/field/method/module/view/
+pattern/stylesheet) are now `async def` and offload the full resolve+cache+compute pipeline via a
+shared `asyncio.to_thread` helper (`_serve_resource`). The in-memory LRU get/put semantics and the
+`OrmQueryTimeout` uncached-surface (model) are preserved. A pure-unit test proves a slow render does
+not block a concurrent loop task.
+
+### Added - timeout metric on the `_resolve_model` data path (#284, ADR-0010/0046)
+
+The `model_inspect` summary tool path and the `odoo://{version}/model/{name}` resource path can both
+time out outside the bounded-offload pools, so their timeouts were invisible to ops. Each now records
+`nonorm_query_timeout_total{tool="model_inspect"}` exactly once - the tool path in `_resolve_model`'s
+`except` (non-reraise branch), the resource path in `_model_resource`'s `except` (the re-raise in
+`_resolve_model` is intentionally UNCOUNTED to avoid double-count).
+
 ### Fixed - abandoned streamable-http session leak (#279, ADR-0049)
 
 Abandoned streamable-http MCP sessions accumulated until server restart because FastMCP 2.x does

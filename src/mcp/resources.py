@@ -37,6 +37,7 @@ internal design notes (cross-server pattern: stable URI resources) for prior art
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -548,6 +549,60 @@ def _render_stylesheet(
 # ---------------------------------------------------------------------------
 
 
+def _serve_resource_blocking(
+    cache: ResourceCache,
+    version: str,
+    kind: str,
+    entity: str,
+    render_fn: Callable[[str], tuple[str, str]],
+    *,
+    tenant_keyed: bool = True,
+) -> str:
+    """Resolve the sentinel, key the cache, and compute on miss — all blocking.
+
+    Runs the full DB-touching pipeline (sentinel resolve via
+    :func:`_resolved_version_for`, then :meth:`ResourceCache.get_or_compute`)
+    in ONE call so the async handler can offload it via a single
+    ``asyncio.to_thread`` hop. ``render_fn`` receives the already-resolved
+    concrete version so the sentinel is resolved exactly once. Returns the
+    resource body string.
+
+    ``tenant_keyed`` controls whether the cache key carries the tenant
+    dimension (every kind except the global ``pattern`` spec data).
+    """
+    resolved = _resolved_version_for(version)
+    if tenant_keyed:
+        key = _tenant_cache_key(resolved, kind, entity)
+    else:
+        key = f"odoo://{resolved}/{kind}/{entity}"
+    return cache.get_or_compute(key, lambda: render_fn(resolved))[0]
+
+
+async def _serve_resource(
+    cache: ResourceCache,
+    version: str,
+    kind: str,
+    entity: str,
+    render_fn: Callable[[str], tuple[str, str]],
+    *,
+    tenant_keyed: bool = True,
+) -> str:
+    """Async wrapper: offload the blocking resolve+cache+compute off the event loop.
+
+    FastMCP 2.x calls sync resource handlers directly on the event loop thread,
+    so a cache-miss on a dense model would block the loop for up to the per-query
+    Neo4j timeout (ADR-0046 anti-pattern that caused wedge #227). Offloading via
+    ``asyncio.to_thread`` keeps the loop free for other requests. Cache hits still
+    pay one thread hop, but the body comes back without touching Neo4j.
+
+    ``render_fn`` is invoked with the resolved concrete version on a cache miss.
+    """
+    return await asyncio.to_thread(
+        _serve_resource_blocking,
+        cache, version, kind, entity, render_fn, tenant_keyed=tenant_keyed,
+    )
+
+
 def register_resources(mcp_instance) -> None:
     """Attach 7 ``@mcp.resource`` template handlers to *mcp_instance*.
 
@@ -578,21 +633,27 @@ def register_resources(mcp_instance) -> None:
             "inheritance chain, field/method counts."
         ),
     )
-    def _model_resource(version: str, name: str) -> str:
-        # Resolve sentinel (e.g. "auto") BEFORE forming the cache key so
-        # two callers with different session versions never share a body.
-        # R1 fix: include tenant dimension so private-tenant data is never
-        # served from an admin's (or another tenant's) cached body.
-        resolved = _resolved_version_for(version)
-        key = _tenant_cache_key(resolved, "model", name)
+    async def _model_resource(version: str, name: str) -> str:
+        # async + to_thread (#284): FastMCP calls sync resource handlers on the
+        # event loop thread, so a cache-miss on a dense model would block the loop
+        # for up to the per-query Neo4j timeout (ADR-0046 wedge #227). Offload the
+        # whole resolve+cache+compute off the loop.
+        #
+        # _render_model passes _reraise_timeout=True so a transient per-query
+        # timeout propagates out of get_or_compute BEFORE the cache put — the
+        # timeout body is never written to the LRU (a 30s blip would otherwise pin
+        # a stale error for the full TTL). We surface the clean English message
+        # UNCACHED here; the next read re-resolves once Neo4j recovers.
         try:
-            return cache.get_or_compute(
-                key, lambda: _render_model(resolved, name),
-            )[0]
+            return await _serve_resource(
+                cache, version, "model", name,
+                lambda resolved: _render_model(resolved, name),
+            )
         except OrmQueryTimeout as exc:
-            # #284 review: surface the clean English timeout message UNCACHED so a
-            # 30s blip on a dense-mesh model never pins a stale error in the LRU
-            # for the full TTL. The next read re-resolves once Neo4j recovers.
+            # Record the resource-path timeout exactly once (the tool path records
+            # its own in _resolve_model; the re-raise there is UNCOUNTED — #284).
+            from src.mcp import server as _srv
+            _srv._metric_nonorm_query_timeout("model_inspect")
             return exc.user_message
 
     # ---- field ----------------------------------------------------------
@@ -604,13 +665,13 @@ def register_resources(mcp_instance) -> None:
             "stored flag, and every module that declares it."
         ),
     )
-    def _field_resource(version: str, model: str, field: str) -> str:
-        resolved = _resolved_version_for(version)
+    async def _field_resource(version: str, model: str, field: str) -> str:
+        # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key prevents cross-tenant cache contamination.
-        key = _tenant_cache_key(resolved, "field", f"{model}/{field}")
-        return cache.get_or_compute(
-            key, lambda: _render_field(resolved, model, field),
-        )[0]
+        return await _serve_resource(
+            cache, version, "field", f"{model}/{field}",
+            lambda resolved: _render_field(resolved, model, field),
+        )
 
     # ---- method ---------------------------------------------------------
     @mcp_instance.resource(
@@ -621,13 +682,13 @@ def register_resources(mcp_instance) -> None:
             "super() call markers, decorators."
         ),
     )
-    def _method_resource(version: str, model: str, method: str) -> str:
-        resolved = _resolved_version_for(version)
+    async def _method_resource(version: str, model: str, method: str) -> str:
+        # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key.
-        key = _tenant_cache_key(resolved, "method", f"{model}/{method}")
-        return cache.get_or_compute(
-            key, lambda: _render_method(resolved, model, method),
-        )[0]
+        return await _serve_resource(
+            cache, version, "method", f"{model}/{method}",
+            lambda resolved: _render_method(resolved, model, method),
+        )
 
     # ---- module ---------------------------------------------------------
     @mcp_instance.resource(
@@ -638,13 +699,13 @@ def register_resources(mcp_instance) -> None:
             "models defined/extended, view + JS counts."
         ),
     )
-    def _module_resource(version: str, name: str) -> str:
-        resolved = _resolved_version_for(version)
+    async def _module_resource(version: str, name: str) -> str:
+        # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key.
-        key = _tenant_cache_key(resolved, "module", name)
-        return cache.get_or_compute(
-            key, lambda: _render_module(resolved, name),
-        )[0]
+        return await _serve_resource(
+            cache, version, "module", name,
+            lambda resolved: _render_module(resolved, name),
+        )
 
     # ---- view -----------------------------------------------------------
     @mcp_instance.resource(
@@ -655,13 +716,13 @@ def register_resources(mcp_instance) -> None:
             "extension chain."
         ),
     )
-    def _view_resource(version: str, xmlid: str) -> str:
-        resolved = _resolved_version_for(version)
+    async def _view_resource(version: str, xmlid: str) -> str:
+        # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key.
-        key = _tenant_cache_key(resolved, "view", xmlid)
-        return cache.get_or_compute(
-            key, lambda: _render_view(resolved, xmlid),
-        )[0]
+        return await _serve_resource(
+            cache, version, "view", xmlid,
+            lambda resolved: _render_view(resolved, xmlid),
+        )
 
     # ---- pattern --------------------------------------------------------
     @mcp_instance.resource(
@@ -672,12 +733,14 @@ def register_resources(mcp_instance) -> None:
             "gotchas, intent keywords."
         ),
     )
-    def _pattern_resource(version: str, pattern_id: str) -> str:
-        resolved = _resolved_version_for(version)
-        uri = f"odoo://{resolved}/pattern/{pattern_id}"
-        return cache.get_or_compute(
-            uri, lambda: _render_pattern(resolved, pattern_id),
-        )[0]
+    async def _pattern_resource(version: str, pattern_id: str) -> str:
+        # async + to_thread (#284): keep the event loop free on cache miss.
+        # pattern is global spec data — keyed by version alone (no tenant dim).
+        return await _serve_resource(
+            cache, version, "pattern", pattern_id,
+            lambda resolved: _render_pattern(resolved, pattern_id),
+            tenant_keyed=False,
+        )
 
     # ---- stylesheet -----------------------------------------------------
     @mcp_instance.resource(
@@ -691,15 +754,16 @@ def register_resources(mcp_instance) -> None:
             "may include forward slashes."
         ),
     )
-    def _stylesheet_resource(
+    async def _stylesheet_resource(
         version: str, module: str, file_path: str,
     ) -> str:
-        resolved = _resolved_version_for(version)
+        # async + to_thread (#284): keep the event loop free on cache miss
+        # (the on-disk file read can also block).
         # Tenant-scoped cache key: stylesheets carry a profile[] array, so a
         # private-tenant stylesheet can exist. A plain per-URI key would let a
         # cache HIT bypass _render_stylesheet (and its _scope_pred filter),
         # leaking a foreign tenant's body. Same dimension as the other 5 kinds.
-        key = _tenant_cache_key(resolved, "stylesheet", f"{module}/{file_path}")
-        return cache.get_or_compute(
-            key, lambda: _render_stylesheet(resolved, module, file_path),
-        )[0]
+        return await _serve_resource(
+            cache, version, "stylesheet", f"{module}/{file_path}",
+            lambda resolved: _render_stylesheet(resolved, module, file_path),
+        )

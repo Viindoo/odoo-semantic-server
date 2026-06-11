@@ -479,55 +479,10 @@ def test_query_timeout_surfaces_as_ormquerytimeout(orm_funcs, monkeypatch):
 #     conversion-to-clean-string must happen inside _resolve_model itself.
 # ---------------------------------------------------------------------------
 
-def test_resolve_model_query_timeout_surfaces_clean_string(monkeypatch):
-    """A per-query timeout inside _resolve_model returns a clean English str.
-
-    Deterministic simulation (mirrors test_query_timeout_surfaces_as_ormquerytimeout):
-    monkeypatch the Neo4j driver session so .run() always raises the driver's
-    transaction-timeout ClientError. With an EXPLICIT version, _resolve_version
-    short-circuits at Tier-1 without touching the session, so the very first
-    session.run is the bounded ranking query — exactly the #279 hot path.
-
-    The business contract being protected: when that query times out the caller
-    gets a clean, actionable string (no hang, no raw ClientError escaping to
-    FastMCP as isError, no Cypher fragment leaked).
-    """
-    from neo4j.exceptions import ClientError
-
-    import src.mcp.server as srv
-
-    class _TimingOutSession:
-        """Context-manager session whose .run() always times out."""
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def run(self, *a, **k):
-            exc = ClientError("transaction timed out")
-            exc.code = (
-                "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-            )
-            raise exc
-
-    class _FakeDriver:
-        def session(self, *a, **k):
-            return _TimingOutSession()
-
-    monkeypatch.setattr(srv, "_get_driver", lambda: _FakeDriver())
-
-    # Explicit version → _resolve_version returns it without a session.run.
-    result = srv._resolve_model("dense.model", DENSE_VERSION)
-
-    assert isinstance(result, str), f"expected clean str, got {type(result)!r}"
-    assert "timed out" in result.lower(), f"not a timeout message: {result!r}"
-    # ADR-0023: no Cypher leaked.
-    assert "MATCH" not in result and "Cypher" not in result, (
-        f"Cypher leaked: {result!r}"
-    )
-    # English, actionable.
-    assert "retry" in result.lower() or "dense" in result.lower()
+# NOTE: test_resolve_model_query_timeout_surfaces_clean_string moved to
+# tests/test_orm_offload_bounded.py (#284 / finding-6) — it is a pure-unit test
+# (monkeypatched driver, no Neo4j) that the module-level `pytestmark =
+# pytest.mark.neo4j` here wrongly deselected from the fast unit lane.
 
 
 # ---------------------------------------------------------------------------

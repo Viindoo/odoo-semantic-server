@@ -362,16 +362,12 @@ def test_resolve_model_parents_no_cross_tenant_leak(world):
     _ = _resolve_field  # keep import used
 
 
-def test_resolve_model_structured_parents_no_leak(world):
-    from src.mcp.server import _resolve_model_structured
-    with world["drv"].session() as s:
-        s.run("""MATCH (a:Model {name:'acme.secret', odoo_version:$v})
-                 MATCH (g:Model {name:'globex.secret', odoo_version:$v})
-                 MERGE (a)-[:INHERITS {order:0}]->(g)""", v=V)
-    with as_tenant(world["acme"]):
-        out = _resolve_model_structured("acme.secret", V)
-    assert out is not None
-    assert "globex.secret" not in (out.inherits_from or []), f"STRUCTURED PARENT LEAK: {out!r}"
+# NOTE: the cross-tenant parent no-leak invariant is fully covered above by
+# test_resolve_model_parents_no_cross_tenant_leak via the LIVE _resolve_model
+# text path. The former test_resolve_model_structured_parents_no_leak (which
+# probed the now-removed _resolve_model_structured) was redundant and was
+# dropped with the structured subsystem (ADR-0028) — the invariant stays
+# protected by the live-path test, not by a snapshot of a deleted helper.
 
 
 # --- T1 site: _lint_check_xml (LintViolation, version-keyed) ----------------
@@ -560,13 +556,12 @@ def test_resolve_view_parent_admin_sees_parent(world):
     assert f"{_PFX}globex_pview" in out, "admin must see the real INHERITS_VIEW parent"
 
 
-def test_resolve_view_structured_parent_no_leak(world):
-    from src.mcp.server import _resolve_view_structured
-    with as_tenant(world["acme"]):
-        out = _resolve_view_structured(f"{_PFX}acme_view", V)
-    assert out is not None
-    assert f"{_PFX}globex_pview" != (out.inherits_from or ""), \
-        f"STRUCTURED VIEW PARENT LEAK: {out!r}"
+# NOTE: the cross-tenant view-parent no-leak invariant is fully covered above by
+# test_resolve_view_parent_no_cross_tenant_leak via the LIVE _resolve_view text
+# path. The former test_resolve_view_structured_parent_no_leak (which probed the
+# now-removed _resolve_view_structured) was redundant and was dropped with the
+# structured subsystem (ADR-0028) — the invariant stays protected by the
+# live-path test.
 
 
 # --- F-6: empty profile=[] node must never leak to a scoped tenant ----------
