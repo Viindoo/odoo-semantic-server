@@ -281,8 +281,51 @@ def test_timeout_metric_recorded_even_when_coroutine_cancelled():
         _restore(["ORM_QUERY_MAX_CONCURRENCY", "ORM_SLOT_ACQUIRE_TIMEOUT"])
 
 
+def test_nonorm_timeout_records_separate_counter_not_orm():
+    """A non-ORM heavy-read timeout must increment nonorm_query_timeout_total,
+    NOT orm_query_timeout_total — ops rely on the label to tell the pools apart
+    (#276 G5/G6). Protects the offload_bounded_nonorm timeout-metric wiring.
+    """
+    srv = _reload_server_with(
+        {"NONORM_READ_MAX_CONCURRENCY": "2", "NONORM_SLOT_ACQUIRE_TIMEOUT": "5"}
+    )
+    try:
+        from src import metrics
+
+        def _count(counter):
+            total = 0.0
+            for m in counter.collect():
+                for s in m.samples:
+                    if s.name.endswith("_total"):
+                        total += s.value
+            return total
+
+        nonorm_before = _count(metrics.nonorm_query_timeout_total)
+        orm_before = _count(metrics.orm_query_timeout_total)
+
+        @srv.offload_bounded_nonorm
+        def timing_out(model, odoo_version="auto"):
+            raise OrmQueryTimeout("non-ORM read timed out — narrow and retry.")
+
+        async def drive():
+            # The wrapper catches OrmQueryTimeout and returns the user message.
+            return await timing_out("m", "99.0")
+
+        result = _run(drive())
+        assert "timed out" in result.lower()
+
+        assert _count(metrics.nonorm_query_timeout_total) == nonorm_before + 1, (
+            "non-ORM timeout must increment nonorm_query_timeout_total"
+        )
+        assert _count(metrics.orm_query_timeout_total) == orm_before, (
+            "non-ORM timeout must NOT increment the ORM counter"
+        )
+    finally:
+        _restore(["NONORM_READ_MAX_CONCURRENCY", "NONORM_SLOT_ACQUIRE_TIMEOUT"])
+
+
 # ---------------------------------------------------------------------------
-# (5) Env validation fail-fast: bad values -> SystemExit (HIGH #3).
+# (5) Env validation fail-fast: bad values -> SystemExit (HIGH #3 + #276 G6/G7).
 # ---------------------------------------------------------------------------
 
 def test_validate_orm_env_rejects_bad_values():
@@ -293,6 +336,11 @@ def test_validate_orm_env_rejects_bad_values():
         "NEO4J_QUERY_TIMEOUT_SECONDS": "30",
         "ORM_QUERY_MAX_CONCURRENCY": "8",
         "ORM_SLOT_ACQUIRE_TIMEOUT": "5",
+        "NONORM_READ_MAX_CONCURRENCY": "8",
+        "NONORM_SLOT_ACQUIRE_TIMEOUT": "5",
+        "EMBEDDER_SLOT_ACQUIRE_TIMEOUT": "5",
+        "EMBEDDER_TIMEOUT_READ_QUERY": "30",
+        "EMBEDDER_MAX_CONCURRENCY": "8",
     }
     saved = {k: os.environ.get(k) for k in base}
     try:
@@ -315,9 +363,148 @@ def test_validate_orm_env_rejects_bad_values():
         os.environ["ORM_SLOT_ACQUIRE_TIMEOUT"] = "30"
         with pytest.raises(SystemExit):
             srv._validate_orm_env()
+        os.environ["ORM_SLOT_ACQUIRE_TIMEOUT"] = "5"
+
+        # #276 G6: non-ORM cap 0 -> every non-ORM heavy read fast-rejects forever.
+        os.environ["NONORM_READ_MAX_CONCURRENCY"] = "0"
+        with pytest.raises(SystemExit):
+            srv._validate_orm_env()
+        os.environ["NONORM_READ_MAX_CONCURRENCY"] = "8"
+
+        # #276 G6: non-ORM acquire timeout >= neo4j timeout -> reject not fast.
+        os.environ["NONORM_SLOT_ACQUIRE_TIMEOUT"] = "30"
+        with pytest.raises(SystemExit):
+            srv._validate_orm_env()
+        os.environ["NONORM_SLOT_ACQUIRE_TIMEOUT"] = "5"
+
+        # #276 G7: embed acquire timeout >= query read timeout -> reject not fast.
+        os.environ["EMBEDDER_SLOT_ACQUIRE_TIMEOUT"] = "30"
+        with pytest.raises(SystemExit):
+            srv._validate_orm_env()
+        os.environ["EMBEDDER_SLOT_ACQUIRE_TIMEOUT"] = "5"
+
+        # #276 G7: embed cap 0 -> BoundedSemaphore(0) can never be acquired ->
+        # every query-embed fast-rejects forever (parity with ORM/non-ORM caps).
+        os.environ["EMBEDDER_MAX_CONCURRENCY"] = "0"
+        with pytest.raises(SystemExit):
+            srv._validate_orm_env()
+        os.environ["EMBEDDER_MAX_CONCURRENCY"] = "8"
     finally:
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+# ---------------------------------------------------------------------------
+# (6) #276 G7 — EMBED path slot is THREAD-held: cancelling the coroutine while
+#     the worker thread is still embedding must NOT free the slot. The pre-fix
+#     code (asyncio.Semaphore released in the coroutine `finally`) FAILS here.
+# ---------------------------------------------------------------------------
+
+def test_embed_slot_held_until_thread_exits_not_on_cancel():
+    srv = _reload_server_with(
+        {"EMBEDDER_MAX_CONCURRENCY": "2", "EMBEDDER_SLOT_ACQUIRE_TIMEOUT": "5"}
+    )
+    try:
+        started = threading.Event()
+        finish = threading.Event()
+        exited = threading.Event()
+
+        class _BlockingEmbedder:
+            # Minimal embedder: sync embed() blocks until released, mirroring a
+            # slow Ollama round-trip. No _embed_with_timeout -> exercises the
+            # FakeEmbedder fallback path in _embed_sync_query.
+            chars_per_token = 4.0
+
+            def embed(self, texts):
+                started.set()
+                try:
+                    finish.wait(5.0)
+                    return [[0.1, 0.2, 0.3] for _ in texts]
+                finally:
+                    exited.set()
+
+        embedder = _BlockingEmbedder()
+        sem = srv._get_embed_semaphore()
+
+        def free_permits(cap):
+            grabbed = 0
+            for _ in range(cap):
+                if sem.acquire(blocking=False):
+                    grabbed += 1
+                else:
+                    break
+            for _ in range(grabbed):
+                sem.release()
+            return grabbed
+
+        async def drive():
+            assert free_permits(2) == 2, "expected both embed permits free at start"
+            task = asyncio.create_task(srv._embed_query(embedder, "", "hello world"))
+            await asyncio.to_thread(started.wait, 5.0)
+            assert started.is_set()
+            # The worker thread now holds one embed slot.
+            assert free_permits(2) == 1, "embed worker thread should hold one slot"
+
+            # Cancel mid-embed (simulates client disconnect).
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            # #276 G7 invariant: thread still embedding -> slot still held.
+            assert not exited.is_set(), "embed thread should still be running"
+            assert free_permits(2) == 1, (
+                "cancel must NOT free the embed slot while the thread embeds"
+            )
+
+            # Release the embed; the slot must come back after the thread exits.
+            finish.set()
+            await asyncio.to_thread(exited.wait, 5.0)
+            for _ in range(50):
+                if free_permits(2) == 2:
+                    break
+                await asyncio.sleep(0.02)
+            assert free_permits(2) == 2, "embed slot not reclaimed after thread exit"
+
+        _run(drive())
+    finally:
+        finish.set()
+        _restore(["EMBEDDER_MAX_CONCURRENCY", "EMBEDDER_SLOT_ACQUIRE_TIMEOUT"])
+
+
+# ---------------------------------------------------------------------------
+# (7) #276 G7 — embed fast-reject raises EmbedOverloaded from inside the worker
+#     thread when the bounded embed semaphore is saturated.
+# ---------------------------------------------------------------------------
+
+def test_embed_fast_reject_when_saturated():
+    srv = _reload_server_with(
+        {"EMBEDDER_MAX_CONCURRENCY": "1", "EMBEDDER_SLOT_ACQUIRE_TIMEOUT": "0.1"}
+    )
+    try:
+        gate = threading.Event()
+
+        class _BlockingEmbedder:
+            chars_per_token = 4.0
+
+            def embed(self, texts):
+                gate.wait(2.0)
+                return [[0.1] for _ in texts]
+
+        embedder = _BlockingEmbedder()
+
+        async def drive():
+            holder = asyncio.create_task(srv._embed_query(embedder, "", "first"))
+            await asyncio.sleep(0.05)  # let the holder grab the only slot
+            # Second embed cannot acquire within 0.1s -> EmbedOverloaded.
+            with pytest.raises(srv.EmbedOverloaded):
+                await srv._embed_query(embedder, "", "second")
+            gate.set()
+            await holder
+
+        _run(drive())
+    finally:
+        gate.set()  # release any still-blocked embed thread
+        _restore(["EMBEDDER_MAX_CONCURRENCY", "EMBEDDER_SLOT_ACQUIRE_TIMEOUT"])

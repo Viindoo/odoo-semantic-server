@@ -471,10 +471,23 @@ def resolve_version_v2(
     """Resolve a version argument using the 3-tier order defined by ADR-0029.
 
     Resolution order:
-    1. **Explicit** — *version_arg* after sentinel normalization.
+    1. **Explicit** — *version_arg* after sentinel normalization. An explicit,
+       concrete version is **Tier-1 and ALWAYS wins over any session pin** — it
+       is never overridden by Tier-2/Tier-3. This is the property that makes the
+       resolver **race-free by construction** under concurrency (see the
+       "Canonical pattern under concurrency" amendment in ADR-0029): two actors
+       sharing one ``mcp_session_id`` but each passing their own explicit version
+       each resolve to their own version regardless of who pinned last.
     2. **Session pin** — ``get_session_state(api_key_id, mcp_session_id).odoo_version``
-       (in-memory, per-session — #251).
+       (in-memory, per-session — #251). This is **single-actor convenience only**:
+       the server cannot distinguish two concurrent actors sharing one
+       ``mcp_session_id``, so a deliberate ``'auto'``/sentinel reflects whoever
+       pinned last. Concurrent multi-version flows MUST pass explicit versions.
     3. **Latest fallback** — ``_latest_version(session)`` from the Neo4j index.
+       This backs the deliberate-sentinel path (Resources ``odoo://auto/...`` per
+       ADR-0030, and the WI-4/#248 backward-compat contract). When the index is
+       empty it cannot produce a version → **fail-loud** ``ValueError`` rather
+       than a silent wrong default.
 
     Args:
         version_arg: Raw version argument from the MCP tool call (may be
@@ -489,8 +502,10 @@ def resolve_version_v2(
         A concrete Odoo version string (e.g. ``"17.0"``).
 
     Raises:
-        ValueError: If all three tiers fail to produce a version (empty index
-            + no session + no explicit version).
+        ValueError: If all three tiers fail to produce a version (sentinel /
+            omitted version + no resolvable session pin + empty index). The
+            message is **fail-loud and actionable** — it names the explicit
+            ``odoo_version=`` contract rather than silently defaulting.
     """
     # Tier 1: explicit version provided by the caller
     explicit = normalize_version_arg(version_arg)
@@ -512,10 +527,19 @@ def resolve_version_v2(
         # ADR-0023 §2/§4.4 (#265-Obs3): agent-facing message — no operator-shell
         # hint (agents cannot run shell commands). Point the agent at the MCP
         # tools it CAN call to discover indexed scope.
+        #
+        # #274: This is the genuine fail-loud point — a sentinel/omitted version
+        # with NO resolvable pin AND an empty index has nothing to resolve to.
+        # We refuse to invent a default; the message names the explicit
+        # ``odoo_version=`` contract that makes concurrent multi-version flows
+        # race-free (see ADR-0029 "Canonical pattern under concurrency").
         raise ValueError(
-            "No indexed Odoo data is available for this profile. "
-            "Call list_available_versions or list_available_profiles to see "
-            "what is indexed, then pass an explicit odoo_version."
+            "No active Odoo version is resolvable for this session: no explicit "
+            "odoo_version was passed, no version is pinned for this MCP session, "
+            "and the index is empty. Pass an explicit odoo_version= (the Tier-1 "
+            "value always wins and is required for concurrent multi-version flows), "
+            "or call list_available_versions / list_available_profiles to discover "
+            "what is indexed."
         )
     return v
 
@@ -530,15 +554,25 @@ def resolve_profile_v2(
 
     Resolution order:
     1. **Explicit** — *profile_arg* after :func:`normalize_profile_arg`; returned
-       verbatim if non-empty.
+       verbatim if non-empty. Like the version Tier-1, an explicit profile
+       **ALWAYS wins over any session pin** — making profile resolution
+       **race-free by construction** for concurrent actors that each pass their
+       own ``profile_name`` (see the "Canonical pattern under concurrency"
+       amendment in ADR-0029).
     2. **Session pin** — ``get_session_state(api_key_id, mcp_session_id).profile_name``
-       (in-memory, per-session) if set.
+       (in-memory, per-session) if set. **Single-actor convenience only**: two
+       concurrent actors sharing one ``mcp_session_id`` cannot be told apart, so a
+       pinned default reflects whoever pinned last. Concurrent flows that need
+       distinct profiles MUST pass ``profile_name`` explicitly per call.
     3. **None** — no pin → defer to the caller's existing default behaviour.
 
     This proposes which profile to *default to* when the caller omits one; it
     performs NO authorization. The server-side ADR-0034 choke re-validates the
-    proposed profile at read time (narrowing-only, fail-closed) — that authz
-    lives in WI-2, not here.
+    proposed profile at read time (narrowing-only, fail-closed) — so even a stale
+    or wrong pin under concurrency can only ever **narrow** within ``own ∪ shared``
+    or deny-all (fail-closed), never widen access or cross tenants. That authz
+    re-validation lives in the ``_scope`` / ``_effective_allowed`` choke (server.py),
+    not here.
 
     Args:
         profile_arg: Raw profile argument from the MCP tool call (may be empty,

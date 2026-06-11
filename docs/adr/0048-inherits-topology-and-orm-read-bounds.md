@@ -419,7 +419,7 @@ locked by test" claim in the prior CHANGELOG entry is now accurate (it was previ
 **Pre-deploy (Wave 0, before code deploy):**
 1. Record and terminate 11 zombie transactions: `SHOW TRANSACTIONS` → `TERMINATE TRANSACTION <id>`.
 2. Set `db.transaction.timeout=600s`: `CALL dbms.setConfigValue('db.transaction.timeout','600s')` +
-   persist in `neo4j.conf`.
+   persist in `neo4j.conf`. *(Docker Compose deployments: this is now automatic — see IaC note below.)*
 3. Create 2 indexes (idempotent, background population):
    `CREATE INDEX model_name_version_idx IF NOT EXISTS FOR (m:Model) ON (m.name, m.odoo_version)`
    `CREATE INDEX field_model_version_idx IF NOT EXISTS FOR (f:Field) ON (f.model, f.odoo_version)`
@@ -435,3 +435,30 @@ locked by test" claim in the prior CHANGELOG entry is now accurate (it was previ
 - `NEO4J_QUERY_TIMEOUT_SECONDS` (default 30) — per-ORM-query driver timeout.
 - `ORM_QUERY_MAX_CONCURRENCY` (default 8) — semaphore cap for ORM tool slots.
 - `ORM_SLOT_ACQUIRE_TIMEOUT` (default 5) — fast-reject if slot not acquired within N seconds.
+
+---
+
+## Amendment - IaC wiring of db.transaction.timeout backstop (issue #276)
+
+**Date:** 2026-06-11
+
+The D7 ops recommendation (`db.transaction.timeout=600s` applied manually via `CALL dbms.setConfigValue`
++ `neo4j.conf`) was a pre-deploy ops step. A `docker compose up` or `docker compose recreate`
+after the initial apply would silently reset the timeout to `0s` (disabled), reverting the global
+backstop and re-exposing the zombie-transaction leak pattern.
+
+**IaC fix:** `NEO4J_db_transaction_timeout=600s` is now set in `docker-compose.yml`
+(`services.neo4j.environment`) and mirrored in `.github/workflows/nightly-smoke.yml` (all three
+Neo4j service containers: `smoke-real-odoo-17`, `smoke-real-odoo-8`, `recall-benchmark`). Any
+compose lifecycle event (up/recreate/pull) now applies the backstop automatically without operator
+intervention.
+
+A static test (`tests/test_compose_neo4j_backstop.py`) asserts:
+- The `NEO4J_db_transaction_timeout` env key is present in the `neo4j` service block and its
+  numeric value (in seconds) exceeds `NEO4J_QUERY_TIMEOUT_SECONDS` (default 30) — enforcing the
+  D7 invariant that the global backstop is always larger than the per-query driver timeout.
+- An integration test (`@pytest.mark.neo4j`) queries `SHOW SETTINGS` to verify the setting is
+  applied by Neo4j at runtime (covers the env-name → config mapping that static parsing cannot).
+
+**Bare-metal / systemd deployments** (no Docker Compose) still require the manual `neo4j.conf`
+step documented in the original Ops Notes above. The IaC fix covers Compose-managed instances only.

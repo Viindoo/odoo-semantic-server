@@ -286,6 +286,33 @@ ORM_QUERY_MAX_CONCURRENCY: int = int(os.getenv("ORM_QUERY_MAX_CONCURRENCY", "8")
 # window. Enforced at server startup (see server.py _validate_orm_env).
 ORM_SLOT_ACQUIRE_TIMEOUT: float = float(os.getenv("ORM_SLOT_ACQUIRE_TIMEOUT", "5"))
 
+# NONORM_READ_MAX_CONCURRENCY caps in-flight NON-ORM heavy reads that are wrapped
+# in offload_bounded_nonorm (currently impact_analysis — a 6-query fan-out over
+# TARGETS_MODEL / DEPENDS_ON / BOUND_TO / PATCHES that can run long on a dense
+# graph). Kept as a SEPARATE pool from ORM_QUERY_MAX_CONCURRENCY (issue #276 G6):
+# a fan-out burst of one class must never starve the other. Default 8 mirrors the
+# ORM cap and sits below the ~24-connection Neo4j pool. Override via
+# NONORM_READ_MAX_CONCURRENCY.
+NONORM_READ_MAX_CONCURRENCY: int = int(os.getenv("NONORM_READ_MAX_CONCURRENCY", "8"))
+
+# NONORM_SLOT_ACQUIRE_TIMEOUT: max wait (seconds) for a non-ORM read slot before
+# fast-reject. Same fast-reject contract as ORM_SLOT_ACQUIRE_TIMEOUT — must stay
+# strictly below NEO4J_QUERY_TIMEOUT_SECONDS so an overloaded server rejects
+# quickly instead of pinning a worker-thread slot for the full query window.
+# Enforced at server startup (see server.py _validate_orm_env).
+NONORM_SLOT_ACQUIRE_TIMEOUT: float = float(
+    os.getenv("NONORM_SLOT_ACQUIRE_TIMEOUT", "5")
+)
+
+# EMBEDDER_SLOT_ACQUIRE_TIMEOUT: max wait (seconds) for a query-embed concurrency
+# slot before fast-reject (EmbedOverloaded). Must stay strictly below the query
+# read timeout (TIMEOUT_EMBEDDER_READ_QUERY) so an overloaded embedder rejects
+# fast rather than pinning a worker thread for the whole embed window (issue #276
+# G7). Enforced at server startup (see server.py _validate_orm_env).
+EMBEDDER_SLOT_ACQUIRE_TIMEOUT: float = float(
+    os.getenv("EMBEDDER_SLOT_ACQUIRE_TIMEOUT", "5")
+)
+
 # ---------------------------------------------------------------------------
 # PostgreSQL connection pool
 # ---------------------------------------------------------------------------

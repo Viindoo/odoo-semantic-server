@@ -84,11 +84,30 @@ orm_overloaded_total = Counter(
     labelnames=["tool"],
 )
 
+nonorm_overloaded_total = Counter(
+    "nonorm_overloaded_total",
+    "Number of NON-ORM heavy read tool calls (e.g. impact_analysis)"
+    " fast-rejected because the bounded non-ORM concurrency semaphore was full"
+    " (#276 G6).",
+    labelnames=["tool"],
+)
+
+nonorm_query_timeout_total = Counter(
+    "nonorm_query_timeout_total",
+    "Number of NON-ORM heavy read tool calls (e.g. impact_analysis) whose Neo4j"
+    " query hit the per-query timeout (#276 G5). Distinct from"
+    " orm_query_timeout_total so ops can tell which pool's queries are timing"
+    " out.",
+    labelnames=["tool"],
+)
+
 __all__ = [
     "embedder_batch_duration_seconds",
     "forgot_password_db_failure_total",
     "forgot_password_email_send_failure_total",
     "forgot_password_success_total",
+    "nonorm_overloaded_total",
+    "nonorm_query_timeout_total",
     "orm_overloaded_total",
     "orm_query_timeout_total",
     "prometheus_client",
