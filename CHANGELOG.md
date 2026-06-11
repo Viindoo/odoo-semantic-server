@@ -256,6 +256,18 @@ Two production issues fixed in one wave (10 work items + PR #275 review-round-3 
 
 ---
 
+### Fixed - `_resolve_model` INHERITS-heavy queries now bounded (#279 follow-up)
+
+`_resolve_model` (the `model_inspect` summary path + the `odoo://{version}/model/{name}` resource)
+ran its ranking and inheritance-parents queries under a bare `session.run()` with no per-query
+timeout — only the 600s server-side `db.transaction.timeout` backstop, which on the #273 same-name
+mesh let queries hang for 19-24h. Both queries are now wrapped by `neo4j.Query(timeout=
+NEO4J_QUERY_TIMEOUT_SECONDS)` (via the shared `_data_bounded` helper). On timeout `OrmQueryTimeout`
+is caught inside `_resolve_model` and returned as a clean English string (ADR-0023, no Cypher
+leaked) so the plain-`@offload` callers never surface a raw `ClientError` as a protocol-level error.
+Closes the last non-ORM hot-read-path gap from #273/#276 G5. No tool change, no migration. Tool
+count stays **25**.
+
 ### Fixed - abandoned streamable-http session leak (#279, ADR-0049)
 
 Abandoned streamable-http MCP sessions accumulated until server restart because FastMCP 2.x does

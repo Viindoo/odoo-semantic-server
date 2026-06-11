@@ -468,6 +468,69 @@ def test_query_timeout_surfaces_as_ormquerytimeout(orm_funcs, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# 6b. Non-ORM hot read path: _resolve_model (model_inspect summary + the
+#     odoo:// model resource) is INHERITS-heavy and ran under a bare
+#     session.run with no per-query timeout (#279 follow-up). When the per-query
+#     Neo4j timeout fires inside it, the client must receive a clean English
+#     string (ADR-0023) — NOT a hang, NOT a raw ClientError, NOT leaked Cypher.
+#     This is the approach-(a) catch-in-_resolve_model contract: because
+#     _resolve_model returns str and runs under a plain @offload (model_inspect)
+#     and the resource handler — neither of which catches OrmQueryTimeout — the
+#     conversion-to-clean-string must happen inside _resolve_model itself.
+# ---------------------------------------------------------------------------
+
+def test_resolve_model_query_timeout_surfaces_clean_string(monkeypatch):
+    """A per-query timeout inside _resolve_model returns a clean English str.
+
+    Deterministic simulation (mirrors test_query_timeout_surfaces_as_ormquerytimeout):
+    monkeypatch the Neo4j driver session so .run() always raises the driver's
+    transaction-timeout ClientError. With an EXPLICIT version, _resolve_version
+    short-circuits at Tier-1 without touching the session, so the very first
+    session.run is the bounded ranking query — exactly the #279 hot path.
+
+    The business contract being protected: when that query times out the caller
+    gets a clean, actionable string (no hang, no raw ClientError escaping to
+    FastMCP as isError, no Cypher fragment leaked).
+    """
+    from neo4j.exceptions import ClientError
+
+    import src.mcp.server as srv
+
+    class _TimingOutSession:
+        """Context-manager session whose .run() always times out."""
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def run(self, *a, **k):
+            exc = ClientError("transaction timed out")
+            exc.code = (
+                "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+            )
+            raise exc
+
+    class _FakeDriver:
+        def session(self, *a, **k):
+            return _TimingOutSession()
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _FakeDriver())
+
+    # Explicit version → _resolve_version returns it without a session.run.
+    result = srv._resolve_model("dense.model", DENSE_VERSION)
+
+    assert isinstance(result, str), f"expected clean str, got {type(result)!r}"
+    assert "timed out" in result.lower(), f"not a timeout message: {result!r}"
+    # ADR-0023: no Cypher leaked.
+    assert "MATCH" not in result and "Cypher" not in result, (
+        f"Cypher leaked: {result!r}"
+    )
+    # English, actionable.
+    assert "retry" in result.lower() or "dense" in result.lower()
+
+
+# ---------------------------------------------------------------------------
 # 7. Semaphore: cap holds, fast-reject on overload, slot released after worker.
 #    Mirrors WI-2's standalone decorator test (tien-do.md WI-2 log).
 # ---------------------------------------------------------------------------
