@@ -3,6 +3,7 @@
 import asyncio
 import os
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -10,6 +11,19 @@ from pathlib import Path
 
 import pytest
 from neo4j import GraphDatabase
+
+# Worktree bootstrap: put THIS repo root at sys.path[0] before any `src.*` import.
+# When `pytest` runs as the editable-installed console-script, sys.path is seeded
+# from the editable `.pth` of whichever checkout was `pip install -e`d (the MAIN
+# tree). From a sibling git worktree, a bare `pytest` would otherwise import
+# `src.*` from the main tree instead of this worktree's code — silently testing
+# the wrong source. Prepending the conftest's own repo root forces this worktree's
+# `src/` to win. conftest.py is imported in full BEFORE pytest collects any test
+# module, and no `src.*` import exists above this line (all such imports live
+# inside fixtures), so this runs before the first `src.*` resolution.
+_repo_root = str(Path(__file__).resolve().parent.parent)
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
 # Test-only bcrypt work factor. Production uses cost=12 (ADR-0011); the ~45
 # password-hashing tests don't need that strength, and a cost-12 hash is ~0.4s

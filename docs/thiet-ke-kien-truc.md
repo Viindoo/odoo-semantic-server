@@ -72,7 +72,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │  │  PYTHON RUNTIME  (Python 3.12+, venv tại ~/.venv/odoo-semantic-mcp)  │  │
 │  │                                                               │  │
 │  │  [CLI — one-shot]          [Server — long-running]            │  │
-│  │  python -m src.indexer     python -m src.mcp.server           │  │
+│  │  python -m src.indexer     python -m src.mcp                  │  │
 │  │  └─ INDEXER PIPELINE       └─ FastMCP HTTP :8002              │  │
 │  │     1. Scanner                 systemd giữ process alive      │  │
 │  │     2. Registry Builder                                       │  │
