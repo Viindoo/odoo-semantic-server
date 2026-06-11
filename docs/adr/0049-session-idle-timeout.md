@@ -46,8 +46,18 @@ need to get the kwarg to the constructor.
 
 **Adopt Option B: bypass `mcp.http_app()` and build the streamable-http
 Starlette app directly in `main()`, reproducing FastMCP's
-`create_streamable_http_app()` verbatim plus the one `session_idle_timeout`
-kwarg.** Configurable via the new `SESSION_IDLE_TIMEOUT` env (default `3600`,
+`create_streamable_http_app()` plus four additions over the bare factory:
+(1) the `session_idle_timeout` kwarg; (2) forward `json_response` and
+`stateless_http` read off `mcp._deprecated_settings` so an operator using
+`FASTMCP_JSON_RESPONSE` / `FASTMCP_STATELESS_HTTP` keeps `http_app()` parity
+(FIX 2; stateless mode passes `None` for the idle timeout since there are no
+sessions to reap); (3) forward `debug` the same way `http_app()` does (FIX C);
+(4) extract the whole construction into a module-level
+`_build_streamable_http_app()` helper that both `main()` and
+`tests/test_session_idle_timeout.py` call, so the manual reproduction can never
+drift out of lockstep (FIX 3 - the helper is the SSOT, the smoke test guards
+against FastMCP-internals drift).** Configurable via the new
+`SESSION_IDLE_TIMEOUT` env (default `3600`,
 i.e. 1h ≈ 120× the 30s worst-case tool runtime, so a long in-flight call is never
 reaped mid-flight). The PIN TTL of ADR-0029 (24h) is unchanged and unrelated —
 this bounds the underlying transport session, not the version/profile pin.

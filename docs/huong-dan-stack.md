@@ -170,13 +170,15 @@ use). One edge per extender is sufficient — the K² mesh stamped the same valu
 edges with no benefit.
 
 **Read-side: per-hop name-dedup, depth-first semantics.** ORM tools (`_lookup_field` step-3) no
-longer use VLP `*1..3` with ORDER BY before LIMIT. Instead, a CALL subquery collects distinct
-ancestor names per hop, tagged with minimum depth, then joins Field. Nearest ancestor wins (minimum
-hop count); alphabetical module tiebreak within same depth. This is the formal depth-first contract
-(not an implementation accident) — see ADR-0048 D2.
+longer use VLP `*1..3` with ORDER BY before LIMIT. Instead, a flat `OPTIONAL MATCH` + `WITH
+collect(DISTINCT ...)` per hop collects distinct ancestor names (no CALL subquery - which also
+removes the Neo4j 5.26 `CALL { WITH }` deprecation), tagged with minimum depth, then joins Field.
+Nearest ancestor wins (minimum hop count); alphabetical module tiebreak within same depth. This is
+the formal depth-first contract (not an implementation accident) - see ADR-0048 D2.
 
-**Post-pass reconciliation** at the end of each `index_repo` creates any missed extender→definition
-edges (cross-repo write-order gap). Idempotent, version-scoped.
+**Post-pass reconciliation** at the end of each `index_profile` (once per version, after all repos
+for that version complete - hoisted from `index_repo` to cut cost by R×) creates any missed
+extender→definition edges (cross-repo write-order gap). Idempotent, version-scoped.
 
 ```cypher
 // Writer W1 — correct topology: extender nối tới definition only

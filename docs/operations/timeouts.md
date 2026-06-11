@@ -45,18 +45,40 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 | `ORM_QUERY_MAX_CONCURRENCY` | 8 | (new) | `src/constants.py` | Semaphore cap on concurrent ORM tool executions (resolve_orm_chain / validate_domain / validate_depends / validate_relation). Uses a `threading.BoundedSemaphore` held by the worker thread (not the coroutine) - slot is released only when the thread exits, not when the client disconnects. Prevents pool-drain (#276 pattern). Mirrors `EMBEDDER_MAX_CONCURRENCY` pattern (ADR-0046). **WARNING: must be > 0. A value of 0 makes every ORM-validation tool fast-reject forever. The server refuses to start (SystemExit) if this value is 0.** |
 | `ORM_SLOT_ACQUIRE_TIMEOUT` | 5 | (new) | `src/constants.py` | Fast-reject if an ORM semaphore slot is not available within N seconds. Caller receives `OrmOverloaded` structured error (plain string, never `isError=true`). **Must be strictly less than `NEO4J_QUERY_TIMEOUT_SECONDS`** (constraint enforced at startup - server refuses to start on violation). |
 
+### Non-ORM heavy reads (MCP tools - #276 G6)
+
+A separate concurrency pool for non-ORM heavy reads (currently `impact_analysis` fan-out) so a burst
+of dense fan-out cannot drain the ORM pool. Uses the same thread-held `threading.BoundedSemaphore`
+(cancel-safe) machinery as the ORM pool, via the `@offload_bounded_nonorm` decorator.
+
+| Env var | Default | Was | File:line | Reasoning |
+|---------|---------|-----|-----------|-----------|
+| `NONORM_READ_MAX_CONCURRENCY` | 8 | (new) | `src/constants.py` | Semaphore cap on concurrent non-ORM heavy reads. A SEPARATE pool from `ORM_QUERY_MAX_CONCURRENCY` so non-ORM fan-out and the 4 ORM-validation tools cannot starve each other. |
+| `NONORM_SLOT_ACQUIRE_TIMEOUT` | 5 | (new) | `src/constants.py` | Fast-reject if a non-ORM read slot is not available within N seconds. Same fast-reject contract as `ORM_SLOT_ACQUIRE_TIMEOUT`. |
+
+### MCP transport (ADR-0049)
+
+| Env var | Default | Was | File:line | Reasoning |
+|---------|---------|-----|-----------|-----------|
+| `SESSION_IDLE_TIMEOUT` | 3600s | (new) | `src/mcp/server.py` | Max idle time before an abandoned streamable-http MCP session is reaped. Forwarded to `StreamableHTTPSessionManager` via the `_build_streamable_http_app()` Option B bypass (FastMCP 2.x does not forward the kwarg natively - see ADR-0049). A non-finite or `<= 0` value falls back to the default (a guard logs a warning, since `<= 0` would disable reaping). Ignored under `--transport stdio`. Unrelated to the ADR-0029 session-pin TTL (24h, write-anchored). |
+
 **Startup validation:** `_validate_orm_env()` is called once at `__main__` entry (after `init_dotenv`,
 not at import-time to avoid breaking pytest). It performs three checks and calls `SystemExit(1)` if
 any fail: `NEO4J_QUERY_TIMEOUT_SECONDS <= 0`, `ORM_QUERY_MAX_CONCURRENCY <= 0`,
 `ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS`. This ensures the core #273 fix cannot
 be silently disabled by a mis-set env var.
 
-**Non-ORM reads (accepted posture):** Approximately 84 `session.run` calls in `src/mcp/server.py`
-(e.g., `impact_analysis` ~9 queries, `_resolve_model` ranking) do NOT have a per-query timeout.
-This is accepted: all run in `@offload` worker threads (no event-loop wedge); `db.transaction.timeout=600s`
-backstops all. A slow non-ORM traversal can pin a `asyncio.to_thread` pool thread up to 600s under
-fan-out, but this is degraded throughput, not a #273-class zombie. Extending `_bounded()` to hot
-non-ORM paths is a follow-up item (TASKS.md).
+**Non-ORM reads (accepted posture):** `src/mcp/server.py` holds ~73 `session.run` calls in total.
+Of the hottest, `impact_analysis` is now fully bounded (#278 G5): each of its heavy reads runs
+through `_data_bounded` / `_single_bounded`, which wrap the Cypher in
+`neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)` (per-query timeout), and the whole tool is wrapped
+by the `@offload_bounded_nonorm` decorator (concurrency cap, see below). The remaining bare
+`session.run()` calls (e.g., the `_resolve_model` ranking query at `src/mcp/server.py:1941`) still do
+NOT have a per-query timeout. This is accepted: all run in `@offload` worker threads (no event-loop
+wedge); `db.transaction.timeout=600s` backstops all. A slow non-ORM traversal can pin a
+`asyncio.to_thread` pool thread up to 600s under fan-out, but this is degraded throughput, not a
+#273-class zombie. Extending the per-query `_bounded()` wrapper to the `_resolve_model` ranking query
+is the remaining follow-up item (TASKS.md).
 
 **Neo4j `db.transaction.timeout` — now wired into IaC (ADR-0048 D7 / issue #276):**
 
