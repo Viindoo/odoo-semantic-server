@@ -1253,25 +1253,24 @@ Small operational waves pending on prod server — not code changes.
 Items identified during review round 3 that are out of scope for the fix wave but should be
 tracked. Each has bounded risk (not blocking merge); see ADR-0048 Amendment for full context.
 
-- [ ] **Embed-path semaphore cancellation flaw (ADR-0046 pattern):** the embed path
+- [x] **Embed-path semaphore cancellation flaw (ADR-0046 pattern):** the embed path
   (`offload_bounded` analog in `src/mcp/server.py` embed wrappers) has the same latent
   cancellation-release flaw that CRITICAL-2 fixed for ORM tools - `asyncio.Semaphore` released on
   coroutine cancel while the thread still runs. Fix: apply the same `threading.BoundedSemaphore`
   in-thread acquire/release pattern. Risk is bounded by 30s query timeout but the protection
   claimed by ADR-0046 does not exist until fixed.
-  *Cross-ref: ADR-0048 D7 amendment, ADR-0046.*
+  *Cross-ref: ADR-0048 D7 amendment, ADR-0046.* (done 2026-06-11 - #278/443da3e)
 
-- [ ] **Extend per-query timeout to non-ORM hot read paths:** ~84 `session.run` calls in
-  `server.py` currently have no `neo4j.Query(timeout=...)` wrapper. Accepted for now (all run in
-  `@offload` threads - no event-loop wedge; 600s `db.transaction.timeout` backstops). Priority
-  targets for a follow-up: `impact_analysis` (~9 queries), `_resolve_model` ranking query
-  (INHERITS-heavy graphs). Extend `_bounded()` from `orm.py` or create a shared helper.
+- [ ] **Extend per-query timeout to non-ORM hot read paths:** `impact_analysis` done (#278 G5 -
+  `@offload_bounded_nonorm`); `_resolve_model` ranking query STILL OPEN (src/mcp/server.py ~line
+  1916 still bare `session.run()`, INHERITS-heavy - exact target #273 aimed at). Remaining ~83
+  `session.run` calls accepted (all run in `@offload` threads - no event-loop wedge; 600s
+  `db.transaction.timeout` backstops).
   *Cross-ref: FOLLOW-UP #8 inline comment (pr275-comments.md), ADR-0048 D7 amendment.*
 
-- [ ] **`reconcile_same_name_inherits` concurrent D>1 deadlock note:** when `--profile-workers > 1`
-  runs same-version reconciles in parallel, MERGE-deadlocks can occur. Current policy: warn-and-
-  continue (idempotent, gaps filled on next run). Add a docstring note to the function documenting
-  this behavior explicitly, and consider an advisory lock per-version for the reconcile pass.
+- [ ] **`reconcile_same_name_inherits` concurrent D>1 deadlock note:** docstring note DONE
+  2026-06-11 (commit 8459939 - see `src/indexer/writer_neo4j.py` "Concurrency (--profile-workers)"
+  section in the function docstring); advisory lock per-version STILL OPEN.
   *Cross-ref: ADR-0048 D1/D5 note, pr275-comments.md MED.*
 
 ---

@@ -1458,7 +1458,9 @@ class Neo4jWriter:
         failure policy above absorbs the deadlock (WARNING + return 0) rather than
         aborting, but the loser then leaves its gap unfilled for that run — re-run the
         profile, or accept the miss (the next full reindex fills it). Idempotent MERGE
-        makes a re-run safe.
+        makes a re-run safe. An advisory lock per-version for the reconcile pass would
+        serialize same-version parallel runs and prevent the deadlock entirely; this is
+        tracked as future work (issue #279).
 
         Returns the number of INHERITS edges created (0 if already complete or on error).
         """

@@ -74,14 +74,16 @@ class _SlowAsyncEmbedder:
 
 @pytest.fixture(autouse=True)
 def _reset_embed_semaphore():
-    """Each test gets a fresh module-level (thread-bound) embed semaphore."""
-    srv._embed_semaphore = None
-    srv._embed_cap_in_use = None
-    srv._embed_slot_timeout_in_use = None
+    """Each test gets a fresh thread-bound embed semaphore.
+
+    The embed pool is now a _LazyBoundedSemaphore object (#279 consolidation);
+    .reset() drops the built semaphore so the next .get() rebuilds from the
+    current env (e.g. a monkeypatched EMBEDDER_SLOT_ACQUIRE_TIMEOUT) — same intent
+    as the previous "null the module globals" reset, against the new structure.
+    """
+    srv._embed_pool.reset()
     yield
-    srv._embed_semaphore = None
-    srv._embed_cap_in_use = None
-    srv._embed_slot_timeout_in_use = None
+    srv._embed_pool.reset()
 
 
 # ---------------------------------------------------------------------------

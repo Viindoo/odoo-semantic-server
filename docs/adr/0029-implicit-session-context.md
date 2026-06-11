@@ -561,3 +561,58 @@ stays **24/25**.
   fail-closed), making a profile-pin race a convenience defect, not a security one.
 - ADR-0030 — Resources keep sentinel support; the reason the shared resolver must
   retain its latest-fallback.
+
+---
+
+## Amendment (#279, 2026-06-11) — Option D (`context_id` per-call keying) evaluated and declined
+
+### Decision
+
+**Option D is closed WONTFIX.** Keying the session pin by `(api_key_id, mcp_session_id,
+context_id)` was evaluated during issue #279 and declined.
+
+### Reasons
+
+1. **Version race is fully resolved.** The `RequiredOdooVersion` hard-require (WI-4 amendment
+   above) forces an explicit, concrete version on every tool call. No pin read occurs on the
+   19 version-bearing tools when the caller provides an explicit version (Tier-1 always wins).
+   There is no version-race surface left to protect with `context_id`.
+
+2. **Profile race is authz-safe and documented.** The profile pin race is a *convenience* defect,
+   not a security defect: the ADR-0034 tenant choke re-validates the pinned profile at read time
+   (narrowing-only, fail-closed). A stale or wrong pin under concurrency can only produce a
+   narrower-than-intended view; it can never widen access or cross a tenant boundary. The
+   mitigation is documented: pass `profile_name` explicitly per call.
+
+3. **No concrete customer signal.** No bug report of "concurrent same-session subagents showing
+   data from the wrong profile" has been received.
+
+4. **Fundamental mechanism gap.** MCP protocol has no per-call header mechanism that an LLM
+   subagent can use to inject a `context_id`. Delivering it would require either (a) adding
+   `context_id: str | None = None` as a parameter on all 19 tools (schema noise, confusing UX)
+   or (b) a custom `_meta` field without FastMCP support. Neither is acceptable at this cost
+   for a theoretical defect with no customer signal.
+
+### Scope
+
+No code change. Documentation only (this amendment + CHANGELOG Known caveats). Tool count stays
+**25**. No migration.
+
+### Reopen triggers
+
+Reopen this issue if any of the following occur:
+
+1. **Customer bug report** of concurrent same-session subagents showing data from the wrong
+   profile ("subagent A saw profile X data instead of profile Y").
+2. **Roadmap feature** that explicitly supports multi-subagent isolated-profile workflows where
+   different subagents in one session need distinct, non-interfering profile contexts.
+3. **MCP protocol** adds a native `_meta.context_id` field or equivalent per-call context
+   mechanism - implementation would then be trivial (~50 LOC server, no client schema change).
+
+### References
+
+- Issue #279 — full investigation notes + DEBATE.md + deep-2-context-id-pin.md.
+- ADR-0034 — tenant choke (narrowing-only, fail-closed) that makes the profile race authz-safe.
+- Amendment (#274) above — `RequiredOdooVersion` hard-require that closed the version race.
+- `odoo-mcp-client` `skills/_shared/concurrency-guard.md` — client-side SSOT for the
+  explicit-per-call rule (version); profile-explicit rule is a tracked follow-up.
