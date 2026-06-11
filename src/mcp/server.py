@@ -5535,12 +5535,13 @@ def _list_fields(
         # `delegated via` row labels. Bounded by _bounded() (issue #273).
         #
         # FIX (#284 follow-up): these two helpers are bounded + tx-timeout-mapped
-        # to OrmQueryTimeout on a dense inheritance graph. model_inspect /
-        # entity_lookup wrap _list_fields in plain @offload (no OrmQueryTimeout
-        # catch), so a tx-timeout here would ESCAPE as a FastMCP protocol
-        # `isError`, violating the ADR-0023 raw-text contract — exactly as the
-        # detail path (_resolve_field) was hardened to avoid. Mirror that catch:
-        # surface the clean degraded English string instead of raising.
+        # to OrmQueryTimeout on a dense inheritance graph. The list path catches
+        # that HERE and returns the clean degraded English string directly. The
+        # @offload_neo4j boundary on model_inspect/entity_lookup (PR-1 #287) only
+        # backstops a RAISED OrmQueryTimeout; this inline catch keeps the list
+        # path self-contained (note: it does NOT yet emit the timeout metric —
+        # deferred to PR-3 / issue #287 M3). Mirrors the detail path
+        # (_resolve_field): surface the clean string instead of raising.
         try:
             rows = _list_fields_with_inherited(
                 model, odoo_version, session, profile_name,
@@ -5828,13 +5829,13 @@ def _list_methods(
         # DISTINCT-name count below. Carries owner_model for provenance labels
         # (edge_kind is always 'inherits' on the method path).
         # FIX (#284 follow-up): the three acquisitions below are all bounded by
-        # the per-query Neo4j timeout. model_inspect / entity_lookup wrap
-        # _list_methods in plain @offload (no OrmQueryTimeout catch), so a
-        # tx-timeout on a dense inheritance graph would ESCAPE as a FastMCP
-        # protocol `isError`, violating the ADR-0023 raw-text contract (the same
-        # asymmetry the detail path _resolve_method already closed). Wrap the
-        # whole acquisition in `try/except OrmQueryTimeout: return exc.user_message`,
-        # mirroring _resolve_field. The override_rec query was a BARE
+        # the per-query Neo4j timeout. The list path catches a tx-timeout HERE and
+        # returns the clean degraded string directly; the @offload_neo4j boundary
+        # on model_inspect/entity_lookup (PR-1 #287) only backstops a RAISED
+        # OrmQueryTimeout, so this inline catch keeps the list path self-contained
+        # (note: does NOT yet emit the metric — deferred to PR-3 / issue #287 M4).
+        # Wrap the whole acquisition in `try/except OrmQueryTimeout: return
+        # exc.user_message`, mirroring _resolve_field. The override_rec query was a BARE
         # `session.run(_bounded(...)).single()` that raises a RAW neo4j
         # ClientError on timeout (NOT routed through orm.py's ClientError ->
         # OrmQueryTimeout conversion), so it would not even reach this catch —
@@ -7539,9 +7540,11 @@ async def entity_lookup(
     # (_resolve_field / _resolve_method / _resolve_view / _resolve_model /
     # _describe_module) now RAISE OrmQueryTimeout on a tx-timeout, which would
     # otherwise escape this async handler as a protocol-level isError. Record the
-    # metric once (the resolvers never count it) + return the clean message. The
-    # kind='pattern' path routes to _suggest_pattern (PR-2 scope) which does not
-    # raise OrmQueryTimeout, so this catch only fires for the converted kinds.
+    # metric once here + return the clean message. (Exception: kind='model' →
+    # _resolve_model self-catches and returns the clean string already counted as
+    # "model_inspect", so this catch never fires for model — no double-count.)
+    # kind='pattern' routes to _suggest_pattern (PR-2 scope) which does not raise
+    # OrmQueryTimeout, so this catch fires only for field/method/view/module.
     try:
         text = await asyncio.to_thread(
             _entity_lookup,
