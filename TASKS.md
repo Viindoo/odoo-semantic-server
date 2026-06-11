@@ -1261,11 +1261,14 @@ tracked. Each has bounded risk (not blocking merge); see ADR-0048 Amendment for 
   claimed by ADR-0046 does not exist until fixed.
   *Cross-ref: ADR-0048 D7 amendment, ADR-0046.* (done 2026-06-11 - #278/443da3e)
 
-- [ ] **Extend per-query timeout to non-ORM hot read paths:** `impact_analysis` done (#278 G5 -
-  `@offload_bounded_nonorm`); `_resolve_model` ranking query STILL OPEN (src/mcp/server.py ~line
-  1916 still bare `session.run()`, INHERITS-heavy - exact target #273 aimed at). Remaining ~83
-  `session.run` calls accepted (all run in `@offload` threads - no event-loop wedge; 600s
-  `db.transaction.timeout` backstops).
+- [x] **Extend per-query timeout to non-ORM hot read paths:** `impact_analysis` done (#278 G5 -
+  `@offload_bounded_nonorm`); `_resolve_model` ranking + parents INHERITS-heavy queries now bounded
+  by the per-query Neo4j timeout (`neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)` via
+  `_data_bounded`); `OrmQueryTimeout` is caught inside `_resolve_model` and surfaced as a clean
+  English string (ADR-0023, approach (a)) so the plain-`@offload` `model_inspect` summary path and
+  the `odoo://` model resource handler never see a raw `ClientError` (#279, done 2026-06-11).
+  Remaining ~83 `session.run` calls accepted (all run in `@offload` threads - no event-loop wedge;
+  600s `db.transaction.timeout` backstops).
   *Cross-ref: FOLLOW-UP #8 inline comment (pr275-comments.md), ADR-0048 D7 amendment.*
 
 - [ ] **`reconcile_same_name_inherits` concurrent D>1 deadlock note:** docstring note DONE

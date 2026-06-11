@@ -1926,101 +1926,133 @@ def _resolve_model(
         of this parameter (magic fields live in synthetic space only).
         Default ``None`` preserves the existing behaviour (all modules).
     """
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
+    # #279 follow-up (ADR-0048 / ADR-0023): both queries below are INHERITS-heavy
+    # (the ranking query is the #273 same-name-mesh path-explosion target). Each is
+    # wrapped by `_data_bounded` so it runs under the per-query Neo4j timeout
+    # (neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)) — the 600s server-side
+    # db.transaction.timeout backstop alone let #273 hang for 19-24h. On timeout
+    # `_data_bounded` raises OrmQueryTimeout (clean English, no Cypher leaked).
+    # `_resolve_model` returns `str`, and its callers run under a plain `@offload`
+    # (model_inspect) / the MCP resource handler — NEITHER catches OrmQueryTimeout,
+    # so an uncaught raise would surface as a protocol-level isError and not the
+    # ADR-0023 raw-text contract. We therefore catch it HERE (approach (a)) and
+    # return the clean user_message string. This is preferred over flipping
+    # model_inspect to @offload_bounded_nonorm: (1) it covers the resources.py
+    # caller too, which the decorator swap would miss, and (2) it does not change
+    # the concurrency semantics of the high-traffic model_inspect tool (whose
+    # non-summary methods do not run this INHERITS-heavy query at all).
+    try:
+        with _get_driver().session() as session:
+            odoo_version = _resolve_version(odoo_version, session)
 
-        # Ranking tiers — see docs/adr/0013:
-        # T1 is_def_rank: m.is_definition flag (post-reindex, authoritative).
-        # T2 field_count: Field nodes declared on this model in this module —
-        #                 100% accurate signal pre-reindex on real data
-        #                 (defining module always has the most fields).
-        # T3 dependents : DEPENDS_ON inbound on Module (manifest depends).
-        # T4 edition    : community < enterprise < viindoo < oca < custom.
-        # T5 mod_name   : alphabetical tiebreak — eliminates arbitrary order.
-        layers = session.run(
-            f"""
-            MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($from_module IS NULL OR m.module = $from_module)
-            WITH m, mod,
-                 CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
-                 COUNT {{
-                     (:Field {{model: $name, module: m.module, odoo_version: $v}})
-                 }} AS field_count,
-                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo,
-                   mod.edition AS edition, mod.license AS license,
-                   coalesce(m.is_definition, false) AS is_definition,
-                   COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
-                   COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
-            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
-                     edition_rank ASC, mod_name ASC
-            """,
-            name=model_name, v=odoo_version, **_scope(profile_name),
-            from_module=from_module,
-        ).data()
+            # Ranking tiers — see docs/adr/0013:
+            # T1 is_def_rank: m.is_definition flag (post-reindex, authoritative).
+            # T2 field_count: Field nodes declared on this model in this module —
+            #                 100% accurate signal pre-reindex on real data
+            #                 (defining module always has the most fields).
+            # T3 dependents : DEPENDS_ON inbound on Module (manifest depends).
+            # T4 edition    : community < enterprise < viindoo < oca < custom.
+            # T5 mod_name   : alphabetical tiebreak — eliminates arbitrary order.
+            layers = _data_bounded(
+                session,
+                f"""
+                MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
+                WHERE ($own IS NULL OR (size(m.profile) > 0
+                       AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
+                  AND ($from_module IS NULL OR m.module = $from_module)
+                WITH m, mod,
+                     CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
+                     COUNT {{
+                         (:Field {{model: $name, module: m.module, odoo_version: $v}})
+                     }} AS field_count,
+                     COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
+                     {_edition_rank_cypher("mod")},
+                     mod.name AS mod_name
+                RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo,
+                       mod.edition AS edition, mod.license AS license,
+                       coalesce(m.is_definition, false) AS is_definition,
+                       COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
+                       COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
+                ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
+                         edition_rank ASC, mod_name ASC
+                """,
+                f"model resolution for '{model_name}' (Odoo {odoo_version})",
+                name=model_name, v=odoo_version, **_scope(profile_name),
+                from_module=from_module,
+            )
 
-        if not layers:
-            if from_module:
-                return (
-                    f"Model '{model_name}' not found in module '{from_module}'"
-                    f" (Odoo {odoo_version})."
+            if not layers:
+                if from_module:
+                    return (
+                        f"Model '{model_name}' not found in module '{from_module}'"
+                        f" (Odoo {odoo_version})."
+                    )
+                return f"Model '{model_name}' not found in Odoo {odoo_version}."
+
+            # M2 (#262): the "Extended by" list MUST use the SAME predicate as
+            # _list_extenders — `NOT is_definition` — so the summary "... and N more"
+            # count and the paginated extenders total are always equal. The previous
+            # `layers[1:]` assumed exactly one definition row on top, which:
+            #   - under-counts by 1 when the definition node is out of scope (a pure
+            #     _inherit model whose top row is itself an extender), and
+            #   - over-counts when >1 module carries is_definition=true.
+            # `base` (the "Defined in" line) stays as the top-ranked row (ADR-0013);
+            # in the rare no-definition-row case it is also a NOT-is_definition row,
+            # so it appears in both sections — identical to what _list_extenders
+            # would return, which is the parity contract M2 requires.
+            base = layers[0]
+            extensions = [row for row in layers if not row["is_definition"]]
+            # INHERITS-aware counts (#283): the summary must agree with _list_fields /
+            # _list_methods totals. The flat per-layer `fields_count` / `methods_count`
+            # only counts entities declared directly on this model name; it MISSES
+            # fields/methods inherited from a mixin (e.g. `res_ref` on
+            # `viin.approval.request` lives under `abstract.approval.request.fields`).
+            # Use the same per-hop-dedup traversal + DISTINCT-name count as the list
+            # tools so the summary never contradicts the enumeration. from_module
+            # scoping is intentionally NOT applied here — the summary count reflects
+            # the model as a whole, counting the deduped own+inherited name set.
+            try:
+                fields_count = _count_fields_with_inherited(
+                    model_name, odoo_version, session, profile_name
                 )
-            return f"Model '{model_name}' not found in Odoo {odoo_version}."
+                methods_count = _count_methods_with_inherited(
+                    model_name, odoo_version, session, profile_name
+                )
+            except OrmQueryTimeout:
+                # Dense-graph fallback (#283): a timed-out INHERITED count must not
+                # blank the whole summary — degrade to the flat own-model count
+                # rather than failing the model overview. This inner timeout is
+                # recoverable; the OUTER ranking/parents `_data_bounded` timeout is
+                # not, and still returns a clean string via the function-level except
+                # below (#279/#284).
+                fields_count = base["fields_count"]
+                methods_count = base["methods_count"]
 
-        # M2 (#262): the "Extended by" list MUST use the SAME predicate as
-        # _list_extenders — `NOT is_definition` — so the summary "... and N more"
-        # count and the paginated extenders total are always equal. The previous
-        # `layers[1:]` assumed exactly one definition row on top, which:
-        #   - under-counts by 1 when the definition node is out of scope (a pure
-        #     _inherit model whose top row is itself an extender), and
-        #   - over-counts when >1 module carries is_definition=true.
-        # `base` (the "Defined in" line) stays as the top-ranked row (ADR-0013);
-        # in the rare no-definition-row case it is also a NOT-is_definition row,
-        # so it appears in both sections — identical to what _list_extenders
-        # would return, which is the parity contract M2 requires.
-        base = layers[0]
-        extensions = [row for row in layers if not row["is_definition"]]
-        # INHERITS-aware counts (issue: summary must agree with _list_fields /
-        # _list_methods totals). The flat per-layer `fields_count` /
-        # `methods_count` only counts entities declared directly on this model
-        # name; it MISSES fields/methods inherited from a mixin (e.g. `res_ref`
-        # on `viin.approval.request` lives under `abstract.approval.request.
-        # fields`). Use the same per-hop-dedup traversal + DISTINCT-name count
-        # as the list tools so the summary never contradicts the enumeration.
-        # from_module scoping is intentionally NOT applied here — the summary
-        # count reflects the model as a whole, and the inherited helpers count
-        # the deduped own+inherited name set for the model.
-        try:
-            fields_count = _count_fields_with_inherited(
-                model_name, odoo_version, session, profile_name
+            # DISTINCT on p.name only — the same parent (e.g. mail.thread) is reachable
+            # via multiple INHERITS edges (one per module that declares _inherit), and
+            # each one resolves to a separate (parent_name, module) pair. Without
+            # collapsing here the rendered list shows duplicates like
+            # "mail.thread, mail.thread, mail.thread, ..." (M5 install audit).
+            parents = _data_bounded(
+                session,
+                f"""
+                MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
+                WHERE p.name <> $name
+                  AND NOT coalesce(r.unresolved, false)
+                  AND {_scope_pred("p")}
+                RETURN DISTINCT p.name AS pname
+                ORDER BY pname
+                """,
+                f"inheritance parents for '{model_name}' (Odoo {odoo_version})",
+                name=model_name, v=odoo_version, **_scope(profile_name),
             )
-            methods_count = _count_methods_with_inherited(
-                model_name, odoo_version, session, profile_name
-            )
-        except OrmQueryTimeout:
-            # Dense-graph fallback: a timed-out inherited count must not blank the
-            # whole summary. Degrade to the flat own-model count (the pre-fix
-            # behaviour) rather than failing the entire model overview.
-            fields_count = base["fields_count"]
-            methods_count = base["methods_count"]
-
-        # DISTINCT on p.name only — the same parent (e.g. mail.thread) is reachable
-        # via multiple INHERITS edges (one per module that declares _inherit), and
-        # each one resolves to a separate (parent_name, module) pair. Without
-        # collapsing here the rendered list shows duplicates like
-        # "mail.thread, mail.thread, mail.thread, ..." (M5 install audit).
-        parents = session.run(f"""
-            MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
-            WHERE p.name <> $name
-              AND NOT coalesce(r.unresolved, false)
-              AND {_scope_pred("p")}
-            RETURN DISTINCT p.name AS pname
-            ORDER BY pname
-        """, name=model_name, v=odoo_version, **_scope(profile_name)).data()
+    except OrmQueryTimeout as exc:
+        # Approach (a): _resolve_model returns str, so surface the clean English
+        # timeout message (ADR-0023 — no Cypher leaked) rather than letting the
+        # exception escape to FastMCP as a protocol-level isError. The metric is
+        # not recorded here (this path is outside the bounded-offload pools); the
+        # 30s driver timeout itself is the load-bearing #279 protection.
+        return exc.user_message
 
     # ADR-0023 §1.1: header = "{entity} (Odoo {version})", no decoration.
     # from_module filter info goes as a branch line, not appended to header.
