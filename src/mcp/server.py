@@ -2638,12 +2638,10 @@ def _resolve_method(
     #
     # _reraise_timeout: the ``odoo://`` method resource handler sets this so a
     # transient timeout body is never written to the resource LRU (mirrors
-    # _resolve_model). The default False keeps the model_inspect / entity_lookup
-    # tool path returning a clean ADR-0023 string — but now via the owning
-    # @offload_neo4j handler: we RE-RAISE here so the decorator records the
-    # metric once and returns the clean message (no double-count). The pre-PR-1
-    # behaviour caught + returned here under plain @offload; the decorator swap
-    # moves the catch to the boundary so the timeout is observable in the metric.
+    # _resolve_model / _resolve_field). The default False keeps the model_inspect
+    # / entity_lookup tool path returning a clean ADR-0023 string directly. (The
+    # tool-path method-detail timeout is therefore not yet counted in the metric —
+    # the deferred M2 gap, PR-3 / issue #287 — matching _resolve_field's M1.)
     try:
         with _get_driver().session() as session:
             odoo_version = _resolve_version(odoo_version, session)
@@ -2681,15 +2679,17 @@ def _resolve_method(
                 f"Method '{method_name}' not found on model"
                 f" '{model_name}' in Odoo {odoo_version}."
             )
-    except OrmQueryTimeout:
-        # Re-raise on BOTH paths so the timeout is observable + uncached:
-        #   * tool path → the owning @offload_neo4j handler records the metric
-        #     once and returns exc.user_message (clean ADR-0023 string).
-        #   * resource path (_reraise_timeout=True) → propagates out of
-        #     get_or_compute before the cache put; the method resource handler
-        #     records the metric once and returns the message uncached.
-        # No double-count: this inner resolver never records the metric itself.
-        raise
+    except OrmQueryTimeout as exc:
+        # Consistent with _resolve_field / _resolve_model. Resource path
+        # (_reraise_timeout=True): re-raise so the transient body is never cached
+        # (propagates out of get_or_compute before the put; the method resource
+        # handler records the metric once + returns it uncached). Tool path
+        # (default): return the clean ADR-0023 string directly. The tool-path
+        # method-detail timeout metric is the deferred M2 gap (PR-3 / issue #287),
+        # matching _resolve_field's M1.
+        if _reraise_timeout:
+            raise
+        return exc.user_message
 
     base_mth = records[0]["mth"]
     lines = [
