@@ -97,20 +97,8 @@ try {
 </AdminLayout>
 
 <script>
-  import { withStepUp } from '../../lib/mfaStepUp';
-
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error'
-        ? 'bg-red-100 text-red-800 border-red-300'
-        : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
+  import { submitJson } from '../../lib/apiClient';
+  import { flash } from '../../lib/flash';
 
   // Deactivate / Reactivate
   document.querySelectorAll('[data-action]').forEach((btn) => {
@@ -126,16 +114,12 @@ try {
           : `Reactivate user "${username}"?`;
       if (!confirm(confirmMsg)) return;
 
-      const res = await fetch(`/api/admin/users/${userId}/${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        showFlash(`User "${username}" ${action === 'deactivate' ? 'deactivated' : 'reactivated'}.`);
+      const r = await submitJson(`/api/admin/users/${userId}/${action}`, { method: 'POST', body: {} });
+      if (r.ok) {
+        flash(`User "${username}" ${action === 'deactivate' ? 'deactivated' : 'reactivated'}.`);
         setTimeout(() => location.reload(), 800);
       } else {
-        showFlash(data.detail ?? data.error ?? `${action} failed.`, 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -154,19 +138,17 @@ try {
         : `Demote "${username}" to regular User? They will lose admin access.`;
       if (!confirm(confirmMsg)) return;
 
-      const res = await fetch(`/api/admin/users/${userId}/admin`, {
+      const r = await submitJson(`/api/admin/users/${userId}/admin`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ is_admin: newIsAdmin }),
+        body: { is_admin: newIsAdmin },
       });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        showFlash(`User "${username}" ${newIsAdmin ? 'promoted to Admin' : 'demoted to User'}.`);
+      if (r.ok) {
+        flash(`User "${username}" ${newIsAdmin ? 'promoted to Admin' : 'demoted to User'}.`);
         setTimeout(() => location.reload(), 800);
-      } else if (res.status === 422) {
-        showFlash('Cannot demote last admin.', 'error');
+      } else if (r.status === 422) {
+        flash('Cannot demote last admin.', { error: true });
       } else {
-        showFlash(data.detail ?? data.error ?? `${action} failed.`, 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -180,18 +162,15 @@ try {
 
       if (!confirm(`Send password reset link to "${username}"?`)) return;
 
-      const res = await fetch(`/api/admin/users/${userId}/reset-password-link`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const msg = data.email_sent
+      const r = await submitJson(`/api/admin/users/${userId}/reset-password-link`, { method: 'POST', body: {} });
+      if (r.ok) {
+        const d = r.data as { email_sent?: boolean };
+        const msg = d.email_sent
           ? `Reset email sent to "${username}".`
           : `Reset link generated for "${username}" (check server logs — SMTP not configured).`;
-        showFlash(msg);
+        flash(msg);
       } else {
-        showFlash(data.detail ?? data.error ?? 'Reset failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -216,19 +195,17 @@ try {
 
       if (!confirm(`Apply plan "${planLabel}" to ALL API keys (active + inactive) of user "${username}"?\n\nThis will overwrite the current plan on every key.`)) return;
 
-      const res = await withStepUp(() => fetch(`/api/admin/users/${userId}/plan`, {
+      const r = await submitJson(`/api/admin/users/${userId}/plan`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ plan_id: parseInt(planId, 10) }),
-      }));
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        const n = data.keys_updated ?? 0;
-        showFlash(`Plan "${planLabel}" applied to ${n} key${n !== 1 ? 's' : ''} of user "${username}".`);
+        body: { plan_id: parseInt(planId, 10) },
+      });
+      if (r.ok) {
+        const d = r.data as { keys_updated?: number };
+        const n = d.keys_updated ?? 0;
+        flash(`Plan "${planLabel}" applied to ${n} key${n !== 1 ? 's' : ''} of user "${username}".`);
         setTimeout(() => location.reload(), 800);
       } else {
-        showFlash(data.detail ?? data.error ?? 'Plan cascade failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });

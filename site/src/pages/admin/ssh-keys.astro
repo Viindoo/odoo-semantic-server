@@ -167,29 +167,17 @@ try {
 </AdminLayout>
 
 <script>
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
+  import { submitJson } from '../../lib/apiClient';
+  import { flash } from '../../lib/flash';
 
   // Generate SSH key
   document.querySelector('[data-testid="generate-ssh-key-form"]')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const res = await fetch('/api/ssh-keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fd.get('name') }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.public_key) {
+    const r = await submitJson('/api/ssh-keys', { method: 'POST', body: { name: fd.get('name') } });
+    const data = r.data as { public_key?: string };
+    if (r.ok && data.public_key) {
       const banner = document.querySelector('[data-testid="new-pubkey-banner"]') as HTMLElement | null;
       const val = document.querySelector('[data-testid="new-pubkey-value"]') as HTMLElement | null;
       if (banner && val) {
@@ -198,7 +186,7 @@ try {
       }
       setTimeout(() => location.reload(), 4000);
     } else {
-      showFlash(data.error ?? 'Failed to generate key.', 'error');
+      flash(r.error ?? 'Failed to generate key.', { error: true });
     }
   });
 
@@ -207,13 +195,12 @@ try {
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const res = await fetch('/api/ssh-keys/import', {
+    const r = await submitJson('/api/ssh-keys/import', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fd.get('name'), private_key_pem: fd.get('private_key_pem') }),
+      body: { name: fd.get('name'), private_key_pem: fd.get('private_key_pem') },
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.public_key) {
+    const data = r.data as { public_key?: string };
+    if (r.ok && data.public_key) {
       const banner = document.querySelector('[data-testid="new-pubkey-banner"]') as HTMLElement | null;
       const val = document.querySelector('[data-testid="new-pubkey-value"]') as HTMLElement | null;
       if (banner && val) {
@@ -222,7 +209,7 @@ try {
       }
       setTimeout(() => location.reload(), 4000);
     } else {
-      showFlash(data.error ?? 'Import failed.', 'error');
+      flash(r.error ?? 'Failed to import key.', { error: true });
     }
   });
 
@@ -231,7 +218,7 @@ try {
     btn.addEventListener('click', async () => {
       const pubkey = (btn as HTMLElement).dataset.pubkey ?? '';
       await navigator.clipboard.writeText(pubkey).catch(() => {});
-      showFlash('Public key copied to clipboard.', 'success');
+      flash('Public key copied to clipboard.');
     });
   });
 
@@ -240,20 +227,12 @@ try {
     btn.addEventListener('click', async () => {
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Delete this SSH key pair? Any repos using it will lose access.')) return;
-      // Content-Type: application/json is required to bypass Astro's default
-      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
-      // form-like content types (none, urlencoded, multipart, text/plain) as
-      // "Cross-site form submission". JSON requests are exempt from that check.
-      const res = await fetch(`/api/ssh-keys/${keyId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        showFlash('SSH key deleted.', 'success');
+      const r = await submitJson(`/api/ssh-keys/${keyId}`, { method: 'DELETE', body: {} });
+      if (r.ok) {
+        flash('SSH key deleted.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.error ?? 'Delete failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });

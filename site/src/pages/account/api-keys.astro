@@ -182,16 +182,8 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
 </AccountLayout>
 
 <script>
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 4000);
-  }
+  import { flash } from '../../lib/flash';
+  import { submitJson } from '../../lib/apiClient';
 
   // On first landing after auto-onboarding (password verify-email or OAuth),
   // reveal the auto-minted key once for copy. Two carriers, checked as a union
@@ -262,17 +254,15 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const res = await fetch('/api/api-keys', {
+    const r = await submitJson('/api/api-keys', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: fd.get('name') }),
+      body: { name: fd.get('name') },
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok && data.raw_key) {
+    if (r.ok && (r.data as { raw_key?: string }).raw_key) {
       const banner = document.querySelector('[data-testid="new-key-banner"]') as HTMLElement | null;
       const keyVal = document.querySelector('[data-testid="new-key-value"]') as HTMLElement | null;
       if (banner && keyVal) {
-        keyVal.textContent = data.raw_key;
+        keyVal.textContent = (r.data as { raw_key: string }).raw_key;
         banner.removeAttribute('hidden');
         banner.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
@@ -280,7 +270,7 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       // The Active Keys table is therefore stale until then — acceptable
       // tradeoff so the raw key isn't lost to a 3-second timeout.
     } else {
-      showFlash(data.error ?? 'Failed to create key.', 'error');
+      flash(r.error ?? 'Failed to create key.', { error: true });
     }
   });
 
@@ -330,7 +320,7 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
         setTimeout(() => { label.textContent = prev; }, 1500);
       }
     } else {
-      showFlash('Copy failed — select the key manually and press Ctrl+C.', 'error');
+      flash('Copy failed — select the key manually and press Ctrl+C.', { error: true });
     }
   });
 
@@ -339,20 +329,14 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
     btn.addEventListener('click', async () => {
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Deactivate this API key? All tools using it will lose access.')) return;
-      // Content-Type: application/json is required to bypass Astro's default
-      // `security.checkOrigin` CSRF guard, which rejects POST/DELETE with
-      // form-like content types (none, urlencoded, multipart, text/plain) as
-      // "Cross-site form submission". JSON requests are exempt from that check.
-      const res = await fetch(`/api/api-keys/${keyId}/deactivate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        showFlash('API key deactivated.', 'success');
+      // submitJson sends Content-Type: application/json, which bypasses Astro's
+      // `security.checkOrigin` CSRF guard (same reasoning as before).
+      const r = await submitJson(`/api/api-keys/${keyId}/deactivate`, { method: 'POST' });
+      if (r.ok) {
+        flash('API key deactivated.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.error ?? 'Deactivation failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });
@@ -363,16 +347,13 @@ const inactiveKeys = keysData.keys.filter((k) => !k.active);
       const keyId = (btn as HTMLElement).dataset.keyId;
       if (!confirm('Reactivate this API key? It will immediately regain API access.')) return;
       // Content-Type: application/json bypasses Astro CSRF guard (see deactivate note above).
-      const res = await fetch(`/api/api-keys/${keyId}/reactivate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (res.ok) {
-        showFlash('API key reactivated.', 'success');
+      // submitJson sends Content-Type: application/json — bypasses Astro CSRF guard.
+      const r = await submitJson(`/api/api-keys/${keyId}/reactivate`, { method: 'POST' });
+      if (r.ok) {
+        flash('API key reactivated.');
         setTimeout(() => location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({}));
-        showFlash(data.error ?? 'Reactivation failed.', 'error');
+        flash(r.error!, { error: true });
       }
     });
   });

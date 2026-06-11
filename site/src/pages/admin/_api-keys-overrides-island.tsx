@@ -16,18 +16,8 @@
 //   4xx/5xx → inline error display
 
 import { useState, useEffect } from 'react';
-import { withStepUp } from '../../lib/mfaStepUp';
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 5000);
-}
+import { submitJson } from '../../lib/apiClient';
+import { flash } from '../../lib/flash';
 
 type OverridesState = {
   keyId: number;
@@ -120,19 +110,16 @@ export default function ApiKeysOverridesIsland() {
         rate_limit_override: parseOverride(state.rateOverride),
         quota_override: parseOverride(state.quotaOverride),
       };
-      const res = await withStepUp(() => fetch(`/api/admin/api-keys/${state.keyId}/plan`, {
+      const r = await submitJson(`/api/admin/api-keys/${state.keyId}/plan`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(body),
-      }));
-      if (res.ok) {
+        body,
+      });
+      if (r.ok) {
         flash('Overrides saved.');
         handleClose();
         setTimeout(() => window.location.reload(), 800);
       } else {
-        const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-        setFormError(String((data as { detail?: string; error?: string }).detail ?? (data as { detail?: string; error?: string }).error ?? `Error ${res.status}`));
+        setFormError(r.error!);
       }
     } catch (err) {
       setFormError(String(err));

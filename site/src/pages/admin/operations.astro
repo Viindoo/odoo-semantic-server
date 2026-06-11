@@ -480,18 +480,9 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
 </AdminLayout>
 
 <script>
-  import { withStepUp } from '../../lib/mfaStepUp';
-
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 5000);
-  }
+  import { submitJson } from '../../lib/apiClient';
+  import { extractApiError } from '../../lib/apiError';
+  import { flash } from '../../lib/flash';
 
   function showJobStarted(jobId: number | null, label: string) {
     const container = document.querySelector('[data-testid="active-job-container"]') as HTMLElement | null;
@@ -524,25 +515,25 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
   }
 
   function pollJob(jobId: number, badgeEl: HTMLElement | null) {
-    function poll() {
-      fetch(`/api/jobs/${jobId}/status`)
-        .then((r) => r.json())
-        .then((data) => {
-          if (badgeEl) {
-            badgeEl.textContent = data.status ?? 'unknown';
-            const colorMap: Record<string, string> = {
-              running: 'bg-viindoo-info/10 text-viindoo-info',
-              done: 'bg-green-100 text-green-700',
-              error: 'bg-red-100 text-red-700',
-              pending: 'bg-yellow-100 text-yellow-700',
-            };
-            badgeEl.className = `text-xs px-2 py-0.5 rounded-full ${colorMap[data.status] ?? 'bg-gray-100 text-gray-600'}`;
-          }
-          if (data.status === 'running' || data.status === 'pending') {
-            setTimeout(poll, 3000);
-          }
-        })
-        .catch(() => setTimeout(poll, 5000));
+    async function poll() {
+      const r = await submitJson<{ status?: string }>(`/api/jobs/${jobId}/status`, { method: 'GET', stepUp: false });
+      if (r.ok) {
+        if (badgeEl) {
+          badgeEl.textContent = r.data.status ?? 'unknown';
+          const colorMap: Record<string, string> = {
+            running: 'bg-viindoo-info/10 text-viindoo-info',
+            done: 'bg-green-100 text-green-700',
+            error: 'bg-red-100 text-red-700',
+            pending: 'bg-yellow-100 text-yellow-700',
+          };
+          badgeEl.className = `text-xs px-2 py-0.5 rounded-full ${colorMap[r.data.status ?? ''] ?? 'bg-gray-100 text-gray-600'}`;
+        }
+        if (r.data.status === 'running' || r.data.status === 'pending') {
+          setTimeout(poll, 3000);
+        }
+      } else {
+        setTimeout(poll, 5000);
+      }
     }
     setTimeout(poll, 3000);
   }
@@ -552,21 +543,20 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const res = await fetch('/api/operations/index-core', {
+    const r = await submitJson('/api/operations/index-core', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: {
         source: fd.get('source'),
         version: fd.get('version'),
         static_data_dir: fd.get('static_data_dir') ?? '',
-      }),
+      },
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      showFlash(data.message ?? 'Index core started.', 'success');
-      showJobStarted(data.job_id, `core:${fd.get('version')}`);
+    const data = r.data as { message?: string; job_id?: number };
+    if (r.ok) {
+      flash(data.message ?? 'Index core started.');
+      showJobStarted(data.job_id ?? null, `core:${fd.get('version')}`);
     } else {
-      showFlash(data.error ?? 'Index core failed.', 'error');
+      flash(r.error!, { error: true });
     }
   });
 
@@ -575,23 +565,21 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const body: Record<string, string> = {
-      version: String(fd.get('version') ?? ''),
-      patterns_file: String(fd.get('patterns_file') ?? ''),
-      no_embed: fd.get('no_embed') ? '1' : '',
-      force: fd.get('force') ? '1' : '',
-    };
-    const res = await fetch('/api/operations/seed-patterns', {
+    const r = await submitJson('/api/operations/seed-patterns', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: {
+        version: String(fd.get('version') ?? ''),
+        patterns_file: String(fd.get('patterns_file') ?? ''),
+        no_embed: fd.get('no_embed') ? '1' : '',
+        force: fd.get('force') ? '1' : '',
+      },
     });
-    const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      showFlash(data.message ?? 'Seed patterns started.', 'success');
-      showJobStarted(data.job_id, 'patterns');
+    const data = r.data as { message?: string; job_id?: number };
+    if (r.ok) {
+      flash(data.message ?? 'Seed patterns started.');
+      showJobStarted(data.job_id ?? null, 'patterns');
     } else {
-      showFlash(data.error ?? 'Seed patterns failed.', 'error');
+      flash(r.error!, { error: true });
     }
   });
 
@@ -600,23 +588,21 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const body: Record<string, string> = {
-      output: String(fd.get('output') ?? ''),
-      bundle_passphrase_env: String(fd.get('bundle_passphrase_env') ?? ''),
-    };
-    const res = await fetch('/api/operations/backup', {
+    const r = await submitJson('/api/operations/backup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: {
+        output: String(fd.get('output') ?? ''),
+        bundle_passphrase_env: String(fd.get('bundle_passphrase_env') ?? ''),
+      },
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      showFlash(data.error ?? 'Backup failed.', 'error');
+    const data = r.data as { message?: string; job_id?: string; output?: string };
+    if (!r.ok) {
+      flash(r.error!, { error: true });
       return;
     }
 
-    showFlash(data.message ?? 'Backup started.', 'success');
-    const jobId: string = data.job_id;
+    flash(data.message ?? 'Backup started.');
+    const jobId: string = String(data.job_id ?? '');
     const outputPath: string = data.output ?? '';
 
     const logContainer = document.querySelector('[data-testid="backup-log-container"]') as HTMLElement | null;
@@ -645,11 +631,11 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
           downloadEl.textContent = `Backup saved: ${outputPath}`;
           downloadEl.removeAttribute('hidden');
         }
-        showFlash(ok ? `Backup complete: ${outputPath}` : 'Backup failed — check log.', ok ? 'success' : 'error');
+        flash(ok ? `Backup complete: ${outputPath}` : 'Backup failed — check log.', ok ? {} : { error: true });
       }
       if (parsed.error) {
         es.close();
-        showFlash(String(parsed.error), 'error');
+        flash(String(parsed.error), { error: true });
       }
     };
     es.onerror = () => {
@@ -665,45 +651,40 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     const fileInput = form.querySelector('[data-testid="restore-file-input"]') as HTMLInputElement;
     const fileObj = fileInput?.files?.[0];
     if (!fileObj) {
-      showFlash('Please select a file.', 'error');
+      flash('Please select a file.', { error: true });
       return;
     }
     const MAX_BYTES = 500 * 1024 * 1024;
     if (fileObj.size > MAX_BYTES) {
-      showFlash('File exceeds 500MB limit.', 'error');
+      flash('File exceeds 500MB limit.', { error: true });
       return;
     }
     const uploadFd = new FormData();
     uploadFd.append('file', fileObj);
-    showFlash('Uploading backup bundle...', 'success');
+    flash('Uploading backup bundle...');
     const btn = form.querySelector('[data-testid="restore-button"]') as HTMLButtonElement;
     if (btn) btn.disabled = true;
     try {
-      const res = await withStepUp(() => fetch('/api/operations/restore', {
-        method: 'POST',
-        body: uploadFd,
-      }));
-      const data = await res.json().catch(() => ({}));
+      const r = await submitJson('/api/operations/restore', { method: 'POST', body: uploadFd });
+      const data = r.data as { job_id?: number | string; safety_backup?: string };
       const resultEl = document.querySelector('[data-testid="restore-result"]') as HTMLElement | null;
       const resultContent = document.querySelector('[data-testid="restore-result-content"]') as HTMLElement | null;
-      if (res.ok) {
+      if (r.ok) {
         if (resultEl && resultContent) {
           resultContent.textContent = JSON.stringify(data, null, 2);
           resultEl.removeAttribute('hidden');
         }
-        showFlash(
-          `Restore started (job ${data.job_id}). Safety backup: ${data.safety_backup ?? 'n/a'}`,
-          'success'
-        );
+        flash(`Restore started (job ${data.job_id}). Safety backup: ${data.safety_backup ?? 'n/a'}`);
       } else {
         if (resultEl && resultContent) {
-          resultContent.textContent = data.detail ?? data.error ?? 'Unknown error';
+          // OBJ-RISK fix: use extractApiError instead of raw data.detail to avoid [object Object]
+          resultContent.textContent = extractApiError(r.data, 'Unknown error');
           resultEl.removeAttribute('hidden');
         }
-        showFlash(data.detail ?? data.error ?? 'Restore upload failed.', 'error');
+        flash(r.error!, { error: true });
       }
     } catch (err) {
-      showFlash('Restore upload failed: ' + String(err), 'error');
+      flash('Restore upload failed: ' + String(err), { error: true });
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -714,33 +695,31 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     e.preventDefault();
     const form = e.currentTarget as HTMLFormElement;
     const fd = new FormData(form);
-    const body: Record<string, unknown> = {
-      name: fd.get('name'),
-      repo_base_dir: fd.get('repo_base_dir') ?? '',
-      dry_run: fd.get('dry_run') ? '1' : '',
-      repo_map_urls: [],
-      repo_map_paths: [],
-    };
-    const res = await fetch('/api/operations/apply-preset', {
+    const r = await submitJson('/api/operations/apply-preset', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: {
+        name: fd.get('name'),
+        repo_base_dir: fd.get('repo_base_dir') ?? '',
+        dry_run: fd.get('dry_run') ? '1' : '',
+        repo_map_urls: [],
+        repo_map_paths: [],
+      },
     });
-    const data = await res.json().catch(() => ({}));
+    const data = r.data as { dry_run?: boolean; preview?: string; message?: string };
     const resultEl = document.querySelector('[data-testid="preset-result"]') as HTMLElement | null;
     const resultContent = document.querySelector('[data-testid="preset-result-content"]') as HTMLElement | null;
-    if (res.ok) {
+    if (r.ok) {
       if (data.dry_run && resultEl && resultContent) {
         resultContent.textContent = data.preview ?? '(no output)';
         resultEl.removeAttribute('hidden');
       }
-      showFlash(data.message ?? `Preset '${fd.get('name')}' applied.`, 'success');
+      flash(data.message ?? `Preset '${fd.get('name')}' applied.`);
     } else {
       if (resultEl && resultContent) {
-        resultContent.textContent = data.error ?? 'Unknown error';
+        resultContent.textContent = r.error!;
         resultEl.removeAttribute('hidden');
       }
-      showFlash(data.error ?? 'Apply preset failed.', 'error');
+      flash(r.error!, { error: true });
     }
   });
 </script>

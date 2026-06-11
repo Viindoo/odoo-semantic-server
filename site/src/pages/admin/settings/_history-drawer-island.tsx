@@ -2,7 +2,8 @@
 // History Drawer React island — standalone slide-out history panel (WI-10)
 // Used by [category].astro as a per-key history trigger.
 import { useState, useEffect } from 'react';
-import { withStepUp } from '../../../lib/mfaStepUp';
+import { submitJson } from '../../../lib/apiClient';
+import { flash } from '../../../lib/flash';
 
 interface HistoryEntry {
   id: number;
@@ -16,17 +17,6 @@ interface HistoryEntry {
 interface Props {
   settingKey: string;
   triggerSelector?: string; // CSS selector of external button that opens this drawer
-}
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError ? 'bg-red-50 border-red-300 text-red-800' : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
 }
 
 function extractValue(v: unknown): unknown {
@@ -67,39 +57,32 @@ export default function HistoryDrawerIsland({ settingKey, triggerSelector }: Pro
     if (!open) return;
     setLoading(true);
     setError(null);
-    fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/history?limit=50`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((data: unknown) => {
-        setEntries(Array.isArray(data) ? data as HistoryEntry[] : []);
-        setLoading(false);
-      })
-      .catch((e: unknown) => {
-        setError(String(e));
-        setLoading(false);
-      });
+    submitJson<HistoryEntry[]>(
+      `/api/admin/settings/${encodeURIComponent(settingKey)}/history?limit=50`,
+      { method: 'GET', stepUp: false },
+    ).then((r) => {
+      if (r.ok) setEntries(Array.isArray(r.data) ? r.data : []);
+      else setError(r.error ?? `HTTP ${r.status}`);
+      setLoading(false);
+    });
   }, [open, settingKey]);
 
   const handleUndo = async () => {
     if (!confirm(`Undo last change to "${settingKey}"? This reverts to the previous value.`)) return;
     setUndoing(true);
     try {
-      const res = await withStepUp(() => fetch(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
+      const r = await submitJson(`/api/admin/settings/${encodeURIComponent(settingKey)}/undo`, {
         method: 'POST',
-        credentials: 'include',
-      }));
-      if (res.ok) {
+      });
+      if (r.ok) {
         flash(`Setting ${settingKey} reverted to previous value.`);
         setOpen(false);
         setTimeout(() => location.reload(), 600);
       } else {
-        const d = await res.json().catch(() => ({})) as { detail?: string };
-        flash(d.detail ?? 'Undo failed.', true);
+        flash(r.error!, { error: true });
       }
     } catch (e: unknown) {
-      flash(String(e), true);
+      flash(String(e), { error: true });
     } finally {
       setUndoing(false);
     }

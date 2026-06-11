@@ -131,6 +131,8 @@ try {
 </AdminLayout>
 
 <script>
+  import { submitJson } from '../../lib/apiClient';
+
   // Disable TOTP form handler
   const disableForm = document.querySelector('[data-testid="disable-totp-form"]');
   if (disableForm) {
@@ -144,21 +146,21 @@ try {
       if (btn) { btn.disabled = true; btn.textContent = 'Disabling…'; }
       if (errorEl) errorEl.setAttribute('hidden', '');
 
-      const res = await fetch('/api/auth/totp/disable', {
+      const r = await submitJson('/api/auth/totp/disable', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: fd.get('password'), code: fd.get('code') }),
+        body: { password: fd.get('password'), code: fd.get('code') },
+        stepUp: false,
       });
-      const data = await res.json().catch(() => ({}));
 
-      if (res.ok) {
+      if (r.ok) {
         window.location.reload();
       } else {
         if (errorEl) {
+          const d = r.data as { error?: string } | null;
           const msg =
-            data.error === 'invalid_credentials' ? 'Incorrect password.' :
-            data.error === 'invalid_code' ? 'Invalid 6-digit code. Check your authenticator app.' :
-            data.error ?? 'Failed to disable 2FA.';
+            (d as { error?: string } | null)?.error === 'invalid_credentials' ? 'Incorrect password.' :
+            (d as { error?: string } | null)?.error === 'invalid_code' ? 'Invalid 6-digit code. Check your authenticator app.' :
+            r.error!;
           errorEl.textContent = msg;
           errorEl.removeAttribute('hidden');
         }

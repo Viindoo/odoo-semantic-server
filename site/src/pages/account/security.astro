@@ -150,18 +150,8 @@ try {
 </AccountLayout>
 
 <script>
-  function showFlash(msg: string, type: 'success' | 'error' = 'success') {
-    const banner = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-    if (!banner) return;
-    banner.textContent = msg;
-    banner.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-      type === 'error'
-        ? 'bg-red-100 text-red-800 border-red-300'
-        : 'bg-green-100 text-green-800 border-green-300'
-    }`;
-    banner.removeAttribute('hidden');
-    setTimeout(() => banner.setAttribute('hidden', ''), 5000);
-  }
+  import { flash } from '../../lib/flash';
+  import { submitJson } from '../../lib/apiClient';
 
   // Disable TOTP form handler (mirrors admin/security.astro)
   const disableForm = document.querySelector('[data-testid="disable-totp-form"]') as HTMLFormElement | null;
@@ -176,22 +166,23 @@ try {
       if (btn) { btn.disabled = true; btn.textContent = 'Disabling…'; }
       if (errorEl) errorEl.setAttribute('hidden', '');
 
-      const res = await fetch('/api/auth/totp/disable', {
+      const r = await submitJson('/api/auth/totp/disable', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: fd.get('password'), code: fd.get('code') }),
+        // Not a fresh-MFA gate — it re-authenticates via password+code in the
+        // body, so no step-up wrap (matches admin/security.astro + pre-refactor).
+        stepUp: false,
+        body: { password: fd.get('password'), code: fd.get('code') },
       });
-      const data = await res.json().catch(() => ({}));
 
-      if (res.ok) {
-        showFlash('Two-factor authentication disabled.', 'success');
+      if (r.ok) {
+        flash('Two-factor authentication disabled.');
         setTimeout(() => window.location.reload(), 800);
       } else {
         if (errorEl) {
           const msg =
-            data.error === 'invalid_credentials' ? 'Incorrect password.' :
-            data.error === 'invalid_code' ? 'Invalid 6-digit code. Check your authenticator app.' :
-            data.error ?? 'Failed to disable 2FA.';
+            (r.data as { error?: string }).error === 'invalid_credentials' ? 'Incorrect password.' :
+            (r.data as { error?: string }).error === 'invalid_code' ? 'Invalid 6-digit code. Check your authenticator app.' :
+            r.error!;
           errorEl.textContent = msg;
           errorEl.removeAttribute('hidden');
         }

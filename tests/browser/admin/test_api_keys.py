@@ -154,3 +154,42 @@ class TestApiKeysPage:
         # fallback path is browser-config-dependent and tested manually.
         clipboard = page.evaluate("() => navigator.clipboard.readText()")
         assert clipboard == revealed
+
+    def test_save_plan_prompts_mfa_step_up_not_object_object(
+        self, astro_server, clean_browser, page
+    ):
+        """Business rule (ADR-0043 + ADR-0048): assigning a plan to a key is a
+        fresh-MFA-gated action. When the session's MFA is stale, clicking "Save"
+        on the plan selector MUST prompt the step-up modal so the admin can
+        re-verify — it must NEVER silently no-op nor surface a garbled
+        "[object Object]" banner (the original bug: a bare fetch rendered the 403
+        ``detail`` object verbatim and never opened the modal).
+
+        Protects the user-facing behaviour, not the implementation: it fails if a
+        future change drops the submitJson/withStepUp wrapping so the modal stops
+        opening, or if any error is rendered as "[object Object]".
+        """
+        # Arrange — create a key so its row exposes the plan selector + Save btn.
+        page.goto(f"{astro_server}{API_KEYS_URL}")
+        page.wait_for_load_state("load")
+        page.get_by_test_id("generate-key-button").click()
+        page.wait_for_timeout(300)
+        page.get_by_test_id("api-key-name-input").fill("plan-stepup-key")
+        page.get_by_test_id("create-key-button").click()
+        expect(page.get_by_test_id("new-key-banner")).to_be_visible(timeout=5000)
+
+        # Reload so the new key appears in the table with its plan-assign row,
+        # and give the StepUpMfaModal island time to hydrate.
+        page.reload()
+        page.wait_for_load_state("load")
+        row = page.locator(".plan-assign-row").first
+        expect(row).to_be_visible(timeout=5000)
+        page.wait_for_timeout(1000)
+
+        # Act — pick a plan (index 1 = first real plan, past the placeholder) and Save.
+        row.locator(".plan-select").select_option(index=1)
+        row.locator(".save-plan-btn").click()
+
+        # Assert — the fresh-MFA gate prompts step-up, and nothing is garbled.
+        expect(page.get_by_test_id("step-up-modal")).to_be_visible(timeout=5000)
+        assert "[object Object]" not in page.locator("body").inner_text()

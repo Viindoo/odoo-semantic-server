@@ -41,6 +41,8 @@
  * It is a zero-render host — nothing is visible until a step-up is requested.
  */
 
+import { extractApiError } from './apiError';
+
 // ---------------------------------------------------------------------------
 // Sentinel
 // ---------------------------------------------------------------------------
@@ -88,9 +90,10 @@ export async function stepUpVerify(
       body: JSON.stringify(payload),
     });
     if (res.ok) return { ok: true };
-    const data = await res.json().catch(() => ({})) as Record<string, unknown>;
-    const err = String(data.error ?? data.detail ?? `HTTP ${res.status}`);
-    return { ok: false, error: err };
+    const data = await res.json().catch(() => ({}));
+    // extractApiError handles string / object / pydantic-list detail shapes so a
+    // 422 (e.g. neither code nor backup_code) never surfaces "[object Object]".
+    return { ok: false, error: extractApiError(data, `HTTP ${res.status}`) };
   } catch (e: unknown) {
     return { ok: false, error: String(e) };
   }

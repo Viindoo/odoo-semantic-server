@@ -2,6 +2,7 @@
 // UsageDashboard React island — plan + quota usage + 6-month history.
 // IMPORTANT: use className= and htmlFor= (NOT class= or for=) — this is a .tsx React island.
 import { useEffect, useState } from 'react';
+import { submitJson } from '../../lib/apiClient';
 
 interface Plan {
   slug: string;
@@ -43,26 +44,19 @@ export default function UsageDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const loadUsage = () => {
-      fetch('/api/account/usage', { credentials: 'include' })
-        .then(async (res) => {
-          if (res.status === 401) {
-            window.location.href = '/login?return=/account/usage';
-            return null;
-          }
-          if (!res.ok) {
-            throw new Error(`Request failed (${res.status})`);
-          }
-          return res.json() as Promise<UsageResponse>;
-        })
-        .then((d) => {
-          if (d) {
-            if (d.error) setError(d.error);
-            else setData(d);
-          }
-        })
-        .catch((e: unknown) => setError(String(e)))
-        .finally(() => setLoading(false));
+    const loadUsage = async () => {
+      const r = await submitJson<UsageResponse>('/api/account/usage', { method: 'GET', stepUp: false });
+      if (r.status === 401) {
+        window.location.href = '/login?return=/account/usage';
+        return;
+      }
+      if (r.ok) {
+        if (r.data.error) setError(r.data.error);
+        else setData(r.data);
+      } else {
+        setError(r.error ?? `Request failed (${r.status})`);
+      }
+      setLoading(false);
     };
 
     loadUsage();

@@ -4,27 +4,13 @@
 // Uses the same widget vocabulary as _setting-editor-island.tsx (admin) but with
 // the tenant endpoint contract (effective_value / tenant_override / system_default).
 import { useState, useCallback } from 'react';
-import { withStepUp } from '../../../lib/mfaStepUp';
+import { submitJson } from '../../../lib/apiClient';
+import { flash } from '../../../lib/flash';
 import type { TenantSettingDef } from '../../../lib/settings-types';
 
 interface Props {
   tenantId: number;
   initialSettings: TenantSettingDef[];
-}
-
-// ─── Flash helper ─────────────────────────────────────────────────────────────
-
-function flash(msg: string, isError = false) {
-  const el = document.querySelector('[data-testid="flash-banner"]') as HTMLElement | null;
-  if (!el) return;
-  el.textContent = msg;
-  el.className = `fixed top-4 right-4 z-50 px-5 py-3 rounded-xl shadow-lg text-sm font-medium border ${
-    isError
-      ? 'bg-red-50 border-red-300 text-red-800'
-      : 'bg-green-50 border-green-300 text-green-800'
-  }`;
-  el.hidden = false;
-  setTimeout(() => { el.hidden = true; }, 4000);
 }
 
 // ─── Duration helpers ─────────────────────────────────────────────────────────
@@ -258,19 +244,14 @@ function TenantHistoryDrawer({
 
   useState(() => {
     setLoading(true);
-    fetch(
+    submitJson<HistoryEntry[]>(
       `/api/tenants/${tenantId}/settings/${encodeURIComponent(settingKey)}/history?limit=50`,
-      { credentials: 'include' },
-    )
-      .then((r) => r.json())
-      .then((data) => {
-        setEntries(Array.isArray(data) ? data : []);
-        setLoading(false);
-      })
-      .catch((e) => {
-        setError(String(e));
-        setLoading(false);
-      });
+      { method: 'GET', stepUp: false },
+    ).then((r) => {
+      if (r.ok) setEntries(Array.isArray(r.data) ? r.data : []);
+      else setError(r.error ?? `HTTP ${r.status}`);
+      setLoading(false);
+    });
   });
 
   const fmt = (v: unknown) => {
@@ -391,18 +372,14 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
     setSaving((prev) => ({ ...prev, [s.key]: true }));
     setErrors((prev) => ({ ...prev, [s.key]: '' }));
     try {
-      const res = await withStepUp(() => fetch(
+      const r = await submitJson(
         `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ value, reason }),
-        },
-      ));
-      if (!res.ok) {
-        const d = (await res.json().catch(() => ({}))) as { detail?: string };
-        throw new Error(d.detail ?? `HTTP ${res.status}`);
+        { method: 'PATCH', body: { value, reason } },
+      );
+      if (!r.ok) {
+        setErrors((prev) => ({ ...prev, [s.key]: r.error! }));
+        setSaving((prev) => ({ ...prev, [s.key]: false }));
+        return;
       }
       flash(`Setting ${s.key} saved. Effective in ≤60 s.`);
       // Optimistically update local state so the card reflects the new override
@@ -436,16 +413,15 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
       return;
     setResettingKey(s.key);
     try {
-      const res = await withStepUp(() => fetch(
+      // Content-Type included so Astro's checkOrigin guard (dev/preview/CI
+      // proxy) doesn't 403 the reset before it reaches FastAPI. Harmless in
+      // prod (nginx bypasses the proxy); the reset POST carries no body.
+      const r = await submitJson(
         `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}/reset`,
-        // Content-Type required so Astro's checkOrigin guard (dev/preview/CI
-        // proxy) doesn't 403 the reset before it reaches FastAPI. Harmless in
-        // prod (nginx bypasses the proxy); the reset POST carries no body.
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include' },
-      ));
-      if (!res.ok) {
-        const d = (await res.json().catch(() => ({}))) as { detail?: string };
-        flash(d.detail ?? 'Reset failed.', true);
+        { method: 'POST' },
+      );
+      if (!r.ok) {
+        flash(r.error!, { error: true });
       } else {
         flash(`Setting ${s.key} reset to system default.`);
         // Fetch the fresh effective/system values so we reflect any admin changes
@@ -456,18 +432,14 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
         let freshSystemDefault: unknown = s.system_default;
         let freshEffectiveValue: unknown = s.system_default;
         try {
-          const freshRes = await fetch(
+          const freshR = await submitJson<{ system_value?: unknown; effective_value?: unknown }>(
             `/api/tenants/${tenantId}/settings/${encodeURIComponent(s.key)}`,
-            { credentials: 'include' },
+            { method: 'GET', stepUp: false },
           );
-          if (freshRes.ok) {
-            const freshData = await freshRes.json() as {
-              system_value?: unknown;
-              effective_value?: unknown;
-            };
+          if (freshR.ok) {
             // system_value is the live system-level default (no tenant context)
-            if ('system_value' in freshData) freshSystemDefault = freshData.system_value;
-            if ('effective_value' in freshData) freshEffectiveValue = freshData.effective_value;
+            if ('system_value' in freshR.data) freshSystemDefault = freshR.data.system_value;
+            if ('effective_value' in freshR.data) freshEffectiveValue = freshR.data.effective_value;
           }
         } catch { /* fallback to snapshot values already set above */ }
         setSettings((prev) =>
@@ -485,7 +457,7 @@ export default function TenantSettingsIsland({ tenantId, initialSettings }: Prop
         );
       }
     } catch (e: unknown) {
-      flash(String(e), true);
+      flash(String(e), { error: true });
     } finally {
       setResettingKey(null);
     }
