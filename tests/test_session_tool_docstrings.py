@@ -15,9 +15,17 @@ importing the strings) keep the guard independent of how the docstrings are buil
 import re
 from pathlib import Path
 
+# The session-pin tool bodies (set_active_version / set_active_profile) moved to
+# src/mcp/tools/session_tools.py in the Phase 3 server.py split, while the
+# RequiredOdooVersion = Annotated[...] declaration stays in server.py. Read both
+# so the source-text docstring guards below find the defs wherever they live; the
+# intent (catch R-A1 wording regressions) is location-agnostic.
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src" / "mcp"
 SERVER_SRC = (
-    Path(__file__).resolve().parent.parent / "src" / "mcp" / "server.py"
-).read_text(encoding="utf-8")
+    (_SRC_ROOT / "server.py").read_text(encoding="utf-8")
+    + "\n"
+    + (_SRC_ROOT / "tools" / "session_tools.py").read_text(encoding="utf-8")
+)
 
 
 def _slice_function(name: str) -> str:

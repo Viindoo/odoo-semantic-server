@@ -14,8 +14,6 @@ from contextvars import ContextVar
 from typing import Annotated
 
 from fastmcp import FastMCP
-from fastmcp.tools.tool import ToolResult
-from mcp.types import TextContent
 from neo4j import GraphDatabase
 from neo4j.exceptions import ClientError
 from pydantic import Field
@@ -62,7 +60,15 @@ from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for externa
     format_next_step,
     hints_for,
 )
-from src.mcp.inspect import _entity_lookup, _model_inspect, _module_inspect, _profile_inspect
+from src.mcp.inspect import (
+    # The inspect-tool wrappers moved to tools/inspect_tools.py (Phase 3) and
+    # import the discriminator impls (_model_inspect / _module_inspect /
+    # _entity_lookup / _profile_inspect) directly from src.mcp.inspect. Only
+    # _module_inspect needs re-exporting here: test_cross_tenant_isolation.py
+    # imports it via src.mcp.server. `X as X` marks the intentional re-export so
+    # ruff keeps F401 active for genuinely-unused imports elsewhere.
+    _module_inspect as _module_inspect,
+)
 from src.mcp.orm import (
     _ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY,
     OrmQueryTimeout,
@@ -7310,682 +7316,20 @@ def find_override_point(
     return _find_override_point(model, method, odoo_version, to_version=to_version)
 
 
-# Wave 1 — @mcp.tool(**READONLY_TOOL_KWARGS) wrappers for the 7 new tools (ADR-0023 §5).
-# TRIGGER docstrings keep EN + VI for router accuracy (ADR-0012 §2 exception).
 # ---------------------------------------------------------------------------
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload_neo4j
-def describe_module(
-    name: str,
-    odoo_version: RequiredOdooVersion,
-    profile_name: str | None = None,
-) -> ToolResult:
-    """Return a full architecture overview of an Odoo module (manifest +
-    model/view/JS counts).
-
-    TRIGGER when: "what does module viin_sale do", "describe sale_management",
-    "overview of website_sale", "module X làm gì", "tóm tắt module Y"
-    PREFER over: check_module_exists when caller needs module contents
-    (models, views, JS), not just YES/NO. Also prefer over model_inspect
-    when the question is about a module overview, not a single model.
-    SKIP when: caller only needs YES/NO — use check_module_exists (faster).
-
-    Args:
-        name: Module technical name (e.g. 'sale', 'viin_sale').
-        profile_name: Optional profile filter.
-
-    Returns:
-        Tree: Manifest (Depends, Edition, Version), Defines models,
-        Extends models, Views (by type), JS patches.
-
-    Example:
-        describe_module("viin_sale", "17.0")
-        → Manifest:
-            ├─ Depends: sale, account, viin_base
-            ├─ Edition: viindoo
-            ├─ Defines models: 2
-            ├─ Extends models: 5
-            ├─ Views: 12 (8 form, 3 tree, 1 search)
-            └─ JS patches: 3
-
-    See also: odoo://{version}/module/{name}
-    """
-    # WI-5 (#261/#265-Obs4): uniform raw-text output. describe_module was the last
-    # tool wiring the M10.5 Wave-B dual channel (output_schema + structured_content);
-    # that lone structured channel is the #261 not-found throw and the #265-Obs4
-    # serialization inconsistency. Emit text only, like every sibling tool
-    # (ADR-0023 §1: the plain-text tree IS the contract). The unwired
-    # _describe_module_structured companion + DescribeModuleOutput DTO have been
-    # removed (L9) now that no consumer references them.
-    text = _describe_module(name, odoo_version, profile_name)
-    return ToolResult(
-        content=[TextContent(type="text", text=text)],
-        structured_content=None,
-    )
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload_neo4j
-def model_inspect(
-    model: str,
-    method: str,
-    odoo_version: RequiredOdooVersion,
-    profile_name: str | None = None,
-    *,
-    field: str | None = None,
-    method_name: str | None = None,
-    start_index: int = 0,
-    limit: int = 200,
-    from_module: str | None = None,
-    kind: str | None = None,
-    view_type: str | None = None,
-) -> ToolResult:
-    """Method-discriminator superset for model-scoped reads. See ADR-0028.
-
-    TRIGGER when: inspecting one model from multiple angles (summary, fields,
-    methods, views) — fewer round trips than separate calls.
-    Also: "kiểm tra một model nhiều mặt", "xem mọi thông tin của model X"
-    PREFER over: separate per-view calls when you know the sub-view; one call
-    with method= is friendlier for LLM context windows.
-    SKIP when: cross-model entity dispatch by kind — use entity_lookup.
-
-    Args:
-        model: Dotted model name, e.g. 'sale.order'.
-        method: summary | fields | methods | views | field | method | extenders.
-            'field' needs field=. 'method' needs method_name=.
-            'extenders' paginates the full extending-module list (use after
-            summary shows "and N more" in Extended by).
-        profile_name: Profile filter (inheritance-resolved). Default: all.
-        field: Required for method='field'. readonly reflects Python def only.
-        method_name: Required for method='method'.
-        start_index: Pagination cursor for fields/methods/views/extenders.
-        limit: Rows per page (cap: 50 fields, 20 methods/views/extenders,
-            10 JS patches). Page via start_index, not limit.
-        from_module: Filter to rows in this module (summary/fields/field).
-        kind: Filter fields by ttype, e.g. 'many2one' — fields only.
-        view_type: Filter views, e.g. 'form'/'tree'/'list' — views only.
-            'list' is the v18+ alias for 'tree'.
-    """
-    text = _model_inspect(
-        model=model,
-        method=method,
-        odoo_version=odoo_version,
-        profile_name=profile_name,
-        field=field,
-        method_name=method_name,
-        api_key_id=_get_api_key_id(),
-        start_index=start_index,
-        limit=limit,
-        from_module=from_module,
-        kind=kind,
-        view_type=view_type,
-    )
-    return ToolResult(content=[TextContent(type="text", text=text)])
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload_neo4j
-def module_inspect(
-    name: str,
-    method: str,
-    odoo_version: RequiredOdooVersion,
-    profile_name: str | None = None,
-    start_index: int = 0,
-    limit: int = 200,
-    view_type: str | None = None,
-    bound_model: str | None = None,
-    era: str | None = None,
-    target: str | None = None,
-) -> ToolResult:
-    """Method-discriminator superset for module-scoped reads. See ADR-0028.
-
-    TRIGGER when: you need to inspect one module from multiple angles —
-    summary then views then OWL components — reducing round trips vs
-    multiple separate module_inspect or describe_module calls.
-    Also: "khám phá nội dung module X", "module X chứa những gì"
-    PREFER over: chaining describe_module + multiple module_inspect calls
-    when the discriminator method= captures the exact sub-view needed.
-    SKIP when: you need only a summary — use describe_module directly.
-
-    Args:
-        name: Technical module name, e.g. 'sale', 'website_sale'.
-        method: One of summary | views | owl | qweb | js | dependencies.
-            'fields' and 'methods' return a guidance stub (model required).
-            'dependencies' returns the transitive DEPENDS_ON closure with repo
-            info and topological load order (B2, ADR-0028 consolidation).
-        profile_name: Optional profile filter (inheritance-resolved via
-            ancestor chain). Default None = all profiles.
-        start_index: Pagination cursor for views/owl/qweb/js (zero-based).
-        limit: Max rows per page for views/owl/qweb/js (default 200).
-        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
-            'list' is the v18+ alias for 'tree'.
-        bound_model: Filter OWL components bound to a model — method='owl' only.
-        era: era1|era2|era3 — filter JS patches by era — method='js' only.
-        target: filter JS patches by patched target — method='js' only.
-    """
-    text = _module_inspect(
-        name=name,
-        method=method,
-        odoo_version=odoo_version,
-        profile_name=profile_name,
-        api_key_id=_get_api_key_id(),
-        start_index=start_index,
-        limit=limit,
-        view_type=view_type,
-        bound_model=bound_model,
-        era=era,
-        target=target,
-    )
-    return ToolResult(content=[TextContent(type="text", text=text)])
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-async def entity_lookup(
-    kind: str,
-    *,
-    odoo_version: RequiredOdooVersion,
-    profile_name: str | None = None,
-    model: str | None = None,
-    field: str | None = None,
-    method_name: str | None = None,
-    xmlid: str | None = None,
-    name: str | None = None,
-    from_module: str | None = None,
-) -> ToolResult:
-    """Unified single-entity lookup by kind discriminator. See ADR-0028.
-
-    TRIGGER when: kind of entity is known but you're unsure which method=
-    to use on model_inspect — use kind= to dispatch without knowing whether
-    to call model_inspect, module_inspect, or describe_module.
-    Also: "tra cứu một entity cụ thể khi biết kind", "tìm field/method/view"
-    PREFER over: guessing the right superset tool + method combination;
-    entity_lookup normalises the dispatch and returns the same tree text.
-    SKIP when: the entity kind and tool are already known — call model_inspect,
-    module_inspect, or describe_module directly for a cleaner trace.
-
-    Args:
-        kind: One of model | field | method | view | module | pattern.
-        profile_name: Optional profile filter.
-        model: Required for kind in {model, field, method}.
-        field: Required for kind='field'.
-        method_name: Required for kind='method'.
-        xmlid: Required for kind='view'.
-        name: Required for kind in {module, pattern}.
-        from_module: Optional module filter — restrict results to rows declared
-            in this module only (kind='model' and kind='field').
-
-    Returns:
-        Tree text identical to the underlying tool's output.
-
-    Example:
-        entity_lookup("field", model="sale.order", field="amount_total", odoo_version="17.0")
-        → same as model_inspect(model="sale.order", method="field",
-            field="amount_total", odoo_version="17.0")
-    """
-    # #227: entity_lookup(kind='pattern') routes to _suggest_pattern, whose
-    # embedder.embed() blocks. Capture the api_key_id ContextVar on the event
-    # loop (it does not propagate into a raw worker thread), then run the whole
-    # dispatch off-loop so a slow embed never freezes the server.
-    api_key_id = _get_api_key_id()
-    # Pre-embed the pattern intent on the loop through the SAME bounded path as
-    # suggest_pattern (semaphore + 30s query timeout) so this discriminator
-    # route can't pin an unbounded worker on the 1200s batch client. Any failure
-    # leaves _query_vec=None → _suggest_pattern's sync path reports the error.
-    _embedder = None
-    _query_vec = None
-    if kind == "pattern" and name and name.strip():
-        from src.embedding.instructions import INSTRUCT_NL_TO_CODE
-        try:
-            _embedder = _get_embedder()
-            instruct = getattr(_embedder, "query_instruction", INSTRUCT_NL_TO_CODE)
-            _query_vec = await _embed_query(_embedder, instruct, name)
-        except EmbedOverloaded as e:
-            return ToolResult(content=[TextContent(type="text", text=f"entity_lookup: {e}")])
-        except Exception:
-            _embedder = None
-            _query_vec = None
-    # entity_lookup is async (it pre-embeds the pattern intent on the loop before
-    # the to_thread hop), so it CANNOT be wrapped by the sync-bodied @offload_neo4j
-    # (design §6 embed-aware exception). Instead we add a SCOPED `except
-    # OrmQueryTimeout` around just the Neo4j dispatch: the converted resolvers
-    # (_resolve_field / _resolve_method / _resolve_view / _resolve_model /
-    # _describe_module) now RAISE OrmQueryTimeout on a tx-timeout, which would
-    # otherwise escape this async handler as a protocol-level isError. Record the
-    # metric once here + return the clean message. (Exception: kind='model' →
-    # _resolve_model self-catches and returns the clean string already counted as
-    # "model_inspect", so this catch never fires for model — no double-count.)
-    # kind='pattern' routes to _suggest_pattern (PR-2 scope) which does not raise
-    # OrmQueryTimeout, so this catch fires only for field/method/view/module.
-    try:
-        text = await asyncio.to_thread(
-            _entity_lookup,
-            kind=kind,
-            odoo_version=odoo_version,
-            profile_name=profile_name,
-            model=model,
-            field=field,
-            method_name=method_name,
-            xmlid=xmlid,
-            name=name,
-            api_key_id=api_key_id,
-            from_module=from_module,
-            _embedder=_embedder,
-            _query_vec=_query_vec,
-        )
-    except OrmQueryTimeout as exc:
-        _metric_nonorm_query_timeout("entity_lookup")
-        return ToolResult(
-            content=[TextContent(type="text", text=exc.user_message)]
-        )
-    return ToolResult(content=[TextContent(type="text", text=text)])
-
-
-# ---------------------------------------------------------------------------
-# Wave E — Session-context tools (ADR-0029, M11 WI-E3)
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool(**MUTATING_TOOL_KWARGS)
-@offload
-def set_active_version(odoo_version: str) -> ToolResult:
-    """Pin the active Odoo version for this MCP session (ADR-0029 implicit context).
-
-    TRIGGER when: a single actor works one Odoo version for a while and wants the
-    'auto' convenience of dropping odoo_version= on subsequent calls.
-    PREFER over: passing odoo_version='17.0' to every individual tool call ONLY
-    when one actor drives this session; this scopes the version once per MCP
-    session with a 24h write-anchored idle TTL.
-    SKIP when: hopping between multiple versions mid-session, OR when concurrent
-    sub-agents / parallel sessions may share this MCP session — pass
-    odoo_version= explicitly to each call instead. The pin is single-actor
-    convenience and last-write-wins; concurrent actors sharing one session MUST
-    pass an explicit odoo_version= so each resolves its own version safely.
-
-    Args:
-        odoo_version: Concrete version string to pin, e.g. '17.0', '16.0'.
-            Sentinel values ('auto', 'default', 'latest', 'any', '') are
-            rejected here — you cannot pin a sentinel as the active version.
-            After a successful pin, a single-actor session may pass 'auto' as
-            odoo_version to reuse this pin (ADR-0029); under concurrency pass the
-            version explicitly instead.
-
-    Returns:
-        Confirmation receipt with the pinned version and TTL duration.
-    """
-    normalized = _session.normalize_version_arg(odoo_version)
-    if normalized is None:
-        return ToolResult(content=[TextContent(type="text",
-            text=(
-                f"Error: '{odoo_version}' is a sentinel placeholder, not a real version.\n"
-                "Pass a concrete version like '17.0' or '16.0'.\n"
-                "Use list_available_versions() to see what is indexed."
-            )
-        )])
-    # Sanity-check: confirm the version is actually indexed in Neo4j before pinning it.
-    try:
-        with _get_driver().session() as neo4j_session:
-            hit = neo4j_session.run(
-                f"MATCH (m:Module {{odoo_version: $v}}) WHERE {_scope_pred('m')} "
-                "RETURN m LIMIT 1",
-                v=normalized, **_scope(),
-            ).data()
-        if not hit:
-            # Version not indexed (for this tenant) — fetch available list for the error.
-            with _get_driver().session() as neo4j_session:
-                rows = neo4j_session.run(f"""
-                    MATCH (m:Module)
-                    WHERE {_scope_pred("m")}
-                    WITH DISTINCT m.odoo_version AS v
-                    WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
-                    RETURN v
-                    ORDER BY toInteger(split(v, '.')[0]) DESC,
-                             toInteger(split(v, '.')[1]) DESC
-                """, **_scope()).data()
-            available = [r["v"] for r in rows]
-            if available:
-                avail_str = ", ".join(available)
-                hint = f"Indexed versions: {avail_str}"
-            else:
-                hint = "No Odoo versions are indexed in this knowledge base yet."
-            return ToolResult(content=[TextContent(type="text",
-                text=(
-                    f"Error: version '{normalized}' is not indexed in this knowledge base.\n"
-                    f"├─ {hint}\n"
-                    "└─ Use list_available_versions() to see what is available."
-                )
-            )])
-    except Exception:
-        logger.warning("set_active_version: indexed-version check failed", exc_info=True)
-        return ToolResult(content=[TextContent(type="text",
-            text="Error checking indexed versions — try again shortly.")])
-    try:
-        persisted = _session.set_active_version_db(
-            _get_api_key_id(), normalized, _get_mcp_session_id()
-        )
-    except Exception:
-        logger.warning("set_active_version: persist failed", exc_info=True)
-        return ToolResult(content=[TextContent(type="text",
-            text="Error persisting the active version — try again shortly.")])
-    if not persisted:
-        # The write was skipped (non-numeric api_key_id). On authenticated HTTP
-        # this means the api_key_id never reached the tool body (#248) — fail
-        # loud instead of lying with a success receipt. On stdio / CLI (no
-        # X-API-Key header) it is the expected no-op.
-        if _http_request_has_api_key():
-            return ToolResult(content=[TextContent(type="text",
-                text=(
-                    "Error: could not persist the active version for this API key "
-                    "(session context unavailable).\n"
-                    "└─ Pass an explicit odoo_version= on each call until this is resolved."
-                )
-            )])
-        return ToolResult(content=[TextContent(type="text",
-            text=(
-                f"Note: '{normalized}' was not persisted — no API key in this "
-                "transport (stdio/CLI).\n"
-                "Pass odoo_version= explicitly; session pinning needs an HTTP API key."
-            )
-        )])
-    return ToolResult(content=[TextContent(type="text",
-        text=(
-            f"Active version set to '{normalized}' for this session (TTL 24h).\n"
-            "Pass odoo_version='auto' on subsequent calls to reuse this version "
-            "(the version-required tools no longer accept an omitted odoo_version; "
-            "'auto' resolves to this pin)."
-        )
-    )])
-
-
-@mcp.tool(**MUTATING_TOOL_KWARGS)
-@offload
-def set_active_profile(profile_name: str | None) -> ToolResult:
-    """Pin the active profile for this MCP session (ADR-0029 implicit context).
-
-    TRIGGER when: a single actor works exclusively within one customer profile
-    and wants profile filtering applied automatically to subsequent queries.
-    PREFER over: passing profile_name='my-erp-prod' to every tool call ONLY when
-    one actor drives this session; this scopes the profile once per MCP session
-    with a 24h write-anchored idle TTL.
-    SKIP when: comparing across multiple profiles mid-session, OR when concurrent
-    sub-agents / parallel sessions may share this MCP session — pass
-    profile_name= explicitly to each call instead. The pin is single-actor
-    convenience: concurrent same-session subagents that need DISTINCT profiles
-    must pass profile_name= explicitly per call, because the pin is shared per
-    (api_key_id, mcp_session_id) and is last-write-wins — one subagent's
-    set_active_profile clobbers another's. (Authz-safe regardless: the pinned
-    profile is re-validated at read time through the ADR-0034 tenant choke,
-    narrowing-only and fail-closed, so a clobber can only narrow a view, never
-    widen or leak — but it can silently return a narrower-than-intended result,
-    hence pass profile_name= explicitly when subagents diverge. See #279.)
-
-    Args:
-        profile_name: Profile name such as 'internal_17' or
-            'my-erp-prod'. Pass null / None to clear the active profile
-            (subsequent calls revert to cross-profile queries).
-
-    Returns:
-        Confirmation receipt with the pinned profile name and TTL duration.
-    """
-    # Validate the profile exists before pinning it (None = clear, always valid).
-    if profile_name is not None:
-        # SECURITY (ADR-0034): authorization gate BEFORE the existence check.
-        # _get_allowed_profiles() returns None for an admin / unrestricted key,
-        # or the list of profiles this API key's tenant may see. Pinning a
-        # profile outside that set would let a scoped key narrow onto — and read
-        # from — a profile it is not entitled to, so reject it here.
-        # _get_allowed_profiles() touches the DB (choke-point query), so wrap it:
-        # a DB error here must surface as a structured ToolResult error, not a
-        # raw trace. Authz semantics unchanged (None=admin→allow; else reject if
-        # profile_name not in allowed).
-        try:
-            allowed = _get_allowed_profiles()
-        except Exception:
-            logger.warning("set_active_profile: authorization check failed", exc_info=True)
-            return ToolResult(content=[TextContent(type="text",
-                text="Error checking profile authorization — try again shortly.")])
-        if allowed is not None and profile_name not in allowed:
-            return ToolResult(content=[TextContent(type="text",
-                text=(
-                    f"Error: profile '{profile_name}' is not available to this "
-                    "API key.\n"
-                    "└─ Use list_available_profiles() to see what you can pin."
-                )
-            )])
-        try:
-            with _checkout_pg() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM profiles WHERE name=%s", (profile_name,))
-                    found = cur.fetchone()
-        except Exception:
-            logger.warning("set_active_profile: profile existence check failed", exc_info=True)
-            return ToolResult(content=[TextContent(type="text",
-                text="Error checking profiles — try again shortly.")])
-        if not found:
-            # Profile not registered — list available ones for the error message.
-            try:
-                with _checkout_pg() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT name FROM profiles ORDER BY name")
-                        rows = cur.fetchall()
-                available = [r[0] for r in rows]
-            except Exception:
-                available = []
-            # INFO-LEAK guard (ADR-0034): a scoped (non-admin) key must not see
-            # profile names outside its tenant in the error hint. `allowed` is the
-            # authorized set computed above (None = admin / unrestricted → show
-            # all). Filter the listing to names this key may already see.
-            if allowed is not None:
-                available = [name for name in available if name in allowed]
-            if available:
-                avail_str = ", ".join(available)
-                hint = f"Registered profiles: {avail_str}"
-            else:
-                hint = "No profiles registered yet — use the admin UI or manager CLI."
-            return ToolResult(content=[TextContent(type="text",
-                text=(
-                    f"Error: profile '{profile_name}' is not registered.\n"
-                    f"├─ {hint}\n"
-                    "└─ Use list_available_profiles() to see what is available."
-                )
-            )])
-    try:
-        persisted = _session.set_active_profile_db(
-            _get_api_key_id(), profile_name, _get_mcp_session_id()
-        )
-    except Exception:
-        logger.warning("set_active_profile: persist failed", exc_info=True)
-        return ToolResult(content=[TextContent(type="text",
-            text="Error persisting the active profile — try again shortly.")])
-    if not persisted:
-        # Skipped write (non-numeric api_key_id). Loud on authenticated HTTP
-        # (#248 propagation gap), gentle no-op on stdio / CLI.
-        if _http_request_has_api_key():
-            return ToolResult(content=[TextContent(type="text",
-                text=(
-                    "Error: could not persist the active profile for this API key "
-                    "(session context unavailable).\n"
-                    "└─ Pass an explicit profile_name= on each call until this is resolved."
-                )
-            )])
-        return ToolResult(content=[TextContent(type="text",
-            text=(
-                "Note: active profile was not persisted — no API key in this "
-                "transport (stdio/CLI).\n"
-                "Pass profile_name= explicitly; session pinning needs an HTTP API key."
-            )
-        )])
-    if profile_name is None:
-        msg = (
-            "Active profile cleared for this session.\n"
-            "Subsequent tool calls will query across all profiles you can access."
-        )
-    else:
-        msg = (
-            f"Active profile set to '{profile_name}' for this session (TTL 24h).\n"
-            "Subsequent query tools that omit profile_name= will narrow to this "
-            "profile for this session (still bounded by your tenant scope)."
-        )
-    return ToolResult(content=[TextContent(type="text", text=msg)])
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
-def list_available_versions() -> ToolResult:
-    """List all Odoo versions indexed in this knowledge base.
-
-    TRIGGER when: unsure which Odoo versions are available, before calling
-    set_active_version(), or to validate a version string before querying.
-    PREFER over: guessing a version and getting an empty result; use this
-    first to confirm what is indexed before running model/field queries.
-    SKIP when: the version is already known (e.g. from a prior set_active_version
-    confirmation or from a model_inspect result header).
-
-    Returns:
-        Sorted list of indexed Odoo versions (newest first), e.g.:
-        Indexed Odoo versions (3 total):
-        ├─ 17.0
-        ├─ 16.0
-        └─ 15.0
-    """
-    with _get_driver().session() as neo4j_session:
-        rows = neo4j_session.run("""
-            MATCH (m:Module)
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
-            WITH DISTINCT m.odoo_version AS v
-            WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
-            RETURN v
-            ORDER BY toInteger(split(v, '.')[0]) DESC,
-                     toInteger(split(v, '.')[1]) DESC
-        """, **_scope(None)).data()
-
-    if not rows:
-        return ToolResult(content=[TextContent(type="text",
-            text=(
-                "No Odoo versions indexed in this profile yet. "
-                "Call list_available_profiles to see which profiles are configured."
-            )
-        )])
-
-    versions = [r["v"] for r in rows]
-    lines = [f"Indexed Odoo versions ({len(versions)} total):"]
-    for i, v in enumerate(versions):
-        prefix = "└─" if i == len(versions) - 1 else "├─"
-        lines.append(f"{prefix} {v}")
-    return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
-def list_available_profiles() -> ToolResult:
-    """List all profiles registered in this knowledge base.
-
-    TRIGGER when: unsure which profiles exist, before calling set_active_profile(),
-    or to enumerate tenants/customers before running profile-scoped queries.
-    PREFER over: guessing a profile name and getting an empty result; use this
-    first to confirm available profiles before filtering queries.
-    SKIP when: the profile name is already known (e.g. from a prior
-    set_active_profile confirmation or from admin documentation).
-
-    Returns:
-        Tree listing of registered profiles with their Odoo version, e.g.:
-        Registered profiles (2 total):
-        ├─ my_profile_17  (17.0)
-        └─ customer_erp_16      (16.0)
-    """
-    # C4 (WI-4): scope the listing to the tenant's allowed profiles. admin
-    # (allowed=None) sees all; a tenant sees only its own + shared-base profiles;
-    # [] (profile-less tenant) → empty list (deny-all).
-    allowed = _effective_allowed(None)
-    if allowed is None:
-        sql = "SELECT name, odoo_version FROM profiles ORDER BY name"
-        params: list = []
-    else:
-        sql = "SELECT name, odoo_version FROM profiles WHERE name = ANY(%s) ORDER BY name"
-        params = [allowed]
-    try:
-        with _checkout_pg() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
-    except Exception:
-        logger.warning("list_available_profiles: query failed", exc_info=True)
-        return ToolResult(content=[TextContent(type="text",
-            text="Error querying profiles — try again shortly.")])
-
-    if not rows:
-        return ToolResult(content=[TextContent(type="text",
-            text=(
-                "No profiles registered yet.\n"
-                "Use the admin UI or `manager` CLI to register a profile."
-            )
-        )])
-
-    lines = [f"Registered profiles ({len(rows)} total):"]
-    for i, (name, odoo_version) in enumerate(rows):
-        prefix = "└─" if i == len(rows) - 1 else "├─"
-        ver_str = f"  ({odoo_version})" if odoo_version else ""
-        lines.append(f"{prefix} {name}{ver_str}")
-    return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
-
-
-# ---------------------------------------------------------------------------
-# WI-4 (#260, #259 chain) — profile_inspect discriminator tool (24 -> 25)
-# ADR-0028: one discriminator superset, naming matches model_inspect/module_inspect.
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload_neo4j
-def profile_inspect(
-    method: str,
-    odoo_version: RequiredOdooVersion,
-    name: str | None = None,
-    repo: str | None = None,
-    start_index: int = 0,
-    limit: int = 50,
-) -> ToolResult:
-    """Method-discriminator for profile-level introspection. See ADR-0028.
-
-    TRIGGER when: "which repos make up profile X", "list modules in Viindoo 17",
-    "show profile hierarchy", "describe profile X", "danh sách module của
-    profile", "profile X có bao nhiêu module", "repos nào trong profile này".
-    PREFER over: chaining list_available_profiles + describe_module when the
-    question is about a profile's composition (repos, modules, parent chain).
-    SKIP when: you only need YES/NO on a module — use check_module_exists.
-    SKIP when: you need a single model's fields/methods — use model_inspect.
-
-    Args:
-        method: 'summary' | 'repos' | 'modules'.
-            summary - ancestor chain, children, repos, module count (needs name=).
-            repos   - distinct repos in the ancestor chain, deduped by (url, branch).
-            modules - paginated modules scoped to the profile; repo= URL-substring
-              filter; start_index/limit pagination (default 50/page, max 50).
-        name: Profile name (e.g. 'viindoo_internal_17'). Required for 'summary';
-            optional for 'repos'/'modules' (None = all caller-visible profiles).
-        repo: Filter by repo URL substring ('repos'/'modules' only).
-        start_index: Zero-based pagination cursor for 'modules'.
-        limit: Rows per page for 'modules' (default 50, max 50).
-
-    Example:
-        profile_inspect(method='summary', name='viindoo_internal_17',
-                        odoo_version='17.0')
-        -> tree: Ancestor chain, Children, Repos (deduped), Module count.
-    """
-    text = _profile_inspect(
-        name=name,
-        method=method,
-        odoo_version=odoo_version,
-        repo=repo,
-        api_key_id=_get_api_key_id(),
-        start_index=start_index,
-        limit=limit,
-    )
-    return ToolResult(content=[TextContent(type="text", text=text)])
-
-
+# Inspect tools (describe_module / model_inspect / module_inspect /
+# entity_lookup / profile_inspect) moved to src/mcp/tools/inspect_tools.py
+# and the Wave-E session tools (set_active_version / set_active_profile /
+# list_available_versions / list_available_profiles) moved to
+# src/mcp/tools/session_tools.py (Phase 3).  They are registered via the
+# @mcp.tool import-time side effect when server.py imports those modules at
+# the end of this file; the public tool symbols are re-exported there too so
+# src.mcp.server.<tool> keeps working for tests + external callers.  The
+# discriminator impls (_model_inspect / _module_inspect / _entity_lookup /
+# _profile_inspect) live in src/mcp/inspect.py and the session-persistence
+# helpers in src/mcp/session.py; _describe_module stays in this hub (inspect.py
+# uses it too) and the inspect/session wrappers reach the hub through `srv.`
+# at call time, so monkeypatch.setattr(srv, ...) keeps working.
 # ---------------------------------------------------------------------------
 # M10A Stylesheet tools (resolve_stylesheet / find_style_override) and their
 # impl helpers (_resolve_stylesheet / _literal_style_lookup /
@@ -8185,14 +7529,30 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
 # Popping the tool modules first guarantees they re-execute against the current
 # `mcp`, keeping the tool surface complete after any reload.
 for _tool_mod in (
-    "src.mcp.tools.orm_tools",     # Phase 1
-    "src.mcp.tools.stylesheet",    # Phase 2
+    "src.mcp.tools.orm_tools",       # Phase 1
+    "src.mcp.tools.stylesheet",      # Phase 2
+    "src.mcp.tools.inspect_tools",   # Phase 3
+    "src.mcp.tools.session_tools",   # Phase 3
 ):
     sys.modules.pop(_tool_mod, None)
 del _tool_mod
 
+from src.mcp.tools import inspect_tools as _inspect_tools  # noqa: E402,F401
 from src.mcp.tools import orm_tools as _orm_tools  # noqa: E402,F401
+from src.mcp.tools import session_tools as _session_tools  # noqa: E402,F401
 from src.mcp.tools import stylesheet as _stylesheet_tools  # noqa: E402,F401
+
+# Phase 3 re-exports: the five inspect tools + the four Wave-E session tools.
+# Tests + external callers import these public tool symbols from src.mcp.server;
+# preserve the path after the move. The wrappers reach the hub through `srv.` at
+# call time so monkeypatch.setattr(srv, ...) keeps working.
+from src.mcp.tools.inspect_tools import (  # noqa: E402,F401
+    describe_module,
+    entity_lookup,
+    model_inspect,
+    module_inspect,
+    profile_inspect,
+)
 
 # Backward-compat re-exports: tests + external callers import these public tool
 # symbols from src.mcp.server; preserve the path after the move.
@@ -8201,6 +7561,12 @@ from src.mcp.tools.orm_tools import (  # noqa: E402,F401
     validate_depends,
     validate_domain,
     validate_relation,
+)
+from src.mcp.tools.session_tools import (  # noqa: E402,F401
+    list_available_profiles,
+    list_available_versions,
+    set_active_profile,
+    set_active_version,
 )
 
 # Phase 2 re-exports: the two public stylesheet tools, plus the three impl
