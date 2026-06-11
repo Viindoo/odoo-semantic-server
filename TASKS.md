@@ -1267,9 +1267,17 @@ tracked. Each has bounded risk (not blocking merge); see ADR-0048 Amendment for 
   `_data_bounded`); `OrmQueryTimeout` is caught inside `_resolve_model` and surfaced as a clean
   English string (ADR-0023, approach (a)) so the plain-`@offload` `model_inspect` summary path and
   the `odoo://` model resource handler never see a raw `ClientError` (#279, done 2026-06-11).
-  Remaining ~83 `session.run` calls accepted (all run in `@offload` threads - no event-loop wedge;
-  600s `db.transaction.timeout` backstops).
-  *Cross-ref: FOLLOW-UP #8 inline comment (pr275-comments.md), ADR-0048 D7 amendment.*
+  #284 follow-up (done 2026-06-11): `_latest_version` (implicit-version Tier-3 fallback) bounded via
+  `_single_bounded` so its tx-timeout no longer escapes `_resolve_model`'s `except OrmQueryTimeout` on
+  the `auto`/`None` path; the retired dual-channel structured subsystem (6 `_X_structured` helpers +
+  6 `*Output` DTOs) and its dead-code-snapshot tests physically removed (ADR-0028); all 7 `odoo://`
+  resource handlers converted to `async def` + `asyncio.to_thread` (they were sync `def` running ON
+  the event loop, NOT in `@offload` threads - the one genuine event-loop-wedge exception to the
+  "remaining session.run accepted" note, now closed, ADR-0046 class); timeout metric
+  `nonorm_query_timeout_total{tool="model_inspect"}` recorded on both the tool and resource paths.
+  Remaining `session.run` calls accepted (all run in `@offload` threads or the now-async resource
+  handlers - no event-loop wedge; 600s `db.transaction.timeout` backstops).
+  *Cross-ref: FOLLOW-UP #8 inline comment (pr275-comments.md), ADR-0048 D7 amendment, ADR-0028, #284.*
 
 - [ ] **`reconcile_same_name_inherits` concurrent D>1 deadlock note:** docstring note DONE
   2026-06-11 (commit 8459939 - see `src/indexer/writer_neo4j.py` "Concurrency (--profile-workers)"

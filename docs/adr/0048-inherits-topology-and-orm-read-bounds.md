@@ -64,8 +64,9 @@ where D is typically 1).
 
 **Evidence that no consumer needed the K² mesh (verified grep + code review):**
 
-- **R3/R4 (`_resolve_model`, `_resolve_model_structured`):** explicitly filter `WHERE p.name <> $name`
-  — same-name edges are discarded at read time.
+- **R3 (`_resolve_model`):** explicitly filters `WHERE p.name <> $name` — same-name edges are
+  discarded at read time. (The former `_resolve_model_structured` dual-channel companion shared this
+  filter; it was physically removed with the retired structured subsystem under ADR-0028 — PR #284.)
 - **R1/R2 (orm.py step-3 and validate_relation):** same-name edges added no reachability (any
   cross-name parent is already reachable directly from the copy that declared it in `_inherit`);
   they only multiplied path count, causing bug #273.

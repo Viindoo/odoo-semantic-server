@@ -56,19 +56,6 @@ from src.constants import (
     VALID_CHUNK_TYPES,
 )
 from src.mcp import session as _session
-from src.mcp.dto import (
-    FieldRef,
-    ListFieldsOutput,
-    ListMethodsOutput,
-    MethodRef,
-    ModelRef,
-    ModuleRef,
-    ResolveFieldOutput,
-    ResolveMethodOutput,
-    ResolveModelOutput,
-    ResolveViewOutput,
-    ViewRef,
-)
 from src.mcp.example_lexical import lexical_example_lookup
 from src.mcp.hints import (  # noqa: F401  (hints_for is re-exported for external consumers)
     format_next_step,
@@ -1850,7 +1837,16 @@ def _latest_version(session) -> str | None:
     Returns None when no indexed data exists (no hardcoded fallback). Callers
     should surface a clear error instructing the user to run the indexer.
     """
-    rec = session.run("""
+    # #284: bound under the per-query Neo4j timeout via _single_bounded so a
+    # tx-timeout surfaces as OrmQueryTimeout (not a raw ClientError). On the
+    # implicit-version path this call runs inside _resolve_model's try block
+    # (via _resolve_version -> resolve_version_v2 Tier-3); a raw ClientError
+    # would ESCAPE that `except OrmQueryTimeout` (ADR-0023 violation). The
+    # query touches only Module nodes (no INHERITS traversal) so a timeout is
+    # low-probability, but converting it keeps the clean-text contract intact.
+    rec = _single_bounded(
+        session,
+        """
         MATCH (m:Module)
         WHERE ($own IS NULL OR (size(m.profile) > 0
                AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
@@ -1860,7 +1856,10 @@ def _latest_version(session) -> str | None:
         ORDER BY toInteger(split(v, '.')[0]) DESC,
                  toInteger(split(v, '.')[1]) DESC
         LIMIT 1
-    """, **_scope(None)).single()
+        """,
+        "latest indexed version",
+        **_scope(None),
+    )
     return rec["v"] if rec else None
 
 
@@ -2059,9 +2058,8 @@ def _resolve_model(
     except OrmQueryTimeout as exc:
         # Approach (a): _resolve_model returns str, so surface the clean English
         # timeout message (ADR-0023 — no Cypher leaked) rather than letting the
-        # exception escape to FastMCP as a protocol-level isError. The metric is
-        # not recorded here (this path is outside the bounded-offload pools); the
-        # 30s driver timeout itself is the load-bearing #279 protection.
+        # exception escape to FastMCP as a protocol-level isError. The 30s driver
+        # timeout itself is the load-bearing #279 protection.
         #
         # #284 review: the odoo:// model resource caches this return value via
         # ResourceCache.get_or_compute, which stores UNCONDITIONALLY. Returning
@@ -2071,7 +2069,15 @@ def _resolve_model(
         # exception propagates and is rendered uncached; the sibling field/method
         # resolvers already raise their raw ClientError for the same reason.
         if _reraise_timeout:
+            # Resource path: re-raise UNCOUNTED here so the resource handler's
+            # own `except OrmQueryTimeout` records the metric exactly once for
+            # that path (no double-count). #284 / finding-5.
             raise
+        # Tool path (model_inspect summary): record the timeout so ops can see
+        # dense-mesh timeouts on this non-ORM read. _resolve_model is NOT inside a
+        # bounded-offload pool, so this is the only place the tool-path timeout is
+        # observable — no double-count (the bounded pools have their own metric).
+        _metric_nonorm_query_timeout("model_inspect")
         return exc.user_message
 
     # ADR-0023 §1.1: header = "{entity} (Odoo {version})", no decoration.
@@ -7037,517 +7043,6 @@ def find_override_point(
           └─ Anti-patterns (3): ...
     """
     return _find_override_point(model, method, odoo_version, to_version=to_version)
-
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Dual-channel companion functions (M10.5 WI-B3, Option A — independent Cypher).
-#
-# Each _X_structured() mirrors the data fetched by its _X() counterpart and
-# returns a typed *Output DTO (or None when the entity is not found).  They
-# intentionally re-issue the same Cypher queries so the text channel (_X)
-# remains byte-identical and unmodified (AC-B3-3).  The 2x DB cost is
-# accepted for this PoC wave; a future wave can collapse to Option B (shared
-# rows).
-#
-# next_step_hint is populated via hints_for() using the same ctx keys that
-# the NEXT_STEP_HINTS registry templates use (see src/mcp/hints.py).
-# ---------------------------------------------------------------------------
-
-
-def _resolve_model_structured(
-    model_name: str,
-    odoo_version: str = "auto",
-    profile_name: str | None = None,
-) -> ResolveModelOutput | None:
-    """Structured companion for _resolve_model. Returns None when not found."""
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        layers = session.run(
-            f"""
-            MATCH (m:Model {{name: $name, odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
-            WITH m, mod,
-                 CASE WHEN coalesce(m.is_definition, false) THEN 0 ELSE 1 END AS is_def_rank,
-                 COUNT {{
-                     (:Field {{model: $name, module: m.module, odoo_version: $v}})
-                 }} AS field_count,
-                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN m.module AS module_name, coalesce(mod.repo_url, mod.repo) AS repo,
-                   coalesce(m.is_definition, false) AS is_definition,
-                   mod.edition AS edition,
-                   COUNT {{ (:Field {{model: $name, odoo_version: $v}}) }} AS fields_count,
-                   COUNT {{ (:Method {{model: $name, odoo_version: $v}}) }} AS methods_count
-            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
-                     edition_rank ASC, mod_name ASC
-            """,
-            name=model_name, v=odoo_version, **_scope(profile_name),
-        ).data()
-
-        if not layers:
-            return None
-
-        parents = session.run(f"""
-            MATCH (:Model {{name: $name, odoo_version: $v}})-[r:{REL_INHERITS}]->(p:Model)
-            WHERE p.name <> $name
-              AND NOT coalesce(r.unresolved, false)
-              AND {_scope_pred("p")}
-            RETURN DISTINCT p.name AS pname
-            ORDER BY pname
-        """, name=model_name, v=odoo_version, **_scope(profile_name)).data()
-
-    base = layers[0]
-    extensions = layers[1:]
-
-    defined_in = ModuleRef(
-        name=base["module_name"],
-        odoo_version=odoo_version,
-        profile=None,
-    )
-    extended_by = [
-        ModuleRef(name=ext["module_name"], odoo_version=odoo_version, profile=None)
-        for ext in extensions
-    ]
-    inherits_from = [p["pname"] for p in parents]
-
-    return ResolveModelOutput(
-        ref=ModelRef(name=model_name, module=base["module_name"], odoo_version=odoo_version),
-        is_definition=bool(base.get("is_definition", False)),
-        defined_in=defined_in,
-        extended_by=extended_by,
-        inherits_from=inherits_from,
-        field_count=base["fields_count"],
-        method_count=base["methods_count"],
-        next_step_hint=format_next_step([
-            f"model_inspect(model='{model_name}', method='fields', odoo_version='{odoo_version}')"
-            " for full field list",
-            f"model_inspect(model='{model_name}', method='methods', odoo_version='{odoo_version}')"
-            " for behavior",
-        ]),
-    )
-
-
-def _resolve_field_structured(
-    model_name: str,
-    field_name: str,
-    odoo_version: str = "auto",
-    profile_name: str | None = None,
-) -> ResolveFieldOutput | None:
-    """Structured companion for _resolve_field. Returns None when not found."""
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        records = session.run(f"""
-            MATCH (f:Field {{name: $fn, model: $mn, odoo_version: $v}})
-            WHERE ($own IS NULL OR (size(f.profile) > 0
-                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
-            OPTIONAL MATCH (m_node:Model {{name: $mn, module: f.module, odoo_version: $v}})
-            WITH f, mod, m_node,
-                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
-                      AS is_def_rank,
-                 COUNT {{
-                     (:Field {{model: $mn, module: f.module, odoo_version: $v}})
-                 }} AS field_count,
-                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN f, f.module AS module_name
-            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
-                     edition_rank ASC, mod_name ASC
-        """, fn=field_name, mn=model_name, v=odoo_version,
-            **_scope(profile_name)).data()
-
-    if not records:
-        return None
-
-    base_f = records[0]["f"]
-    declared_in = [
-        FieldRef(
-            model=model_name,
-            name=field_name,
-            module=r["module_name"],
-            odoo_version=odoo_version,
-        )
-        for r in records
-    ]
-
-    return ResolveFieldOutput(
-        ref=FieldRef(
-            model=model_name,
-            name=field_name,
-            module=records[0]["module_name"],
-            odoo_version=odoo_version,
-        ),
-        ttype=base_f.get("ttype") or "?",
-        computed=bool(base_f.get("compute")),
-        compute_method=base_f.get("compute") or None,
-        stored=bool(base_f.get("stored", True)),
-        required=bool(base_f.get("required", False)),
-        related=base_f.get("related") or None,
-        # WI-1 (#238): effective_readonly is None on pre-reindex graphs — pass
-        # through as None (unknown) rather than coercing to False.
-        readonly=base_f.get("effective_readonly"),
-        comodel=base_f.get("comodel_name") or None,
-        label=base_f.get("string") or None,
-        help=base_f.get("help") or None,
-        declared_in=declared_in,
-        next_step_hint=format_next_step([
-            f"find_examples(query='{model_name}.{field_name} usage'"
-            f", odoo_version='{odoo_version}') for real-world patterns",
-            f"impact_analysis(entity_type='field'"
-            f", entity_name='{model_name}.{field_name}'"
-            f", odoo_version='{odoo_version}') for blast radius",
-        ]),
-    )
-
-
-def _resolve_method_structured(
-    model_name: str,
-    method_name: str,
-    odoo_version: str = "auto",
-    profile_name: str | None = None,
-) -> ResolveMethodOutput | None:
-    """Structured companion for _resolve_method. Returns None when not found."""
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        records = session.run(f"""
-            MATCH (mth:Method {{name: $mn, model: $model, odoo_version: $v}})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
-            OPTIONAL MATCH (m_node:Model {{name: $model, module: mth.module, odoo_version: $v}})
-            WITH mth, mod, m_node,
-                 CASE WHEN coalesce(m_node.is_definition, false) THEN 0 ELSE 1 END
-                      AS is_def_rank,
-                 COUNT {{
-                     (:Field {{model: $model, module: mth.module, odoo_version: $v}})
-                 }} AS field_count,
-                 COUNT {{ ()-[:{REL_DEPENDS_ON}]->(mod) }} AS dependents,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN mth, mth.module AS module_name
-            ORDER BY is_def_rank ASC, field_count DESC, dependents DESC,
-                     edition_rank ASC, mod_name ASC
-        """, mn=method_name, model=model_name, v=odoo_version,
-            **_scope(profile_name)).data()
-
-    if not records:
-        return None
-
-    base_mth = records[0]["mth"]
-    override_chain = [
-        MethodRef(
-            model=model_name,
-            name=method_name,
-            module=r["module_name"],
-            odoo_version=odoo_version,
-        )
-        for r in records
-    ]
-
-    return ResolveMethodOutput(
-        ref=MethodRef(
-            model=model_name,
-            name=method_name,
-            module=records[0]["module_name"],
-            odoo_version=odoo_version,
-        ),
-        signature=base_mth.get("signature") or None,
-        convention=base_mth.get("convention_kind") or None,
-        override_chain=override_chain,
-        next_step_hint=format_next_step([
-            f"find_override_point(model='{model_name}', method='{method_name}'"
-            f", odoo_version='{odoo_version}') for safe hook spot",
-            f"impact_analysis(entity_type='method'"
-            f", entity_name='{model_name}.{method_name}'"
-            f", odoo_version='{odoo_version}') for blast radius",
-        ]),
-    )
-
-
-def _resolve_view_structured(
-    xmlid: str,
-    odoo_version: str = "auto",
-    profile_name: str | None = None,
-) -> ResolveViewOutput | None:
-    """Structured companion for _resolve_view. Returns None when not found."""
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        view_rec = session.run("""
-            MATCH (v:View {xmlid: $xmlid, odoo_version: $ver})
-            WHERE ($own IS NULL OR (size(v.profile) > 0
-                   AND all(__p IN v.profile WHERE __p IN $own OR __p IN $shared)))
-            AND coalesce(v.unresolved, false) = false
-            AND v.module <> '__unresolved__'
-            OPTIONAL MATCH (v)-[:DEFINED_IN]->(mod:Module)
-            RETURN v, mod.name AS module_name
-        """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
-
-        if not view_rec:
-            return None
-
-        extensions = session.run(f"""
-            MATCH (ext:View {{odoo_version: $ver}})-[:{REL_INHERITS_VIEW}]->
-                  (v:View {{xmlid: $xmlid, odoo_version: $ver}})
-            WHERE NOT coalesce(ext.unresolved, false)
-            AND ($own IS NULL OR (size(ext.profile) > 0
-                 AND all(__p IN ext.profile WHERE __p IN $own OR __p IN $shared)))
-            RETURN ext.xmlid AS ext_xmlid,
-                   ext.model AS ext_model,
-                   coalesce(ext.xpaths_exprs, []) AS xpaths_exprs
-        """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).data()
-
-        # WG-3t WRONG-TARGET fix: this returns parent.xmlid, so the tenant
-        # predicate must gate the RETURNED node (parent), not just the child v.
-        # Filtering only v would leak a foreign tenant's parent view xmlid.
-        parent_rec = session.run(f"""
-            MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
-                  -[r:{REL_INHERITS_VIEW}]->(parent:View {{odoo_version: $ver}})
-            WHERE NOT coalesce(r.unresolved, false)
-            AND {_scope_pred("v")}
-            AND {_scope_pred("parent")}
-            RETURN parent.xmlid AS parent_xmlid
-        """, xmlid=xmlid, ver=odoo_version, **_scope(profile_name)).single()
-
-    v_props = view_rec["v"]
-    own_exprs = list(v_props.get("xpaths_exprs") or [])
-
-    extended_by = [
-        ViewRef(
-            xmlid=ext["ext_xmlid"],
-            model=ext.get("ext_model"),
-            odoo_version=odoo_version,
-        )
-        for ext in extensions
-    ]
-
-    return ResolveViewOutput(
-        ref=ViewRef(
-            xmlid=xmlid,
-            model=v_props.get("model"),
-            odoo_version=odoo_version,
-        ),
-        string=v_props.get("name") or None,
-        view_type=v_props.get("type") or "?",
-        module=view_rec.get("module_name") or "?",
-        mode=v_props.get("mode") or None,
-        inherits_from=parent_rec["parent_xmlid"] if parent_rec else None,
-        xpath_count=len(own_exprs),
-        extended_by=extended_by,
-        next_step_hint=format_next_step(
-            [
-                f"model_inspect(model='{v_props.get('model')}', method='views',"
-                f" odoo_version='{odoo_version}')"
-                " for sibling views",
-                f"find_examples(query='{xmlid} xpath', odoo_version='{odoo_version}')"
-                " for inheritance patterns",
-            ]
-            if v_props.get("model")
-            else [
-                f"find_examples(query='{xmlid} xpath', odoo_version='{odoo_version}')"
-                " for inheritance patterns",
-            ]
-        ),
-    )
-
-
-def _list_fields_structured(
-    model: str,
-    odoo_version: str = "auto",
-    module: str | None = None,
-    kind: str | None = None,
-    profile_name: str | None = None,
-    limit: int = 200,
-    start_index: int = 0,
-    api_key_id: str = _ANONYMOUS_API_KEY_ID,
-) -> ListFieldsOutput | None:
-    """Structured companion for _list_fields. Returns None when model has no fields."""
-    cap = LIST_PREVIEW_FIELDS_MAX
-    effective_limit = min(limit, cap)
-
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        rows = session.run(
-            f"""
-            MATCH (f:Field {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR (size(f.profile) > 0
-                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR f.module = $module)
-              AND ($kind IS NULL OR f.ttype = $kind)
-              AND f.module <> '__unresolved__'
-            OPTIONAL MATCH (mod:Module {{name: f.module, odoo_version: $v}})
-            WITH f, mod,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN f.name AS name, f.ttype AS ttype, f.module AS module_name,
-                   edition_rank, mod_name
-            ORDER BY edition_rank ASC, mod_name ASC, f.name ASC
-            SKIP $skip
-            LIMIT $limit
-            """,
-            m=model, v=odoo_version, module=module, kind=kind,
-            **_scope(profile_name), skip=start_index, limit=effective_limit,
-        ).data()
-
-        total_rec = session.run(
-            """
-            MATCH (f:Field {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(f.profile) > 0
-                   AND all(__p IN f.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR f.module = $module)
-              AND ($kind IS NULL OR f.ttype = $kind)
-              AND f.module <> '__unresolved__'
-            RETURN count(f) AS c
-            """,
-            m=model, v=odoo_version, module=module, kind=kind,
-            **_scope(profile_name),
-        ).single()
-        total = total_rec["c"] if total_rec else 0
-
-    # Mint refs for the structured channel — same api_key_id as text channel.
-    field_items = [{"field_name": r["name"], "model": model} for r in rows]
-    ref_ids = mint_refs(field_items, api_key_id, kind="field")
-
-    fields = [
-        FieldRef(
-            model=model,
-            name=r["name"],
-            module=r["module_name"],
-            odoo_version=odoo_version,
-            ref=ref_id,
-        )
-        for r, ref_id in zip(rows, ref_ids)
-    ]
-
-    first_field = rows[0]["name"] if rows else None
-    next_hints: list[str] = []
-    if first_field:
-        next_hints.append(
-            f"model_inspect(model='{model}', method='field', field='{first_field}'"
-            f", odoo_version='{odoo_version}') for full chain",
-        )
-    next_hints.append(
-        f"model_inspect(model='{model}', method='methods', odoo_version='{odoo_version}')"
-        " for behavior",
-    )
-    return ListFieldsOutput(
-        model=model,
-        odoo_version=odoo_version,
-        total=total,
-        shown=len(fields),
-        fields=fields,
-        next_step_hint=format_next_step(next_hints),
-    )
-
-
-def _list_methods_structured(
-    model: str,
-    odoo_version: str = "auto",
-    module: str | None = None,
-    profile_name: str | None = None,
-    limit: int = 200,
-    start_index: int = 0,
-    api_key_id: str = _ANONYMOUS_API_KEY_ID,
-) -> ListMethodsOutput | None:
-    """Structured companion for _list_methods. Returns None when model has no methods."""
-    cap = LIST_PREVIEW_MAX_ITEMS
-    effective_limit = min(limit, cap)
-
-    with _get_driver().session() as session:
-        odoo_version = _resolve_version(odoo_version, session)
-
-        rows = session.run(
-            f"""
-            MATCH (mth:Method {{model: $m, odoo_version: $v}})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR mth.module = $module)
-              AND mth.module <> '__unresolved__'
-            OPTIONAL MATCH (mod:Module {{name: mth.module, odoo_version: $v}})
-            WITH mth, mod,
-                 {_edition_rank_cypher("mod")},
-                 mod.name AS mod_name
-            RETURN mth.name AS name, mth.module AS module_name,
-                   edition_rank, mod_name
-            ORDER BY edition_rank ASC, mod_name ASC, mth.name ASC
-            SKIP $skip
-            LIMIT $limit
-            """,
-            m=model, v=odoo_version, module=module,
-            **_scope(profile_name), skip=start_index, limit=effective_limit,
-        ).data()
-
-        total_rec = session.run(
-            """
-            MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-              AND ($module IS NULL OR mth.module = $module)
-              AND mth.module <> '__unresolved__'
-            RETURN count(mth) AS c
-            """,
-            m=model, v=odoo_version, module=module,
-            **_scope(profile_name),
-        ).single()
-        total = total_rec["c"] if total_rec else 0
-
-        override_rec = session.run(
-            """
-            MATCH (mth:Method {model: $m, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(mth.profile) > 0
-                   AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-              AND mth.module <> '__unresolved__'
-            WITH mth.name AS name, count(DISTINCT mth.module) AS modcount
-            WHERE modcount >= 2
-            RETURN collect(name) AS overrides
-            """,
-            m=model, v=odoo_version, **_scope(profile_name),
-        ).single()
-        override_names = sorted(override_rec["overrides"]) if override_rec else []
-
-    # Mint refs for the structured channel — same api_key_id as text channel.
-    method_items = [{"method_name": r["name"], "model": model} for r in rows]
-    ref_ids = mint_refs(method_items, api_key_id, kind="method")
-
-    methods = [
-        MethodRef(
-            model=model,
-            name=r["name"],
-            module=r["module_name"],
-            odoo_version=odoo_version,
-            ref=ref_id,
-        )
-        for r, ref_id in zip(rows, ref_ids)
-    ]
-
-    first_method = rows[0]["name"] if rows else None
-    next_hints: list[str] = []
-    if first_method:
-        next_hints.append(
-            f"model_inspect(model='{model}', method='method', method_name='{first_method}'"
-            f", odoo_version='{odoo_version}') for override chain",
-        )
-        next_hints.append(
-            f"find_override_point(model='{model}', method='{first_method}'"
-            f", odoo_version='{odoo_version}') for hook spot",
-        )
-    return ListMethodsOutput(
-        model=model,
-        odoo_version=odoo_version,
-        total=total,
-        shown=len(methods),
-        methods=methods,
-        override_names=override_names,
-        next_step_hint=format_next_step(next_hints),
-    )
 
 
 # Wave 1 — @mcp.tool(**READONLY_TOOL_KWARGS) wrappers for the 7 new tools (ADR-0023 §5).

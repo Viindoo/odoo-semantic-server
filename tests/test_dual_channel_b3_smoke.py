@@ -7,16 +7,13 @@ list_qweb_templates, list_js_patches), all MCP tools emit raw-text tree only.
 
 WI-5 fix (#261/#265-Obs4): describe_module no longer declares output_schema= on its
 @mcp.tool decorator. All tools (including describe_module) now emit uniform raw text
-with structured_content=None (ADR-0023 §1). The 6 structured-companion functions
-(_resolve_*_structured, _list_*_structured) still exist for Resource/internal use
-and are tested via their DTO round-trips.
+with structured_content=None (ADR-0023 §1). The dual-channel structured-companion
+functions (_resolve_*_structured, _list_*_structured) were physically removed once
+ADR-0028 made every tool text-only; only the text channel survives.
 
 Verified:
   (a) describe_module — text-only channel (no structured_content), including not-found.
-  (b) The 6 structured-companion functions are called directly to confirm DTO round-trips.
-
-For the new superset tools (model_inspect, module_inspect, entity_lookup), only the
-text channel is verified (text-only per design).
+  (b) model_inspect / entity_lookup superset tools — text-only channel (per design).
 
 DB version: TEST_VERSION = "95.0" (distinct from 99.0/98.0/97.0/96.0
 fixtures used by other test modules).
@@ -30,13 +27,6 @@ import pytest
 
 from src.indexer.models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from src.indexer.writer_neo4j import Neo4jWriter
-from src.mcp.dto import (
-    ListFieldsOutput,
-    ListMethodsOutput,
-    ResolveFieldOutput,
-    ResolveMethodOutput,
-    ResolveModelOutput,
-)
 
 pytestmark = pytest.mark.neo4j
 
@@ -145,28 +135,11 @@ def _assert_text_channel(result) -> str:
     return block.text
 
 
-def _assert_dual_channel(result, dto_class) -> None:
-    """Assert both channels are present and structured_content validates as dto_class."""
-    text = _assert_text_channel(result)
-    assert text, "text channel must be non-empty"
-    # Structured channel
-    assert result.structured_content is not None, "structured_content must not be None"
-    assert isinstance(result.structured_content, dict), (
-        f"structured_content must be a dict, got {type(result.structured_content)}"
-    )
-    # Round-trip through the DTO to validate shape (AC-B3-2: structured channel
-    # must validate against the tool's declared *Output DTO type).
-    validated = dto_class.model_validate(result.structured_content)
-    assert validated is not None, "DTO round-trip must succeed"
-
-
 # ---------------------------------------------------------------------------
-# 7 smoke tests — migrated to v0.6 superset tools.
+# Smoke tests — v0.6 superset tools, text-only channel (ADR-0028).
 #
-# (a) describe_module — still has dual channel (unchanged).
+# (a) describe_module — text-only (no structured_content), found + not-found.
 # (b) model_inspect / entity_lookup — text-only channel (by design, v0.6+).
-# (c) Structured companion functions (_resolve_*_structured, _list_*_structured)
-#     are called directly to verify DTO round-trips without needing the wrapper.
 #
 # NOTE: @mcp.tool() wraps functions into FunctionTool objects (not directly
 # callable per CLAUDE.md §FastMCP). We call .fn to reach the underlying
@@ -185,51 +158,6 @@ def test_model_inspect_summary_text_channel(b3_db):
     text = _assert_text_channel(result)
     assert "b3.order" in text
     assert "b3_sale" in text or "sale" in text.lower()
-
-
-def test_resolve_model_structured_companion(b3_db):
-    """_resolve_model_structured returns a valid ResolveModelOutput DTO."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    structured = server._resolve_model_structured("b3.order", TEST_VERSION)
-    assert structured is not None, "_resolve_model_structured returned None"
-    output = ResolveModelOutput.model_validate(structured.model_dump())
-    assert output.ref.name == "b3.order"
-    assert output.ref.odoo_version == TEST_VERSION
-    assert isinstance(output.field_count, int)
-    assert isinstance(output.method_count, int)
-    assert output.next_step_hint
-
-
-def test_resolve_field_structured_companion(b3_db):
-    """_resolve_field_structured returns a valid ResolveFieldOutput DTO."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    structured = server._resolve_field_structured("b3.order", "amount_total", TEST_VERSION)
-    assert structured is not None, "_resolve_field_structured returned None"
-    output = ResolveFieldOutput.model_validate(structured.model_dump())
-    assert output.ref.name == "amount_total"
-    assert output.ref.model == "b3.order"
-    assert output.ref.odoo_version == TEST_VERSION
-    assert output.ttype
-    assert output.next_step_hint
-
-
-def test_resolve_method_structured_companion(b3_db):
-    """_resolve_method_structured returns a valid ResolveMethodOutput DTO."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    structured = server._resolve_method_structured("b3.order", "action_confirm", TEST_VERSION)
-    assert structured is not None, "_resolve_method_structured returned None"
-    output = ResolveMethodOutput.model_validate(structured.model_dump())
-    assert output.ref.name == "action_confirm"
-    assert output.ref.model == "b3.order"
-    assert output.ref.odoo_version == TEST_VERSION
-    assert isinstance(output.override_chain, list)
-    assert output.next_step_hint
 
 
 def test_entity_lookup_view_text_channel(b3_db):
@@ -288,35 +216,3 @@ def test_describe_module_not_found_returns_clean_text(b3_db):
     assert result.structured_content is None, (
         f"Not-found path must not produce structured_content. Got: {result.structured_content!r}"
     )
-
-
-def test_list_fields_structured_companion(b3_db):
-    """_list_fields_structured returns a valid ListFieldsOutput DTO."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    structured = server._list_fields_structured("b3.order", TEST_VERSION)
-    assert structured is not None, "_list_fields_structured returned None"
-    output = ListFieldsOutput.model_validate(structured.model_dump())
-    assert output.model == "b3.order"
-    assert output.odoo_version == TEST_VERSION
-    assert isinstance(output.total, int)
-    assert isinstance(output.shown, int)
-    assert isinstance(output.fields, list)
-    assert output.next_step_hint
-
-
-def test_list_methods_structured_companion(b3_db):
-    """_list_methods_structured returns a valid ListMethodsOutput DTO."""
-    import importlib
-    server = importlib.import_module("src.mcp.server")
-
-    structured = server._list_methods_structured("b3.order", TEST_VERSION)
-    assert structured is not None, "_list_methods_structured returned None"
-    output = ListMethodsOutput.model_validate(structured.model_dump())
-    assert output.model == "b3.order"
-    assert output.odoo_version == TEST_VERSION
-    assert isinstance(output.total, int)
-    assert isinstance(output.shown, int)
-    assert isinstance(output.methods, list)
-    assert output.next_step_hint

@@ -184,14 +184,10 @@ def test_graceful_degradation_missing_properties(ro_db, neo4j_driver):
         )
 
 
-def test_structured_readonly_passthrough(ro_db):
-    """_resolve_field_structured exposes readonly (True for stored-related)."""
-    server = importlib.import_module("src.mcp.server")
-
-    out = server._resolve_field_structured("ro.model", "res_model", TEST_VERSION)
-    assert out is not None
-    assert out.readonly is True
-    assert out.related == "workflow_id.model_name"
-
-    out_rw = server._resolve_field_structured("ro.model", "name", TEST_VERSION)
-    assert out_rw.readonly is False
+# NOTE: the effective-readonly business invariant (stored-related field surfaced
+# as read-only) is fully covered by test_detail_render_readonly_flag (via the LIVE
+# _resolve_field text path) and test_list_render_readonly_and_related (via
+# _list_fields). The former test_structured_readonly_passthrough probed the
+# now-removed _resolve_field_structured helper and was redundant — it was dropped
+# with the structured subsystem (ADR-0028); the invariant stays protected by the
+# live-path tests above.

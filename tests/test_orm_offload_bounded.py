@@ -680,3 +680,168 @@ def test_cancel_safety_identical_across_pools(decorator, getter, cap_env, timeou
         gate.set()
         proceed3.set()
         _restore([cap_env, timeout_env])
+
+
+# ---------------------------------------------------------------------------
+# _resolve_model + _latest_version timeout-surface tests (pure-unit, #284).
+#
+# Moved from tests/test_orm_dense_inheritance.py (#284 / finding-6): these are
+# monkeypatched-driver tests with no Neo4j, but that file's module-level
+# `pytestmark = pytest.mark.neo4j` wrongly deselected them from the fast unit
+# lane. This file has no module marker, so they run in `make test`.
+# ---------------------------------------------------------------------------
+
+# Local copy of the version constant (the source file is neo4j-marked; importing
+# it would pull in that module's marker).  Any sentinel-free string works — the
+# tests use it only as an explicit (Tier-1) version where noted.
+DENSE_VERSION = "99.7"
+
+
+class _TxTimeoutSession:
+    """Context-manager Neo4j session whose .run() always raises a tx-timeout."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def run(self, *a, **k):
+        from neo4j.exceptions import ClientError
+
+        exc = ClientError("transaction timed out")
+        exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+        raise exc
+
+
+class _TxTimeoutDriver:
+    def session(self, *a, **k):
+        return _TxTimeoutSession()
+
+
+def test_resolve_model_query_timeout_surfaces_clean_string(monkeypatch):
+    """A per-query timeout inside _resolve_model returns a clean English str.
+
+    Deterministic simulation: monkeypatch the Neo4j driver session so .run()
+    always raises the driver's transaction-timeout ClientError. With an EXPLICIT
+    version, _resolve_version short-circuits at Tier-1 without touching the
+    session, so the very first session.run is the bounded ranking query — exactly
+    the #279 hot path.
+
+    Business contract protected: when that query times out the caller gets a
+    clean, actionable string (no hang, no raw ClientError escaping to FastMCP as
+    isError, no Cypher fragment leaked).
+    """
+    import src.mcp.server as srv
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+
+    # Explicit version → _resolve_version returns it without a session.run.
+    result = srv._resolve_model("dense.model", DENSE_VERSION)
+
+    assert isinstance(result, str), f"expected clean str, got {type(result)!r}"
+    assert "timed out" in result.lower(), f"not a timeout message: {result!r}"
+    # ADR-0023: no Cypher leaked.
+    assert "MATCH" not in result and "Cypher" not in result, (
+        f"Cypher leaked: {result!r}"
+    )
+    # English, actionable.
+    assert "retry" in result.lower() or "dense" in result.lower()
+
+
+def test_latest_version_tx_timeout_raises_orm_query_timeout(monkeypatch):
+    """_latest_version converts a tx-timeout ClientError to OrmQueryTimeout (#284).
+
+    Business contract: the implicit-version fallback query must surface a
+    tx-timeout as the project's OrmQueryTimeout (clean English, ADR-0023), NOT a
+    raw neo4j ClientError. Before the #284 fix _latest_version ran a bare
+    session.run(...).single(), so a tx-timeout escaped as a raw ClientError that
+    _resolve_model's `except OrmQueryTimeout` could not catch.
+    """
+    import src.mcp.server as srv
+
+    with pytest.raises(OrmQueryTimeout):
+        srv._latest_version(_TxTimeoutSession())
+
+
+def test_resolve_model_implicit_version_timeout_surfaces_clean_string(monkeypatch):
+    """A tx-timeout during implicit-version resolution returns a clean str (#284).
+
+    On the implicit-version path (odoo_version='auto'), _resolve_model resolves
+    the version via _resolve_version -> resolve_version_v2 Tier-3 ->
+    _latest_version, INSIDE its try block. The timeout there must be caught by
+    _resolve_model's `except OrmQueryTimeout` and rendered as a clean string —
+    not escape as a raw ClientError to FastMCP.
+
+    Pre-fix RED: _latest_version raised a raw ClientError (not OrmQueryTimeout),
+    so this call raised instead of returning a clean str.
+    """
+    import src.mcp.server as srv
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    # No api-key pin for the anonymous default → Tier-1 (auto sentinel) and
+    # Tier-2 (session pin) both miss, so resolution reaches Tier-3 _latest_version.
+    result = srv._resolve_model("dense.model", "auto")
+
+    assert isinstance(result, str), f"expected clean str, got {type(result)!r}"
+    assert "timed out" in result.lower(), f"not a timeout message: {result!r}"
+    assert "MATCH" not in result and "Cypher" not in result, (
+        f"Cypher leaked: {result!r}"
+    )
+
+
+def test_resolve_model_tool_path_timeout_records_metric(monkeypatch):
+    """The model_inspect (tool) path increments nonorm_query_timeout_total (#284 D).
+
+    _resolve_model is outside both bounded-offload pools, so its except clause is
+    the ONLY place a tool-path timeout is observable. The metric must carry the
+    user-facing tool label (tool='model_inspect'), not the internal helper name.
+    """
+    from prometheus_client import REGISTRY
+
+    import src.mcp.server as srv
+
+    def _label_value():
+        return REGISTRY.get_sample_value(
+            "nonorm_query_timeout_total", {"tool": "model_inspect"}
+        ) or 0.0
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    before = _label_value()
+    # Tool path: _reraise_timeout defaults to False → records + returns clean str.
+    result = srv._resolve_model("dense.model", DENSE_VERSION)
+    assert isinstance(result, str)
+    after = _label_value()
+    assert after == before + 1, (
+        f"tool-path timeout must increment nonorm_query_timeout_total"
+        f"{{tool='model_inspect'}} exactly once; before={before} after={after}"
+    )
+
+
+def test_resolve_model_resource_path_timeout_does_not_double_count(monkeypatch):
+    """The resource path (_reraise_timeout=True) re-raises UNCOUNTED in _resolve_model.
+
+    The metric for the resource path is recorded once by the resource handler's
+    own except (resources._model_resource), NOT here — so _resolve_model must
+    re-raise without touching the counter when _reraise_timeout=True (#284 D,
+    no double-count).
+    """
+    from prometheus_client import REGISTRY
+
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    def _label_value():
+        return REGISTRY.get_sample_value(
+            "nonorm_query_timeout_total", {"tool": "model_inspect"}
+        ) or 0.0
+
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    before = _label_value()
+    with pytest.raises(OrmQueryTimeout):
+        srv._resolve_model("dense.model", DENSE_VERSION, _reraise_timeout=True)
+    after = _label_value()
+    assert after == before, (
+        f"resource path must NOT increment the counter in _resolve_model "
+        f"(handler counts it once); before={before} after={after}"
+    )
