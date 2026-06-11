@@ -68,6 +68,10 @@ class TestSignupCspHcaptcha:
         assert "https://newassets.hcaptcha.com" in script_src, (
             f"script-src must allow newassets.hcaptcha.com on /signup; got: {script_src!r}"
         )
+        # hCaptcha rotates script origins too — wildcard required per their CSP docs.
+        assert "https://*.hcaptcha.com" in script_src, (
+            f"script-src must allow https://*.hcaptcha.com on /signup; got: {script_src!r}"
+        )
 
     def test_signup_connect_src_includes_hcaptcha_api(self, astro_server):
         csp = _get_headers(f"{astro_server}/signup")["content-security-policy"]
@@ -94,6 +98,10 @@ class TestSignupCspHcaptcha:
         frame_src = directives.get("frame-src", "")
         assert "https://newassets.hcaptcha.com" in frame_src, (
             f"frame-src must allow newassets.hcaptcha.com on /signup; got: {frame_src!r}"
+        )
+        # hCaptcha rotates frame origins too — wildcard required per their CSP docs.
+        assert "https://*.hcaptcha.com" in frame_src, (
+            f"frame-src must allow https://*.hcaptcha.com on /signup; got: {frame_src!r}"
         )
 
     def test_signup_permissions_policy_present(self, astro_server):
@@ -169,6 +177,10 @@ class TestNonHcaptchaPathsDoNotLeakAllowlist:
         )
         assert "api.hcaptcha.com" not in csp
         assert "newassets.hcaptcha.com" not in csp
+        # Wildcards are /signup-only; they must also be absent on /login.
+        assert "https://*.hcaptcha.com" not in csp, (
+            f"hCaptcha wildcard must NOT appear on /login: {csp!r}"
+        )
 
     def test_login_csp_still_has_default_directives(self, astro_server):
         """Sanity: even without hCaptcha, login CSP must have the base directives."""

@@ -70,12 +70,12 @@ function _defaultCspDirectives(): Record<string, string[]> {
 export function _buildCspForPath(pathname: string): string {
   const directives = _defaultCspDirectives();
   if (_HCAPTCHA_PATHS.has(pathname)) {
-    directives['script-src'].push('https://js.hcaptcha.com', 'https://newassets.hcaptcha.com');
+    directives['script-src'].push('https://js.hcaptcha.com', 'https://newassets.hcaptcha.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com');
     // hCaptcha serves assets (e.g. logo.png) from rotating *.w.hcaptcha.com subdomains;
     // pinning specific subdomains breaks per their official CSP docs — wildcard is required.
     // https://docs.hcaptcha.com/configuration#content-security-policy-settings
     directives['connect-src'].push('https://api.hcaptcha.com', 'https://newassets.hcaptcha.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com');
-    directives['frame-src'].push('https://newassets.hcaptcha.com');
+    directives['frame-src'].push('https://newassets.hcaptcha.com', 'https://hcaptcha.com', 'https://*.hcaptcha.com');
   }
   return Object.entries(directives)
     .map(([name, values]) => `${name} ${values.join(' ')}`)
