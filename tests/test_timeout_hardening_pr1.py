@@ -139,6 +139,51 @@ _SYNC_TOOL_PATHS = [
     pytest.param(lambda s: s._list_js_patches(odoo_version=TIMEOUT_TEST_VERSION,
                                               module="web"),
                  id="list_js_patches"),
+    # --- PR-2 PURE spec.py (#287) ---
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.spec", fromlist=["_lookup_core_api"])
+        ._lookup_core_api("foo.bar", TIMEOUT_TEST_VERSION),
+        id="lookup_core_api"),
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.spec", fromlist=["_api_version_diff"])
+        ._api_version_diff("foo.bar", TIMEOUT_TEST_VERSION, "98.0"),
+        id="api_version_diff"),
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.spec", fromlist=["_find_deprecated_usage"])
+        ._find_deprecated_usage(odoo_version=TIMEOUT_TEST_VERSION),
+        id="find_deprecated_usage"),
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.spec", fromlist=["_lint_check"])
+        ._lint_check("x = 1", TIMEOUT_TEST_VERSION, "python"),
+        id="lint_check-python"),
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.spec", fromlist=["_lint_check_xml"])
+        ._lint_check_xml(TIMEOUT_TEST_VERSION),
+        id="lint_check-xml"),
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.spec", fromlist=["_cli_help"])
+        ._cli_help(None, odoo_version=TIMEOUT_TEST_VERSION),
+        id="cli_help"),
+    # --- PR-2 PURE guidance.py (#287) ---
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.guidance", fromlist=["_check_module_exists"])
+        ._check_module_exists("sale", TIMEOUT_TEST_VERSION),
+        id="check_module_exists"),
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.guidance", fromlist=["_find_override_point"])
+        ._find_override_point("sale.order", "write", TIMEOUT_TEST_VERSION),
+        id="find_override_point"),
+    # --- PR-2 PURE session_tools.py (#287) ---
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.session_tools",
+                             fromlist=["_list_available_versions"])
+        ._list_available_versions(),
+        id="list_available_versions"),
+    # --- PR-2 PURE stylesheet.py (#287) ---
+    pytest.param(
+        lambda s: __import__("src.mcp.tools.stylesheet", fromlist=["_resolve_stylesheet"])
+        ._resolve_stylesheet("web", TIMEOUT_TEST_VERSION),
+        id="resolve_stylesheet"),
 ]
 
 

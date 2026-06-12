@@ -346,31 +346,46 @@ def _find_examples(
     # module-level constants so tests/test_calibration_eval.py grid sweep can
     # monkey-patch them. Baseline (0.02, 0.20) calibrated against 100-query
     # Vi+En eval set 2026-05-11.
+    # #287: find_examples is async (embeds on the event loop, then offloads this
+    # body via asyncio.to_thread) so it has NO @offload_neo4j backstop. Both rerank
+    # queries are bounded via _data_bounded; the VLP `DEPENDS_ON*1..` chain query
+    # is the #273-class fan-out vector, so the 30s per-query bound is the fix. Wrap
+    # BOTH queries in ONE OrmQueryTimeout catch (one metric, one clean-string
+    # return per ADR-0023).
+    from src.mcp.orm import OrmQueryTimeout
     module_names = list({c["module"] for c in raw})
-    with driver.session() as session:
-        dep_rows = session.run(
-            f"UNWIND $names AS name"
-            f" MATCH (m:Module {{name: name, odoo_version: $v}})"
-            f" WHERE {_srv._scope_pred('m')}"
-            f" WITH m, name"
-            f" OPTIONAL MATCH (dep)-[:{REL_DEPENDS_ON}]->(m)"
-            f" RETURN name, count(dep) AS dependents",
-            names=module_names, v=odoo_version, **_srv._scope(profile_name),
-        ).data()
-        dependents_map = {r["name"]: r["dependents"] for r in dep_rows}
+    try:
+        with driver.session() as session:
+            dep_rows = _srv._data_bounded(
+                session,
+                f"UNWIND $names AS name"
+                f" MATCH (m:Module {{name: name, odoo_version: $v}})"
+                f" WHERE {_srv._scope_pred('m')}"
+                f" WITH m, name"
+                f" OPTIONAL MATCH (dep)-[:{REL_DEPENDS_ON}]->(m)"
+                f" RETURN name, count(dep) AS dependents",
+                label=f"dependents rerank (Odoo {odoo_version})",
+                names=module_names, v=odoo_version, **_srv._scope(profile_name),
+            )
+            dependents_map = {r["name"]: r["dependents"] for r in dep_rows}
 
-        in_chain_set: set[str] = set()
-        if context_module and module_names:
-            chain_rows = session.run(
-                "MATCH (ctx:Module {name: $ctx, odoo_version: $v})"
-                " -[:DEPENDS_ON*1..]->(tgt:Module)"
-                " WHERE tgt.name IN $names"
-                f" AND {_srv._scope_pred('ctx')}"
-                " RETURN DISTINCT tgt.name AS name",
-                ctx=context_module, v=odoo_version, names=module_names,
-                **_srv._scope(profile_name),
-            ).data()
-            in_chain_set = {r["name"] for r in chain_rows}
+            in_chain_set: set[str] = set()
+            if context_module and module_names:
+                chain_rows = _srv._data_bounded(
+                    session,
+                    "MATCH (ctx:Module {name: $ctx, odoo_version: $v})"
+                    " -[:DEPENDS_ON*1..]->(tgt:Module)"
+                    " WHERE tgt.name IN $names"
+                    f" AND {_srv._scope_pred('ctx')}"
+                    " RETURN DISTINCT tgt.name AS name",
+                    label=f"dependency-chain rerank (Odoo {odoo_version})",
+                    ctx=context_module, v=odoo_version, names=module_names,
+                    **_srv._scope(profile_name),
+                )
+                in_chain_set = {r["name"] for r in chain_rows}
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("find_examples")
+        return exc.user_message
 
     # M1 fix: literal rows have cosine=None — guard against TypeError in score math.
     # Assign a floor score with a small epsilon to preserve SQL ORDER BY order so

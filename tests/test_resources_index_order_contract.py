@@ -25,12 +25,18 @@ def _capturing_session(returns_per_call: list[list]):
 
     `returns_per_call[i]` is the `.data()` payload for the i-th `session.run`.
     Captured query strings are recorded on `session.captured_queries`.
+
+    #287: `_fetch_top_models` now routes through `_data_bounded`, which wraps the
+    Cypher in a `neo4j.Query(text, timeout=...)` before calling `session.run`.
+    The captured first positional arg is therefore a `neo4j.Query` whose raw text
+    lives on `.text` — normalise to the string so the ORDER BY contract assertions
+    (unchanged) keep inspecting the actual Cypher.
     """
     captured: list[str] = []
     call = {"i": 0}
 
     def _run(query, **kwargs):
-        captured.append(query)
+        captured.append(getattr(query, "text", query))
         idx = call["i"]
         call["i"] += 1
         result = MagicMock()

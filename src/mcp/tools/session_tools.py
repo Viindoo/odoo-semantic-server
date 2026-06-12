@@ -3,8 +3,9 @@
 Wave E session tools (ADR-0029, M11 WI-E3):
   - ``set_active_version`` / ``set_active_profile`` (sync, ``@offload``) — pin
     the per-session version / profile.
-  - ``list_available_versions`` / ``list_available_profiles`` (sync,
-    ``@offload``) — enumerate what is indexed / registered.
+  - ``list_available_versions`` (sync, ``@offload_neo4j`` — per-query bounded +
+    clean-string-on-timeout, #287) / ``list_available_profiles`` (sync,
+    ``@offload``, Postgres-only) — enumerate what is indexed / registered.
 
 The session persistence helpers (``normalize_version_arg`` /
 ``set_active_version_db`` / ``set_active_profile_db``) live in
@@ -37,11 +38,13 @@ from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent
 
 from src.mcp import session as _session
+from src.mcp.orm import OrmQueryTimeout
 from src.mcp.server import (
     MUTATING_TOOL_KWARGS,
     READONLY_TOOL_KWARGS,
     mcp,
     offload,
+    offload_neo4j,
 )
 
 # ---------------------------------------------------------------------------
@@ -51,7 +54,7 @@ from src.mcp.server import (
 
 @mcp.tool(**MUTATING_TOOL_KWARGS)
 @offload
-def set_active_version(odoo_version: str) -> ToolResult:
+def set_active_version(odoo_version: str) -> ToolResult | str:
     """Pin the active Odoo version for this MCP session (ADR-0029 implicit context).
 
     TRIGGER when: a single actor works one Odoo version for a while and wants the
@@ -86,17 +89,26 @@ def set_active_version(odoo_version: str) -> ToolResult:
             )
         )])
     # Sanity-check: confirm the version is actually indexed in Neo4j before pinning it.
+    # #287 (GAP-2): the two sanity reads are now per-query bounded via
+    # _data_bounded; the catch-all `except Exception` below would otherwise
+    # swallow a tx-timeout silently (no metric, indistinguishable from a real
+    # config error). The `except OrmQueryTimeout` is placed BEFORE it so a
+    # timeout records the metric once and returns the clean ADR-0023 string.
     try:
         with _srv._get_driver().session() as neo4j_session:
-            hit = neo4j_session.run(
+            hit = _srv._data_bounded(
+                neo4j_session,
                 f"MATCH (m:Module {{odoo_version: $v}}) WHERE {_srv._scope_pred('m')} "
                 "RETURN m LIMIT 1",
+                label=f"version {normalized!r} sanity check",
                 v=normalized, **_srv._scope(),
-            ).data()
+            )
         if not hit:
             # Version not indexed (for this tenant) — fetch available list for the error.
             with _srv._get_driver().session() as neo4j_session:
-                rows = neo4j_session.run(f"""
+                rows = _srv._data_bounded(
+                    neo4j_session,
+                    f"""
                     MATCH (m:Module)
                     WHERE {_srv._scope_pred("m")}
                     WITH DISTINCT m.odoo_version AS v
@@ -104,7 +116,10 @@ def set_active_version(odoo_version: str) -> ToolResult:
                     RETURN v
                     ORDER BY toInteger(split(v, '.')[0]) DESC,
                              toInteger(split(v, '.')[1]) DESC
-                """, **_srv._scope()).data()
+                    """,
+                    label="indexed-version list",
+                    **_srv._scope(),
+                )
             available = [r["v"] for r in rows]
             if available:
                 avail_str = ", ".join(available)
@@ -118,6 +133,9 @@ def set_active_version(odoo_version: str) -> ToolResult:
                     "└─ Use list_available_versions() to see what is available."
                 )
             )])
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("set_active_version")
+        return exc.user_message
     except Exception:
         _srv.logger.warning("set_active_version: indexed-version check failed", exc_info=True)
         return ToolResult(content=[TextContent(type="text",
@@ -292,9 +310,49 @@ def set_active_profile(profile_name: str | None) -> ToolResult:
     return ToolResult(content=[TextContent(type="text", text=msg)])
 
 
+def _list_available_versions() -> ToolResult:
+    """Impl for list_available_versions — no FastMCP wrapper overhead.
+
+    Extracted from the public def (#287) so the bounded Neo4j read can be tested
+    in the no-DB timeout lane exactly like the other PURE bodies, and so the
+    @offload_neo4j backstop wraps a plain sync body.
+    """
+    with _srv._get_driver().session() as neo4j_session:
+        rows = _srv._data_bounded(
+            neo4j_session,
+            """
+            MATCH (m:Module)
+            WHERE ($own IS NULL OR (size(m.profile) > 0
+                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
+            WITH DISTINCT m.odoo_version AS v
+            WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
+            RETURN v
+            ORDER BY toInteger(split(v, '.')[0]) DESC,
+                     toInteger(split(v, '.')[1]) DESC
+            """,
+            label="indexed Odoo version list",
+            **_srv._scope(None),
+        )
+
+    if not rows:
+        return ToolResult(content=[TextContent(type="text",
+            text=(
+                "No Odoo versions indexed in this profile yet. "
+                "Call list_available_profiles to see which profiles are configured."
+            )
+        )])
+
+    versions = [r["v"] for r in rows]
+    lines = [f"Indexed Odoo versions ({len(versions)} total):"]
+    for i, v in enumerate(versions):
+        prefix = "└─" if i == len(versions) - 1 else "├─"
+        lines.append(f"{prefix} {v}")
+    return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
+
+
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
-def list_available_versions() -> ToolResult:
+@offload_neo4j
+def list_available_versions() -> ToolResult | str:
     """List all Odoo versions indexed in this knowledge base.
 
     TRIGGER when: unsure which Odoo versions are available, before calling
@@ -311,32 +369,7 @@ def list_available_versions() -> ToolResult:
         ├─ 16.0
         └─ 15.0
     """
-    with _srv._get_driver().session() as neo4j_session:
-        rows = neo4j_session.run("""
-            MATCH (m:Module)
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
-            WITH DISTINCT m.odoo_version AS v
-            WHERE v <> 'unknown' AND v =~ '\\d+\\.\\d+'
-            RETURN v
-            ORDER BY toInteger(split(v, '.')[0]) DESC,
-                     toInteger(split(v, '.')[1]) DESC
-        """, **_srv._scope(None)).data()
-
-    if not rows:
-        return ToolResult(content=[TextContent(type="text",
-            text=(
-                "No Odoo versions indexed in this profile yet. "
-                "Call list_available_profiles to see which profiles are configured."
-            )
-        )])
-
-    versions = [r["v"] for r in rows]
-    lines = [f"Indexed Odoo versions ({len(versions)} total):"]
-    for i, v in enumerate(versions):
-        prefix = "└─" if i == len(versions) - 1 else "├─"
-        lines.append(f"{prefix} {v}")
-    return ToolResult(content=[TextContent(type="text", text="\n".join(lines))])
+    return _list_available_versions()
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)

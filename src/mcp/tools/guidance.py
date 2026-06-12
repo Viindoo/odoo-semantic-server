@@ -9,7 +9,8 @@ Three guidance tools and their implementation helpers:
 ``suggest_pattern`` is ``async def`` (no offload decorator): it embeds the
 intent on the event loop (bounded, short timeout) and then offloads the
 blocking Neo4j/PG body via ``asyncio.to_thread`` (ADR-0046).
-``check_module_exists`` and ``find_override_point`` use ``@offload``.
+``check_module_exists`` and ``find_override_point`` use ``@offload_neo4j``
+(per-query bounded + clean-string-on-timeout; #287).
 
 Registration happens via the ``@mcp.tool`` import-time side effect; server.py
 imports this module at the end of the file so the decorators run.
@@ -63,7 +64,7 @@ from src.mcp.server import (
     READONLY_TOOL_KWARGS,
     RequiredOdooVersion,
     mcp,
-    offload,
+    offload_neo4j,
 )
 
 # Guidance-only module-level constants (§2.7 — verified used only by the tools
@@ -193,15 +194,30 @@ def _suggest_pattern(
         pattern_ids.append(pid)
         score_map[pid] = float(cosine)
 
-    with driver.session() as session:
-        records = session.run("""
-            UNWIND $ids AS pid
-            MATCH (p:PatternExample {pattern_id: pid})
-            RETURN p.pattern_id AS id, p.intent_keywords AS kw,
-                   p.file_ref AS fr, p.snippet_text AS sn,
-                   p.gotchas AS g, p.language AS lang,
-                   p.odoo_version_min AS vmin
-        """, ids=pattern_ids).data()
+    # #287: bound the PatternExample batch fetch under the per-query Neo4j
+    # timeout. suggest_pattern is async (embeds on the event loop, then offloads
+    # this body via asyncio.to_thread) so it has NO @offload_neo4j backstop — the
+    # OrmQueryTimeout must be caught INLINE here, emit the metric once, and return
+    # the clean string (ADR-0023 raw-text contract).
+    from src.mcp.orm import OrmQueryTimeout
+    try:
+        with driver.session() as session:
+            records = _srv._data_bounded(
+                session,
+                """
+                UNWIND $ids AS pid
+                MATCH (p:PatternExample {pattern_id: pid})
+                RETURN p.pattern_id AS id, p.intent_keywords AS kw,
+                       p.file_ref AS fr, p.snippet_text AS sn,
+                       p.gotchas AS g, p.language AS lang,
+                       p.odoo_version_min AS vmin
+                """,
+                label=f"pattern metadata batch (Odoo {v})",
+                ids=pattern_ids,
+            )
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("suggest_pattern")
+        return exc.user_message
 
     by_id = {r["id"]: r for r in records}
     return _format_suggest_pattern(
@@ -282,7 +298,9 @@ def _check_module_exists(
     driver = _driver or _srv._get_driver()
     with driver.session() as session:
         v = _srv._resolve_version(odoo_version, session)
-        rec = session.run("""
+        rec = _srv._single_bounded(
+            session,
+            """
             MATCH (m:Module {name: $n, odoo_version: $v})
             WHERE ($own IS NULL OR (size(m.profile) > 0
                    AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
@@ -290,7 +308,10 @@ def _check_module_exists(
                    m.license AS license,
                    m.viindoo_equivalent_qname AS vvq,
                    m.repo AS repo
-        """, n=name, v=v, **_srv._scope(profile_name)).single()
+            """,
+            label=f"module {name!r} existence (Odoo {v})",
+            n=name, v=v, **_srv._scope(profile_name),
+        )
 
     indexed = rec is not None
     edition = rec["edition"] if rec else None
@@ -416,7 +437,9 @@ def _fetch_method_for_diff(session, model: str, method: str, version: str) -> di
     has_super_call, signature. Returns None when no Method found.
     Aggregates across all modules (decorators union, super_call OR).
     """
-    rows = session.run(f"""
+    rows = _srv._data_bounded(
+        session,
+        f"""
         MATCH (mth:Method {{name: $method, model: $model, odoo_version: $v}})
         WHERE {_srv._scope_pred("mth")}
         RETURN mth.decorators AS decorators,
@@ -425,7 +448,10 @@ def _fetch_method_for_diff(session, model: str, method: str, version: str) -> di
                coalesce(mth.has_super_call, false) AS has_super,
                mth.signature AS signature
         ORDER BY mth.module
-    """, method=method, model=model, v=version, **_srv._scope()).data()
+        """,
+        label=f"method {model}.{method} for diff (Odoo {version})",
+        method=method, model=model, v=version, **_srv._scope(),
+    )
     if not rows:
         return None
     # Merge across override chain: union decorators, OR has_super, first non-null sig
@@ -575,7 +601,9 @@ def _find_override_point(
     # find_override_point has no profile_name param — use None so admin is
     # unrestricted and tenant boundary is still enforced via _srv._effective_allowed.
     with driver.session() as session:
-        records = session.run("""
+        records = _srv._data_bounded(
+            session,
+            """
             MATCH (mth:Method {name: $method, model: $model, odoo_version: $v})
             WHERE ($own IS NULL OR (size(mth.profile) > 0
                    AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
@@ -585,7 +613,10 @@ def _find_override_point(
                    coalesce(mth.has_super_call, false) AS has_super,
                    coalesce(mod.repo_url, mod.repo) AS repo, mod.edition AS edition
             ORDER BY mth.module
-        """, method=method, model=model, v=v, **_srv._scope(None)).data()
+            """,
+            label=f"override chain {model}.{method} (Odoo {v})",
+            method=method, model=model, v=v, **_srv._scope(None),
+        )
 
     if not records:
         next_line = format_next_step([
@@ -714,7 +745,7 @@ async def suggest_pattern(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def check_module_exists(
     name: str,
     odoo_version: RequiredOdooVersion,
@@ -755,7 +786,7 @@ def check_module_exists(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def find_override_point(
     model: str, method: str, odoo_version: RequiredOdooVersion, to_version: str = "",
 ) -> str:

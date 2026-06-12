@@ -1,7 +1,7 @@
 """Spec-layer MCP tools (split out of src/mcp/server.py, Phase 4).
 
-Five M4.5 spec tools and their implementation helpers — all ``@offload``
-(sync bodies offloaded off the event loop):
+Five M4.5 spec tools and their implementation helpers — all ``@offload_neo4j``
+(sync Neo4j-read bodies offloaded off the event loop; per-query bounded, #287):
   - ``lookup_core_api``        — CoreSymbol signature/status/replacement lookup.
   - ``api_version_diff``       — diff one CoreSymbol between two versions.
   - ``find_deprecated_usage``  — scan indexed code for deprecated/removed API use.
@@ -57,7 +57,7 @@ from src.mcp.server import (
     READONLY_TOOL_KWARGS,
     RequiredOdooVersion,
     mcp,
-    offload,
+    offload_neo4j,
 )
 
 
@@ -108,7 +108,9 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     """Return signature + status + replacement for a single Odoo core API symbol."""
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
-        rec = session.run("""
+        rec = _srv._single_bounded(
+            session,
+            """
             MATCH (cs:CoreSymbol {odoo_version: $v})
             WHERE cs.qualified_name = $name
                OR cs.qualified_name ENDS WITH '.' + $name
@@ -124,7 +126,10 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
                    cs.deprecated_in AS deprecated_in
             ORDER BY size(cs.qualified_name) ASC
             LIMIT 1
-        """, name=name, v=odoo_version).single()
+            """,
+            label=f"core API symbol {name!r} (Odoo {odoo_version})",
+            name=name, v=odoo_version,
+        )
     if rec is None:
         next_line = format_next_step([
             f"find_examples(query='{name}', odoo_version='{odoo_version}')"
@@ -174,7 +179,9 @@ def _format_api_diff(
 
 
 def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
-    rec = session.run("""
+    rec = _srv._single_bounded(
+        session,
+        """
         MATCH (cs:CoreSymbol {odoo_version: $v})
         WHERE cs.qualified_name = $name
            OR cs.qualified_name ENDS WITH '.' + $name
@@ -190,7 +197,10 @@ def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
                cs.deprecated_in AS deprecated_in
         ORDER BY size(cs.qualified_name) ASC
         LIMIT 1
-    """, name=name, v=version).single()
+        """,
+        label=f"core API symbol {name!r} (Odoo {version})",
+        name=name, v=version,
+    )
     return dict(rec) if rec else None
 
 
@@ -216,7 +226,7 @@ def _api_version_diff(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def lookup_core_api(name: str, odoo_version: RequiredOdooVersion) -> str:
     """Look up an Odoo core API symbol: signature, status, replacement.
 
@@ -325,7 +335,11 @@ def _find_deprecated_usage(
             ORDER BY mth.module, mth.model, mth.name
             LIMIT $cap_plus_one
         """
-        records = session.run(cypher, **params).data()
+        records = _srv._data_bounded(
+            session, cypher,
+            label=f"deprecated-usage scan (Odoo {odoo_version})",
+            **params,
+        )
     overflow = len(records) > LIST_PREVIEW_MAX_ITEMS
     if overflow:
         records = records[:LIST_PREVIEW_MAX_ITEMS]
@@ -557,7 +571,9 @@ def _lint_check_xml(odoo_version: str) -> str:
     """
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
-        rows = session.run(f"""
+        rows = _srv._data_bounded(
+            session,
+            f"""
             MATCH (lv:LintViolation {{odoo_version: $v}})
             WHERE {_srv._scope_pred("lv")}
             RETURN lv.view_xmlid AS view_xmlid,
@@ -568,7 +584,10 @@ def _lint_check_xml(odoo_version: str) -> str:
                    lv.view_type AS view_type,
                    lv.file_path AS file_path
             ORDER BY lv.view_xmlid ASC, lv.line ASC, lv.rule ASC
-        """, v=odoo_version, **_srv._scope()).data()
+            """,
+            label=f"RelaxNG lint violations (Odoo {odoo_version})",
+            v=odoo_version, **_srv._scope(),
+        )
 
     header = (
         f"lint_check(Odoo {odoo_version}, language=xml) — "
@@ -636,7 +655,9 @@ def _lint_check(
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
         if language == "python":
-            rules = session.run("""
+            rules = _srv._data_bounded(
+                session,
+                """
                 MATCH (l:LintRule {odoo_version: $v})
                 WHERE l.kind STARTS WITH 'pylint'
                 RETURN l.rule_id AS rule_id,
@@ -644,9 +665,14 @@ def _lint_check(
                        l.message AS message,
                        l.kind AS kind,
                        l.code_pattern AS code_pattern
-            """, v=odoo_version).data()
+                """,
+                label=f"python lint rules (Odoo {odoo_version})",
+                v=odoo_version,
+            )
         else:  # javascript: ESLint rules + Odoo JS-targeted pylint rules (file_pattern *.js)
-            rules = session.run("""
+            rules = _srv._data_bounded(
+                session,
+                """
                 MATCH (l:LintRule {odoo_version: $v})
                 WHERE l.kind STARTS WITH 'eslint'
                    OR (l.kind STARTS WITH 'pylint' AND l.file_pattern ENDS WITH '.js')
@@ -655,11 +681,19 @@ def _lint_check(
                        l.message AS message,
                        l.kind AS kind,
                        l.code_pattern AS code_pattern
-            """, v=odoo_version).data()
-        curate_rec = session.run("""
+                """,
+                label=f"javascript lint rules (Odoo {odoo_version})",
+                v=odoo_version,
+            )
+        curate_rec = _srv._single_bounded(
+            session,
+            """
             MATCH (sm:SpecMetadata {kind: 'lint', odoo_version: $v})
             RETURN sm.curate_status AS curate_status
-        """, v=odoo_version).single()
+            """,
+            label=f"lint curation status (Odoo {odoo_version})",
+            v=odoo_version,
+        )
         curate_status = curate_rec["curate_status"] if curate_rec else None
 
     # Tier-1 disclosure (ADR-0002 §4): NO rules indexed → genuine data gap, NOT a
@@ -718,7 +752,7 @@ def _lint_check(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def find_deprecated_usage(
     odoo_version: RequiredOdooVersion,
     kind: str | None = None,
@@ -760,7 +794,7 @@ def find_deprecated_usage(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def lint_check(
     code: str, odoo_version: RequiredOdooVersion, language: str = "python",
 ) -> str:
@@ -851,14 +885,21 @@ def _cli_help(
         odoo_version = _srv._resolve_version(odoo_version, session)
 
         # Query SpecMetadata curation status for CLI at this version.
-        curate_rec = session.run("""
+        curate_rec = _srv._single_bounded(
+            session,
+            """
             MATCH (sm:SpecMetadata {kind: 'cli', odoo_version: $v})
             RETURN sm.curate_status AS curate_status
-        """, v=odoo_version).single()
+            """,
+            label=f"CLI curation status (Odoo {odoo_version})",
+            v=odoo_version,
+        )
         curate_status = curate_rec["curate_status"] if curate_rec else None
 
         if command and flag:
-            rec = session.run("""
+            rec = _srv._single_bounded(
+                session,
+                """
                 MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd, odoo_version: $v})
                 OPTIONAL MATCH (f)-[:REPLACED_BY]->(repl:CLIFlag)
                 RETURN f.flag_name AS flag_name,
@@ -868,7 +909,10 @@ def _cli_help(
                        f.default AS default,
                        f.help AS help,
                        repl.flag_name AS replacement
-            """, flag=flag, cmd=command, v=odoo_version).single()
+                """,
+                label=f"CLI flag {flag!r} of {command!r} (Odoo {odoo_version})",
+                flag=flag, cmd=command, v=odoo_version,
+            )
             if rec is None:
                 result = (
                     f"cli_help({command!r}, {flag!r}, Odoo {odoo_version})\n"
@@ -879,11 +923,16 @@ def _cli_help(
                 replacement = data.pop("replacement", None)
                 # Fallback: replacement_flag_name property when no REPLACED_BY edge.
                 if not replacement:
-                    fallback = session.run("""
+                    fallback = _srv._single_bounded(
+                        session,
+                        """
                         MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd,
                                           odoo_version: $v})
                         RETURN f.replacement_flag_name AS r
-                    """, flag=flag, cmd=command, v=odoo_version).single()
+                        """,
+                        label=f"CLI flag replacement for {flag!r} (Odoo {odoo_version})",
+                        flag=flag, cmd=command, v=odoo_version,
+                    )
                     replacement = fallback["r"] if fallback else None
                 result = _format_cli_flag_detail(data, replacement, odoo_version)
             if curate_status == "pending":
@@ -894,21 +943,31 @@ def _cli_help(
             return result
 
         if command:
-            cmd_rec = session.run("""
+            cmd_rec = _srv._single_bounded(
+                session,
+                """
                 MATCH (c:CLICommand {name: $cmd, odoo_version: $v})
                 RETURN c.name AS name, c.description AS description
-            """, cmd=command, v=odoo_version).single()
+                """,
+                label=f"CLI command {command!r} (Odoo {odoo_version})",
+                cmd=command, v=odoo_version,
+            )
             if cmd_rec is None:
                 result = (
                     f"cli_help({command!r}, Odoo {odoo_version})\n"
                     f"└─ command {command!r} not found"
                 )
             else:
-                flags = session.run("""
+                flags = _srv._data_bounded(
+                    session,
+                    """
                     MATCH (f:CLIFlag {command_name: $cmd, odoo_version: $v})
                     RETURN f.flag_name AS flag_name, f.status AS status
                     ORDER BY f.flag_name
-                """, cmd=command, v=odoo_version).data()
+                    """,
+                    label=f"CLI flags of {command!r} (Odoo {odoo_version})",
+                    cmd=command, v=odoo_version,
+                )
                 result = _format_cli_command_summary(dict(cmd_rec), flags, odoo_version)
             if curate_status == "pending":
                 result = (
@@ -918,11 +977,16 @@ def _cli_help(
             return result
 
         # No command — list all CLI commands at this version.
-        cmds = session.run("""
+        cmds = _srv._data_bounded(
+            session,
+            """
             MATCH (c:CLICommand {odoo_version: $v})
             RETURN c.name AS name
             ORDER BY c.name
-        """, v=odoo_version).data()
+            """,
+            label=f"CLI command list (Odoo {odoo_version})",
+            v=odoo_version,
+        )
     if not cmds:
         result = (
             f"cli_help(Odoo {odoo_version})\n"
@@ -948,7 +1012,7 @@ def _cli_help(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def cli_help(
     command: str | None = None,
     flag: str | None = None,
@@ -986,7 +1050,7 @@ def cli_help(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def api_version_diff(symbol: str, from_version: str, to_version: str) -> str:
     """Diff a single Odoo core API symbol between two indexed versions.
 
