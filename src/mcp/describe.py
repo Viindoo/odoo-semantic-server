@@ -419,5 +419,12 @@ def _module_dep_closure(
 # ``_srv`` points back at the same stale generation, so monkeypatch.setattr(srv,
 # ...) still takes effect.  The bodies read the hub through ``_srv.<name>`` at
 # call time so those patches are observed.
-_srv = sys.modules["src.mcp.server"]
+#
+# ``.get`` (not ``[...]``) so a cold ``import src.mcp.describe`` in a fresh
+# interpreter (server not loaded) binds ``None`` instead of raising KeyError.
+# In production this module is only ever imported via server.py's end-of-body
+# pop+reimport, at which point ``src.mcp.server`` IS in sys.modules, so ``.get``
+# returns the SAME generation as before — the helper bodies that dereference
+# ``_srv`` only run through that path, never under a bare cold import.
+_srv = sys.modules.get("src.mcp.server")
 

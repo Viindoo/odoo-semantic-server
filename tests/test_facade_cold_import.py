@@ -35,18 +35,14 @@ _FACADE_CHILDREN = [
     # B2 — orm -> orm_queries / orm_validators
     "src.mcp.orm_queries",
     "src.mcp.orm_validators",
+    # A1 — server hub-shrink -> describe / listings. These bind the owning server
+    # generation with `_srv = sys.modules.get('src.mcp.server')` (``.get`` so a
+    # cold import binds None instead of raising; in production they are imported
+    # only via server.py's pop+reimport where the server IS loaded, preserving
+    # the monkeypatch/reload contract — see the comment at each binding).
+    "src.mcp.describe",
+    "src.mcp.listings",
 ]
-
-# NOTE: src.mcp.describe and src.mcp.listings (A1 server hub-shrink) are NOT in
-# the list above on purpose. They are server-INTERNAL sub-modules (only server.py
-# imports them, via a pop+reimport at the end of its body) and bind the owning
-# server generation eagerly with `_srv = sys.modules['src.mcp.server']` for a
-# deliberate monkeypatch/reload contract (see the comment at that binding). A bare
-# `import src.mcp.describe` therefore raises KeyError because the server is not
-# loaded yet — but that standalone import is not a supported entry path. Making
-# them cold-safe means swapping the eager bind for a lazy `_srv` proxy, which
-# changes the A1 reload semantics and must be reviewed as its own change rather
-# than bundled here.
 
 
 @pytest.mark.parametrize("module", _FACADE_CHILDREN)
