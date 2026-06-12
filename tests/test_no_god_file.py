@@ -25,10 +25,13 @@ large new block of resolver code) is caught.
     target. The ceiling here is the measured post-A1 size + buffer; it is a
     ratchet that only ever moves DOWN.
 
-  * TOOL_MODULE_MAX_LINES — discovery.py is the largest tool module because it
-    carries five tools plus their full impls (find_examples / impact_analysis /
-    suggest_pattern / check_module_exists / find_override_point); the irreducible
-    impl body alone is ~1650 lines. The ceiling is its measured size + buffer.
+  * TOOL_MODULE_MAX_LINES — A2 split discovery.py: the two discovery tools
+    (find_examples / impact_analysis + impls) stayed in discovery.py and the
+    three guidance tools (suggest_pattern / check_module_exists /
+    find_override_point + impls) moved to guidance.py.  The largest tool module
+    is now discovery.py (~1038 lines), with spec.py a close second (~1031).  The
+    ceiling is the measured largest size + buffer; it ratchets DOWN on any
+    further tool-module shrink.
 
   * HELPER_MODULE_MAX_LINES — the Phase 7 / A1 split also produced the two
     NON-tool helper modules src/mcp/describe.py + src/mcp/listings.py (the moved
@@ -48,9 +51,10 @@ MCP_DIR = REPO_ROOT / "src" / "mcp"
 # putting the hub under the <4500 target. Ratchet DOWN on further hub shrink.
 SERVER_MAX_LINES = 3700
 
-# Measured post-Phase-5: discovery.py = 1778 lines (largest tool module — 5
-# tools + their full impls). Buffer ~120 → 1900.
-TOOL_MODULE_MAX_LINES = 1900
+# Measured post-A2: discovery.py = 1038 lines (largest tool module — 2 tools +
+# impls; spec.py = 1031 is a close second). Buffer ~62 → 1100. Ratcheted DOWN
+# from the post-Phase-5 1900 now that discovery.py shed the 3 guidance tools.
+TOOL_MODULE_MAX_LINES = 1100
 
 # Measured post-A1: listings.py = 1460 lines (the nine _list_* helpers — the
 # larger of the two A1 helper modules; describe.py = 423). Buffer ~140 → 1600.

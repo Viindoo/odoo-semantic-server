@@ -3152,49 +3152,58 @@ for _tool_mod in (
     "src.mcp.tools.session_tools",   # Phase 3
     "src.mcp.tools.spec",            # Phase 4
     "src.mcp.tools.discovery",       # Phase 5
+    "src.mcp.tools.guidance",        # A2 (split out of discovery)
 ):
     sys.modules.pop(_tool_mod, None)
 del _tool_mod
 
 from src.mcp.tools import discovery as _discovery_tools  # noqa: E402,F401
+from src.mcp.tools import guidance as _guidance_tools  # noqa: E402,F401
 from src.mcp.tools import inspect_tools as _inspect_tools  # noqa: E402,F401
 from src.mcp.tools import orm_tools as _orm_tools  # noqa: E402,F401
 from src.mcp.tools import session_tools as _session_tools  # noqa: E402,F401
 from src.mcp.tools import spec as _spec_tools  # noqa: E402,F401
 from src.mcp.tools import stylesheet as _stylesheet_tools  # noqa: E402,F401
 
-# Phase 5 re-exports: the five public discovery tools, plus the impl symbols
+# Phase 5 / A2 re-exports: the two public discovery tools, plus the impl symbols
 # that tests import via src.mcp.server (directly, e.g. test_mcp_find_examples.py
 # imports _find_examples; test_mcp_impact_analysis.py imports _impact_analysis +
-# _compute_risk; test_calibration_eval.py imports _compute_risk;
-# test_cross_tenant_isolation.py imports _fetch_method_for_diff +
-# _diff_method_across_versions; test_mcp_pattern_tools.py imports
-# _suggest_pattern / _check_module_exists / _find_override_point; or as
-# attributes off a popped + re-imported module).  _suggest_pattern is also
-# reached lazily by src/mcp/inspect.py (entity_lookup kind='pattern') through
-# srv._suggest_pattern, so the re-export keeps that path working.  The impl
-# bodies read the hub through _srv. at call time so monkeypatch.setattr(srv, ...)
-# keeps working.  The two discovery-only constants (_VALID_PATTERN_LANGUAGES /
-# _ANTI_PATTERNS_BASE, §2.7 - verified discovery-only) now live solely in
-# tools/discovery.py and are NOT re-exported (no external importer).
+# _compute_risk; test_calibration_eval.py imports _compute_risk; or as attributes
+# off a popped + re-imported module).  The impl bodies read the hub through _srv.
+# at call time so monkeypatch.setattr(srv, ...) keeps working.
 from src.mcp.tools.discovery import (  # noqa: E402,F401
+    _compute_risk,
+    _find_examples,
+    _impact_analysis,
+    find_examples,
+    impact_analysis,
+)
+
+# A2 re-exports: the three public guidance tools (split out of discovery in A2),
+# plus the impl symbols that tests import via src.mcp.server (directly, e.g.
+# test_cross_tenant_isolation.py imports _fetch_method_for_diff +
+# _diff_method_across_versions; test_mcp_pattern_tools.py imports _suggest_pattern
+# / _check_module_exists / _find_override_point; or as attributes off a popped +
+# re-imported module).  _suggest_pattern is also reached lazily by
+# src/mcp/inspect.py (entity_lookup kind='pattern') through srv._suggest_pattern,
+# so the re-export keeps that path working.  The impl bodies read the hub through
+# _srv. at call time so monkeypatch.setattr(srv, ...) keeps working.  The two
+# guidance-only constants (_VALID_PATTERN_LANGUAGES / _ANTI_PATTERNS_BASE, §2.7 -
+# verified guidance-only) now live solely in tools/guidance.py and are NOT
+# re-exported (no external importer).
+from src.mcp.tools.guidance import (  # noqa: E402,F401
     _anti_patterns_for_convention,
     _check_module_exists,
-    _compute_risk,
     _diff_method_across_versions,
     _ee_confusion_live,
     _fetch_method_for_diff,
-    _find_examples,
     _find_override_point,
     _format_check_module_exists,
     _format_find_override_point,
     _format_suggest_pattern,
-    _impact_analysis,
     _suggest_pattern,
     check_module_exists,
-    find_examples,
     find_override_point,
-    impact_analysis,
     suggest_pattern,
 )
 
