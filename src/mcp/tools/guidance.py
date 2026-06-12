@@ -127,8 +127,7 @@ def _suggest_pattern(
         with driver.session() as session:
             v = _srv._resolve_version(odoo_version, session)
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("suggest_pattern")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "suggest_pattern")
 
     if _query_vec is not None:
         intent_vec = _query_vec
@@ -225,8 +224,7 @@ def _suggest_pattern(
                 ids=pattern_ids,
             )
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("suggest_pattern")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "suggest_pattern")
 
     by_id = {r["id"]: r for r in records}
     return _format_suggest_pattern(

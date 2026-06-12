@@ -1097,6 +1097,22 @@ def _metric_nonorm_query_timeout(tool: str) -> None:
         pass
 
 
+def _nonorm_timeout_response(exc: OrmQueryTimeout, tool: str) -> str:
+    """Standard inline-catch body for an async/mutating Neo4j-read tool (ADR-0050).
+
+    The EMBED tools (``async def``, embed on the event loop before ``to_thread``)
+    and the mutating ``set_active_version`` carry no ``@offload_neo4j`` backstop,
+    so each catches ``OrmQueryTimeout`` itself and converts it to the clean
+    ADR-0023 string + the non-ORM timeout metric. That two-line body was repeated
+    at every inline catch; this collapses it to one call. The ``except
+    OrmQueryTimeout as exc:`` handler at each site is preserved verbatim (only the
+    body changes) so the per-read structural guard in
+    ``tests/test_resolve_timeout_guard.py`` still sees a timeout-catching ``try``.
+    """
+    _metric_nonorm_query_timeout(tool)
+    return exc.user_message
+
+
 # Bounded offload for the 4 ORM-validation tools (#273): a thread-held
 # BoundedSemaphore so a fan-out burst of dense ORM traversals cannot drain the
 # shared ThreadPoolExecutor / Neo4j pool. The slot is thread-bound (#276
@@ -2459,12 +2475,14 @@ def _resolve_field(
         except OrmQueryTimeout as exc:
             # Resource path (_reraise_timeout=True): re-raise so the transient
             # body is never cached (the field resource handler records the metric
-            # once and returns the message uncached). Tool path: returning the
-            # clean string here means this inherited-fallback timeout is NOT
-            # counted by @offload_neo4j (the decorator only counts a RAISED
-            # OrmQueryTimeout); adding that metric is Phase 3 / PR-3 (design M1).
+            # once and returns the message uncached) — and so the resolver never
+            # double-counts the resource-path timeout.
             if _reraise_timeout:
                 raise
+            # Tool path: @offload_neo4j only counts a RAISED OrmQueryTimeout, so
+            # this inherited-fallback timeout (returned as a clean string) must be
+            # counted here for parity with _resolve_model (PR-3 M1, ADR-0050).
+            _metric_nonorm_query_timeout("model_inspect")
             return exc.user_message
         if inh is not None:
             if from_module is None or inh.get("module") == from_module:
@@ -2715,12 +2733,14 @@ def _resolve_method(
         # Consistent with _resolve_field / _resolve_model. Resource path
         # (_reraise_timeout=True): re-raise so the transient body is never cached
         # (propagates out of get_or_compute before the put; the method resource
-        # handler records the metric once + returns it uncached). Tool path
-        # (default): return the clean ADR-0023 string directly. The tool-path
-        # method-detail timeout metric is the deferred M2 gap (PR-3 / issue #287),
-        # matching _resolve_field's M1.
+        # handler records the metric once + returns it uncached) — the resolver
+        # never double-counts the resource-path timeout.
         if _reraise_timeout:
             raise
+        # Tool path: @offload_neo4j only counts a RAISED OrmQueryTimeout, so this
+        # method-detail timeout (returned as a clean string) is counted here for
+        # parity with _resolve_field's M1 (PR-3 M2, ADR-0050).
+        _metric_nonorm_query_timeout("model_inspect")
         return exc.user_message
 
     base_mth = records[0]["mth"]

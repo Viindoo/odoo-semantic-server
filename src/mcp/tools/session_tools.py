@@ -134,8 +134,7 @@ def set_active_version(odoo_version: str) -> ToolResult | str:
                 )
             )])
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("set_active_version")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "set_active_version")
     except Exception:
         _srv.logger.warning("set_active_version: indexed-version check failed", exc_info=True)
         return ToolResult(content=[TextContent(type="text",
