@@ -126,8 +126,7 @@ def _find_examples(
             if odoo_version in ("auto", "latest"):
                 odoo_version = _srv._resolve_version("auto", session)
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("find_examples")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "find_examples")
 
     selected_types = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
 
@@ -391,8 +390,7 @@ def _find_examples(
                 )
                 in_chain_set = {r["name"] for r in chain_rows}
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("find_examples")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "find_examples")
 
     # M1 fix: literal rows have cosine=None — guard against TypeError in score math.
     # Assign a floor score with a small epsilon to preserve SQL ORDER BY order so

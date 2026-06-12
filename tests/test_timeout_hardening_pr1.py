@@ -255,6 +255,166 @@ def test_resolve_field_inherited_fallback_reraises_for_resource(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# PR-3 (M1-M4) — metric uniformity: the four tool-path timeouts that returned a
+# clean string WITHOUT counting now emit nonorm_query_timeout_total{model_inspect}
+# exactly once. Mocked at the metric so the assertion is a precise call ledger
+# (tool name + count), independent of the global Prometheus registry. Each test
+# would go RED if its metric line were removed (the ledger would be empty).
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_field_inherited_timeout_emits_metric_once(monkeypatch):
+    """M1: _resolve_field inherited-fallback tool-path timeout counts once.
+
+    Business rule: a model_inspect field-detail read that degrades to the clean
+    timeout string must still be observable in nonorm_query_timeout_total so ops
+    can see it — counting it is what M1 added.
+    """
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_metric_nonorm_query_timeout", lambda t: calls.append(t))
+    monkeypatch.setattr(srv, "_data_bounded", lambda *a, **k: [])  # no rows → fallback
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout("Inherited field lookup timed out — retry.")
+
+    monkeypatch.setattr(srv, "_resolve_field_inherited", _boom)
+
+    result = srv._resolve_field("dense.model", "nonexistent", TIMEOUT_TEST_VERSION)
+    assert_clean_timeout_string(result)
+    assert calls == ["model_inspect"]  # counted exactly once, correct tool label
+
+
+def test_resolve_field_inherited_timeout_for_resource_does_not_count_in_resolver(
+    monkeypatch,
+):
+    """M1 double-count guard: the RESOURCE path (_reraise_timeout=True) re-raises
+    WITHOUT counting in the resolver — the resource handler is the single counting
+    site, so the resolver's ledger stays empty (no double-count).
+    """
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_metric_nonorm_query_timeout", lambda t: calls.append(t))
+    monkeypatch.setattr(srv, "_data_bounded", lambda *a, **k: [])
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout("Inherited field lookup timed out — retry.")
+
+    monkeypatch.setattr(srv, "_resolve_field_inherited", _boom)
+
+    with pytest.raises(OrmQueryTimeout):
+        srv._resolve_field(
+            "dense.model", "nonexistent", TIMEOUT_TEST_VERSION,
+            _reraise_timeout=True,
+        )
+    assert calls == []  # resolver never counts the re-raised resource-path timeout
+
+
+def test_resolve_method_timeout_emits_metric_once(monkeypatch):
+    """M2: _resolve_method tool-path timeout counts once.
+
+    Business rule: a model_inspect method-detail read that degrades to the clean
+    timeout string is now counted, matching M1's field path.
+    """
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_metric_nonorm_query_timeout", lambda t: calls.append(t))
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout("Method lookup timed out — retry.")
+
+    # The first bounded read inside the _resolve_method try is the method query;
+    # routing it through a timing-out _data_bounded raises OrmQueryTimeout.
+    monkeypatch.setattr(srv, "_data_bounded", _boom)
+
+    result = srv._resolve_method("dense.model", "write", TIMEOUT_TEST_VERSION)
+    assert_clean_timeout_string(result)
+    assert calls == ["model_inspect"]
+
+
+def test_resolve_method_timeout_for_resource_does_not_count_in_resolver(monkeypatch):
+    """M2 double-count guard: the resource path (_reraise_timeout=True) re-raises
+    without counting in the resolver."""
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_metric_nonorm_query_timeout", lambda t: calls.append(t))
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout("Method lookup timed out — retry.")
+
+    monkeypatch.setattr(srv, "_data_bounded", _boom)
+
+    with pytest.raises(OrmQueryTimeout):
+        srv._resolve_method(
+            "dense.model", "write", TIMEOUT_TEST_VERSION, _reraise_timeout=True,
+        )
+    assert calls == []
+
+
+def test_list_fields_timeout_emits_metric_once(monkeypatch):
+    """M3: _list_fields tool-path timeout counts once.
+
+    Business rule: the field-listing path (model_inspect/entity_lookup) that
+    degrades to the clean timeout string must be observable; M3 added the count.
+    The list path has no _reraise_timeout, so there is no resource path to guard.
+    """
+    import src.mcp.listings as listings
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_metric_nonorm_query_timeout", lambda t: calls.append(t))
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout("Field listing timed out — narrow the model.")
+
+    monkeypatch.setattr(listings, "_list_fields_with_inherited", _boom)
+
+    result = listings._list_fields("dense.model", TIMEOUT_TEST_VERSION)
+    assert_clean_timeout_string(result)
+    assert calls == ["model_inspect"]
+
+
+def test_list_methods_timeout_emits_metric_once(monkeypatch):
+    """M4: _list_methods tool-path timeout counts once."""
+    import src.mcp.listings as listings
+    import src.mcp.server as srv
+    from src.mcp.orm import OrmQueryTimeout
+
+    calls: list[str] = []
+    monkeypatch.setattr(srv, "_metric_nonorm_query_timeout", lambda t: calls.append(t))
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+    def _boom(*a, **k):
+        raise OrmQueryTimeout("Method listing timed out — narrow the model.")
+
+    monkeypatch.setattr(listings, "_list_methods_with_inherited", _boom)
+
+    result = listings._list_methods("dense.model", TIMEOUT_TEST_VERSION)
+    assert_clean_timeout_string(result)
+    assert calls == ["model_inspect"]
+
+
+# ---------------------------------------------------------------------------
 # async-wrapper cases — the now-async tool handlers return the clean string.
 # ---------------------------------------------------------------------------
 

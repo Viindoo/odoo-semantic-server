@@ -397,8 +397,8 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
         # `lambda resolved: _render_pattern(...)`), a raised OrmQueryTimeout
         # propagates out BEFORE the cache put — the no-poison guarantee, same as
         # the model path. No _reraise_timeout flag is needed here; the raise IS the
-        # no-cache mechanism. The pattern resource handler's `except OrmQueryTimeout`
-        # records the metric once and returns the clean body.
+        # no-cache mechanism. The pattern resource handler (via
+        # _serve_resource_with_metric) records the metric once and returns the clean body.
         rec = _srv._single_bounded(
             neo4j_session,
             """
@@ -636,6 +636,42 @@ async def _serve_resource(
     )
 
 
+async def _serve_resource_with_metric(
+    cache: ResourceCache,
+    version: str,
+    kind: str,
+    entity: str,
+    render_fn: Callable[[str], tuple[str, str]],
+    *,
+    metric_tool: str,
+    tenant_keyed: bool = True,
+) -> str:
+    """:func:`_serve_resource` + the ADR-0023/ADR-0050 resource-path timeout backstop.
+
+    The 7 ``odoo://`` resource handlers are otherwise byte-identical: offload the
+    blocking resolve+cache+compute, and on a transient per-query timeout emit the
+    non-ORM timeout metric exactly once and return the clean degraded body
+    UNCACHED. The underlying renderers pass ``_reraise_timeout=True`` so the
+    timeout propagates out of ``get_or_compute`` BEFORE the LRU put (no-poison);
+    the resolver itself never counts that re-raised timeout, so this handler is
+    the single counting site for the resource path (no double-count with the
+    tool path — see ADR-0050).
+
+    ``metric_tool`` is the Prometheus ``nonorm_query_timeout_total{tool=...}``
+    label for this kind (model/field/method → ``model_inspect``, etc.).
+    """
+    try:
+        return await _serve_resource(
+            cache, version, kind, entity, render_fn, tenant_keyed=tenant_keyed,
+        )
+    except OrmQueryTimeout as exc:
+        # Lazy import kept INSIDE the catch: server.py imports this module at
+        # registration time, so a top-level `import server` would be circular.
+        from src.mcp import server as _srv
+        _srv._metric_nonorm_query_timeout(metric_tool)
+        return exc.user_message
+
+
 def register_resources(mcp_instance) -> None:
     """Attach 7 ``@mcp.resource`` template handlers to *mcp_instance*.
 
@@ -675,19 +711,15 @@ def register_resources(mcp_instance) -> None:
         # _render_model passes _reraise_timeout=True so a transient per-query
         # timeout propagates out of get_or_compute BEFORE the cache put — the
         # timeout body is never written to the LRU (a 30s blip would otherwise pin
-        # a stale error for the full TTL). We surface the clean English message
-        # UNCACHED here; the next read re-resolves once Neo4j recovers.
-        try:
-            return await _serve_resource(
-                cache, version, "model", name,
-                lambda resolved: _render_model(resolved, name),
-            )
-        except OrmQueryTimeout as exc:
-            # Record the resource-path timeout exactly once (the tool path records
-            # its own in _resolve_model; the re-raise there is UNCOUNTED — #284).
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("model_inspect")
-            return exc.user_message
+        # a stale error for the full TTL). _serve_resource_with_metric records the
+        # resource-path timeout exactly once (the tool path records its own in
+        # _resolve_model; the re-raise there is UNCOUNTED — #284) and surfaces the
+        # clean English message UNCACHED; the next read re-resolves once Neo4j recovers.
+        return await _serve_resource_with_metric(
+            cache, version, "model", name,
+            lambda resolved: _render_model(resolved, name),
+            metric_tool="model_inspect",
+        )
 
     # ---- field ----------------------------------------------------------
     @mcp_instance.resource(
@@ -703,16 +735,12 @@ def register_resources(mcp_instance) -> None:
         # R1: tenant-scoped key prevents cross-tenant cache contamination.
         # _render_field passes _reraise_timeout=True so a transient per-query
         # timeout propagates out of get_or_compute BEFORE the cache put — never
-        # cached. We record the metric once here and return the clean message.
-        try:
-            return await _serve_resource(
-                cache, version, "field", f"{model}/{field}",
-                lambda resolved: _render_field(resolved, model, field),
-            )
-        except OrmQueryTimeout as exc:
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("model_inspect")
-            return exc.user_message
+        # cached. _serve_resource_with_metric records the metric once + returns clean.
+        return await _serve_resource_with_metric(
+            cache, version, "field", f"{model}/{field}",
+            lambda resolved: _render_field(resolved, model, field),
+            metric_tool="model_inspect",
+        )
 
     # ---- method ---------------------------------------------------------
     @mcp_instance.resource(
@@ -726,15 +754,11 @@ def register_resources(mcp_instance) -> None:
     async def _method_resource(version: str, model: str, method: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
-        try:
-            return await _serve_resource(
-                cache, version, "method", f"{model}/{method}",
-                lambda resolved: _render_method(resolved, model, method),
-            )
-        except OrmQueryTimeout as exc:
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("model_inspect")
-            return exc.user_message
+        return await _serve_resource_with_metric(
+            cache, version, "method", f"{model}/{method}",
+            lambda resolved: _render_method(resolved, model, method),
+            metric_tool="model_inspect",
+        )
 
     # ---- module ---------------------------------------------------------
     @mcp_instance.resource(
@@ -748,15 +772,11 @@ def register_resources(mcp_instance) -> None:
     async def _module_resource(version: str, name: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
-        try:
-            return await _serve_resource(
-                cache, version, "module", name,
-                lambda resolved: _render_module(resolved, name),
-            )
-        except OrmQueryTimeout as exc:
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("module_inspect")
-            return exc.user_message
+        return await _serve_resource_with_metric(
+            cache, version, "module", name,
+            lambda resolved: _render_module(resolved, name),
+            metric_tool="module_inspect",
+        )
 
     # ---- view -----------------------------------------------------------
     @mcp_instance.resource(
@@ -770,15 +790,11 @@ def register_resources(mcp_instance) -> None:
     async def _view_resource(version: str, xmlid: str) -> str:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
-        try:
-            return await _serve_resource(
-                cache, version, "view", xmlid,
-                lambda resolved: _render_view(resolved, xmlid),
-            )
-        except OrmQueryTimeout as exc:
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("entity_lookup")
-            return exc.user_message
+        return await _serve_resource_with_metric(
+            cache, version, "view", xmlid,
+            lambda resolved: _render_view(resolved, xmlid),
+            metric_tool="entity_lookup",
+        )
 
     # ---- pattern --------------------------------------------------------
     @mcp_instance.resource(
@@ -794,17 +810,13 @@ def register_resources(mcp_instance) -> None:
         # pattern is global spec data — keyed by version alone (no tenant dim).
         # _render_pattern's inline Cypher is bounded via _single_bounded; a
         # tx-timeout raises OrmQueryTimeout out of get_or_compute BEFORE the cache
-        # put (no-poison). Record the metric once + return the clean body.
-        try:
-            return await _serve_resource(
-                cache, version, "pattern", pattern_id,
-                lambda resolved: _render_pattern(resolved, pattern_id),
-                tenant_keyed=False,
-            )
-        except OrmQueryTimeout as exc:
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("suggest_pattern")
-            return exc.user_message
+        # put (no-poison). _serve_resource_with_metric records once + returns clean.
+        return await _serve_resource_with_metric(
+            cache, version, "pattern", pattern_id,
+            lambda resolved: _render_pattern(resolved, pattern_id),
+            metric_tool="suggest_pattern",
+            tenant_keyed=False,
+        )
 
     # ---- stylesheet -----------------------------------------------------
     @mcp_instance.resource(
@@ -829,13 +841,9 @@ def register_resources(mcp_instance) -> None:
         # leaking a foreign tenant's body. Same dimension as the other 5 kinds.
         # _render_stylesheet's inline Cypher is bounded via _single_bounded; a
         # tx-timeout raises OrmQueryTimeout out of get_or_compute BEFORE the cache
-        # put (no-poison). Record the metric once + return the clean body.
-        try:
-            return await _serve_resource(
-                cache, version, "stylesheet", f"{module}/{file_path}",
-                lambda resolved: _render_stylesheet(resolved, module, file_path),
-            )
-        except OrmQueryTimeout as exc:
-            from src.mcp import server as _srv
-            _srv._metric_nonorm_query_timeout("resolve_stylesheet")
-            return exc.user_message
+        # put (no-poison). _serve_resource_with_metric records once + returns clean.
+        return await _serve_resource_with_metric(
+            cache, version, "stylesheet", f"{module}/{file_path}",
+            lambda resolved: _render_stylesheet(resolved, module, file_path),
+            metric_tool="resolve_stylesheet",
+        )

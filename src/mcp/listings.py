@@ -106,9 +106,9 @@ def _list_fields(
         # that HERE and returns the clean degraded English string directly. The
         # @offload_neo4j boundary on model_inspect/entity_lookup (PR-1 #287) only
         # backstops a RAISED OrmQueryTimeout; this inline catch keeps the list
-        # path self-contained (note: it does NOT yet emit the timeout metric —
-        # deferred to PR-3 / issue #287 M3). Mirrors the detail path
-        # (_resolve_field): surface the clean string instead of raising.
+        # path self-contained and emits the timeout metric itself (PR-3 / issue
+        # #287 M3, ADR-0050). Mirrors the detail path (_resolve_field): surface
+        # the clean string instead of raising.
         try:
             rows = _list_fields_with_inherited(
                 model, odoo_version, session, profile_name,
@@ -122,6 +122,11 @@ def _list_fields(
                 model, odoo_version, session, profile_name, module=module, kind=kind
             )
         except OrmQueryTimeout as exc:
+            # List path has no _reraise_timeout (always returns a string), so the
+            # tool-path timeout is counted here for parity with the resolvers
+            # (PR-3 M3, ADR-0050). No resource ever reaches this list path, so
+            # there is no double-count risk.
+            _srv._metric_nonorm_query_timeout("model_inspect")
             return exc.user_message
 
     # D2: Build magic-field prelude for page 0 only when no module filter suppresses them.
@@ -400,7 +405,7 @@ def _list_methods(
         # returns the clean degraded string directly; the @offload_neo4j boundary
         # on model_inspect/entity_lookup (PR-1 #287) only backstops a RAISED
         # OrmQueryTimeout, so this inline catch keeps the list path self-contained
-        # (note: does NOT yet emit the metric — deferred to PR-3 / issue #287 M4).
+        # and emits the metric itself (PR-3 / issue #287 M4, ADR-0050).
         # Wrap the whole acquisition in `try/except OrmQueryTimeout: return
         # exc.user_message`, mirroring _resolve_field. The override_rec query was a BARE
         # `session.run(_bounded(...)).single()` that raises a RAW neo4j
@@ -449,6 +454,11 @@ def _list_methods(
                 mn=model, v=odoo_version, **_srv._scope(profile_name),
             )
         except OrmQueryTimeout as exc:
+            # List path has no _reraise_timeout (always returns a string), so the
+            # tool-path timeout is counted here for parity with the resolvers
+            # (PR-3 M4, ADR-0050). No resource ever reaches this list path, so
+            # there is no double-count risk.
+            _srv._metric_nonorm_query_timeout("model_inspect")
             return exc.user_message
         override_keys = {
             (name, owner) for name, owner in (override_rec["overrides"] or [])

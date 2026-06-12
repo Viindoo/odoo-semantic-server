@@ -336,8 +336,7 @@ def _find_style_override(
         with driver.session() as session:
             odoo_version = _srv._resolve_version(odoo_version, session)
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("find_style_override")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "find_style_override")
 
     want_literal = is_literal_token(selector_or_variable)
 
@@ -539,8 +538,7 @@ def _find_style_override(
             lines.append("   └" + "─" * 42)
             lines.append("")
     except OrmQueryTimeout as exc:
-        _srv._metric_nonorm_query_timeout("find_style_override")
-        return exc.user_message
+        return _srv._nonorm_timeout_response(exc, "find_style_override")
 
     # Pass top-result module so hints render useful resolve_stylesheet/describe_module calls.
     top_module = raw[0]["module"] if raw else ""
