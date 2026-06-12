@@ -22,12 +22,13 @@ import re
 import tokenize
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo
-from .parser_python import (
-    FIELD_TYPES,
-    FIELD_TYPES_LEGACY,
-    RELATIONAL_FIELD_TYPES,
-    _classify_method_convention,
-)
+
+# NOTE: shared constants (FIELD_TYPES / FIELD_TYPES_LEGACY / RELATIONAL_FIELD_TYPES)
+# and _classify_method_convention live in parser_python.py, which imports THIS
+# module at the bottom of its body for re-export. Importing them at module level
+# here forms an import cycle that breaks a cold `import parser_python_era1` (the
+# bottom re-export sees this module only partially initialized). They are used
+# only inside _parse_era1_text, so we import them lazily there instead.
 
 # --- era1 text-regex fallback (Python 2 v8/v9 source that fails ast.parse) -
 
@@ -302,6 +303,15 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
     pulls out _name / _inherit / fields-from-_columns. Methods are NOT extracted
     in fallback mode — defer to era2 AST when source is Py3-parseable.
     """
+    # Lazy import (see module-top NOTE): breaks the parser_python <-> era1 cycle
+    # so this module stays cold-importable.
+    from .parser_python import (
+        FIELD_TYPES,
+        FIELD_TYPES_LEGACY,
+        RELATIONAL_FIELD_TYPES,
+        _classify_method_convention,
+    )
+
     classes = list(_RE_CLASS_HEAD.finditer(source))
     if not classes:
         return []
