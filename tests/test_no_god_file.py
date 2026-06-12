@@ -4,46 +4,60 @@
 src/mcp/server.py was a 9091-line god file (25 MCP tools + impls + the shared
 resolver/state hub all in one module). The Phase 1-5 tool-split (see
 docs refactor plan §6) moved the 25 tool bodies + their private impls out to
-src/mcp/tools/*.py, leaving server.py as the hub (mcp instance, state
-singletons, ContextVars, offload infra, the _resolve_* / _list_* resolver
-helpers, the HTTP endpoints + main()).
+src/mcp/tools/*.py. Phase 7 / A1 then moved the _describe_module /
+_module_dep_closure / _list_* read-helper cluster (~1750 lines) out to the
+NON-tool helper modules src/mcp/describe.py + src/mcp/listings.py, leaving
+server.py as the hub (mcp instance, state singletons, ContextVars, offload
+infra, the _resolve_* resolver helpers, the HTTP endpoints + main()).
 
 This test locks that achievement in: it FAILS if anyone lets server.py balloon
-back past a measured ceiling, or adds a new tools/*.py module that itself grows
-into a fresh god file. It is a pure-filesystem check — no DB, no Docker, no
-import side effects — so it runs in the fast unit suite.
+back past a measured ceiling, or adds a new tools/*.py (or helper) module that
+itself grows into a fresh god file. It is a pure-filesystem check — no DB, no
+Docker, no import side effects — so it runs in the fast unit suite.
 
 The thresholds are DATA-DRIVEN, not aspirational. They are set to the actual
-post-Phase-5 line counts plus a small buffer so honest day-to-day edits do not
-trip the guard, while any real regrowth (a tool body sneaking back into the hub,
-a large new block of resolver code) is caught.
+post-A1 line counts plus a small buffer so honest day-to-day edits do not trip
+the guard, while any real regrowth (a tool body sneaking back into the hub, a
+large new block of resolver code) is caught.
 
-  * SERVER_MAX_LINES — the hub still carries the _list_* / describe_module
-    resolver cluster (~1985 lines) shared by inspect.py / resources.py; that
-    cluster is scheduled to move out in the OPTIONAL Phase 7. Until then,
-    server.py legitimately sits well above the ideal <4500 target. The ceiling
-    here is the measured post-Phase-5 size + buffer; TIGHTEN it toward <4500 as
-    Phase 7 lands. It is NOT meant to assert the ideal number that has not been
-    reached yet — it is a ratchet that only ever moves DOWN.
+  * SERVER_MAX_LINES — after Phase 7 / A1 the hub no longer carries the _list_* /
+    describe_module cluster, so server.py is now under the long-standing <4500
+    target. The ceiling here is the measured post-A1 size + buffer; it is a
+    ratchet that only ever moves DOWN.
 
   * TOOL_MODULE_MAX_LINES — discovery.py is the largest tool module because it
     carries five tools plus their full impls (find_examples / impact_analysis /
     suggest_pattern / check_module_exists / find_override_point); the irreducible
     impl body alone is ~1650 lines. The ceiling is its measured size + buffer.
+
+  * HELPER_MODULE_MAX_LINES — the Phase 7 / A1 split also produced the two
+    NON-tool helper modules src/mcp/describe.py + src/mcp/listings.py (the moved
+    _describe_module / _module_dep_closure / _list_* read helpers). listings.py
+    is the larger of the two (the nine _list_* bodies). The ceiling is its
+    measured size + buffer so neither helper module regrows into a god file.
 """
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_FILE = REPO_ROOT / "src" / "mcp" / "server.py"
 TOOLS_DIR = REPO_ROOT / "src" / "mcp" / "tools"
+MCP_DIR = REPO_ROOT / "src" / "mcp"
 
-# Measured post-Phase-5: server.py = 5223 lines. Buffer ~180 → 5400.
-# Ratchet DOWN as Phase 7 moves the _list_* resolver cluster out of the hub.
-SERVER_MAX_LINES = 5400
+# Measured post-A1 (Phase 7): server.py = 3544 lines. Buffer ~156 → 3700.
+# The _list_* / describe_module cluster moved to src/mcp/{describe,listings}.py,
+# putting the hub under the <4500 target. Ratchet DOWN on further hub shrink.
+SERVER_MAX_LINES = 3700
 
 # Measured post-Phase-5: discovery.py = 1778 lines (largest tool module — 5
 # tools + their full impls). Buffer ~120 → 1900.
 TOOL_MODULE_MAX_LINES = 1900
+
+# Measured post-A1: listings.py = 1460 lines (the nine _list_* helpers — the
+# larger of the two A1 helper modules; describe.py = 423). Buffer ~140 → 1600.
+HELPER_MODULE_MAX_LINES = 1600
+
+# The NON-tool helper modules carved out of the hub in Phase 7 / A1.
+HELPER_MODULES = ("describe.py", "listings.py")
 
 
 def _line_count(path: Path) -> int:
@@ -77,4 +91,20 @@ def test_each_tool_module_under_ceiling():
         f"tool module(s) exceed {TOOL_MODULE_MAX_LINES} lines: {offenders}."
         " Split the module by tool/responsibility rather than letting one"
         " tools/*.py file become a new god file."
+    )
+
+
+def test_each_helper_module_under_ceiling():
+    """The A1 helper modules (describe.py / listings.py) must not regrow."""
+    offenders = {}
+    for name in HELPER_MODULES:
+        path = MCP_DIR / name
+        assert path.is_file(), f"missing {path}"
+        n = _line_count(path)
+        if n > HELPER_MODULE_MAX_LINES:
+            offenders[name] = n
+    assert not offenders, (
+        f"helper module(s) exceed {HELPER_MODULE_MAX_LINES} lines: {offenders}."
+        " Split by responsibility rather than letting src/mcp/listings.py (or"
+        " describe.py) become a new god file."
     )
