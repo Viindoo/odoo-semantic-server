@@ -125,9 +125,9 @@ def _list_fields(
             # List path has no _reraise_timeout (always returns a string), so the
             # tool-path timeout is counted here for parity with the resolvers
             # (PR-3 M3, ADR-0050). No resource ever reaches this list path, so
-            # there is no double-count risk.
-            _srv._metric_nonorm_query_timeout("model_inspect")
-            return exc.user_message
+            # there is no double-count risk. Use the shared inline-catch helper
+            # (same as the EMBED/mutating tools) so the body stays single-sourced.
+            return _srv._nonorm_timeout_response(exc, "model_inspect")
 
     # D2: Build magic-field prelude for page 0 only when no module filter suppresses them.
     # Magic fields are rendered as a FIXED <builtin> prelude block that is OUTSIDE the
@@ -457,9 +457,9 @@ def _list_methods(
             # List path has no _reraise_timeout (always returns a string), so the
             # tool-path timeout is counted here for parity with the resolvers
             # (PR-3 M4, ADR-0050). No resource ever reaches this list path, so
-            # there is no double-count risk.
-            _srv._metric_nonorm_query_timeout("model_inspect")
-            return exc.user_message
+            # there is no double-count risk. Use the shared inline-catch helper
+            # (same as the EMBED/mutating tools) so the body stays single-sourced.
+            return _srv._nonorm_timeout_response(exc, "model_inspect")
         override_keys = {
             (name, owner) for name, owner in (override_rec["overrides"] or [])
         } if override_rec else set()

@@ -659,6 +659,12 @@ async def _serve_resource_with_metric(
 
     ``metric_tool`` is the Prometheus ``nonorm_query_timeout_total{tool=...}``
     label for this kind (model/field/method → ``model_inspect``, etc.).
+
+    ``tenant_keyed`` defaults to True; ALL kinds are tenant-keyed EXCEPT
+    ``pattern`` (``tenant_keyed=False``) — the pattern catalogue is global spec
+    data (ADR-0034), so its cache entries are shared across tenants. A new
+    tenant-scoped resource kind MUST keep the ``tenant_keyed=True`` default, or
+    cache entries leak across tenants.
     """
     try:
         return await _serve_resource(

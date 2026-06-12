@@ -1097,7 +1097,7 @@ def _metric_nonorm_query_timeout(tool: str) -> None:
         pass
 
 
-def _nonorm_timeout_response(exc: "OrmQueryTimeout", tool: str) -> str:
+def _nonorm_timeout_response(exc: OrmQueryTimeout, tool: str) -> str:
     """Standard inline-catch body for an async/mutating Neo4j-read tool (ADR-0050).
 
     The EMBED tools (``async def``, embed on the event loop before ``to_thread``)
