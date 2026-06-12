@@ -199,11 +199,8 @@ def orm_funcs(seeded_dense_graph):
     os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
     import sys
     sys.modules.pop("src.mcp.server", None)
-    from src.mcp.orm import (
-        _lookup_field,
-        _resolve_orm_chain,
-        _validate_relation,
-    )
+    from src.mcp.orm_queries import _lookup_field
+    from src.mcp.orm_validators import _resolve_orm_chain, _validate_relation
     return _lookup_field, _resolve_orm_chain, _validate_relation
 
 
@@ -407,7 +404,7 @@ def test_inherited_field_fail_closed_for_foreign_tenant(tenant_inherited_world):
     """THE GATE: a field reachable only via the step-3 inherited fallback, whose
     Field node is scoped to acme, must be INVISIBLE to globex (fail-closed) yet
     VISIBLE to admin — proving the tenant choke on the inherited Field holds."""
-    from src.mcp.orm import _lookup_field
+    from src.mcp.orm_queries import _lookup_field
     from src.mcp.server import _get_driver
     w = tenant_inherited_world
 
@@ -797,7 +794,8 @@ def mesh_funcs(mesh_graph):
     os.environ["NEO4J_PASSWORD"] = os.getenv("NEO4J_TEST_PASSWORD", "password")
     import sys
     sys.modules.pop("src.mcp.server", None)
-    from src.mcp.orm import _lookup_field, _validate_relation
+    from src.mcp.orm_queries import _lookup_field
+    from src.mcp.orm_validators import _validate_relation
     return _lookup_field, _validate_relation
 
 

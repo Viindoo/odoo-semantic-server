@@ -18,7 +18,7 @@ import textwrap
 import pytest
 
 from src.indexer.models import ModuleInfo
-from src.indexer.parser_python import (
+from src.indexer.parser_python_era1 import (
     _parse_era1_text,
     _string_aware_brace_scan,
 )

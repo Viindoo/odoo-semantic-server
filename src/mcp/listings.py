@@ -44,12 +44,14 @@ from src.constants import (
 )
 from src.mcp.hints import format_next_step
 from src.mcp.orm import (
-    _ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY,
     OrmQueryTimeout,
+    _edition_rank_cypher,
+)
+from src.mcp.orm_queries import (
+    _ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY,
     _ancestor_owner_names,
     _count_fields_with_inherited,
     _count_methods_with_inherited,
-    _edition_rank_cypher,
     _list_fields_with_inherited,
     _list_methods_with_inherited,
 )

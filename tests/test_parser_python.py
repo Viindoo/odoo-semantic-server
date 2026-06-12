@@ -869,7 +869,7 @@ def test_module_info_has_edition_default():
 
 def test_extract_columns_handles_unbalanced_open_brace_in_string():
     """Unbalanced '{' inside a string value must NOT stop extraction early."""
-    from src.indexer.parser_python import _extract_columns_block
+    from src.indexer.parser_python_era1 import _extract_columns_block
 
     body = "_columns = {'help': 'Use {only open', 'name': 'char'}"
     result = _extract_columns_block(body)
@@ -881,7 +881,7 @@ def test_extract_columns_handles_unbalanced_open_brace_in_string():
 
 def test_extract_columns_handles_unbalanced_close_brace_in_string():
     """Unbalanced '}' inside a string value must NOT cause early return."""
-    from src.indexer.parser_python import _extract_columns_block
+    from src.indexer.parser_python_era1 import _extract_columns_block
 
     body = "_columns = {'help': 'closed} only', 'name': 'char'}"
     result = _extract_columns_block(body)
@@ -893,7 +893,7 @@ def test_extract_columns_handles_unbalanced_close_brace_in_string():
 
 def test_extract_columns_handles_nested_dict_correctly():
     """Nested dict in _columns → brace counter tracks depth, returns full block."""
-    from src.indexer.parser_python import _extract_columns_block
+    from src.indexer.parser_python_era1 import _extract_columns_block
 
     body = "_columns = {'meta': {'a': 1}, 'name': 'char'}"
     result = _extract_columns_block(body)
@@ -903,7 +903,7 @@ def test_extract_columns_handles_nested_dict_correctly():
 
 def test_extract_columns_balanced_brace_in_string_works():
     """Balanced '{...}' inside a string — already worked, must still work."""
-    from src.indexer.parser_python import _extract_columns_block
+    from src.indexer.parser_python_era1 import _extract_columns_block
 
     body = "_columns = {'help': 'Use {curly} braces', 'name': 'char'}"
     result = _extract_columns_block(body)
@@ -984,7 +984,7 @@ def test_extract_columns_falls_back_on_python2_syntax():
     `AttributeError: tokenize.TokenizeError` — wrong exception name + missing
     IndentationError handling. Era1 v8 indexing aborted, 0 nodes written.
     """
-    from src.indexer.parser_python import _extract_columns_block
+    from src.indexer.parser_python_era1 import _extract_columns_block
 
     # Era1-shaped source that looks like a method defined RIGHT AFTER _columns
     # with Python 2 print statement — would force the tokenizer to choke.

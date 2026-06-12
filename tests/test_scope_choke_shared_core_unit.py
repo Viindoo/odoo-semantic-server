@@ -25,7 +25,7 @@ if the production predicate ever drifts.
 """
 from src.indexer.models import ModelInfo, ModuleInfo, ParseResult
 from src.indexer.pipeline import _owning_profiles
-from src.indexer.writer_neo4j import _write_parse_result
+from src.indexer.writer_neo4j_orm import _write_parse_result
 from src.mcp.server import _scope_pred
 
 # --- shared/global profiles (tenant_id IS NULL) and tenant-private profiles ---

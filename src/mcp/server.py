@@ -56,27 +56,29 @@ from src.mcp.inspect import (
 from src.mcp.orm import (
     OrmQueryTimeout,
     _bounded,
-    _count_fields_with_inherited,
-    _count_methods_with_inherited,
     _edition_rank_cypher,
     _is_tx_timeout,
+)
+from src.mcp.orm_queries import (
+    _count_fields_with_inherited,
+    _count_methods_with_inherited,
     _resolve_field_inherited,
     _resolve_method_inherited,
 )
-from src.mcp.orm import (
+from src.mcp.orm_validators import (
     # ORM-validation impls: the tool wrappers moved to tools/orm_tools.py
     # (Phase 1) but tests still import these via src.mcp.server. `X as X` marks
     # an intentional re-export so ruff keeps F401 active for the genuinely
     # internal names above (instead of a blanket per-block noqa).
     _resolve_orm_chain as _resolve_orm_chain,
 )
-from src.mcp.orm import (
+from src.mcp.orm_validators import (
     _validate_depends as _validate_depends,
 )
-from src.mcp.orm import (
+from src.mcp.orm_validators import (
     _validate_domain as _validate_domain,
 )
-from src.mcp.orm import (
+from src.mcp.orm_validators import (
     _validate_relation as _validate_relation,
 )
 from src.mcp.resources import register_resources
@@ -106,10 +108,11 @@ logger = logging.getLogger(__name__)
 #     reembed}.py) — breaks a parent<->child module-load cycle AND/OR keeps the
 #     test monkeypatch contract (the binding is resolved at call time on the
 #     parent namespace, so `patch("src.indexer.pipeline.<name>")` is seen).
-#  4. `import src.mcp.orm as _mod` + `_rebind(getattr(...))` loop (orm.py) — orm
-#     is both a bottom-layer AND a facade, so a plain `from child import N` could
-#     raise if a name is not yet bound during a cold-import race; rebinding via
-#     getattr only needs the module object.
+# (The orm.py `_rebind` facade re-export loop was removed in the Phase 7.5
+# codemod: callers now import the query/validator helpers DIRECTLY from
+# src.mcp.orm_queries / src.mcp.orm_validators, so orm.py no longer mirrors
+# those names onto its own namespace. The bottom-layer it DEFINES is still
+# imported by the children via `from .orm import ...`.)
 #
 # Net: `[...]` vs `.get()` is decided by "does the child top-import server?";
 # symbol-import vs module-attr-access is decided by "is the binding a
