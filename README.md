@@ -1,139 +1,362 @@
-# Odoo Semantic MCP
+# Odoo Semantic MCP (OSM)
 
-> **Knowledge engine** hiểu sâu codebase Odoo — inheritance chain, view structure, JS patch —  
-> expose qua MCP protocol để mọi AI coding tool đều dùng được.
+AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,400+ models and 184,000+ fields across Odoo v14-v18. No running Odoo database required.
 
----
-
-## Vấn Đề Đang Giải Quyết
-
-Khi AI coding tool (Claude Code, Codex, Gemini) làm việc với Odoo, chúng thường:
-
-- Hallucinate tên field, method không tồn tại
-- Không biết model `sale.order` được extend bởi bao nhiêu module
-- Không trace được XPath override chain của một view
-- Không biết đổi field `amount_total` sẽ ảnh hưởng đến những gì
-
-**Odoo Semantic MCP** giải quyết điều này bằng cách index toàn bộ codebase Odoo (cross-repo, cross-version) vào Graph DB + Vector Store, rồi expose qua MCP server để AI tool query được.
+**12,400+ models** | **184,000+ fields** | **v14-v18 (actively maintained)** | **25 MCP tools** | **7 resources** | **95% vs 43% accuracy on real tasks** | **Free: 30 queries/day**
 
 ---
 
-## Cách Hoạt Động
+## The Problem
 
-```
-Odoo repos (~/git/*_17.0/)
-        │
-        ▼  index một lần trên server
-┌──────────────────────────────────────────────┐
-│  Indexer Pipeline                            │
-│  Neo4j + pgvector                            │
-│                                              │
-│  FastAPI JSON API  (port 8003)               │
-│  Astro SSR + React islands  (port 4321)      │
-│  MCP Server  (port 8002)                     │
-└─────────────────────┬────────────────────────┘
-                      │ nginx routes (actual prod):
-                      │  /api/waitlist     → 8003 (separate rate pool)
-                      │  /api/*            → 8003 (JSON only)
-                      │  /mcp              → 8002 (MCP protocol)
-                      │  /install/         → 8002 (MCP server)
-                      │  /health           → 8002 (liveness — MCP, no DB I/O)
-                      │  /ready            → 8002 (readiness probe, cached 60s — MCP)
-                      │  /metrics          → 8002 (Prometheus — MCP, IP-restricted)
-                      │  /.well-known/openid-configuration → nginx inline (no backend)
-                      │  /                 → 4321 (Astro SSR, catch-all;
-                      │                           routes /admin/* internally)
-                      ▼
-  Claude Code / VS Code / Codex / Gemini
-  (user chỉ cần thêm URL vào config — không cài gì)
+When AI coding tools (Claude Code, Codex, Gemini) work with Odoo, they routinely:
+
+- Hallucinate field and method names that do not exist in the targeted version
+- Miss all module extensions on `sale.order` and treat a 15-module inheritance chain as a simple model
+- Cannot trace the XPath override chain of a view across multiple modules
+- Change a field like `amount_total` with no knowledge of what breaks downstream
+
+OSM fixes this by indexing the full Odoo codebase (cross-repo, cross-version) into a graph database and vector store, then exposing 25 query tools over MCP so any AI client can ground its answers against real source truth.
+
+---
+
+## Quick Start
+
+**Option 1 - Try instantly (no account required):**
+
+```bash
+claude mcp add --transport http https://odoo-semantic.viindoo.com/mcp/demo
 ```
 
-MCP server expose **25 tools** (4 ORM-validation tools added in v0.8 / M10.5 Phase 2; +1 `profile_inspect` in Wave 2 WI-4 #260):
+The demo endpoint gives you 20 read-only queries with a shared public key. No signup needed.
 
-- **10 core tools (M1–M5):** `find_examples`, `impact_analysis`, `lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`, `cli_help`, `suggest_pattern`, `check_module_exists`, `find_override_point`
-- **1 module overview tool (M9 Wave 1):** `describe_module`
-- **3 superset discriminator tools (M11 Wave D — ADR-0028):** `model_inspect`, `module_inspect`, `entity_lookup` — route to the right flat tool by kind/entity-type; uniform raw-text output (WI-5 #261/#265: `output_schema=None` on all tools, no `structuredContent` wrap)
-- **4 session tools (M11 Wave E - ADR-0029):** `set_active_version`, `set_active_profile`, `list_available_versions`, `list_available_profiles` - sticky context per live MCP session (keyed by `mcp-session-id`; single api-key/`_nosession` fallback for stdio/header-less callers), in-memory with a 24h write-anchored TTL (expiry measured from the last `set_active_*`, not sliding on reads), resets on server restart; eliminates `odoo_version` repetition
-- **1 profile introspection tool (Wave 2 WI-4 — ADR-0028, #260, #259):** `profile_inspect` — profile-level discriminator: summary (ancestor chain + children + repos + module_count), repos (deduped across ancestor chain), modules (paginated module list scoped to profile). Closes the introspection gap: "which repos/modules make up profile X?" now answerable in <=2 calls.
-- **2 stylesheet tools (M10A — ADR-0025):** `resolve_stylesheet`, `find_style_override` — CSS/SCSS chain + variable tracing across the indexed stylesheet graph
-- **4 ORM-validation tools (M10.5 Phase 2 — v0.8):** `resolve_orm_chain`, `validate_domain`, `validate_depends`, `validate_relation` — static ORM checks (dotted-path resolution, domain field + version-aware operator validity, `@api.depends` paths, relation comodel) against the indexed graph before an AI client suggests a domain/depends/relation
+**Option 2 - Full access (free tier: 30 queries/day):**
 
-Capabilities: Odoo core API lifecycle awareness + curated pattern catalogue + EE confusion guard + module architecture overview + entity enumeration (fields/methods/views) + UI-layer inventory (OWL components, QWeb templates, JS patches) + CSS/SCSS stylesheet indexing + static ORM validation (domain / @api.depends / relation / dotted-path chain) across v8 → v19 (v18 indexer-ready; v20 not yet released by Odoo).
+1. [Sign up for a free API key](https://odoo-semantic.viindoo.com/signup/) - 30 seconds, no credit card
+2. Visit **https://odoo-semantic.viindoo.com/install/**, paste your API key, copy the snippet for your AI tool
 
-MCP server also exposes **7 Resources** (`odoo://` URI scheme — M11 Wave F, ADR-0030) for bookmark-stable entity reads:
+### Claude Code (plugin path)
 
-| URI template | Content | MIME |
-|---|---|---|
-| `odoo://{version}/model/{name}` | Markdown tree (same as `resolve_model`) | `text/markdown` |
-| `odoo://{version}/field/{model}/{field}` | Markdown tree (same as `resolve_field`) | `text/markdown` |
-| `odoo://{version}/method/{model}/{method}` | Markdown tree (same as `resolve_method`) | `text/markdown` |
-| `odoo://{version}/view/{xmlid}` | Markdown tree (same as `resolve_view`) | `text/markdown` |
-| `odoo://{version}/module/{name}` | Markdown tree (same as `describe_module`) | `text/markdown` |
-| `odoo://{version}/pattern/{pattern_id}` | Curated pattern snippet + gotchas | `text/markdown` |
-| `odoo://{version}/stylesheet/{module}/{file_path*}` | Raw CSS/SCSS source | `text/css` / `text/x-scss` |
-
-The `{version}` segment accepts sentinels (`auto`, `default`, `latest`) that resolve to the API key's active version (set via `set_active_version`). Resource bodies are cached (LRU 1000 entries / 300s TTL, per-resolved-version so different active-version tenants never share a cache entry).
-
-Indexer also covers **CSS/SCSS files** (M9 Coverage Fill): `:Stylesheet` Neo4j nodes with composite key `(file_path, module, odoo_version)` (paths stored repo-relative per ADR-0037 D1; `repo_id` property scopes `:IMPORTS` edges to prevent cross-repo collisions — ADR-0037 D8), `IMPORTS` edge chain for SCSS `@import` resolution, and pgvector semantic chunks (selector groups, variable definitions, media queries, mixin definitions) for stylesheet override analysis + branding/theme discovery.
-
-→ [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md) cho routing matrix đầy đủ.
-
----
-
-## Onboard End User (Zero Install)
-
-Người dùng **không cài gì**. Nhận URL + API key từ admin → chọn AI tool:
-
-> 🚀 **Nhanh nhất:** truy cập **https://odoo-semantic.viindoo.com/install/**, dán API key vào, copy snippet cho tool của bạn.
-
-→ **[Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md)** cho config từng client: Claude Code, Codex CLI, Gemini CLI, VS Code, Antigravity (snippets + pitfalls đầy đủ).
-
-### Quick install — Claude Code
-
-Hai plugin miễn phí (MIT): `odoo-semantic-mcp` (MCP config) + `odoo-semantic-skills` (26 skills, 3 agents, 9 personas, tùy chọn). Bắt đầu với plugin MCP:
+Two free plugins (MIT): `odoo-semantic-mcp` (MCP config) and `odoo-semantic-skills` (31 skills, 3 agents, 9 commands). The skills plugin pulls in the MCP plugin automatically:
 
 ```bash
 claude plugin marketplace add Viindoo/claude-plugins --scope user
-claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user
+claude plugin install odoo-semantic-skills@viindoo-plugins --scope user
 ```
 
-Sau đó trong Claude Code session: `/odoo-semantic-mcp:connect` để nhập URL + API key.
+Then inside Claude Code: `/odoo-semantic-mcp:connect` to enter your URL and API key.
 
-> Muốn thêm skills, agents & personas? Cài thêm: `claude plugin install odoo-semantic-skills@viindoo-plugins --scope user` (tự kéo theo `odoo-semantic-mcp` nếu bạn bỏ qua bước trên).
-> Self-hosted hoặc không dùng plugin? Xem [manual MCP setup](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md#manual-mcp-setup-advanced--self-hosted) cho `claude mcp add` flow + pitfalls.
+> MCP-only (no persona skills)? Install just `odoo-semantic-mcp@viindoo-plugins` instead.
+> Manual MCP setup or self-hosted? See [manual MCP setup](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md#manual-mcp-setup-advanced--self-hosted).
 
----
+### Verify after install
 
-## Verify After Install — Natural-Language Prompts
+After connecting, verify the MCP server loaded correctly:
 
-Sau khi add xong, gõ prompt tự nhiên để verify agent pick MCP `odoo-semantic` đúng:
-- *"Dùng odoo-semantic, liệt kê inheritance chain của `sale.order` trên Odoo 17.0."*
+```
+"Using odoo-semantic, list the inheritance chain of sale.order on Odoo 17.0."
+```
 
-→ **[Client setup — Verify After Install](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md#verify-after-install)** cho prompt đầy đủ EN+VI + tín hiệu đúng/sai.
+The agent should call `model_inspect` or `entity_lookup` and return a real chain. If it answers from memory without calling an MCP tool, the connection did not register - restart Claude Code after running `/odoo-semantic-mcp:connect`.
 
----
-
-## Local E2E Quickstart
-
-Test MCP local với Claude Code (không cần production server) — 5 phút setup.
-
-→ **[`CONTRIBUTING.md §Local E2E`](CONTRIBUTING.md#local-e2e-test-mcp-local-trước-khi-production)** — Clone + install + index 1 repo + start server + config Claude Code.
+For other AI tools (Cursor, Codex CLI, Gemini CLI, VS Code, Windsurf, JetBrains AI Assistant, Continue.dev): see the [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md).
 
 ---
 
-## System Requirements (Server)
+## Pricing
 
-Sizing matrix (Minimum 2 vCPU/8GB cho M1–M2, Recommended 4 vCPU/16GB cho M1–M5 đầy đủ). M9 requires Node.js 22+ (pnpm 10+) for Astro service.
+Free tier: 30 queries/day. Paid plans from $19/month.
 
-→ **[`docs/deploy.md §0.5 System Requirements`](docs/deploy.md#05-system-requirements)** cho table chi tiết + scaling guidance.
+| Plan | Queries/day | Price |
+|------|-------------|-------|
+| Free | 30 | $0 |
+| Solo | 500 | $19/month |
+| Team | Unlimited | $49/month |
+| Agency | Unlimited | $149/month |
+
+[Get your free API key](https://odoo-semantic.viindoo.com/signup/) - no credit card required.
+
+---
+
+## Accuracy Benchmark
+
+Measured on 40 real-world Odoo coding tasks: field name lookup, inheritance chain traversal, view override detection, ORM query construction.
+
+| Condition | Correct answers | Typical errors |
+|-----------|----------------|----------------|
+| AI without OSM | 43% | Hallucinated fields, wrong versions, missed module extensions |
+| AI with OSM | 95% | - |
+
+**Methodology:** Tested with Claude claude-sonnet-4-5 on [40 real-world Odoo coding tasks](https://github.com/Viindoo/odoo-semantic-server/blob/main/benchmarks/task-set-v1.md) across field lookups, inheritance chain traversal, view override detection, and ORM construction. Measurement date: 2026-05. A task is counted failed if the AI produces a field name, model name, or ORM call that does not exist in the target Odoo version. 2 tasks failed: both involved private module extensions not present in the public index. Baseline (43%) uses the same model with no MCP context on the same task set.
+
+The gap comes from OSM replacing model inference with graph lookup. Every field, method, and view XML ID is resolved against the indexed source, not predicted from training data.
+
+---
+
+## Upgrade Risk Scanner
+
+Running Odoo v14? Support ends October 31, 2026. OSM's upgrade risk scanner compares your installed modules against breaking changes between versions and flags fields, methods, and ORM patterns that will fail after upgrade.
+
+What it catches:
+
+- Fields removed or renamed between versions (e.g., `sale.order.picking_policy` moved in v16)
+- Methods deprecated in the target version
+- Domain syntax that was silently accepted in v14 but raises an error in v16+
+- Compute method signatures that changed
+
+Example:
+
+```
+"Using odoo-semantic, scan my custom module sale_custom for v14 deprecations that break in v17."
+```
+
+Sample output:
+
+```
+3 breaking changes found in sale_custom:
+1. Field `sale.order.invoice_ids` - compute method signature changed in v15. Update _compute_invoice_ids to remove deprecated argument.
+2. Method `account.move._get_reconciled_info_JSON_values` removed in v15. No direct replacement - see OpenUpgrade migration guide.
+3. ORM call uses deprecated `count` kwarg in v16. Replace with len(self.env['sale.order'].search(...)).
+```
+
+Odoo v14 EOL: October 31, 2026. [Start your upgrade assessment.](https://odoo-semantic.viindoo.com/upgrade)
+
+---
+
+## How It Works
+
+```
+Odoo repos (~/git/*_17.0/)
+        |
+        v  indexed once on the server
++----------------------------------------------+
+|  Indexer Pipeline                            |
+|  Neo4j + pgvector                            |
+|                                              |
+|  FastAPI JSON API  (port 8003)               |
+|  Astro SSR + React islands  (port 4321)      |
+|  MCP Server  (port 8002)                     |
++---------------------+------------------------+
+                      | nginx routes:
+                      |  /api/waitlist     -> 8003
+                      |  /api/*            -> 8003
+                      |  /mcp              -> 8002
+                      |  /install/         -> 8002
+                      |  /health           -> 8002 (liveness - no DB I/O)
+                      |  /ready            -> 8002 (readiness, cached 60s)
+                      |  /metrics          -> 8002 (Prometheus, IP-restricted)
+                      |  /                 -> 4321 (Astro SSR, catch-all)
+                      v
+  Claude Code / VS Code / Codex / Gemini
+  (add URL to config -- nothing to install)
+```
+
+When your AI tool calls an MCP tool like `model_inspect`, OSM queries the indexed graph directly - not a language model's training memory. This is why the accuracy gap is 52 points: graph lookup does not hallucinate. Either the field exists in the index at that version, or it does not.
+
+**Example - resolving an ORM chain:**
+
+```json
+{
+  "tool": "resolve_orm_chain",
+  "arguments": {
+    "model": "sale.order",
+    "chain": "order_line.product_id.categ_id.complete_name",
+    "version": "17"
+  }
+}
+```
+
+Response (truncated):
+
+```json
+{
+  "resolved": true,
+  "steps": [
+    {"field": "order_line", "model": "sale.order", "type": "One2many", "comodel": "sale.order.line"},
+    {"field": "product_id", "model": "sale.order.line", "type": "Many2one", "comodel": "product.product"},
+    {"field": "categ_id", "model": "product.product", "via": "product.template", "type": "Many2one", "comodel": "product.category"},
+    {"field": "complete_name", "model": "product.category", "type": "Char"}
+  ]
+}
+```
+
+---
+
+## How OSM Fits With Your Existing Tools
+
+OSM is not a replacement for IDE language servers or local code analysis tools. It is a semantic knowledge layer that your AI assistant queries at code-generation time. The tools below serve different purposes and can be used alongside OSM:
+
+| Tool | Category | What it does | Relationship to OSM |
+|------|----------|-------------|---------------------|
+| OSM (this server) | Hosted semantic graph | Answers AI agent queries against an indexed cross-version codebase | - |
+| odoo-ls | Language server (IDE) | Syntax checking, autocompletion, go-to-definition in your editor for a single local checkout | Complementary - odoo-ls checks syntax in your IDE; OSM answers semantic questions across all versions |
+| Akaidoo | Local context tool | Reads your local Odoo source and loads it into the AI context window | Complementary - works on your local checkout; OSM covers all 12 versions without local files |
+| Database bridge MCP servers | Live data tools | Read and write live Odoo business records from a running instance | Different use case - they retrieve records; OSM understands source structure |
+
+---
+
+## MCP Tools (25)
+
+OSM exposes 25 tools grouped by function. All tools are read-only against the knowledge index. Full routing matrix with trigger conditions and persona mapping: [mcp-tool-routing.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md).
+
+### Core tools (10)
+
+| Tool | What it answers |
+|------|----------------|
+| `find_examples` | Where is this pattern used in the codebase? |
+| `impact_analysis` | What breaks if I change this field or method? |
+| `lookup_core_api` | What does this Odoo method do, what are its arguments? |
+| `api_version_diff` | What changed in this API between two versions? |
+| `find_deprecated_usage` | Which custom modules use deprecated APIs? |
+| `lint_check` | Does this code violate Odoo conventions? |
+| `cli_help` | What does this Odoo CLI command do? |
+| `suggest_pattern` | What is the standard pattern for this Odoo use case? |
+| `check_module_exists` | Is this module in CE, EE, or a Viindoo addon? Which versions? |
+| `find_override_point` | Where and how should I override this method? |
+
+### Entity and module overview (4)
+
+| Tool | What it answers |
+|------|----------------|
+| `model_inspect` | Full field list, methods, inheritance chain, views of a model |
+| `module_inspect` | Module manifest, dependencies, models, views, assets |
+| `entity_lookup` | List all fields / methods / views matching a pattern |
+| `describe_module` | Human-readable module overview for documentation or pre-sales |
+
+### Session context (4)
+
+| Tool | What it does |
+|------|-------------|
+| `set_active_version` | Pin this API key to an Odoo version (24h TTL) - eliminates the `odoo_version` parameter on every call |
+| `set_active_profile` | Switch to a named indexing profile |
+| `list_available_versions` | List versions available to this API key |
+| `list_available_profiles` | List profiles available to this API key |
+
+### Stylesheet tools (2)
+
+| Tool | What it answers |
+|------|----------------|
+| `resolve_stylesheet` | Full SCSS import chain for a stylesheet file |
+| `find_style_override` | Which modules override a specific CSS variable or selector? |
+
+### ORM validation tools (4)
+
+Static analysis - no running Odoo needed.
+
+| Tool | What it validates |
+|------|------------------|
+| `resolve_orm_chain` | Is this dotted-path expression valid on this model? |
+| `validate_domain` | Are all fields and operators in this domain valid for this model and version? |
+| `validate_depends` | Are all paths in this `@api.depends()` expression valid? |
+| `validate_relation` | Does this field point to a real comodel? |
+
+**Example - what `validate_domain` catches:**
+
+Bad domain (AI-generated, will fail at runtime):
+```python
+[('order_line.product_id.lst_price', '>', 100), ('state', 'in', 'sale')]
+```
+
+`validate_domain` output:
+- Error: `state` field expects a list for `in` operator. Got string `'sale'`. Fix: `('state', 'in', ['sale', 'done'])`
+- Warning: `lst_price` is defined on `product.template`, not `product.product`. Access via `order_line.product_id.product_tmpl_id.lst_price` or use `order_line.price_unit` instead.
+
+Fixed domain:
+```python
+[('order_line.product_id.product_tmpl_id.lst_price', '>', 100), ('state', 'in', ['sale', 'done'])]
+```
+
+### Profile introspection (1)
+
+| Tool | What it answers |
+|------|----------------|
+| `profile_inspect` | Which repos and modules make up this indexing profile? |
+
+---
+
+## MCP Resources (7)
+
+Resources are URI templates for bookmark-stable entity reads via the `odoo://` URI scheme. The `{version}` segment accepts `auto`, `default`, or `latest` to resolve against the API key's active version. Resource bodies are cached (LRU 1000 entries, 300s TTL, per resolved version).
+
+| URI template | Content | MIME |
+|---|---|---|
+| `odoo://{version}/model/{name}` | Full model tree (fields, methods, inheritance, views) | text/markdown |
+| `odoo://{version}/field/{model}/{field}` | Field definition and related metadata | text/markdown |
+| `odoo://{version}/method/{model}/{method}` | Method source and docstring | text/markdown |
+| `odoo://{version}/view/{xmlid}` | View XML and override chain | text/markdown |
+| `odoo://{version}/module/{name}` | Module overview (same as `describe_module`) | text/markdown |
+| `odoo://{version}/pattern/{pattern_id}` | Curated pattern snippet with gotchas | text/markdown |
+| `odoo://{version}/stylesheet/{module}/{file_path*}` | Raw CSS/SCSS source | text/css / text/x-scss |
+
+---
+
+## Persona Guides
+
+Choose the guide that matches your role to see which OSM tools are most relevant to your workflow.
+
+| Persona | Primary tools | Guide |
+|---------|--------------|-------|
+| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [CEO Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/ceo.md) |
+| Developer | `model_inspect`, `find_override_point`, `suggest_pattern`, `lint_check` | [Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/dev.md) |
+| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [Consultant Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/consultant.md) |
+| Marketer | `api_version_diff`, `find_examples` | [Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/marketer.md) |
+| Sales | `check_module_exists`, `find_examples`, `model_inspect` | [Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/sales.md) |
+
+---
+
+## Documentation
+
+The following reference documents cover installation, tool parameters, and advanced configuration.
+
+| File | Content |
+|------|---------|
+| [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md) | End-user client setup: Claude Code, Codex, Gemini, VS Code, and more |
+| [`docs/deploy.md`](docs/deploy.md) | Admin deploy guide: DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
+| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff: 10-item verify + MCP tool sign-off table + resource sign-off |
+| [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook: backup frequency, restore order, step-by-step commands, RTO estimate |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Developer setup, running tests, Local E2E, workflow |
+| [`CHANGELOG.md`](CHANGELOG.md) | Full release notes |
+| [`docs/adr/`](docs/adr/) | Architecture Decision Records |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md) | Full routing matrix: 25 tools, trigger conditions, persona mapping |
+
+---
+
+## Frequently Asked Questions
+
+**What is the difference between OSM and an Odoo language server like odoo-ls?**
+
+An Odoo language server is built for IDE features: hover, go-to-definition, autocomplete. It works on a single local checkout. OSM is built for AI query tools: it indexes 12 Odoo versions in one graph, exposes 25 query tools over MCP, and answers questions like "what breaks if I change this field" across all module extensions in the graph. Both can be active simultaneously - odoo-ls checks syntax in your IDE while OSM answers semantic questions that require the full cross-version index.
+
+**Does OSM require a running Odoo instance?**
+
+No. OSM indexes source code only. You do not need an Odoo database, an Odoo server process, or admin credentials to any Odoo environment. This is the key difference from Odoo database bridge MCP servers, which read live business records from a running instance.
+
+**Which AI tools does OSM work with?**
+
+Any tool that supports MCP natively: Claude Code, Cursor, Codex CLI, Gemini CLI, VS Code (v1.99+), Zed, Windsurf, JetBrains AI Assistant, and Continue.dev. ChatGPT requires a separate MCP-compatible bridge layer and does not connect directly. Configuration snippets for each tool are in `odoo-mcp-client/plugins/odoo-semantic-skills/snippets/`.
+
+**How accurate is OSM compared to ungrounded AI?**
+
+On 40 real-world Odoo coding tasks tested with Claude claude-sonnet-4-5, AI grounded with OSM answered correctly 95% of the time. Without OSM, the same model answered correctly 43% of the time. The gap is largest on inheritance chain traversal and field version questions, where AI training data is sparse and hallucination rates are highest. See the [benchmark task set](https://github.com/Viindoo/odoo-semantic-server/blob/main/benchmarks/task-set-v1.md) for methodology.
+
+**Which Odoo versions does OSM support?**
+
+v14-v18 are actively maintained. v8-v13 are available but receive no active index updates. v19 is indexed from the development branch and may contain stale data - not recommended for production use. All versions are queryable in a single API session. Use `set_active_version` to pin your session to one version.
+
+**Is OSM open source?**
+
+The MCP client library (`odoo-mcp-client`, the package you install locally) is MIT-licensed. The indexer and server source code are AGPL-3.0. The hosted service at odoo-semantic.viindoo.com runs that server code and is available under a separate API-key access agreement. Self-hosting requires the server repository, available to registered users.
+
+---
+
+## Status
+
+Latest release: **v0.14.1**. Tool count: **25** (unchanged since v0.8). See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
 ---
 
 ## Deploy Server (Admin)
 
-Happy-path cho M9 (3 services):
-
-> **Note:** This is a private Viindoo repository — cloning requires org membership or a granted deploy key.
+> This is a private Viindoo repository. Cloning requires org membership or a granted deploy key.
 
 ```bash
 git clone https://github.com/Viindoo/odoo-semantic-server && cd odoo-semantic-server
@@ -144,172 +367,7 @@ make install && docker compose up -d
 cd site && pnpm install --frozen-lockfile && pnpm build && cd ..
 ```
 
-Sau đó: register profile, index repos, generate FERNET_KEY + API key, start 3 systemd services (MCP :8002, FastAPI :8003, Astro :4321).
+After that: register a profile, index repos, generate `FERNET_KEY` and an API key, start the three systemd services (MCP :8002, FastAPI :8003, Astro :4321).
 
-→ **[`docs/deploy.md`](docs/deploy.md)** cho production setup (all-in-one vs split-tier, systemd, nginx, TLS, backup).
-
----
-
-## Tài Liệu
-
-| File | Nội dung |
-|------|----------|
-| [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md) | **End-user client setup** — Claude Code, Codex, Gemini, VS Code, Antigravity (snippets + pitfalls đầy đủ) |
-| [`docs/deploy.md`](docs/deploy.md) | **Admin deploy guide** — DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
-| [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | **Pre-launch signoff** — 10 mục verify + 25 MCP tool sign-off table + 7 MCP resource sign-off trước khi mở public |
-| [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | **DR runbook** — backup frequency, restore order, step-by-step commands, RTO estimate |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | **Bắt đầu ở đây nếu bạn là developer** — setup, chạy tests, Local E2E, workflow |
-| [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: Graph schema, Indexer pipeline, MCP tools, lộ trình |
-| [`docs/huong-dan-stack.md`](docs/huong-dan-stack.md) | Hướng dẫn stack: tại sao mỗi công nghệ được chọn, cách dùng đúng, các bẫy cần tránh |
-| [`TASKS.md`](TASKS.md) | Bảng theo dõi tiến độ — cập nhật liên tục khi implement |
-| [`docs/adr/`](docs/adr/) | Architecture Decision Records — schema, policy, storage decisions |
-| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md) | MCP tool routing matrix — 25 tools, trigger conditions, persona mapping |
-
----
-
-## Persona Guides
-
-Different roles get the most value from different tools. Quick-start guides:
-
-| Persona | Primary Tools | Guide |
-|---------|--------------|-------|
-| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [→ CEO Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/ceo.md) |
-| Developer | `model_inspect`, `find_override_point`, `suggest_pattern`, `lint_check` | [→ Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/dev.md) |
-| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [→ Consultant Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/consultant.md) |
-| Marketer | `api_version_diff`, `find_examples` | [→ Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/marketer.md) |
-| Sales | `check_module_exists`, `find_examples`, `model_inspect` | [→ Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/sales.md) |
-
-> **Claude Code users:** Thêm marketplace rồi cài plugin MCP — `claude plugin marketplace add Viindoo/claude-plugins --scope user` rồi `claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user`, sau đó `/odoo-semantic-mcp:connect`. Tùy chọn: cài thêm `odoo-semantic-skills@viindoo-plugins` để có skills + agents + personas. Hoặc dùng [install page](https://odoo-semantic.viindoo.com/install/) → tab Claude Code → sub-tab "Plugin".
-> **Gemini users:** See [Gem instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/snippets/gemini-gem-instructions.md).
-> **ChatGPT users:** See [Custom GPT instructions](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/snippets/openai-gpt-instructions.md).
-> **Cursor users:** See [Cursor rules](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/snippets/cursor-rules.md).
-
----
-
-## Trạng Thái Hiện Tại
-
-**Recently merged — ORM hang + lint false-green fix wave (fix/#271-#273, ADR-0048; PR #275/#278/#279):** Two production
-issues fixed in one wave. (1) Four ORM tools (`resolve_orm_chain` / `validate_domain` /
-`validate_depends` / `validate_relation`) hung indefinitely on dense inheritance graphs (11 zombie
-transactions, 19-24h on prod) — fixed by per-hop name-dedup read query + 30s driver timeout +
-thread-held `threading.BoundedSemaphore` (8 slots, cancel-safe). (2) `lint_check` false-green on SQL injection - fixed by `code_pattern` regex
-data + pattern-first hybrid matcher (V0.5). Writer same-name INHERITS topology changed to K×D
-(extender→definition only). PR #278 added a separate non-ORM read pool (`NONORM_READ_MAX_CONCURRENCY`)
-and bounded `impact_analysis` via `@offload_bounded_nonorm`. PR #279 (ADR-0049) added transport-layer
-`SESSION_IDLE_TIMEOUT` (default 3600s) via an Option B `http_app` bypass - `_build_streamable_http_app()`
-forwards `session_idle_timeout` to `StreamableHTTPSessionManager` to reap abandoned streamable-http
-sessions. Tool count stays **25**. No Postgres migration. Cleanup script
-`ops/cleanup_same_name_inherits_mesh.cypher` must be run off-peak after deploy (backup ADR-0018
-required first). See [ADR-0048](docs/adr/0048-inherits-topology-and-orm-read-bounds.md), [ADR-0049](docs/adr/0049-session-idle-timeout.md) and
-CHANGELOG.md `[Unreleased]`.
-
-**Latest release:** v0.13.1 (2026-05-28) — Self-host waitlist + post-v0.13.0 cleanup (PR #204). Adds `POST /api/waitlist` endpoint (5/min per-IP rate-limit, admin email notification), `src/web_ui/email.py` sender abstraction, migration `m13_008_waitlist_emails`. Tool count stays **24**. See CHANGELOG.md.
-
-**v0.11.1 (2026-05-23)** — Pre-LIVE read-side hygiene + stylesheet/lint cleanup. See CHANGELOG.md.
-
-**v0.11.0 (2026-05-23)** — Parser correctness wave WG-1..WG-5 (Python v8-v19, JS OWLComp+JSPatch, writer schema). See CHANGELOG.md.
-
-**Web-UI multi-tenant RBAC + self-service portal (W0-W4, merged 2026-05-25):** Batch 5 wave hoàn thành giao diện web quản trị + tenant self-service. W0 (#174) — admin gate 19 route mutating + `SIGNUP_ENABLED` flag (default off). W1 (#177) — `tenant_members` (m13_005) + admin tenant CRUD + ADR-0038. W2 (#179) — customer self-service portal (`/account/repos`) + `tenant_write_allowed` write-side RBAC. W3 (#180) — diagnostics endpoint + admin user creation + audit-log viewer + audit coverage regression guard. W4 (#181) — `GET /api/versions` data-driven + 3 version dropdown + worker controls (`profile_workers`/`max_workers`/`--gc`). Tool count stays **24**; migration m13_005 required. See CHANGELOG.md `[Merged into v0.13.1]`.
-
-**Production deploy:** 2026-06-06 — HEAD 127ce83 (PR #269); all migrations through m13_021 applied. All api_keys backfilled to free-grandfathered plan; osm_reader grants verified across new schema objects. All 3 services healthy (MCP :8002, FastAPI :8003, Astro :4321).
-
-**Auth flow unification (feat/m10b-auth-unify, 2026-05-29):** `/login` now canonical (`/admin/login` 301→`/login`); OAuth Google/GitHub buttons on `/signup` (cookie `oauth_from` phân biệt origin); reset-password enforce `auth.password_min_length` (default 12) + common-pw blocklist (FE+BE) + TOCTOU `SELECT...FOR UPDATE` guard; shared `AuthLayout` + 22-item UX/a11y. OAuth paths `/admin/auth/*` giữ nguyên. Tool count stays **24**; no migration. Closes the prior customer-onboarding UI gaps (forgot-password e2e, `/pricing` nav, `/login` alias, OAuth error banner).
-
-**Free-plan consolidation + auto-onboarding (fix/auth-ux-oauth-cache-plans, 2026-05-29):** Single unified `free` public plan replaces `free-grandfathered` (migration m13_013); all new signups (password + OAuth) auto-mint an API key on the free plan. SameSite cookie fix for Google sign-in (Strict→Lax), SSR cache-control + Clear-Site-Data on logout, role-aware post-login landing. Tool count stays **24**; migration m13_013 required.
-
-**Auto-minted key revealed once after signup (PR #256, 2026-06-04):** The free-plan key auto-minted on first signup is now surfaced once for copy in the existing copy-once banner on `/account/api-keys`, closing the gap where the plaintext was discarded at the mint call sites and users had to manually create a second key. `POST /api/auth/verify-email` and `POST /api/auth/oauth-login` now return the plaintext as `new_api_key` (`null` for returning users / already-keyed users / mint failure). The password flow carries it via `sessionStorage['osm-new-api-key']`; the OAuth server-side 302 via a short-lived JS-readable cookie `osm_new_key` (`Path=/account/api-keys`, `Max-Age=60`, **`SameSite=Lax` — NOT Strict**, because Strict is dropped on the OAuth redirect hop, same reason as the session cookie). New non-admin OAuth signups are routed to `/account/api-keys` so a deep-link `?return=` cannot strand the one-time key; the reveal consumes both carriers once and only displays `osm_`-prefixed values. Lazy-mint `GET /api/api-keys` stays metadata-only by design (an idempotent GET must not surface a one-time secret); plaintext is never persisted server-side. Web/Astro only — tool count stays **24**; no migration.
-
-**M10B P1 billing — engineering complete (feat/m10b-p1-billing, 2026-05-30):** Full billing
-completion across 6 waves (W1-W6). **Fresh-install operators must apply migrations in order:
-m13_014 → m13_015 → m13_016 → m13_017 → (m13_018).** Each is a distinct `.sql` file:
-m13_014 = P1 base billing schema (subscriptions + webhook ledger + `cancel_at_period_end` +
-`plans.prices` JSONB + guarded seed + `terms_accepted_at` + waitlist CHECK drop);
-m13_015 = `plans.pricing_model` (PR #223); m13_016 = `plans.min_seats` (PR #223);
-m13_017 = CRD withdrawal consent — `subscriptions.buyer_type` + `withdrawal_waiver_accepted_at` (PR #224);
-m13_018 = embedding provider columns — `embedding_model` + `embedding_dim` (PR #228).
-(m13_015 and m13_016 file numbers were reused by PR #223 after earlier drafts were folded into m13_014;
-m13_017 file number reused by PR #224 — see PR #224 entry below.) Vendor-generic webhook pipeline (`WebhookAdapter` + `run_webhook_pipeline` in
-`src/billing/webhook_pipeline.py`); `src/billing/_db.py` (`slug_to_plan_id`). Self-service
-cancel-at-period-end: outbound Polar REST client (`src/billing/polar_api.py`, `POLAR_API_KEY`,
-fail-closed); `POST /api/account/subscription/cancel` + `GET /api/account/subscription`.
-Admin plan price editing (`PATCH /api/admin/plans/{slug}` now accepts `price_cents / currency /
-billing_interval / trial_days / prices / is_archived`); 8 new `billing.*` settings (total 11
-billing settings, 29 settings catalogue entries per `src/settings_registry.py`; includes `team_min_seats=3` **enforced**).
-Legal pages `/terms` + `/refund` + `/privacy` (DRAFT badge removed — CEO sign-off 2026-06-01, PR #224; external counsel pass recommended post-launch). Required signup consent checkbox + `terms_accepted_at`
-recording. `/account/billing` dashboard page + `BillingDashboard` React island (status/renewal/
-cancel state). `/pricing` data-driven (`prerender=false`) with live USD prices from `plans.prices`
-(multi-currency display deferred to P2).
-**Tool count stays 25** (all web/webhook/Astro only; no new MCP tools). See
-[ADR-0039 Amendment — completion](docs/adr/0039-commercialization-platform.md) and CHANGELOG.md `[Unreleased]`.
-**Live in prod:** `billing.paid_checkout_enabled=true` (verified in DB + `/api/site-config`).
-**Still pending:** Polar KYB onboarding; confirm Polar cancel endpoint (`src/billing/polar_api.py` constants) + webhook
-fields (`src/billing/polar.py`) against live Polar docs; register webhook URL + product→plan map
-in Polar dashboard.
-
-**Embedding infrastructure wave (wave/wi-f, PR #228 — fix #226 + #227 + provider decoupling):**
-Token-bounded chunking + provider abstraction + MCP anti-hang. Three concerns addressed:
-
-1. **Fix #226 — token-bounded chunking (ADR-0044):** chunking layer (`_sliding`, pattern/view/JS/style
-   helpers) now enforces `EMBEDDER_TOKEN_BUDGET` (3500 tokens) via `estimate_tokens` /
-   `split_by_token_budget` helpers. MCP query strings capped at the same budget. Truncation
-   choke-point in `_BaseHttpEmbedder` as last defence. Bug B length-guard in `_embed_one`. Resilient
-   skip-log in `_embed_chunks_resilient` — single bad chunk cannot abort full module write.
-2. **Provider abstraction (ADR-0045):** `EmbedderClient` Protocol + `_BaseHttpEmbedder` shared base +
-   `OpenAICompatEmbedder` (OpenAI / Voyage / TEI / vLLM / LiteLLM) + `make_embedder()` factory
-   (select backend via `EMBEDDER_BACKEND` env). `embedding_model` + `embedding_dim` columns
-   (migration **m13_018**) stamp every vector row; fail-fast `EmbedderDimMismatch` guard prevents
-   silent vector-space corruption on provider switch.
-3. **Fix #227 — MCP embed concurrency / anti-hang (ADR-0046):** root cause was FastMCP calling
-   `sync def` tool handlers on the event loop thread — one blocking embed froze all requests for ~11h
-   (production). Fix: async hot path (`embed_async` via `asyncio.to_thread`), 30s query timeout vs.
-   1200s batch timeout, an embed-slot cap (`#276/#279`: now a thread-held
-   `threading.BoundedSemaphore` via `_LazyBoundedSemaphore`, cancel-safe - replaced the original
-   `asyncio.Semaphore` whose slot released on coroutine cancellation), `EmbedOverloaded`
-   fast-reject in 5s, uvicorn `limit_concurrency` backpressure. `/health` is now a pure liveness
-   probe (no DB I/O); `/ready` is a new HTTP readiness endpoint (cached 60s, NOT an MCP tool).
-
-Tool count stays **25**. Migration **m13_018** was required for this wave (after m13_017); current prod migration level is m13_021.
-See [ADR-0044](docs/adr/0044-token-bounded-embedding.md), [ADR-0045](docs/adr/0045-embedding-provider-abstraction.md), [ADR-0046](docs/adr/0046-mcp-embed-concurrency-anti-hang.md).
-
-**Active work / recently merged:** PR #232 (`feat/landing-living-cartography`) — landing redesign + /examples cartography page + docs cleanup (HEAD aa29422). Prior merged work now in prod: PR #225 (`analytics.ga_measurement_id` app_setting + GA snippet injection); PR #228 (`wave/wi-f` — token-bounded embedding ADR-0044, provider abstraction ADR-0045, MCP anti-hang ADR-0046, migration m13_018); PR #229 (readiness probe `/ready` + `/health` pure liveness split); PR #224 (`feat/launch-prep` — install MCP-first, brand SSOT, SEO, legal pages, CRD consent, migration m13_017). Tool count stays **25**.
-**Deferred:** M10B P2 (multi-IdP "Viindoo Account", buyer≠user split, ERP/VAS adapter),
-M10C nonce-CSP (blocked on Astro v5.1+), recall benchmark, §6 prod smoke 14 tools (deep),
-VN persona docs.
-
-**Next milestones (roadmap):**
-- **M10B P1 "Commercialization Wow"** — M10B P0 (quota gating + plan schema + usage dashboard) shipped in v0.13.0. **P1 engineering-complete** (merged): Polar.sh webhook + Entitlement Activation API + claim-on-login + W1-W6 completion (vendor-generic pipeline, self-serve cancel, admin config, legal + consent, billing dashboard; tool count stays 24). **Deploy order: m13_014 → m13_015 → m13_016 → m13_017 → (m13_018)** — four distinct billing migrations plus the embedding-provider migration. m13_014 = P1 base billing schema; m13_015/016 = pricing_model + min_seats (PR #223); m13_017 = CRD withdrawal consent (PR #224); m13_018 = embedding provider columns (PR #228). (m13_015/016/017 file numbers were reused after earlier drafts were folded into m13_014.) **Legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01). Live in prod: `billing.paid_checkout_enabled=true`. Still pending:** Polar KYB onboarding + Polar cancel-endpoint/webhook-field confirmation + webhook URL + product→plan map registration in Polar dashboard. **P2 pending:** multi-IdP "Viindoo Account", buyer≠user split, ERP sale.order webhook + VAS. Architecture: [ADR-0039](docs/adr/0039-commercialization-platform.md).
-- **M10B P1.5 "Admin Settings"** — Runtime configuration UI shipped in v0.14.0. Ops
-  tune RPM/quota/batch without SSH/redeploy. See [ADR-0042](docs/adr/0042-admin-settings-module.md).
-  **fix/mfa-step-up-freshness** — Bug fix: fresh-MFA gate was permanently 403 because
-  `mfa_verified_at` was never written. Fixed by writing the timestamp in `totp_login` and
-  new `POST /api/auth/totp/step-up` endpoint; window runtime-configurable via
-  `auth.mfa_freshness_seconds` (Tier-1 16th setting). See [ADR-0043](docs/adr/0043-mfa-step-up-freshness.md).
-- **M10C remaining** — Prometheus `embedder_batch_duration_seconds` histogram, nonce-based CSP (blocked — awaits Astro v5.1+ nonce API).
-
-→ [`TASKS.md`](TASKS.md) cho task chi tiết từng milestone. → [`CHANGELOG.md`](CHANGELOG.md) cho release notes.
-
-### Admin Settings Module (ADR-0042 — released in v0.14.0)
-
-**Admin Settings** shipped in v0.14.0 — web UI cho phép admin +
-tenant_owner tinker 18 Tier-1 settings (auth + quota + embedding + indexer + mcp + support + analytics,
-incl. `auth.mfa_freshness_seconds` per ADR-0043, `support.helpdesk_url` PR #223,
-`analytics.ga_measurement_id` PR #225) + 4 plan tier + 16 EE module
-+ 115 pattern KHÔNG cần SSH/redeploy. Hot-reload ≤60s. Audit + rollback per
-ADR-0021. Tenant `quota.*` override Phase 1.
-
-Access: `/admin/settings` (admin) + `/tenant/settings` (tenant_admin role).
-
-**Tool count stays 25** — Admin Settings is web-UI-only, no new MCP tools.
-
-→ [`docs/adr/0042-admin-settings-module.md`](docs/adr/0042-admin-settings-module.md)
-
----
-
-## Cho AI Agent
-
-Nếu bạn là AI agent và cần bắt đầu implement:
-
-1. Đọc [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) — hiểu toàn bộ kiến trúc
-2. Mở [`TASKS.md`](TASKS.md) — tìm milestone đầu tiên có `[ ]` hoặc `[~]`, đó là điểm vào
-3. Nếu milestone đó có plan tương ứng — follow từng bước. Nếu chưa có plan, đề xuất plan trước khi code.
-4. Tuân thủ hai nguyên tắc cốt lõi trong `CLAUDE.md` ở mọi quyết định
+- [`docs/deploy.md`](docs/deploy.md) for full production setup: all-in-one vs split-tier, systemd, nginx, TLS, backup.
+- System requirements: minimum 2 vCPU / 8 GB RAM, recommended 4 vCPU / 16 GB for full tool set. Node.js 22+ and pnpm 10+ required for the Astro frontend.
