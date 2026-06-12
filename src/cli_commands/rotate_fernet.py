@@ -10,7 +10,7 @@ import logging
 import os
 import sys
 
-log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def _key_fingerprint(key_bytes: bytes) -> str:
@@ -143,7 +143,7 @@ def _cmd_rotate_fernet(args) -> int:
             failures = ssh_failures + totp_failures
             if failures:
                 conn.rollback()
-                log.error(
+                _logger.error(
                     "Rotation aborted: %d row(s) failed to decrypt with old key: %s",
                     len(failures),
                     failures,
@@ -164,7 +164,7 @@ def _cmd_rotate_fernet(args) -> int:
                 (actor, total_updated, old_fp, new_fp),
             )
             conn.commit()
-            log.info(
+            _logger.info(
                 "Rotated %d ssh_key_pairs + %d totp_secrets row(s) successfully.",
                 ssh_updated,
                 totp_updated,
@@ -191,7 +191,7 @@ def _cmd_rotate_fernet(args) -> int:
                     },
                 )
             except Exception as _audit_exc:
-                log.warning(
+                _logger.warning(
                     "admin_audit_log write for fernet.rotate failed (non-fatal): %s",
                     _audit_exc,
                 )

@@ -16,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def _cmd_restore(args) -> int:
@@ -139,7 +139,7 @@ def _restore_bundle(path: Path, args) -> int:
         except Exception as e:
             print(f"ERROR: Invalid manifest.json: {e}", file=sys.stderr)
             return 1
-        log.info("Bundle manifest: %s", manifest)
+        _logger.info("Bundle manifest: %s", manifest)
 
         # --- Locate postgres dump: new bundles use .dump, legacy bundles use .sql ---
         pg_dump = tmpdir / "postgres.dump"
@@ -158,7 +158,7 @@ def _restore_bundle(path: Path, args) -> int:
         safety_path = backup_dir / f"pre-restore-{int(time.time())}.dump"
         env = {**os.environ, **env_overrides}
         safety_cmd = cli._resolve_postgres_tool("pg_dump") + [*pg_args, "-F", "custom", "-Z", "6"]
-        log.info("Writing pre-restore safety backup to: %s", safety_path)
+        _logger.info("Writing pre-restore safety backup to: %s", safety_path)
         try:
             with safety_path.open("wb") as sf:
                 safety_result = subprocess.run(
@@ -178,7 +178,7 @@ def _restore_bundle(path: Path, args) -> int:
         except Exception as e:
             print(f"ERROR: Pre-restore safety backup failed: {e}", file=sys.stderr)
             return 1
-        log.info("Safety backup written: %s", safety_path)
+        _logger.info("Safety backup written: %s", safety_path)
         print(f"Pre-restore safety backup: {safety_path}")
 
         # --- Restore PostgreSQL ---
@@ -222,7 +222,7 @@ def _restore_bundle(path: Path, args) -> int:
             # graph; without this snapshot a failed restore would be
             # unrecoverable. Written next to the Postgres safety backup.
             neo4j_safety_path = backup_dir / f"pre-restore-{int(time.time())}-neo4j.cypher"
-            log.info("Writing pre-restore Neo4j safety snapshot to: %s", neo4j_safety_path)
+            _logger.info("Writing pre-restore Neo4j safety snapshot to: %s", neo4j_safety_path)
             snap_ok, snap_msg = cli._export_neo4j_online(neo4j_safety_path)
             if snap_ok:
                 print(f"Pre-restore Neo4j safety snapshot: {neo4j_safety_path}")
@@ -232,7 +232,7 @@ def _restore_bundle(path: Path, args) -> int:
                 # (it never reaches DETACH DELETE), so there is no graph to
                 # protect — proceed and let the restore report its own error.
                 neo4j_safety_path.unlink(missing_ok=True)
-                log.warning(
+                _logger.warning(
                     "Skipping Neo4j safety snapshot — Neo4j unreachable/unconfigured: %s",
                     snap_msg,
                 )
@@ -254,11 +254,11 @@ def _restore_bundle(path: Path, args) -> int:
             print("Restoring Neo4j graph from neo4j.cypher ...")
             neo4j_ok, neo4j_msg = cli._restore_neo4j_cypher(neo4j_cypher)
             if neo4j_ok:
-                log.info("Neo4j restore complete: %s", neo4j_msg)
+                _logger.info("Neo4j restore complete: %s", neo4j_msg)
                 print(f"  Neo4j: {neo4j_msg}")
             else:
                 neo4j_restore_failed = True
-                log.warning("Neo4j restore failed: %s", neo4j_msg)
+                _logger.warning("Neo4j restore failed: %s", neo4j_msg)
                 print(f"ERROR: Neo4j restore failed: {neo4j_msg}", file=sys.stderr)
                 print(
                     "  The postgres restore is complete. Fix Neo4j manually and re-run "
@@ -276,7 +276,7 @@ def _restore_bundle(path: Path, args) -> int:
             # Postgres has been restored; Neo4j has NOT been restored — exit
             # non-zero so DR automation does not mark this as a successful
             # restore and the operator knows manual neo4j-admin load is needed.
-            log.error(
+            _logger.error(
                 "Legacy neo4j.dump found at %s — manual neo4j-admin restore required. "
                 "Postgres restored; Neo4j NOT restored. See docs/deploy.md §Backup.",
                 neo4j_dump,
@@ -296,7 +296,7 @@ def _restore_bundle(path: Path, args) -> int:
             if passphrase_env:
                 passphrase = os.getenv(passphrase_env)
                 if passphrase:
-                    log.info(
+                    _logger.info(
                         "fernet.enc present — passphrase provided via env, "
                         "decryption skipped (not implemented)."
                     )

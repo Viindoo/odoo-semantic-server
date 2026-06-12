@@ -18,7 +18,7 @@ from pathlib import Path
 
 from psycopg2 import extensions
 
-log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def _get_pg_dsn() -> str:
@@ -179,7 +179,7 @@ def _export_neo4j_online(out_path: Path) -> tuple[bool, str]:
             # back. The snapshot stayed consistent across both scans above.
 
         msg = f"Exported {node_count} nodes, {rel_count} relationships"
-        log.info("Neo4j online export complete: %s", msg)
+        _logger.info("Neo4j online export complete: %s", msg)
         return True, msg
     except Exception as exc:
         return False, f"Neo4j export failed: {exc}"
@@ -290,7 +290,7 @@ def _restore_neo4j_cypher(cypher_path: Path) -> tuple[bool, str]:
             # The legacy offline path (neo4j-admin database load) was
             # destructive by design; this preserves that contract.
             print("Wiping existing Neo4j graph before restore...")
-            log.warning("Wiping existing Neo4j graph before Cypher restore")
+            _logger.warning("Wiping existing Neo4j graph before Cypher restore")
             session.run("MATCH (n) DETACH DELETE n").consume()
             for stmt in statements:
                 try:

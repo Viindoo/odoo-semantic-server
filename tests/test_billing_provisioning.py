@@ -307,7 +307,7 @@ class TestHighestTierWins:
         _raw, _prefix, key_id = auth_store().create_api_key(
             name="Default key (tieruser)", user_id=user_id
         )
-        from src.db.auth_registry import set_api_key_plan_and_overrides
+        from src.db.auth_plans import set_api_key_plan_and_overrides
         from src.db.pg import get_pool
         set_api_key_plan_and_overrides(get_pool(), key_id, team_id, None, None)
         assert _key_plan_id(migrated_pg, key_id) == team_id
@@ -354,7 +354,7 @@ class TestHighestTierWins:
             name="Default key (unluser)", user_id=user_id
         )
         # Admin grants unlimited.
-        from src.db.auth_registry import set_api_key_plan_and_overrides
+        from src.db.auth_plans import set_api_key_plan_and_overrides
         from src.db.pg import get_pool
         set_api_key_plan_and_overrides(get_pool(), key_id, unlimited_id, None, None)
         assert _key_plan_id(migrated_pg, key_id) == unlimited_id

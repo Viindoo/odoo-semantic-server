@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -124,9 +124,9 @@ def _prune_old_bundles(
             resolved.unlink()
             deleted.append(resolved)
             reclaimed += file_size
-            log.debug("Pruned old bundle: %s (%d bytes)", resolved, file_size)
+            _logger.debug("Pruned old bundle: %s (%d bytes)", resolved, file_size)
         except OSError as exc:
-            log.warning("Failed to prune bundle %s: %s", resolved, exc)
+            _logger.warning("Failed to prune bundle %s: %s", resolved, exc)
 
     return deleted, reclaimed
 
@@ -181,7 +181,7 @@ def _cmd_backup(args) -> int:
             try:
                 keep_n = int(env_keep)
             except ValueError:
-                log.warning(
+                _logger.warning(
                     "OSM_BACKUP_KEEP=%r is not a valid integer — using default %d",
                     env_keep,
                     _DEFAULT_KEEP_BUNDLES,
@@ -213,7 +213,7 @@ def _cmd_backup(args) -> int:
     container_running = cli._is_pg_container_running()
     if container_running is False:
         container_name = os.getenv("POSTGRES_CONTAINER", "odoo-semantic-mcp-postgres-1")
-        log.warning(
+        _logger.warning(
             "Backup skipped: postgres container %r is not running."
             " Start the DB tier (e.g. `make recreate-db`) and re-run.",
             container_name,
@@ -234,7 +234,7 @@ def _cmd_backup(args) -> int:
     except psycopg2.OperationalError as e:
         # `Connection refused`, `timeout expired`, etc. Same skip-gracefully
         # path as container-not-running so the nightly unit does not page.
-        log.warning("Backup skipped: PG connection failed — %s", str(e)[:300])
+        _logger.warning("Backup skipped: PG connection failed — %s", str(e)[:300])
         print(
             f"SKIPPED: PG connection failed — backup not taken. Cause: {str(e)[:300]}",
             file=sys.stderr,
@@ -294,7 +294,7 @@ def _cmd_backup(args) -> int:
                     components.append({"file": "neo4j.cypher", "sha256": neo4j_sha})
                     print(f"  neo4j.cypher: {neo4j_out.stat().st_size} bytes ({neo4j_msg})")
                 else:
-                    log.warning(
+                    _logger.warning(
                         "Neo4j online export skipped — bundle missing neo4j.cypher: %s",
                         neo4j_msg,
                     )
@@ -315,7 +315,7 @@ def _cmd_backup(args) -> int:
                         components.append({"file": "fernet.enc", "sha256": fernet_sha})
                         print(f"  fernet.enc: {len(encrypted_key)} bytes (encrypted)")
                     else:
-                        log.warning(
+                        _logger.warning(
                             "FERNET_KEY passphrase env var %r not set — skipping fernet.enc",
                             args.bundle_passphrase_env,
                         )
@@ -347,7 +347,7 @@ def _cmd_backup(args) -> int:
         resolved_backup_dir, keep_n, current_bundle=resolved_output
     )
     if pruned:
-        log.info(
+        _logger.info(
             "Retention pruning: kept newest %d bundles, removed %d old bundle(s),"
             " reclaimed %d bytes",
             keep_n,

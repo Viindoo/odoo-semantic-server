@@ -2,10 +2,16 @@
 """CRUD for api_keys, ssh_key_pairs, usage_log, webui_users tables via AuthStore.
 
 Facade module. AuthStore is composed from the domain mixins in src.db.auth.*
-(api_key / ssh / user / tenant / feedback); the plan-assignment free functions
-live in src.db.auth_plans. Both are re-exported here so existing
-``from src.db.auth_registry import AuthStore | get_plan_by_id | ...`` imports
-keep working unchanged.
+(api_key / ssh / user / tenant / feedback). It is re-exported here together with
+``reactivate_api_key`` and the shared auth exceptions so existing
+``from src.db.auth_registry import AuthStore | reactivate_api_key |
+LastAdminProtectedError | ...`` imports keep working unchanged.
+
+The plan-assignment free functions (get_plan_by_id /
+set_api_key_plan_and_overrides / bulk_set_plan_for_user) are NOT re-exported
+here — import them directly from their home module
+``src.db.auth_plans``. They were pure re-export shims with no patch surface, so
+the indirection was removed in the consolidation pass.
 """
 from src.db.auth._api_key import _ApiKeyMixin
 from src.db.auth._feedback import _FeedbackMixin
@@ -18,11 +24,6 @@ from src.db.auth._shared import (
 from src.db.auth._ssh import _SshKeyMixin
 from src.db.auth._tenant import _TenantMixin
 from src.db.auth._user import _UserMixin
-from src.db.auth_plans import (
-    bulk_set_plan_for_user,
-    get_plan_by_id,
-    set_api_key_plan_and_overrides,
-)
 from src.db.pg import PgPool
 
 __all__ = [
@@ -31,10 +32,7 @@ __all__ = [
     "KeyNotFoundError",
     "LastAdminProtectedError",
     "UserNotFoundError",
-    "bulk_set_plan_for_user",
-    "get_plan_by_id",
     "reactivate_api_key",
-    "set_api_key_plan_and_overrides",
 ]
 
 

@@ -291,7 +291,7 @@ class TestUpdateEntitlement:
             seats=3, buyer_email="udunl@example.com",
         ))
         # ...then admin bumps the LIVE key to unlimited out-of-band.
-        from src.db.auth_registry import set_api_key_plan_and_overrides
+        from src.db.auth_plans import set_api_key_plan_and_overrides
         from src.db.pg import get_pool
         set_api_key_plan_and_overrides(get_pool(), key_id, unlimited_id, None, None)
         assert _key_plan_id(migrated_pg, key_id) == unlimited_id

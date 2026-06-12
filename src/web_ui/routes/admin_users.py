@@ -520,7 +520,7 @@ async def set_api_key_plan_route(
     Response 404: key_id not found.
     Response 422: plan_id not found or override value negative.
     """
-    from src.db.auth_registry import get_plan_by_id, set_api_key_plan_and_overrides
+    from src.db.auth_plans import get_plan_by_id, set_api_key_plan_and_overrides
     from src.db.pg import get_pool
     from src.mcp.middleware import _cache_invalidate_by_key_id
 
@@ -618,7 +618,7 @@ async def cascade_set_user_plan_route(
     Response 404: user_id not found.
     Response 422: plan_id not found.
     """
-    from src.db.auth_registry import bulk_set_plan_for_user, get_plan_by_id
+    from src.db.auth_plans import bulk_set_plan_for_user, get_plan_by_id
     from src.db.pg import auth_store, get_pool
     from src.mcp.middleware import _cache_invalidate_by_key_id
 

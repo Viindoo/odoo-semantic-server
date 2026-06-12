@@ -24,7 +24,7 @@ import shutil
 import subprocess  # noqa: F401 — re-exported as src.cli.subprocess for tests
 import sys
 
-log = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 def _resolve_postgres_tool(tool: str) -> list[str]:

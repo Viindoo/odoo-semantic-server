@@ -58,6 +58,25 @@ _FACADE_CHILDREN = [
     "src.db.auth._tenant",
     "src.db.auth._feedback",
     "src.db.auth_plans",
+    # Phase 1-3 — server hub-shrink -> tools/*.py tool-wrapper modules. These bind
+    # the owning server generation with ``_srv = sys.modules["src.mcp.server"]``
+    # (subscript, NOT ``.get``); the bare-name ``import`` is still cycle-free
+    # because each top-imports ``src.mcp.server`` first, which loads the server
+    # into sys.modules before the bottom-of-file ``_srv`` line runs.
+    "src.mcp.tools.orm_tools",
+    "src.mcp.tools.stylesheet",
+    "src.mcp.tools.inspect_tools",
+    "src.mcp.tools.session_tools",
+    "src.mcp.tools.spec",
+    "src.mcp.tools.discovery",
+    "src.mcp.tools.guidance",
+    # B2 / A1 — deferred-server children: ``src.mcp.inspect`` reaches the server
+    # only through function-local ``from src.mcp import server`` (cycle-break,
+    # same class as orm_validators above). ``src.mcp.session`` and
+    # ``src.mcp.resources`` complete the mcp-package cold-import surface.
+    "src.mcp.inspect",
+    "src.mcp.session",
+    "src.mcp.resources",
 ]
 
 

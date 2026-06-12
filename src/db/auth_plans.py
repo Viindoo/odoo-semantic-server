@@ -2,8 +2,10 @@
 """Plan assignment + per-key override helpers (M10B P0-ext, ADR-0041).
 
 Free functions that operate on a bare PgPool (not AuthStore). Extracted from
-auth_registry.py; re-exported there so existing
-`from src.db.auth_registry import get_plan_by_id` imports keep working.
+auth_registry.py. This is their canonical home — import them directly:
+`from src.db.auth_plans import get_plan_by_id`. (The transitional re-export via
+auth_registry was removed in the consolidation pass; it carried no patch
+surface.)
 """
 from typing import TYPE_CHECKING
 
