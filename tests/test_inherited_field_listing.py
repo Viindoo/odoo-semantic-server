@@ -1508,10 +1508,14 @@ def test_list_fields_returns_clean_string_on_tx_timeout(monkeypatch):
         def session(self):
             return _NoopSession()
 
+    import src.mcp.listings as listings
+
     monkeypatch.setattr(srv, "_get_driver", lambda: _NoopDriver())
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TEST_VERSION)
     # First bounded helper inside the session block raises the bounded timeout.
-    monkeypatch.setattr(srv, "_list_fields_with_inherited", _boom)
+    # Moved to src/mcp/listings.py (Phase 7 / A1) where _list_fields imports it
+    # from src.mcp.orm and calls it by bare name → patch on src.mcp.listings.
+    monkeypatch.setattr(listings, "_list_fields_with_inherited", _boom)
 
     out = srv._list_fields(_CHILD, odoo_version=TEST_VERSION)
 
@@ -1544,9 +1548,13 @@ def test_list_methods_returns_clean_string_on_tx_timeout(monkeypatch):
         def session(self):
             return _NoopSession()
 
+    import src.mcp.listings as listings
+
     monkeypatch.setattr(srv, "_get_driver", lambda: _NoopDriver())
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TEST_VERSION)
-    monkeypatch.setattr(srv, "_list_methods_with_inherited", _boom)
+    # Moved to src/mcp/listings.py (Phase 7 / A1); _list_methods calls it by bare
+    # name there → patch on src.mcp.listings, not the server hub.
+    monkeypatch.setattr(listings, "_list_methods_with_inherited", _boom)
 
     out = srv._list_methods(_CHILD, odoo_version=TEST_VERSION)
 
@@ -1569,12 +1577,18 @@ def test_list_methods_override_rec_raw_clienterror_converted(monkeypatch):
     code, exercising the REAL _single_bounded conversion (not a stubbed boom)."""
     from neo4j.exceptions import ClientError
 
+    import src.mcp.listings as listings
     import src.mcp.server as srv
 
     # list/count helpers succeed (no inherited rows) so execution reaches the
-    # override_rec query — which is the ONLY thing that times out here.
-    monkeypatch.setattr(srv, "_list_methods_with_inherited", lambda *a, **k: [])
-    monkeypatch.setattr(srv, "_count_methods_with_inherited", lambda *a, **k: 0)
+    # override_rec query — which is the ONLY thing that times out here. These were
+    # moved to src/mcp/listings.py (Phase 7 / A1) and are called by bare name in
+    # _list_methods → patch them on src.mcp.listings. _resolve_version / _scope /
+    # _get_driver stay hub helpers read through _list_methods' _srv. bind, so they
+    # are still patched on src.mcp.server. The REAL _single_bounded conversion
+    # (also a hub helper) is exercised unstubbed.
+    monkeypatch.setattr(listings, "_list_methods_with_inherited", lambda *a, **k: [])
+    monkeypatch.setattr(listings, "_count_methods_with_inherited", lambda *a, **k: 0)
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TEST_VERSION)
     # _scope must return the kwargs the bare query interpolates.
     monkeypatch.setattr(srv, "_scope", lambda p=None: {"own": None, "shared": []})

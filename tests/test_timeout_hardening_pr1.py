@@ -299,15 +299,20 @@ def test_list_fields_magic_dedup_raw_escape_degrades(monkeypatch):
     The own-fields enumeration is stubbed to a clean empty list so the test
     isolates the magic-dedup RAW-ESCAPE path.
     """
+    import src.mcp.listings as listings
     import src.mcp.server as srv
 
+    # _get_driver / _resolve_version are hub helpers read by _list_fields through
+    # its _srv. bind, so they are still patched on src.mcp.server.
     monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
     # Own-field enumeration + count return cleanly (no timeout) so the magic
-    # dedup path is the one under test.
-    monkeypatch.setattr(srv, "_list_fields_with_inherited", lambda *a, **k: [])
-    monkeypatch.setattr(srv, "_count_fields_with_inherited", lambda *a, **k: 0)
-    monkeypatch.setattr(srv, "_ancestor_owner_names", lambda *a, **k: ["dense.model"])
+    # dedup path is the one under test. These INHERITS-aware helpers were moved to
+    # src/mcp/listings.py (Phase 7 / A1) where _list_fields now imports them from
+    # src.mcp.orm and calls them by bare name, so patch them on src.mcp.listings.
+    monkeypatch.setattr(listings, "_list_fields_with_inherited", lambda *a, **k: [])
+    monkeypatch.setattr(listings, "_count_fields_with_inherited", lambda *a, **k: 0)
+    monkeypatch.setattr(listings, "_ancestor_owner_names", lambda *a, **k: ["dense.model"])
 
     # Both dedup queries time out (the driver raises on every .run()); the
     # degrade-to-flat fallback then also times out → existing_names = set().
