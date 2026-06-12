@@ -48,6 +48,16 @@ _FACADE_CHILDREN = [
     # cold ``import <child>`` must not trip the parent<->child module-load cycle.
     "src.indexer.pipeline_repo",
     "src.indexer.pipeline_reembed",
+    # B7 — auth_registry -> auth.{_api_key,_ssh,_user,_tenant,_feedback} mixins +
+    # auth_plans. The mixins import only the leaf ``src.db.auth._shared`` (never
+    # auth_registry) and reference cross-mixin methods through ``self`` resolved
+    # by the composed AuthStore MRO, so a cold ``import <child>`` is cycle-free.
+    "src.db.auth._api_key",
+    "src.db.auth._ssh",
+    "src.db.auth._user",
+    "src.db.auth._tenant",
+    "src.db.auth._feedback",
+    "src.db.auth_plans",
 ]
 
 
