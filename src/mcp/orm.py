@@ -161,71 +161,13 @@ def _scope_pred(alias: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Facade re-exports (B2 split - preserve the ``src.mcp.orm.<name>`` import path)
+# Facade re-export shim removed (Phase 7.5 codemod)
 # ---------------------------------------------------------------------------
 #
-# The query helpers + validator impls were moved to orm_queries.py /
-# orm_validators.py but every caller (server.py, listings.py, tools/orm_tools.py,
-# resources.py, and ~10 test files) imports them via ``src.mcp.orm``. The block
-# below re-exports them so that path stays intact with ZERO behavior change.
-#
-# This sits AFTER the bottom-layer definitions above so that, when orm_queries /
-# orm_validators (which import _bounded / _scope / _edition_rank_cypher / the
-# timeout infra FROM this module) are loaded, those names are already defined -
-# the same circular-safe ordering used by the server tool-split (refactor plan
-# section 2.2).
-#
-# WHY ``import module`` + ``_rebind`` instead of ``from child import name``:
-# this module is BOTH the bottom-layer home AND the facade, so it forms a cycle
-# with each child (child top-imports the bottom layer FROM here; here we import
-# the child back). On the production path (``import src.mcp.orm`` or via server),
-# the child fully loads before this tail runs, so the rebind succeeds. On a COLD
-# direct ``import src.mcp.orm_queries`` (no production caller does this, but
-# pytest collection could), the child is the entry point and is only
-# partially initialized when its bottom-layer import re-enters this tail; a
-# plain ``from child import name`` would raise ImportError there. ``import
-# <module>`` only needs the (already-registered) module object, never a
-# not-yet-bound attribute, so it never raises during that race - and ``_rebind``
-# copies whatever public names the child has defined so far. The child then
-# finishes loading and re-runs nothing; the facade names land on the
-# fully-initialized ``src.mcp.orm`` that the production path observes.
-import src.mcp.orm_queries as _orm_queries  # noqa: E402
-import src.mcp.orm_validators as _orm_validators  # noqa: E402
-
-_QUERY_REEXPORTS = (
-    "_ANCESTOR_TAGGED_PROLOGUE",
-    "_ANCESTOR_TAGGED_PROLOGUE_INHERITS_ONLY",
-    "_EDGE_KIND_EXPR",
-    "_ancestor_owner_names",
-    "_ancestor_tagged_prologue",
-    "_count_fields_with_inherited",
-    "_count_methods_with_inherited",
-    "_field_names_on_model",
-    "_list_fields_with_inherited",
-    "_list_methods_with_inherited",
-    "_lookup_field",
-    "_resolve_field_inherited",
-    "_resolve_method_inherited",
-    "_traverse_field_chain",
-)
-_VALIDATOR_REEXPORTS = (
-    "_broken_reason_text",
-    "_parse_domain",
-    "_resolve_orm_chain",
-    "_suggest",
-    "_validate_depends",
-    "_validate_domain",
-    "_validate_relation",
-)
-
-
-def _rebind(module, names) -> None:
-    """Copy each child name onto this module's namespace (facade re-export)."""
-    g = globals()
-    for _name in names:
-        if hasattr(module, _name):
-            g[_name] = getattr(module, _name)
-
-
-_rebind(_orm_queries, _QUERY_REEXPORTS)
-_rebind(_orm_validators, _VALIDATOR_REEXPORTS)
+# The query helpers + validator impls live in orm_queries.py / orm_validators.py.
+# Every caller (server.py, listings.py, tools/orm_tools.py, and the test files)
+# now imports them DIRECTLY from those child modules, so the dynamic ``_rebind``
+# re-export tuples that used to mirror those names onto ``src.mcp.orm`` were
+# dropped. The bottom layer (``_bounded`` / ``_scope`` / ``_edition_rank_cypher``
+# / timeout infra / ``OrmQueryTimeout``) is still DEFINED here and imported by the
+# children via ``from .orm import ...`` - that direction is unchanged.

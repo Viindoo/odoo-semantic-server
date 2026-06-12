@@ -8,7 +8,8 @@ a false-green ``False``. era2 (v10+) still computes a concrete bool.
 import pytest
 
 from src.indexer.models import FieldInfo, ModuleInfo
-from src.indexer.parser_python import _compute_effective_readonly, _parse_era1_text
+from src.indexer.parser_python import _compute_effective_readonly
+from src.indexer.parser_python_era1 import _parse_era1_text
 
 
 @pytest.fixture

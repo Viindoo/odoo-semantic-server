@@ -881,17 +881,17 @@ class Neo4jWriter:
 
 # ---------------------------------------------------------------------------
 # B5 split: module-level write functions extracted by node-group.
-# Re-exported here at the BOTTOM (after _profile_union_set, _chunked and the
-# Neo4jWriter class are all defined above) so that:
-#   - the facade surface src.indexer.writer_neo4j stays path-stable: importers
-#     and tests keep importing _write_parse_result / Neo4jWriter from here;
-#   - Neo4jWriter.write_* methods resolve the bare _write_* names through this
-#     module namespace at call time (after import completes), unchanged.
-# The child modules import _profile_union_set lazily (function-local) so each is
-# independently cold-importable without an import cycle.
+# Imported here at the BOTTOM (after _profile_union_set, _chunked and the
+# Neo4jWriter class are all defined above) because Neo4jWriter.write_* methods
+# call these _write_* functions as BARE names via session.execute_write(...),
+# resolving them through this module namespace at call time. They are therefore
+# GENUINE facade-internal dependencies, not re-export shims - every external
+# caller now imports directly from the writer_neo4j_{orm,spec,ui} child modules
+# (Phase 7.5 codemod). The child modules import _profile_union_set lazily
+# (function-local) so each is independently cold-importable without a cycle.
 # ---------------------------------------------------------------------------
-from .writer_neo4j_orm import _write_parse_result  # noqa: E402,F401
-from .writer_neo4j_spec import (  # noqa: E402,F401
+from .writer_neo4j_orm import _write_parse_result  # noqa: E402
+from .writer_neo4j_spec import (  # noqa: E402
     _write_cli_commands_batch,
     _write_cli_flag_replacements,
     _write_cli_flags_batch,
@@ -901,7 +901,7 @@ from .writer_neo4j_spec import (  # noqa: E402,F401
     _write_pattern_examples_batch,
     _write_replaced_by_edges,
 )
-from .writer_neo4j_ui import (  # noqa: E402,F401
+from .writer_neo4j_ui import (  # noqa: E402
     _write_js_graph_result,
     _write_stylesheets_batch,
     _write_view_parse_result,

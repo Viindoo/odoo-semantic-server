@@ -509,7 +509,7 @@ def test_find_style_override_importer_chain_no_leak(world):
 def test_validate_relation_inherits_no_cross_tenant_leak(world):
     """validate_relation's INHERITS subtype acceptance must not consult a foreign
     tenant's INHERITS edge to wrongly accept a relation."""
-    from src.mcp.orm import _validate_relation
+    from src.mcp.orm_validators import _validate_relation
     # acme.secret.rel_field -> points at globex.secret via comodel; check that
     # acme cannot have the relation "accepted" through a globex-only INHERITS edge.
     with world["drv"].session() as s:

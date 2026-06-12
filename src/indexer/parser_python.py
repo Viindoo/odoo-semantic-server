@@ -876,16 +876,11 @@ def parse_module(module_info: ModuleInfo) -> ParseResult:
     return result
 
 
-# --- Era1 (v8/v9 text-regex) re-exports -------------------------------------
+# --- Era1 (v8/v9 text-regex) dispatch hook ----------------------------------
 # Era1 lives in parser_python_era1.py (B4 split). Imported at the BOTTOM (after
 # all shared constants/_classify_method_convention are defined above) so the
 # era1 module's `from .parser_python import FIELD_TYPES, ...` resolves against
 # this partially-loaded module without a circular import. parse_file's era1
-# dispatch above resolves `_parse_era1_text` through this module-level name.
-# `_string_aware_brace_scan` and `_extract_columns_block` are re-exported because
-# tests import them from here (path-stable surface preserved across the B4 split).
-from .parser_python_era1 import (  # noqa: E402,F401  (bottom import breaks cycle + re-export)
-    _extract_columns_block,
-    _parse_era1_text,
-    _string_aware_brace_scan,
-)
+# dispatch above resolves `_parse_era1_text` through this module-level name, so
+# this import is a genuine facade-internal dependency (NOT a re-export shim).
+from .parser_python_era1 import _parse_era1_text  # noqa: E402  (bottom import breaks cycle)

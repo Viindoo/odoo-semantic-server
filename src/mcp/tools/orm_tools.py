@@ -1,13 +1,14 @@
 """ORM-validation MCP tool wrappers (split out of src/mcp/server.py, Phase 1).
 
-Thin wrappers over the static ORM checks implemented in ``src/mcp/orm.py``.
-Registration happens via the ``@mcp.tool`` import-time side effect; server.py
-imports this module at the end of the file so the decorators run.  The impl
-functions are imported directly from ``src.mcp.orm`` (the same source server.py
-uses), so this module does not need a late import of ``server`` for them.
+Thin wrappers over the static ORM validators implemented in
+``src/mcp/orm_validators.py``.  Registration happens via the ``@mcp.tool``
+import-time side effect; server.py imports this module at the end of the file so
+the decorators run.  The impl functions are imported directly from
+``src.mcp.orm_validators`` (the same source server.py uses), so this module does
+not need a late import of ``server`` for them.
 """
 
-from src.mcp.orm import (
+from src.mcp.orm_validators import (
     _resolve_orm_chain,
     _validate_depends,
     _validate_domain,
