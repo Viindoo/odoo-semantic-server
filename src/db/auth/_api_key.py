@@ -7,7 +7,7 @@ import secrets
 from src.auth import hash_key, hash_key_legacy_sha256
 from src.db.auth._shared import KeyNotFoundError, UserNotFoundError
 
-logger = logging.getLogger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 class _ApiKeyMixin:
@@ -91,7 +91,7 @@ class _ApiKeyMixin:
             with self._pool.checkout() as conn:
                 row = self._pool.fetch_one(conn, base_query, (sha_hash,))
             if row is not None:
-                logger.warning(
+                _logger.warning(
                     "API key id=%s matched via legacy SHA-256 hash. "
                     "Please rotate this key before %s.",
                     row["id"],
@@ -143,7 +143,7 @@ class _ApiKeyMixin:
             with self._pool.checkout() as conn:
                 row = self._pool.fetch_one(conn, base_query, (sha_hash,))
             if row is not None:
-                logger.warning(
+                _logger.warning(
                     "API key id=%s matched via legacy SHA-256 hash. "
                     "Please rotate this key before %s.",
                     row["id"],
@@ -215,7 +215,7 @@ class _ApiKeyMixin:
             with self._pool.checkout() as conn:
                 row = self._pool.fetch_one(conn, base_query, (sha_hash,))
             if row is not None:
-                logger.warning(
+                _logger.warning(
                     "API key id=%s matched via legacy SHA-256 hash. "
                     "Please rotate this key before %s.",
                     row["id"],

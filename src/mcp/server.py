@@ -85,6 +85,38 @@ from src.mcp.tree_builder import render_list_block
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Facade-split patterns — DO NOT "unify for consistency" (each is FUNCTIONAL).
+# ---------------------------------------------------------------------------
+# The god-file split (server / orm / writer_neo4j / parser_python / pipeline /
+# auth_registry) left several DIFFERENT child<->parent wiring mechanisms in the
+# tree. They look inconsistent but each is load-bearing for a specific reason;
+# collapsing them to one style reintroduces an import cycle or a broken
+# monkeypatch. The variants and WHY they differ:
+#
+#  1. `_srv = sys.modules["src.mcp.server"]` (subscript) — used by the tool-mods
+#     (e.g. tools/orm_tools.py, tools/discovery.py). Safe because each tool-mod
+#     ALSO top-imports `src.mcp.server`, so the key is guaranteed present.
+#  2. `_srv = sys.modules.get("src.mcp.server")` (.get) — used by describe.py /
+#     listings.py, which do NOT top-import the server. `.get` binds None on a
+#     cold import instead of raising KeyError (see test_facade_cold_import.py).
+#  3. Deferred function-local `from src.mcp import server` (inspect.py /
+#     orm_validators.py) and `from <parent> import X` inside a function
+#     (parser_python_era1.py, writer_neo4j_{orm,ui,spec}.py, pipeline_{repo,
+#     reembed}.py) — breaks a parent<->child module-load cycle AND/OR keeps the
+#     test monkeypatch contract (the binding is resolved at call time on the
+#     parent namespace, so `patch("src.indexer.pipeline.<name>")` is seen).
+#  4. `import src.mcp.orm as _mod` + `_rebind(getattr(...))` loop (orm.py) — orm
+#     is both a bottom-layer AND a facade, so a plain `from child import N` could
+#     raise if a name is not yet bound during a cold-import race; rebinding via
+#     getattr only needs the module object.
+#
+# Net: `[...]` vs `.get()` is decided by "does the child top-import server?";
+# symbol-import vs module-attr-access is decided by "is the binding a
+# monkeypatch target?". Both are documented at each call site. See the three
+# consolidation review reports and tests/test_facade_cold_import.py.
+# ---------------------------------------------------------------------------
+
 # Sentinel api_key_id for direct _impl calls (tests, CLI) — refs are scoped
 # to this namespace and do not collide with production tenant refs.
 _ANONYMOUS_API_KEY_ID = "anonymous"

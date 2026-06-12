@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass
 
 from src.billing import provisioning
-from src.db.auth_registry import set_api_key_plan_and_overrides
+from src.db.auth_plans import set_api_key_plan_and_overrides
 from src.db.pg import auth_store, get_pool, subscription_store
 
 logger = logging.getLogger(__name__)
