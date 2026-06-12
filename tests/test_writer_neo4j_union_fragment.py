@@ -100,23 +100,33 @@ def test_no_residual_literal_fragments():
     strip lines that start with ``#`` or are triple-quoted docstring content
     (lines whose stripped form starts with the docstring marker ``[x IN coalesce``
     with the ``<alias>`` placeholder) before counting.
+
+    B5 split note: the helper's SSOT ``return`` lives in ``writer_neo4j.py``; the
+    node-grouped siblings (``writer_neo4j_orm/ui/spec.py``) must hold ZERO raw
+    fragments (every site routes through the helper). The guard therefore scans
+    the whole writer module family and expects EXACTLY 1 raw code-line total —
+    the helper's own return — across all of them.
     """
-    writer_path = pathlib.Path(__file__).parent.parent / "src" / "indexer" / "writer_neo4j.py"
-    source = writer_path.read_text(encoding="utf-8")
+    indexer_dir = pathlib.Path(__file__).parent.parent / "src" / "indexer"
+    writer_files = sorted(indexer_dir.glob("writer_neo4j*.py"))
+    assert writer_files, f"no writer_neo4j*.py files found under {indexer_dir}"
 
     raw_suffix = "WHERE NOT x IN $profiles] + $profiles"
 
     # Filter out lines that are documentation (contain '<alias>' placeholder)
     # so we only count code lines.
     code_lines = [
-        line for line in source.splitlines()
+        f"{path.name}: {line}"
+        for path in writer_files
+        for line in path.read_text(encoding="utf-8").splitlines()
         if raw_suffix in line and "<alias>" not in line
     ]
     count = len(code_lines)
     assert count == 1, (
-        f"Found {count} code-line occurrences of the raw union-fragment suffix in "
-        f"writer_neo4j.py (after excluding docstring placeholder lines). "
-        f"Expected EXACTLY 1 (only in the helper's return statement). "
+        f"Found {count} code-line occurrences of the raw union-fragment suffix "
+        f"across the writer_neo4j module family (after excluding docstring "
+        f"placeholder lines). Expected EXACTLY 1 (only in the helper's return "
+        f"statement in writer_neo4j.py). "
         f"count==0 → the helper body was removed/renamed; count>1 → "
         f"{count - 1} call-site(s) were not migrated. "
         f"Offending lines:\n" + "\n".join(code_lines)
@@ -131,15 +141,28 @@ def test_all_call_sites_use_helper():
     union-set sites route through the helper. If a future edit drops a call-site
     (e.g. swaps one for a specialised inline variant) without reinstating the raw
     fragment, the count below catches it even though the literal guard would not.
-    """
-    writer_path = pathlib.Path(__file__).parent.parent / "src" / "indexer" / "writer_neo4j.py"
-    source = writer_path.read_text(encoding="utf-8")
 
-    # Count interpolation call-sites only (exclude the def + docstring lines).
-    call_sites = source.count("{_profile_union_set(")
+    B5 split note: the write functions that hold these call-sites were extracted
+    from ``writer_neo4j.py`` into the node-grouped siblings
+    ``writer_neo4j_orm.py`` / ``writer_neo4j_ui.py`` / ``writer_neo4j_spec.py``
+    (the ``_profile_union_set`` helper itself stays the SSOT in ``writer_neo4j``).
+    The behavioural invariant is unchanged — exactly 16 union-set sites all route
+    through the helper — so this guard now sums the count across the whole writer
+    module family rather than a single file.
+    """
+    indexer_dir = pathlib.Path(__file__).parent.parent / "src" / "indexer"
+    writer_files = sorted(indexer_dir.glob("writer_neo4j*.py"))
+    assert writer_files, f"no writer_neo4j*.py files found under {indexer_dir}"
+
+    per_file = {
+        path.name: path.read_text(encoding="utf-8").count("{_profile_union_set(")
+        for path in writer_files
+    }
+    call_sites = sum(per_file.values())
     assert call_sites == 16, (
-        f"Expected exactly 16 '{{_profile_union_set(' call-sites in writer_neo4j.py, "
-        f"found {call_sites}. A change in call-site count means a union-set site was "
-        f"added or removed — re-verify the writer and update this expectation only if "
-        f"the change is intentional."
+        f"Expected exactly 16 '{{_profile_union_set(' call-sites across the "
+        f"writer_neo4j module family, found {call_sites} (per-file: {per_file}). "
+        f"A change in call-site count means a union-set site was added or removed — "
+        f"re-verify the writer and update this expectation only if the change is "
+        f"intentional."
     )
