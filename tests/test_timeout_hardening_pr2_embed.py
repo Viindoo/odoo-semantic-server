@@ -490,3 +490,138 @@ def test_find_style_override_version_resolution_timeout_returns_clean_string(mon
 
     assert_clean_timeout_string(result)
     assert after == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Version-resolution Tier-3 END-TO-END (#287 review, Hướng B). The STUB tests
+# above replace _resolve_version with a raiser — they prove "the tool catches
+# when resolve raises", but never run the real 3-tier resolver. These tests run
+# Tier-3 FOR REAL: version='auto' (a sentinel, so Tier-1 does NOT short-circuit)
+# + a no-pin session (Tier-2 returns None for the non-numeric 'default' api key)
+# drives resolve_version_v2 into Tier-3 _latest_version(), whose bounded Neo4j
+# read runs on the _TxTimeoutDriver and times out — exactly the production path
+# the harness's EXPLICIT-version + stubbed-resolver design left in a blind spot.
+# _resolve_version is NOT monkeypatched here; only the driver and (defensively)
+# the Tier-2 session-state lookup are. Kept ALONGSIDE the stub tests above: stub
+# = unit (catch wiring), this = integration-of-resolution (real Tier-3).
+# ---------------------------------------------------------------------------
+
+
+def _stub_no_pin(monkeypatch, srv):
+    """Force Tier-2 to report no session pin so resolution falls to Tier-3.
+
+    In the unit lane ``_get_api_key_id()`` already returns the non-numeric
+    ``'default'`` sentinel (so ``get_session_state`` returns ``None`` anyway),
+    but we pin it to ``None`` explicitly so the test never depends on a pin a
+    prior test may have left in the in-memory store.
+    """
+    monkeypatch.setattr(srv._session, "get_session_state", lambda *a, **k: None)
+
+
+def test_suggest_pattern_version_resolution_tier3_timeout_degrades_cleanly(monkeypatch):
+    """suggest_pattern: a REAL Tier-3 resolve timeout (auto + no pin) degrades cleanly.
+
+    Protects: the version-resolution Neo4j read (Tier-3 _latest_version) is the
+    path the original timeout harness never exercised. With no resolver stub the
+    async body's inline catch must convert the OrmQueryTimeout to a clean string
+    and count it once — a regression that strips the inline catch lets it escape.
+    """
+    import src.mcp.server as srv
+    from src.mcp.tools import guidance
+
+    _stub_no_pin(monkeypatch, srv)
+
+    before = _metric_value("suggest_pattern")
+    result = guidance._suggest_pattern(
+        "override write", "auto", "python", 5,
+        _driver=_TxTimeoutDriver(),
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("suggest_pattern")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1, (
+        f"suggest_pattern Tier-3 resolve timeout must count once; "
+        f"before={before} after={after}"
+    )
+
+
+def test_find_examples_version_resolution_tier3_timeout_degrades_cleanly(monkeypatch):
+    """find_examples: a REAL Tier-3 resolve timeout (auto + no pin) degrades cleanly."""
+    import src.mcp.server as srv
+    from src.mcp.tools import discovery
+
+    _stub_no_pin(monkeypatch, srv)
+
+    before = _metric_value("find_examples")
+    result = discovery._find_examples(
+        "write override", "auto", 5,
+        _driver=_TxTimeoutDriver(),
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("find_examples")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1, (
+        f"find_examples Tier-3 resolve timeout must count once; "
+        f"before={before} after={after}"
+    )
+
+
+def test_find_style_override_version_resolution_tier3_timeout_degrades_cleanly(
+    monkeypatch,
+):
+    """find_style_override: a REAL Tier-3 resolve timeout (auto + no pin) degrades cleanly."""
+    import src.mcp.server as srv
+    from src.mcp.tools import stylesheet
+
+    _stub_no_pin(monkeypatch, srv)
+
+    before = _metric_value("find_style_override")
+    result = stylesheet._find_style_override(
+        ".o_list_view", "auto", 5,
+        _driver=_TxTimeoutDriver(),
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("find_style_override")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1, (
+        f"find_style_override Tier-3 resolve timeout must count once; "
+        f"before={before} after={after}"
+    )
+
+
+def test_lookup_core_api_version_resolution_tier3_timeout_caught_by_decorator(
+    monkeypatch,
+):
+    """lookup_core_api: a REAL Tier-3 resolve timeout is caught by @offload_neo4j.
+
+    Protects (gap §2.2): the PURE (sync) tools rely on the @offload_neo4j body
+    backstop to cover the resolution read — but no prior test ran the resolution
+    path FOR REAL through a decorated wrapper. Here version='auto' + no pin drives
+    Tier-3 _latest_version() on the timing-out driver, INSIDE the sync body the
+    decorator wraps; the wrapper must surface a clean string, not an escape.
+    Driven through ``.fn`` (the @offload_neo4j async wrapper) so the body-level
+    catch is the one under test.
+    """
+    import src.mcp.server as srv
+
+    _stub_no_pin(monkeypatch, srv)
+    # The PURE impl uses _srv._get_driver() (no _driver kwarg), so route the hub
+    # driver to the timing-out stub.
+    monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+
+    before = _metric_value("lookup_core_api")
+    result = _run(srv.lookup_core_api.fn(name="safe_eval", odoo_version="auto"))
+    after = _metric_value("lookup_core_api")
+
+    text = result if isinstance(result, str) else result.content[0].text
+    assert_clean_timeout_string(text)
+    assert after == before + 1, (
+        f"lookup_core_api Tier-3 resolve timeout must count once via the "
+        f"@offload_neo4j backstop; before={before} after={after}"
+    )
