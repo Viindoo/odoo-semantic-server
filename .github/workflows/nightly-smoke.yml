@@ -232,7 +232,8 @@ jobs:
           os.environ.setdefault('NEO4J_PASSWORD', 'password')
           os.environ.setdefault('PG_DSN', 'postgresql://odoo_semantic:password@localhost:5432/odoo_semantic')
 
-          from src.mcp.orm import _resolve_orm_chain, _lookup_field
+          from src.mcp.orm_validators import _resolve_orm_chain
+          from src.mcp.orm_queries import _lookup_field
           from src.mcp import server as srv
 
           # (A) Direct step-3 assertion: source must be 'inherited' (NOT 'direct').
@@ -334,7 +335,7 @@ jobs:
           os.environ.setdefault('NEO4J_PASSWORD', 'password')
           os.environ.setdefault('PG_DSN', 'postgresql://odoo_semantic:password@localhost:5432/odoo_semantic')
 
-          from src.mcp.orm import _validate_relation
+          from src.mcp.orm_validators import _validate_relation
           from src.mcp import server as srv
 
           # (A) validate_relation MISMATCH on K² mesh: smoke.order.parent_id is a
@@ -389,7 +390,7 @@ jobs:
               # its own dedicated TEST_VERSION data on the shared CI database (and
               # so the v= parameter is actually referenced, not misleadingly unused).
               s.run('''
-                  MATCH (a:Model {odoo_version: $v})-[r:INHERITS]->(b:Model {odoo_version: $v})
+                  MATCH (a:Model {odoo_version: \$v})-[r:INHERITS]->(b:Model {odoo_version: \$v})
                   WHERE a.name = b.name
                     AND NOT coalesce(b.is_definition, false)
                   CALL (r) { DELETE r } IN TRANSACTIONS OF 10000 ROWS
@@ -403,7 +404,7 @@ jobs:
           assert mesh_after == 0, f'Cleanup did not remove mesh edges: {mesh_after} remaining'
 
           # Verify ORM resolution still works on K×D topology
-          from src.mcp.orm import _resolve_orm_chain
+          from src.mcp.orm_validators import _resolve_orm_chain
           t0 = time.monotonic()
           result_kd = _resolve_orm_chain('smoke.order', 'amount_total', TEST_VERSION)
           elapsed_kd = time.monotonic() - t0
