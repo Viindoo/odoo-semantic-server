@@ -117,7 +117,13 @@ def _fetch_indexed_versions(
             ``_scope()`` in server.py.  Pass ``None`` to skip scope filtering
             (admin / test contexts where server is not initialised).
     """
-    from src.mcp.server import _scope_pred  # type: ignore[import]
+    # #287 (GAP-1 defense-in-depth): bound this discovery read under the per-query
+    # Neo4j timeout. list_resources_index() is the M11 popular-model index that is
+    # NOT yet wired to a live MCP handler (ADR-0030 M12-deferred), so a tx-timeout
+    # cannot currently escape to a client — but routing through _data_bounded means
+    # the bound is already in place when M12 wires it. No decorator/catch is added
+    # here for the same reason (no live handler to host one).
+    from src.mcp.server import _data_bounded, _scope_pred  # type: ignore[import]
 
     if scope_params is not None:
         where_scope = f"AND {_scope_pred('m')}"
@@ -126,7 +132,8 @@ def _fetch_indexed_versions(
         where_scope = ""
         params = {}
 
-    records = session.run(
+    records = _data_bounded(
+        session,
         f"""
         MATCH (m:Module)
         WHERE m.odoo_version <> 'unknown' AND m.odoo_version =~ '\\d+\\.\\d+'
@@ -136,8 +143,9 @@ def _fetch_indexed_versions(
         ORDER BY toInteger(split(v, '.')[0]) DESC,
                  toInteger(split(v, '.')[1]) DESC
         """,
+        label="resource-index version list",
         **params,
-    ).data()
+    )
     return [r["v"] for r in records]
 
 
@@ -167,7 +175,10 @@ def _fetch_top_models(
             ``_scope()`` in server.py.  Pass ``None`` to skip scope filtering
             (admin / test contexts where server is not initialised).
     """
-    from src.mcp.server import _scope_pred  # type: ignore[import]
+    # #287 (GAP-1 defense-in-depth): bound under the per-query Neo4j timeout. See
+    # _fetch_indexed_versions for why no decorator/catch is added here (dead-wire
+    # until ADR-0030 M12 attaches a live handler).
+    from src.mcp.server import _data_bounded, _scope_pred  # type: ignore[import]
 
     # Build the scope predicate fragment for Model and Module nodes.
     # _scope_pred(alias) generates the Cypher expression for the alias's
@@ -179,7 +190,8 @@ def _fetch_top_models(
         scope_filter = ""
         params = {"v": version}
 
-    records = session.run(
+    records = _data_bounded(
+        session,
         f"""
         MATCH (m:Model {{odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
         WHERE coalesce(m.is_definition, false) = true
@@ -191,13 +203,15 @@ def _fetch_top_models(
         ORDER BY dep_count DESC, m.name ASC, mod.name ASC
         LIMIT {_MAX_PER_VERSION}
         """,
+        label=f"resource-index top models (Odoo {version})",
         **params,
-    ).data()
+    )
 
     # Fallback: if no model has is_definition=true yet (pre-reindex state),
     # run without the is_definition filter so the index is still useful.
     if not records:
-        records = session.run(
+        records = _data_bounded(
+            session,
             f"""
             MATCH (m:Model {{odoo_version: $v}})-[:DEFINED_IN]->(mod:Module)
             WHERE true {scope_filter}
@@ -208,8 +222,9 @@ def _fetch_top_models(
             ORDER BY dep_count DESC, m.name ASC, mod.name ASC
             LIMIT {_MAX_PER_VERSION}
             """,
+            label=f"resource-index top models fallback (Odoo {version})",
             **params,
-        ).data()
+        )
 
     return [_make_entry(version, r["model_name"]) for r in records]
 

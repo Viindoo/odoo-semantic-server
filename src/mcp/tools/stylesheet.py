@@ -1,8 +1,9 @@
 """Stylesheet MCP tools (split out of src/mcp/server.py, Phase 2).
 
 Two M10A tools and their implementation helpers:
-  - ``resolve_stylesheet`` (sync, ``@offload``) — enumerate a module's
-    :Stylesheet nodes + their @import chain.
+  - ``resolve_stylesheet`` (sync, ``@offload_neo4j`` — per-query bounded +
+    clean-string-on-timeout, #287) — enumerate a module's :Stylesheet nodes +
+    their @import chain.
   - ``find_style_override`` (``async def``, no offload — embeds async per
     ADR-0046) — literal-first / ANN search for a selector or variable across
     css/scss/less chunks + the :IMPORTS override chain.
@@ -49,7 +50,7 @@ from src.mcp.server import (
     READONLY_TOOL_KWARGS,
     RequiredOdooVersion,
     mcp,
-    offload,
+    offload_neo4j,
 )
 from src.mcp.style_literal import ilike_pattern, is_literal_token, literal_column
 
@@ -66,7 +67,8 @@ def _resolve_stylesheet(
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
 
-        rows = session.run(
+        rows = _srv._data_bounded(
+            session,
             f"""
             MATCH (ss:Stylesheet {{module: $mod, odoo_version: $v}})
             WHERE {_srv._scope_pred("ss")}
@@ -78,8 +80,9 @@ def _resolve_stylesheet(
                    ss.mixin_count AS mixin_count
             ORDER BY ss.file_path ASC
             """,
+            label=f"stylesheet list for {module!r} (Odoo {odoo_version})",
             mod=module, v=odoo_version, **_srv._scope(),
-        ).data()
+        )
 
     if not rows:
         footer = hints_for("resolve_stylesheet", name=module, ver=odoo_version)
@@ -109,7 +112,8 @@ def _resolve_stylesheet(
     imports_by_fp: dict[str, list[dict]] = {}
     if fps_with_imports:
         with _srv._get_driver().session() as session:
-            batch_rows = session.run(
+            batch_rows = _srv._data_bounded(
+                session,
                 f"""
                 UNWIND $fps AS fp
                 MATCH (src:Stylesheet {{file_path: fp, module: $mod, odoo_version: $v}})
@@ -118,8 +122,9 @@ def _resolve_stylesheet(
                 RETURN fp, tgt.file_path AS import_path, tgt.module AS import_module
                 ORDER BY fp ASC, tgt.file_path ASC
                 """,
+                label=f"stylesheet import chain for {module!r} (Odoo {odoo_version})",
                 fps=fps_with_imports, mod=module, v=odoo_version, **_srv._scope(),
-            ).data()
+            )
         for br in batch_rows:
             imports_by_fp.setdefault(br["fp"], []).append(
                 {"import_path": br["import_path"], "import_module": br["import_module"]}
@@ -463,58 +468,72 @@ def _find_style_override(
 
     # For each hit, check :IMPORTS override chain — which modules re-declare
     # the same selector (import same file path chain).
+    #
+    # #287: find_style_override is async (embeds on the event loop, then offloads
+    # this body via asyncio.to_thread) so it has NO @offload_neo4j backstop. Each
+    # per-result importer BFS is bounded via _data_bounded; a tx-timeout on ANY
+    # row surfaces as OrmQueryTimeout, which is caught around the WHOLE render loop
+    # (ADR-0023: a clean degraded string is preferred over an ambiguous partial
+    # render). The metric fires exactly once.
+    from src.mcp.orm import OrmQueryTimeout
     sep = "─" * 41
     lines = [header]
-    for i, chunk in enumerate(raw, 1):
-        entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
-        chunk_label = chunk["chunk_type"]
-        if chunk["chunk_idx"] > 0:
-            chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
-        # B1 fix: always emit a score-shaped token; append match: tag as suffix.
-        cosine_val = chunk.get("cosine")
-        if cosine_val is not None:
-            score_token = f"score {cosine_val:.2f}"
-        else:
-            score_token = "literal match"
-        match_tag = chunk.get("match", "semantic")
-        lines.append(sep)
-        lines.append(
-            f"#{i} · {score_token} · match: {match_tag} · {chunk_label} · {entity}"
-        )
-        lines.append(
-            f"   File: {_srv._portable_path(chunk['file_path'], module=chunk.get('module'))}"
-        )
+    try:
+        for i, chunk in enumerate(raw, 1):
+            entity = f'[{chunk["module"]}] {chunk["entity_name"]}'
+            chunk_label = chunk["chunk_type"]
+            if chunk["chunk_idx"] > 0:
+                chunk_label += f" chunk {chunk['chunk_idx'] + 1}"
+            # B1 fix: always emit a score-shaped token; append match: tag as suffix.
+            cosine_val = chunk.get("cosine")
+            if cosine_val is not None:
+                score_token = f"score {cosine_val:.2f}"
+            else:
+                score_token = "literal match"
+            match_tag = chunk.get("match", "semantic")
+            lines.append(sep)
+            lines.append(
+                f"#{i} · {score_token} · match: {match_tag} · {chunk_label} · {entity}"
+            )
+            lines.append(
+                f"   File: {_srv._portable_path(chunk['file_path'], module=chunk.get('module'))}"
+            )
 
-        # Find stylesheets that import this file (override chain — BFS depth 1)
-        with driver.session() as session:
-            importers = session.run(
-                f"""
-                MATCH (tgt:Stylesheet {{file_path: $fp, odoo_version: $v}})
-                      <-[:IMPORTS]-(src:Stylesheet)
-                WHERE {_srv._scope_pred("tgt")} AND {_srv._scope_pred("src")}
-                RETURN src.file_path AS importer_path, src.module AS importer_module
-                ORDER BY src.file_path ASC
-                """,
-                fp=chunk["file_path"], v=odoo_version, **_srv._scope(),
-            ).data()
-
-        if importers:
-            lines.append(f"   Override chain ({len(importers)} importer(s)):")
-            for imp in importers:
-                _imp_path = _srv._portable_path(
-                    imp["importer_path"], module=imp.get("importer_module")
+            # Find stylesheets that import this file (override chain — BFS depth 1)
+            with driver.session() as session:
+                importers = _srv._data_bounded(
+                    session,
+                    f"""
+                    MATCH (tgt:Stylesheet {{file_path: $fp, odoo_version: $v}})
+                          <-[:IMPORTS]-(src:Stylesheet)
+                    WHERE {_srv._scope_pred("tgt")} AND {_srv._scope_pred("src")}
+                    RETURN src.file_path AS importer_path, src.module AS importer_module
+                    ORDER BY src.file_path ASC
+                    """,
+                    label=f"stylesheet override chain (Odoo {odoo_version})",
+                    fp=chunk["file_path"], v=odoo_version, **_srv._scope(),
                 )
-                lines.append(
-                    f"   ├─ {_imp_path} [{imp['importer_module']}]"
-                )
-        else:
-            lines.append("   Override chain: no importers found (no :IMPORTS edges).")
 
-        lines.append("   ┌" + "─" * 42)
-        for line in chunk["content"].splitlines():
-            lines.append(f"   │ {line}")
-        lines.append("   └" + "─" * 42)
-        lines.append("")
+            if importers:
+                lines.append(f"   Override chain ({len(importers)} importer(s)):")
+                for imp in importers:
+                    _imp_path = _srv._portable_path(
+                        imp["importer_path"], module=imp.get("importer_module")
+                    )
+                    lines.append(
+                        f"   ├─ {_imp_path} [{imp['importer_module']}]"
+                    )
+            else:
+                lines.append("   Override chain: no importers found (no :IMPORTS edges).")
+
+            lines.append("   ┌" + "─" * 42)
+            for line in chunk["content"].splitlines():
+                lines.append(f"   │ {line}")
+            lines.append("   └" + "─" * 42)
+            lines.append("")
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("find_style_override")
+        return exc.user_message
 
     # Pass top-result module so hints render useful resolve_stylesheet/describe_module calls.
     top_module = raw[0]["module"] if raw else ""
@@ -525,7 +544,7 @@ def _find_style_override(
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)
-@offload
+@offload_neo4j
 def resolve_stylesheet(
     module: str,
     odoo_version: RequiredOdooVersion,
