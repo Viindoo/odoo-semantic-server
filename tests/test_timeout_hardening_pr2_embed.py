@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from unittest.mock import MagicMock
 
 from tests._timeout_harness import (
     TIMEOUT_TEST_VERSION,
@@ -157,11 +158,15 @@ def test_suggest_pattern_pattern_fetch_timeout_returns_clean_string_and_counts_o
 
 
 def test_find_examples_rerank_timeout_returns_clean_string_and_counts_once(monkeypatch):
-    """A rerank-query tx-timeout degrades to a clean string + 1 metric.
+    """A FIRST-rerank-query (dependents) tx-timeout degrades cleanly + 1 metric.
 
-    Protects: find_examples reranks via two Neo4j queries (one is the #273-class
-    ``DEPENDS_ON*1..`` VLP). A timeout on either must be caught once and surfaced
-    as a clean string — not escape, not double-count.
+    Protects: find_examples reranks via two Neo4j queries inside ONE try/except.
+    This drives the all-runs-timeout harness, so the FIRST (dependents) query is
+    the one that times out here. The second / VLP ``DEPENDS_ON*1..`` chain query
+    (the #273-class fan-out) is covered separately by
+    test_find_examples_vlp_chain_query_timeout below — the all-runs-timeout
+    harness can never reach it because it dies on query #1. A timeout must be
+    caught once, surfaced as a clean string — not escape, not double-count.
     """
     import src.mcp.server as srv
     from src.mcp.tools import discovery
@@ -209,6 +214,103 @@ def test_find_examples_rerank_timeout_returns_clean_string_and_counts_once(monke
     assert_clean_timeout_string(result)
     assert after == before + 1, (
         f"find_examples must count the timeout once; before={before} after={after}"
+    )
+
+
+class _SecondRunTimeoutSession:
+    """Session whose FIRST ``.run()`` succeeds (empty data) and SECOND times out.
+
+    Lets a test drive the find_examples VLP ``DEPENDS_ON*1..`` chain query (the
+    second rerank query) to timeout while the first/dependents query passes — the
+    exact #273-class fan-out path the all-runs-timeout harness can never reach
+    because it dies on query #1.
+    """
+
+    def __init__(self):
+        self._calls = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def run(self, *a, **k):
+        self._calls += 1
+        if self._calls == 1:
+            result = MagicMock()
+            result.data.return_value = []
+            return result
+        from neo4j.exceptions import ClientError
+
+        exc = ClientError("transaction timed out")
+        exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
+        raise exc
+
+
+class _SecondRunTimeoutDriver:
+    """Driver whose single session times out only on the SECOND ``.run()``."""
+
+    def __init__(self):
+        self._session = _SecondRunTimeoutSession()
+
+    def session(self, *a, **k):
+        return self._session
+
+
+def test_find_examples_vlp_chain_query_timeout_returns_clean_string_and_counts_once(
+    monkeypatch,
+):
+    """A tx-timeout on the VLP DEPENDS_ON chain (2nd rerank query) degrades cleanly.
+
+    Protects: the #273-class ``DEPENDS_ON*1..`` chain query is the actual fan-out
+    vector #287 bounds. Here the first/dependents query SUCCEEDS (empty) and only
+    the chain query times out — so this test reaches the chain path the
+    all-runs-timeout harness cannot (it raises on query #1). The timeout must be
+    caught once and surfaced as a clean string.
+    """
+    import src.mcp.server as srv
+    from src.mcp.tools import discovery
+
+    monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+    monkeypatch.setattr(srv, "_effective_allowed", lambda p: None)
+    monkeypatch.setattr(srv, "_set_iterative_scan", lambda cur: None)
+
+    class _NullTx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(srv, "_rls_read_tx", lambda pg, allowed: _NullTx())
+
+    ann_row = (
+        "method", "sale", "sale.order.write", None,
+        "addons/sale/models/sale_order.py", 0, "def write(self, vals): ...",
+        0.88, 10, None, None,
+    )
+    pg = _FakePgConn([ann_row])
+
+    before = _metric_value("find_examples")
+    # context_module set so the SECOND (VLP chain) query runs; the driver passes
+    # query #1 (dependents) and times out only on that chain query.
+    result = discovery._find_examples(
+        "write override",
+        TIMEOUT_TEST_VERSION,
+        5,
+        context_module="account",
+        _driver=_SecondRunTimeoutDriver(),
+        _pg_conn=pg,
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("find_examples")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1, (
+        f"find_examples VLP chain must count the timeout once; "
+        f"before={before} after={after}"
     )
 
 
@@ -310,3 +412,81 @@ def test_set_active_version_sanity_read_timeout_returns_clean_string_and_counts_
     assert after == before + 1, (
         f"set_active_version must count the timeout once; before={before} after={after}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Version-resolution timeout (#287 review) — the 3 EMBED tools resolve the Odoo
+# version via a bounded Neo4j read (Tier-3 _latest_version) that can itself time
+# out. That call runs OUTSIDE the main fetch/rerank catch, so each tool now wraps
+# it in its own inline catch — a resolve timeout must degrade cleanly, not escape
+# the async body as a protocol error.
+# ---------------------------------------------------------------------------
+
+
+def _raise_resolve_timeout(*_a, **_k):
+    from src.mcp.orm import OrmQueryTimeout
+
+    raise OrmQueryTimeout(
+        "Query timed out after 30s while resolving the latest indexed Odoo version."
+    )
+
+
+def test_suggest_pattern_version_resolution_timeout_returns_clean_string(monkeypatch):
+    """A tx-timeout during version resolution degrades cleanly + 1 metric."""
+    import src.mcp.server as srv
+    from src.mcp.tools import guidance
+
+    monkeypatch.setattr(srv, "_resolve_version", _raise_resolve_timeout)
+
+    before = _metric_value("suggest_pattern")
+    result = guidance._suggest_pattern(
+        "override write", "auto", "python", 5,
+        _driver=_TxTimeoutDriver(),
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("suggest_pattern")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1
+
+
+def test_find_examples_version_resolution_timeout_returns_clean_string(monkeypatch):
+    """A tx-timeout during version resolution degrades cleanly + 1 metric."""
+    import src.mcp.server as srv
+    from src.mcp.tools import discovery
+
+    monkeypatch.setattr(srv, "_resolve_version", _raise_resolve_timeout)
+
+    before = _metric_value("find_examples")
+    # odoo_version='auto' so the gated _resolve_version call fires.
+    result = discovery._find_examples(
+        "write override", "auto", 5,
+        _driver=_TxTimeoutDriver(),
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("find_examples")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1
+
+
+def test_find_style_override_version_resolution_timeout_returns_clean_string(monkeypatch):
+    """A tx-timeout during version resolution degrades cleanly + 1 metric."""
+    import src.mcp.server as srv
+    from src.mcp.tools import stylesheet
+
+    monkeypatch.setattr(srv, "_resolve_version", _raise_resolve_timeout)
+
+    before = _metric_value("find_style_override")
+    result = stylesheet._find_style_override(
+        ".o_list_view", "auto", 5,
+        _driver=_TxTimeoutDriver(),
+        _embedder=_StubEmbedder(),
+        _query_vec=[0.1, 0.2, 0.3],
+    )
+    after = _metric_value("find_style_override")
+
+    assert_clean_timeout_string(result)
+    assert after == before + 1
