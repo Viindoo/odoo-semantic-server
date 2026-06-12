@@ -42,6 +42,12 @@ _FACADE_CHILDREN = [
     # the monkeypatch/reload contract — see the comment at each binding).
     "src.mcp.describe",
     "src.mcp.listings",
+    # B6 — pipeline -> pipeline_repo / pipeline_reembed. The children resolve
+    # parent-level helpers (build_registry / topological_sort / repo_store /
+    # _neo4j_creds) through ``from . import pipeline`` INSIDE their functions, so a
+    # cold ``import <child>`` must not trip the parent<->child module-load cycle.
+    "src.indexer.pipeline_repo",
+    "src.indexer.pipeline_reembed",
 ]
 
 
