@@ -328,8 +328,16 @@ def _find_style_override(
 
     driver = _driver or _srv._get_driver()
 
-    with driver.session() as session:
-        odoo_version = _srv._resolve_version(odoo_version, session)
+    # #287 (review): bound version resolution too — Tier-3 _latest_version() is a
+    # bounded Neo4j read that may raise OrmQueryTimeout, and this async body has no
+    # @offload_neo4j backstop, so catch it inline like the importer BFS below.
+    from src.mcp.orm import OrmQueryTimeout
+    try:
+        with driver.session() as session:
+            odoo_version = _srv._resolve_version(odoo_version, session)
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("find_style_override")
+        return exc.user_message
 
     want_literal = is_literal_token(selector_or_variable)
 
@@ -475,7 +483,6 @@ def _find_style_override(
     # row surfaces as OrmQueryTimeout, which is caught around the WHOLE render loop
     # (ADR-0023: a clean degraded string is preferred over an ambiguous partial
     # render). The metric fires exactly once.
-    from src.mcp.orm import OrmQueryTimeout
     sep = "─" * 41
     lines = [header]
     try:

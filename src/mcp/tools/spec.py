@@ -108,29 +108,10 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
     """Return signature + status + replacement for a single Odoo core API symbol."""
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
-        rec = _srv._single_bounded(
-            session,
-            """
-            MATCH (cs:CoreSymbol {odoo_version: $v})
-            WHERE cs.qualified_name = $name
-               OR cs.qualified_name ENDS WITH '.' + $name
-            RETURN cs.qualified_name AS qualified_name,
-                   cs.kind AS kind,
-                   cs.status AS status,
-                   cs.signature AS signature,
-                   cs.replacement_qname AS replacement_qname,
-                   cs.file_path AS file_path,
-                   cs.line AS line,
-                   cs.added_in AS added_in,
-                   cs.removed_in AS removed_in,
-                   cs.deprecated_in AS deprecated_in
-            ORDER BY size(cs.qualified_name) ASC
-            LIMIT 1
-            """,
-            label=f"core API symbol {name!r} (Odoo {odoo_version})",
-            name=name, v=odoo_version,
-        )
-    if rec is None:
+        # Reuse _fetch_core_symbol (same bounded CoreSymbol query) so the Cypher
+        # lives in one place — api_version_diff already uses it (review: de-dup).
+        sym = _fetch_core_symbol(session, name, odoo_version)
+    if sym is None:
         next_line = format_next_step([
             f"find_examples(query='{name}', odoo_version='{odoo_version}')"
             " for in-the-wild usage patterns",
@@ -140,7 +121,7 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
             f"├─ not found in indexed Odoo core for version {odoo_version}\n"
             + next_line
         )
-    return _format_core_symbol(dict(rec), odoo_version)
+    return _format_core_symbol(sym, odoo_version)
 
 
 def _format_api_diff(

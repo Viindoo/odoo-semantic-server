@@ -117,9 +117,17 @@ def _find_examples(
 
     driver = _driver or _srv._get_driver()
 
-    with driver.session() as session:
-        if odoo_version in ("auto", "latest"):
-            odoo_version = _srv._resolve_version("auto", session)
+    # #287 (review): bound version resolution too — Tier-3 _latest_version() is a
+    # bounded Neo4j read that may raise OrmQueryTimeout, and this async body has no
+    # @offload_neo4j backstop, so catch it inline like the rerank queries below.
+    from src.mcp.orm import OrmQueryTimeout
+    try:
+        with driver.session() as session:
+            if odoo_version in ("auto", "latest"):
+                odoo_version = _srv._resolve_version("auto", session)
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("find_examples")
+        return exc.user_message
 
     selected_types = [t for t in (chunk_types or []) if t in VALID_CHUNK_TYPES]
 
@@ -352,7 +360,6 @@ def _find_examples(
     # is the #273-class fan-out vector, so the 30s per-query bound is the fix. Wrap
     # BOTH queries in ONE OrmQueryTimeout catch (one metric, one clean-string
     # return per ADR-0023).
-    from src.mcp.orm import OrmQueryTimeout
     module_names = list({c["module"] for c in raw})
     try:
         with driver.session() as session:

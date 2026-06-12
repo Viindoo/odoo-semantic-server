@@ -117,8 +117,18 @@ def _suggest_pattern(
             "Hint: check Ollama is running (default: http://localhost:11434)."
         )
 
-    with driver.session() as session:
-        v = _srv._resolve_version(odoo_version, session)
+    # #287 (review): _resolve_version can hit Tier-3 _latest_version(), itself a
+    # bounded Neo4j read that may raise OrmQueryTimeout. This async body has no
+    # @offload_neo4j backstop, so the resolution must be caught inline too (not
+    # only the PatternExample fetch below) — else a resolve timeout escapes as a
+    # protocol error (the exact ADR-0023 hole #287 closes).
+    from src.mcp.orm import OrmQueryTimeout
+    try:
+        with driver.session() as session:
+            v = _srv._resolve_version(odoo_version, session)
+    except OrmQueryTimeout as exc:
+        _srv._metric_nonorm_query_timeout("suggest_pattern")
+        return exc.user_message
 
     if _query_vec is not None:
         intent_vec = _query_vec
@@ -199,7 +209,6 @@ def _suggest_pattern(
     # this body via asyncio.to_thread) so it has NO @offload_neo4j backstop — the
     # OrmQueryTimeout must be caught INLINE here, emit the metric once, and return
     # the clean string (ADR-0023 raw-text contract).
-    from src.mcp.orm import OrmQueryTimeout
     try:
         with driver.session() as session:
             records = _srv._data_bounded(
