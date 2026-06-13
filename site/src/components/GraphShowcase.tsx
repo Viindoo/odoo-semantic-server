@@ -195,7 +195,7 @@ function GraphShowcaseInner() {
       {/* Generated date */}
       {snap && (
         <div className="absolute bottom-3 right-4 z-10 font-mono text-[10px] text-viindoo-on-dark-dim">
-          Generated {generatedDate} from live Neo4j index
+          Generated {generatedDate} from the live knowledge graph index
         </div>
       )}
     </div>

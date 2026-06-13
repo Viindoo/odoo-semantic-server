@@ -12,6 +12,7 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { label: 'Examples',  href: '/examples' },
   { label: 'Tools',     href: '/tools' },
+  { label: 'AI Agents', href: '/odoo-ai-agents' },
   { label: 'Benchmark', href: '/benchmark' },
   { label: 'Pricing',   href: '/pricing' },
   { label: 'Install',   href: '/install/' },

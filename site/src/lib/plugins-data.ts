@@ -16,11 +16,14 @@ export const PLUGIN_REPO_URL = 'https://github.com/Viindoo/odoo-mcp-client';
 /** Command users run after install to wire URL + API key. */
 export const CONNECT_COMMAND = '/odoo-semantic-mcp:connect';
 
-/** Plugin counts — source: plugin-survey.md (odoo-mcp-client VERSION 2.1.0). */
-export const SKILLS_COUNT = 26;
-export const AGENTS_COUNT = 3;
-export const COMMANDS_COUNT = 6;
+/** Plugin counts — source: plugin.json (odoo-mcp-client VERSION 2.1.0). */
+export const SKILLS_COUNT = 41;
+export const AGENTS_COUNT = 7;
+export const COMMANDS_COUNT = 9;
 export const PERSONA_COUNT = 9;
+/** Alias for PERSONA_COUNT — import-compatible name used by WI-5/WI-6. */
+export const PERSONAS_COUNT = PERSONA_COUNT;
+export const WORKFLOWS_COUNT = 12;
 
 export interface PluginMeta {
   slug: string;
@@ -42,12 +45,12 @@ export const MCP_PLUGIN: PluginMeta = {
 };
 
 export const SKILLS_PLUGIN: PluginMeta = {
-  slug: 'odoo-semantic-skills',
+  slug: 'odoo-ai-agents',
   version: '2.1.0',
-  tagline: `${SKILLS_COUNT} skills · ${AGENTS_COUNT} agents · ${PERSONA_COUNT} personas — auto-pulls the MCP plugin.`,
+  tagline: `${SKILLS_COUNT} skills · ${AGENTS_COUNT} agents · ${COMMANDS_COUNT} commands — auto-pulls the MCP plugin.`,
   highlights: [
     `${SKILLS_COUNT} skills fire from plain-English intent — no tool names to memorize`,
-    `${AGENTS_COUNT} agents: odoo-coder, odoo-code-reviewer, odoo-ui-reviewer — review/code/UI grounded in the indexed graph`,
+    `${AGENTS_COUNT} specialist agents: coder, reviewer, architect, frontend, debugger and more — grounded in the indexed graph`,
     `${PERSONA_COUNT} personas for dev · consultant · CEO · sales · marketer · visual QA`,
   ],
 };
@@ -55,7 +58,7 @@ export const SKILLS_PLUGIN: PluginMeta = {
 /** Install command lines (slash-command form for in-session Claude Code).
  *
  *  PRIMARY install path  → marketplace + installMcp + connect
- *  OPTIONAL add-on       → installSkills (26 skills · 3 agents · 9 personas; auto-pulls MCP)
+ *  OPTIONAL add-on       → installSkills (41 skills · 7 agents · 9 commands; auto-pulls MCP)
  */
 export const INSTALL_STEPS_SLASH = {
   marketplace: `/plugin marketplace add ${PLUGIN_MARKETPLACE}`,
@@ -71,7 +74,7 @@ export const INSTALL_STEPS_SLASH = {
 /** Install command lines (CLI form — `claude plugin ...`).
  *
  *  PRIMARY install path  → marketplace + installMcp (= installMcpOnly alias) + connect
- *  OPTIONAL add-on       → installSkills (26 skills · 3 agents · 9 personas; auto-pulls MCP)
+ *  OPTIONAL add-on       → installSkills (41 skills · 7 agents · 9 commands; auto-pulls MCP)
  */
 export const INSTALL_STEPS_CLI = {
   marketplace: `claude plugin marketplace add ${PLUGIN_MARKETPLACE} --scope user`,

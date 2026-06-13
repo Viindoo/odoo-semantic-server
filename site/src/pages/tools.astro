@@ -15,6 +15,7 @@ import {
   type ToolGroup,
 } from '../lib/tools-data';
 import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
+import { SKILLS_COUNT, AGENTS_COUNT, PERSONA_COUNT } from '../lib/plugins-data';
 
 // Build ordered group list (preserve canonical order: resolve → version → quality
 // → superset → session → stylesheet → orm).
@@ -148,6 +149,137 @@ for (const g of GROUP_ORDER) {
       <p class="text-xs text-viindoo-on-dark-dim mt-6 font-mono text-center">
         Resources are read-only &middot; per-tenant cache &middot; same auth as tools (X-API-Key).
       </p>
+    </div>
+  </section>
+
+  <!-- Section C: Amplify with Odoo AI Agent Team -->
+  <section
+    id="agent-team"
+    class="bg-viindoo-bg-0 py-16 px-6"
+    aria-label="Odoo AI Agent Team"
+  >
+    <div class="mx-auto max-w-7xl">
+
+      <!-- Kicker -->
+      <div class="text-sm font-mono text-viindoo-primary uppercase tracking-widest mb-3 flex items-center gap-2">
+        <span class="w-7 h-px bg-viindoo-primary" aria-hidden="true"></span>
+        AMPLIFY WITH AI AGENTS
+      </div>
+
+      <!-- 2-col layout: copy left, visual right -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+
+        <!-- Left: copy block -->
+        <div>
+          <h2 class="text-3xl font-display font-bold text-viindoo-on-dark tracking-tight leading-tight">
+            {TOOL_COUNT} tools. Used automatically,<br class="hidden sm:inline" />
+            by a team that knows when to call each one.
+          </h2>
+          <p class="text-viindoo-on-dark-muted mt-4 text-base leading-relaxed max-w-xl">
+            Knowing the toolbox exists is one thing. Having {SKILLS_COUNT} skills that read
+            your plain-language intent and fire the right tool at the right moment
+            &mdash; without a slash command to memorize &mdash; is another.
+          </p>
+          <p class="text-viindoo-on-dark-muted mt-3 text-base leading-relaxed max-w-xl">
+            The Odoo AI Agent Team adds a specialist layer on top of these
+            {TOOL_COUNT} tools: an architect that calls <code class="font-mono text-viindoo-primary-bright text-sm">impact_analysis</code> before any code
+            is written; a coder that validates every ORM chain with
+            <code class="font-mono text-viindoo-primary-bright text-sm">resolve_orm_chain</code> before it ships; a
+            reviewer that backs every finding with
+            <code class="font-mono text-viindoo-primary-bright text-sm">lint_check</code> output &mdash; not a guess.
+          </p>
+
+          <!-- Stat strip (3-up) -->
+          <div class="flex flex-wrap gap-6 mt-8 pt-6 border-t border-white/10">
+            <div>
+              <p class="font-mono text-2xl font-semibold text-viindoo-primary">{SKILLS_COUNT}</p>
+              <p class="font-mono text-xs text-viindoo-on-dark-dim uppercase tracking-widest mt-0.5">Auto-firing skills</p>
+            </div>
+            <div>
+              <p class="font-mono text-2xl font-semibold text-viindoo-primary">{AGENTS_COUNT}</p>
+              <p class="font-mono text-xs text-viindoo-on-dark-dim uppercase tracking-widest mt-0.5">Specialist agents</p>
+            </div>
+            <div>
+              <p class="font-mono text-2xl font-semibold text-viindoo-primary">{PERSONA_COUNT}</p>
+              <p class="font-mono text-xs text-viindoo-on-dark-dim uppercase tracking-widest mt-0.5">Personas covered</p>
+            </div>
+          </div>
+
+          <!-- CTA -->
+          <div class="mt-8">
+            <a
+              href="/odoo-ai-agents"
+              class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold px-6 py-3 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
+            >
+              Meet the Odoo AI Agent Team
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </a>
+            <p class="text-viindoo-on-dark-dim text-xs font-mono mt-3">
+              MIT licensed &middot; Free tier &middot; Auto-pulls the MCP tools above
+            </p>
+          </div>
+        </div>
+
+        <!-- Right: terminal proof (skill fires tool) -->
+        <div class="relative">
+          <!-- Mac-dots terminal block -->
+          <div class="rounded-xl border border-white/10 bg-viindoo-bg-1 overflow-hidden shadow-lg">
+            <!-- title bar -->
+            <div class="flex items-center gap-1.5 px-4 py-2.5 border-b border-white/10">
+              <span class="w-2.5 h-2.5 rounded-full bg-[#FF5F57]" aria-hidden="true"></span>
+              <span class="w-2.5 h-2.5 rounded-full bg-[#FEBC2E]" aria-hidden="true"></span>
+              <span class="w-2.5 h-2.5 rounded-full bg-[#27C93F]" aria-hidden="true"></span>
+              <span class="ml-2 font-mono text-[11px] text-viindoo-on-dark-dim">odoo-coder agent</span>
+            </div>
+            <!-- terminal lines -->
+            <div class="px-4 py-4 space-y-2 font-mono text-[12px]">
+              <p class="text-viindoo-on-dark-dim">&gt;_ <span class="text-viindoo-on-dark">reading task context ...</span></p>
+              <p class="text-viindoo-on-dark-dim">&gt;_ <span class="text-viindoo-primary">model_inspect</span><span class="text-viindoo-on-dark-dim">(model='sale.order', version='17')</span></p>
+              <p class="text-viindoo-on-dark-dim pl-4">&rarr; <span class="text-viindoo-on-dark">63 fields &middot; 4 inherited models &middot; 12 modules</span></p>
+              <p class="text-viindoo-on-dark-dim">&gt;_ <span class="text-viindoo-primary">validate_depends</span><span class="text-viindoo-on-dark-dim">(model='sale.order', paths=['order_line.price_total'])</span></p>
+              <p class="text-viindoo-on-dark-dim pl-4">&rarr; <span class="text-[#00B365]">&#10003; valid path &middot; comodel sale.order.line</span></p>
+              <p class="text-viindoo-on-dark-dim">&gt;_ <span class="text-viindoo-primary">resolve_orm_chain</span><span class="text-viindoo-on-dark-dim">(model='sale.order', chain='order_line.product_id.categ_id')</span></p>
+              <p class="text-viindoo-on-dark-dim pl-4">&rarr; <span class="text-[#00B365]">&#10003; resolved in 3 hops &middot; no hallucinated steps</span></p>
+              <p class="text-viindoo-on-dark-dim mt-2">&gt;_ <span class="text-viindoo-on-dark">generating production code ...</span></p>
+              <p class="text-viindoo-on-dark pl-4 text-[#00B365]">&#10003; field names verified &middot; ORM chain validated &middot; red test first</p>
+            </div>
+          </div>
+          <!-- caption -->
+          <p class="text-xs text-viindoo-on-dark-dim font-mono mt-3 text-center">
+            <span class="text-[#00B365]">&#10003;</span>
+            Every agent call verified against {TOOL_COUNT} indexed tools &mdash; never from training memory
+          </p>
+        </div>
+
+      </div>
+
+      <!-- 3-bullet value strip (below 2-col) -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-14 pt-10 border-t border-white/10">
+        <div>
+          <p class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1">No slash commands</p>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">
+            Describe an outcome in plain language. The right skill auto-routes to the right
+            specialist and the right OSM tool.
+          </p>
+        </div>
+        <div>
+          <p class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1">Full project lifecycle</p>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">
+            From gap analysis and BRL to code review and deploy checklist &mdash;
+            {SKILLS_COUNT} skills covering {PERSONA_COUNT} Odoo roles, one plugin.
+          </p>
+        </div>
+        <div>
+          <p class="font-mono text-sm font-semibold text-viindoo-on-dark mb-1">One install</p>
+          <p class="text-xs text-viindoo-on-dark-muted leading-relaxed">
+            <code class="text-viindoo-primary-bright">claude plugin install odoo-ai-agents@viindoo-plugins</code>
+            auto-pulls the MCP tools above. Free tier included.
+          </p>
+        </div>
+      </div>
+
     </div>
   </section>
 

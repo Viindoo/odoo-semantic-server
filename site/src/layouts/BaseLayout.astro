@@ -24,6 +24,11 @@ export interface Props {
    *  tracked and the GA third-party origin is never actionable on those pages
    *  (keeps the third-party-script blast-radius scoped, per the CSP design). */
   analytics?: boolean;
+  /** Override the default OG / Twitter social-card image path.
+   *  Must be a root-relative path (e.g. '/og-odoo-ai-agents.png').
+   *  Defaults to '/og-image.png' — the site-wide fallback — so every
+   *  existing page is unaffected when this prop is omitted. */
+  ogImage?: string;
 }
 
 const {
@@ -33,12 +38,13 @@ const {
   showFooter = true,
   provideMain = true,
   analytics = true,
+  ogImage: ogImageProp = '/og-image.png',
 } = Astro.props;
 const isDark = theme === 'dark';
 // Absolute URL for social-card image (OG/Twitter need absolute). Prefer the
 // configured Astro.site so self-hosted deploys emit their own origin.
 const siteOrigin = Astro.site ?? new URL('https://odoo-semantic.viindoo.com');
-const ogImage = new URL('/og-image.png', siteOrigin).href;
+const ogImage = new URL(ogImageProp, siteOrigin).href;
 // Canonical URL — strip query string to avoid duplicate-content signals.
 const canonicalUrl = new URL(Astro.url.pathname, siteOrigin).href;
 // JSON-LD Organization structured data.
@@ -48,7 +54,8 @@ const orgJsonLd = JSON.stringify({
   name: BRAND_FULL,
   url: siteOrigin.toString(),
   // Google logo rich-result requires ImageObject (raster PNG), not a plain SVG URL.
-  // /og-image.png (1200x630 raster) satisfies the format requirement.
+  // Always use the site-wide /og-image.png for the Organization logo (stable,
+  // never overridden per page) regardless of any page-specific ogImage prop.
   logo: {
     '@type': 'ImageObject',
     url: new URL('/og-image.png', siteOrigin).href,

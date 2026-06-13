@@ -3,7 +3,7 @@
 Tài liệu này dành cho developer muốn contribute hoặc phát triển thêm tính năng.
 
 > 📖 **Bạn là end-user muốn kết nối AI tool (Claude Code, Codex, Gemini…) vào MCP server?**
-> Xem [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md) thay vì tài liệu này.
+> Xem [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/setup.md) thay vì tài liệu này.
 
 ---
 

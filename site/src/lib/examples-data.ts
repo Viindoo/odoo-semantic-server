@@ -2,7 +2,7 @@
 /** SSOT for the /examples showcase (and the landing teaser).
  *  Each scenario is a real Odoo question rendered as a before/after:
  *  what an ungrounded AI hallucinates vs. what Odoo Semantic MCP returns,
- *  grounded in the indexed Neo4j graph. Token counts are illustrative of
+ *  grounded in the indexed knowledge graph. Token counts are illustrative of
  *  the compact, structured tool output (English-only per the API contract).
  *
  *  Keep this English-only — it mirrors the MCP tool surface. */
@@ -73,7 +73,7 @@ export const SCENARIOS: ExampleScenario[] = [
         { text: '   ├─ sale_subscription // EE-only, +18 fields' },
         { text: '   └─ sale_purchase     // +3 fields, +5 methods' },
         { text: '' },
-        { text: '✓ 5 modules · all verified against Neo4j index', cls: OK },
+        { text: '✓ 5 modules · all verified against the knowledge graph index', cls: OK },
       ],
     },
   },

@@ -1,0 +1,402 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// AgentHero.astro - flagship "Grounded Pipeline" hero for /odoo-ai-agents.
+//
+// Living Cartography aesthetic: aurora field + blueprint grid + grain. The copy
+// block (kicker + H1 + subhead + dual CTA + inline links + stat strip) sits on
+// TOP, left-aligned in a max-w-4xl column. Below it, FULL-WIDTH, a BPMN-style
+// software-delivery pipeline runs left→right: 7 task nodes (rounded, cyan) and
+// 3 human/decision gates (diamonds, purple), with 3 dashed loop-back arcs
+// (reject→redesign, refuse→re-plan, changes→fix). Every step drops a thin
+// connector into an OSM "bedrock" band beneath the flow - the literal visual of
+// "grounded, not guessing": each step stands on indexed source truth.
+//
+// A1: no infrastructure names - the bedrock is labelled "knowledge graph" only.
+// A3: the GitHub CTA points at PLUGIN_REPO_URL (odoo-mcp-client), never the
+// server repo. A4: no license tokens.
+//
+// LCP discipline: the H1 is the Largest Contentful Paint element and renders
+// first in source order; both diagrams are decorative (aria-hidden) and never
+// block it. A single <figure role="img"> carries a prose description of the
+// whole process for screen readers. Motion (dash/pulse/rise) fully freezes
+// under prefers-reduced-motion (handled in global.css + a local override).
+//
+// Counts/version strings are passed in as props by the page (data-driven from
+// odoo-ai-agents-data.ts -> plugins-data.ts SSOT) - this component hardcodes no
+// capability counts.
+import { PLUGIN_REPO_URL } from '../lib/plugins-data';
+
+export interface Props {
+  /** Skill count (SSOT: plugins-data.ts). */
+  skillsCount: number;
+  /** Agent count (SSOT: plugins-data.ts). */
+  agentsCount: number;
+  /** Command count (SSOT: plugins-data.ts). */
+  commandsCount: number;
+  /** Persona count (SSOT: plugins-data.ts). */
+  personasCount: number;
+}
+
+const { skillsCount, agentsCount, commandsCount, personasCount } = Astro.props;
+
+// Mobile vertical flow - the same 10 steps, kept in one place so SVG + mobile
+// list never drift. `kind` drives the chip styling (task | gate | terminal).
+const mobileSteps = [
+  { kind: 'task', label: 'intake', sub: 'odoo-intake' },
+  { kind: 'task', label: 'fit-gap', sub: 'odoo-gap-analysis' },
+  { kind: 'task', label: 'solution design', sub: 'odoo-solution-design' },
+  { kind: 'gate', label: 'human approve?', sub: 'reject → redesign' },
+  { kind: 'task', label: 'planning', sub: 'implementation plan' },
+  { kind: 'gate', label: 'plan approved?', sub: 'refuse → re-plan' },
+  { kind: 'task', label: 'code', sub: 'odoo-coding' },
+  { kind: 'gate', label: 'review', sub: 'changes → fix' },
+  { kind: 'task', label: 'pull request', sub: 'open PR' },
+  { kind: 'terminal', label: 'merge', sub: 'human-confirm' },
+] as const;
+---
+
+<section
+  id="hero"
+  class="cv-grain relative bg-viindoo-bg-1 overflow-hidden pt-[140px] pb-24"
+  aria-labelledby="hero-h1"
+>
+  <div class="cv-aurora-field" aria-hidden="true"></div>
+  <div class="cv-blueprint absolute inset-0 pointer-events-none" aria-hidden="true"></div>
+
+  <div class="relative z-10 mx-auto max-w-7xl w-full px-6">
+
+    <!-- ── BLOCK A: kicker + H1 + subhead (full-width, LCP text renders first) ── -->
+    <div class="flex flex-col w-full">
+      <!-- Count pill - A4: counts only, no legal-terms token -->
+      <div
+        class="animate-cv-rise inline-flex items-center gap-2 self-start rounded-full bg-viindoo-primary/10 border border-viindoo-primary/30 px-3.5 py-1.5 font-mono text-[11px] tracking-wide text-viindoo-primary-bright"
+        style="animation-delay:.05s;"
+      >
+        <span
+          class="w-1.5 h-1.5 rounded-full bg-viindoo-success animate-cv-pulse"
+          style="box-shadow:0 0 0 4px rgba(0,179,101,0.16);"
+          aria-hidden="true"></span>
+        {skillsCount} SKILLS &middot; {agentsCount} AGENTS &middot; {commandsCount} COMMANDS &middot; {personasCount} PERSONAS
+      </div>
+
+      <!-- A8: exactly ONE H1, literal keyword-front, gradient on the signature phrase -->
+      <h1
+        id="hero-h1"
+        class="animate-cv-rise mt-6 font-display font-extrabold tracking-tight text-viindoo-on-dark m-0"
+        style="animation-delay:.12s; font-size:clamp(40px,5vw,64px); line-height:1.04; letter-spacing:-0.035em;"
+      >
+        Odoo AI Agent Team for Claude Code.<br />
+        <span class="cv-grad-text not-italic inline-block">Grounded, not guessing.</span>
+      </h1>
+
+      <!-- A8 answer-first opener: defines the product in one self-contained sentence -->
+      <p
+        class="animate-cv-rise mt-6 text-viindoo-on-dark-muted text-[19px] leading-relaxed w-full"
+        style="animation-delay:.2s;"
+      >
+        Odoo AI Agent Team is a Claude Code plugin:
+        <strong class="text-viindoo-on-dark font-medium"
+          >{skillsCount} pre-built skills, {agentsCount} specialist agents, and {commandsCount} slash commands</strong
+        > that run the whole delivery pipeline &mdash; intake, design, code, review, ship &mdash; with every step verified
+        against an indexed knowledge graph of 184,000+ fields across Odoo 8 to the latest version. One install. No hallucinated
+        field names.
+      </p>
+    </div>
+
+    <!-- ── BPMN PIPELINE (full-width centerpiece) ─────────────────────────────── -->
+    <figure
+      class="animate-cv-rise mt-16 mb-0 w-full"
+      style="animation-delay:.46s;"
+      role="img"
+      aria-label="Software delivery pipeline run by the agent team, left to right: 1. intake, 2. fit-gap analysis, 3. solution design, 4. a human-approval decision gate that on reject loops back to solution design, 5. planning, 6. a plan-approval decision gate that on refuse loops back to planning, 7. code, 8. a code-review decision gate that on requested changes loops back to code, 9. pull request, and 10. merge on human confirmation. Every step is grounded on the OSM knowledge graph: 12,400 plus models and 184,000 plus fields across Odoo 8 to the latest version, exposed through 25 MCP tools, so each step is verified against source truth rather than guessed."
+    >
+      <!-- caption strip -->
+      <figcaption class="flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[11px] mb-5">
+        <span class="cv-kicker text-viindoo-primary-bright">The Pipeline</span>
+        <span class="text-viindoo-on-dark-dim">one delivery flow, three human gates, three review loops &mdash; every step grounded</span>
+      </figcaption>
+
+      <!-- DESKTOP / TABLET: serpentine BPMN diagram (md and up) -->
+      <div class="hidden md:block cv-glass rounded-2xl p-5 lg:p-7 shadow-glass overflow-hidden" aria-hidden="true">
+        <svg
+          viewBox="0 0 1200 560"
+          preserveAspectRatio="xMidYMid meet"
+          class="w-full h-auto"
+          role="presentation"
+        >
+          <defs>
+            <!-- arrowheads -->
+            <marker id="ah-cyan" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#2DD4E8" />
+            </marker>
+            <marker id="ah-loop" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#A263A5" />
+            </marker>
+            <marker id="ah-ground" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="#00B365" />
+            </marker>
+            <radialGradient id="bp-core-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#00BBCE" stop-opacity="0.16" />
+              <stop offset="100%" stop-color="#00BBCE" stop-opacity="0" />
+            </radialGradient>
+            <linearGradient id="bp-bedrock" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#00B365" stop-opacity="0.16" />
+              <stop offset="50%" stop-color="#00BBCE" stop-opacity="0.12" />
+              <stop offset="100%" stop-color="#00B365" stop-opacity="0.16" />
+            </linearGradient>
+          </defs>
+
+          <!-- ===== ROW 1 (left → right): intake · fit-gap · solution design · ◇approve · planning ===== -->
+          <!-- flow connectors row 1 -->
+          <g fill="none" stroke="#2DD4E8" stroke-width="2" marker-end="url(#ah-cyan)" opacity="0.85">
+            <path d="M176,96 H246" />
+            <path d="M432,96 H502" />
+            <path d="M688,96 H758" />
+            <path d="M910,96 H980" />
+          </g>
+
+          <!-- reject → redesign loop (approve gate ◇ back to solution design), dashed arc above row 1 -->
+          <path d="M820,52 C800,2 615,2 595,60" fill="none" stroke="#A263A5" stroke-width="1.8"
+                stroke-dasharray="6 5" marker-end="url(#ah-loop)" class="animate-cv-dash" opacity="0.85" />
+          <!-- label centred under the arc apex (apex y≈2) with a backing plate so the arc reads behind it -->
+          <g transform="translate(707,20)">
+            <rect x="-56" y="-12" width="112" height="18" rx="5" fill="#0b1a22" fill-opacity="0.92" stroke="#A263A5" stroke-width="0.8" stroke-opacity="0.45" />
+            <text x="0" y="1.5" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#A263A5">reject → redesign</text>
+          </g>
+
+          <!-- 1. intake -->
+          <g transform="translate(32,72)">
+            <rect width="144" height="48" rx="10" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="1.6" />
+            <text x="14" y="21" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#E6F2F4">1 · intake</text>
+            <text x="14" y="37" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">odoo-intake</text>
+          </g>
+          <!-- 2. fit-gap -->
+          <g transform="translate(246,72)">
+            <rect width="186" height="48" rx="10" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="1.6" />
+            <text x="14" y="21" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#E6F2F4">2 · fit-gap</text>
+            <text x="14" y="37" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">odoo-gap-analysis</text>
+          </g>
+          <!-- 3. solution design -->
+          <g transform="translate(502,72)">
+            <rect width="186" height="48" rx="10" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="1.6" />
+            <text x="14" y="21" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#E6F2F4">3 · solution design</text>
+            <text x="14" y="37" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">odoo-solution-design</text>
+          </g>
+          <!-- 4. ◇ human approve? (purple gate) -->
+          <g transform="translate(758,60)">
+            <path d="M76,0 L152,36 L76,72 L0,36 Z" fill="rgba(127,66,130,0.14)" stroke="#7F4282" stroke-width="1.8" />
+            <text x="76" y="26" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#E6F2F4">4 · human</text>
+            <text x="76" y="41" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#E6F2F4">approve?</text>
+          </g>
+          <!-- 5. planning -->
+          <g transform="translate(980,72)">
+            <rect width="186" height="48" rx="10" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="1.6" />
+            <text x="14" y="21" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#E6F2F4">5 · planning</text>
+            <text x="14" y="37" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">implementation plan</text>
+          </g>
+
+          <!-- serpentine elbow: planning (row 1, right) → plan-approved gate (row 2, right) -->
+          <path d="M1073,120 V200" fill="none" stroke="#2DD4E8" stroke-width="2" marker-end="url(#ah-cyan)" opacity="0.85" />
+
+          <!-- ===== ROW 2 (right → left): ◇plan approved · code · ◇review · pull request · merge ===== -->
+          <!-- flow connectors row 2 (drawn right→left) -->
+          <g fill="none" stroke="#2DD4E8" stroke-width="2" marker-end="url(#ah-cyan)" opacity="0.85">
+            <path d="M997,244 H923" />
+            <path d="M737,244 H663" />
+            <path d="M511,244 H437" />
+            <path d="M251,244 H176" />
+          </g>
+
+          <!-- refuse → re-plan loop (plan gate ◇ back to planning), dashed arc above the gate -->
+          <path d="M1105,200 C1172,158 1172,158 1073,172" fill="none" stroke="#A263A5" stroke-width="1.8"
+                stroke-dasharray="6 5" marker-end="url(#ah-loop)" class="animate-cv-dash" opacity="0.85" />
+          <!-- label sits clear above the arc (apex x≈1172) with a backing plate vs the grid -->
+          <g transform="translate(1116,150)">
+            <rect x="-52" y="-12" width="104" height="18" rx="5" fill="#0b1a22" fill-opacity="0.92" stroke="#A263A5" stroke-width="0.8" stroke-opacity="0.45" />
+            <text x="0" y="1.5" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#A263A5">refuse → re-plan</text>
+          </g>
+
+          <!-- changes → fix loop (review gate ◇ back to code), dashed arc above row 2 -->
+          <path d="M620,202 C660,150 770,150 805,214" fill="none" stroke="#A263A5" stroke-width="1.8"
+                stroke-dasharray="6 5" marker-end="url(#ah-loop)" class="animate-cv-dash" opacity="0.85" />
+          <!-- label lifted above the arc apex (y≈150) with a backing plate so the arc never crosses the text -->
+          <g transform="translate(712,138)">
+            <rect x="-46" y="-12" width="92" height="18" rx="5" fill="#0b1a22" fill-opacity="0.92" stroke="#A263A5" stroke-width="0.8" stroke-opacity="0.45" />
+            <text x="0" y="1.5" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" fill="#A263A5">changes → fix</text>
+          </g>
+
+          <!-- 6. ◇ plan approved? (purple gate, row 2 right) -->
+          <g transform="translate(997,208)">
+            <path d="M76,0 L152,36 L76,72 L0,36 Z" fill="rgba(127,66,130,0.14)" stroke="#7F4282" stroke-width="1.8" />
+            <text x="76" y="26" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#E6F2F4">6 · plan</text>
+            <text x="76" y="41" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#E6F2F4">approved?</text>
+          </g>
+          <!-- 7. code -->
+          <g transform="translate(737,220)">
+            <rect width="186" height="48" rx="10" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="1.6" />
+            <text x="14" y="21" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#E6F2F4">7 · code</text>
+            <text x="14" y="37" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">odoo-coding</text>
+          </g>
+          <!-- 8. ◇ review (purple gate / loop) -->
+          <g transform="translate(511,208)">
+            <path d="M76,0 L152,36 L76,72 L0,36 Z" fill="rgba(127,66,130,0.14)" stroke="#7F4282" stroke-width="1.8" />
+            <text x="76" y="33" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="11" font-weight="600" fill="#E6F2F4">8 · review</text>
+            <text x="76" y="48" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" fill="#A263A5">odoo-code-review</text>
+          </g>
+          <!-- 9. pull request -->
+          <g transform="translate(251,220)">
+            <rect width="186" height="48" rx="10" fill="rgba(0,187,206,0.10)" stroke="#00BBCE" stroke-width="1.6" />
+            <text x="14" y="21" font-family="JetBrains Mono, monospace" font-size="12" font-weight="600" fill="#E6F2F4">9 · pull request</text>
+            <text x="14" y="37" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">pass → open PR</text>
+          </g>
+          <!-- 10. merge - terminal, emphasised (thicker ring + success accent) -->
+          <g transform="translate(32,218)">
+            <rect width="144" height="52" rx="12" fill="rgba(0,179,101,0.12)" stroke="#00B365" stroke-width="2.4" />
+            <text x="14" y="23" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="700" fill="#E6F2F4">10 · merge</text>
+            <text x="14" y="39" font-family="JetBrains Mono, monospace" font-size="9" fill="#7E9BA6">human-confirm</text>
+            <circle cx="128" cy="14" r="4" fill="#00B365" class="animate-cv-pulse" style="transform-origin:128px 14px;" />
+          </g>
+
+          <!-- ===== OSM BEDROCK BAND - every step grounded on source truth ===== -->
+          <!-- thin grounding connectors dropping from each row into the band -->
+          <g stroke="#00B365" stroke-width="1.2" stroke-dasharray="3 4" opacity="0.5">
+            <!-- row 1 nodes -->
+            <line x1="104" y1="120" x2="104" y2="470" />
+            <line x1="339" y1="120" x2="339" y2="470" />
+            <line x1="595" y1="120" x2="595" y2="470" />
+            <line x1="834" y1="132" x2="834" y2="470" />
+            <line x1="1073" y1="120" x2="1073" y2="470" />
+            <!-- row 2 nodes -->
+            <line x1="1073" y1="280" x2="1073" y2="470" />
+            <line x1="830" y1="268" x2="830" y2="470" />
+            <line x1="587" y1="280" x2="587" y2="470" />
+            <line x1="344" y1="268" x2="344" y2="470" />
+            <line x1="104" y1="270" x2="104" y2="470" />
+          </g>
+
+          <!-- the band -->
+          <g transform="translate(32,470)">
+            <rect width="1136" height="64" rx="14" fill="url(#bp-bedrock)" stroke="#00B365" stroke-width="1.6" stroke-opacity="0.55" />
+            <ellipse cx="568" cy="32" rx="360" ry="46" fill="url(#bp-core-glow)" />
+            <text x="24" y="27" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="700" fill="#E6F2F4">OSM &middot; knowledge graph</text>
+            <text x="24" y="47" font-family="JetBrains Mono, monospace" font-size="10" fill="#7E9BA6">12.4k models &middot; 184k fields &middot; v8 to latest &middot; 25 MCP tools &middot; every step grounded in source truth</text>
+            <g transform="translate(1010,18)">
+              <rect width="104" height="28" rx="7" fill="rgba(0,179,101,0.16)" stroke="#00B365" stroke-width="1" stroke-opacity="0.6" />
+              <circle cx="16" cy="14" r="3.5" fill="#00B365" class="animate-cv-pulse" style="transform-origin:16px 14px;" />
+              <text x="30" y="18" font-family="JetBrains Mono, monospace" font-size="10" font-weight="600" fill="#9CE6C2">grounded</text>
+            </g>
+          </g>
+        </svg>
+      </div>
+
+      <!-- MOBILE: vertical stack of the same 10 steps over the OSM bedrock (below md) -->
+      <div class="md:hidden cv-glass rounded-2xl p-5 shadow-glass" aria-hidden="true">
+        <ol class="relative flex flex-col gap-0 m-0 p-0 list-none">
+          {mobileSteps.map((step, i) => (
+            <li class="relative">
+              <div
+                class:list={[
+                  'flex items-center gap-3 rounded-xl px-4 py-3 border',
+                  step.kind === 'gate' && 'bg-viindoo-secondary/[0.12] border-viindoo-secondary/50',
+                  step.kind === 'terminal' && 'bg-viindoo-success/[0.12] border-viindoo-success/60',
+                  step.kind === 'task' && 'bg-viindoo-primary/[0.08] border-viindoo-primary/45',
+                ]}
+              >
+                <span
+                  class:list={[
+                    'font-mono text-[11px] w-5 shrink-0',
+                    step.kind === 'gate' ? 'text-viindoo-secondary-bright' : step.kind === 'terminal' ? 'text-viindoo-success' : 'text-viindoo-primary-bright',
+                  ]}
+                >{String(i + 1).padStart(2, '0')}</span>
+                <div class="min-w-0">
+                  <p class="font-mono text-[13px] font-semibold text-viindoo-on-dark leading-tight">
+                    {step.kind === 'gate' ? `◇ ${step.label}` : step.label}
+                  </p>
+                  <p
+                    class:list={[
+                      'font-mono text-[10px] leading-tight mt-0.5',
+                      step.kind === 'gate' ? 'text-viindoo-secondary-bright' : 'text-viindoo-on-dark-dim',
+                    ]}
+                  >{step.sub}</p>
+                </div>
+              </div>
+              {i < mobileSteps.length - 1 && (
+                <div class="flex justify-center py-1" aria-hidden="true">
+                  <span class="text-viindoo-primary-bright text-sm leading-none">&darr;</span>
+                </div>
+              )}
+            </li>
+          ))}
+        </ol>
+
+        <!-- OSM bedrock under the stack -->
+        <div class="mt-4 rounded-xl border border-viindoo-success/55 p-4" style="background:linear-gradient(110deg,rgba(0,179,101,0.14),rgba(0,187,206,0.10),rgba(0,179,101,0.14));">
+          <div class="flex items-center gap-2">
+            <span class="w-1.5 h-1.5 rounded-full bg-viindoo-success animate-cv-pulse" aria-hidden="true"></span>
+            <p class="font-mono text-[12px] font-bold text-viindoo-on-dark">OSM &middot; knowledge graph</p>
+          </div>
+          <p class="mt-1.5 font-mono text-[10px] text-viindoo-on-dark-dim leading-relaxed">
+            12.4k models &middot; 184k fields &middot; v8 to latest &middot; 25 MCP tools &mdash; every step grounded in source truth
+          </p>
+        </div>
+      </div>
+    </figure>
+
+    <!-- ── BLOCK B: dual CTA + inline links + stat strip (full-width, below BPMN) ── -->
+    <div class="flex flex-col w-full mt-12">
+      <!-- Dual CTA - A3 GitHub -> odoo-mcp-client -->
+      <div class="animate-cv-rise flex flex-wrap items-center gap-3" style="animation-delay:.28s;">
+        <a
+          href="#install"
+          class="group inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold px-6 py-3.5 rounded-lg shadow-glow transition-all duration-200 hover:bg-viindoo-primary-bright hover:-translate-y-0.5"
+        >
+          Install the agent team
+          <svg class="w-4 h-4 transition-transform duration-200 group-hover:translate-x-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+        </a>
+        <a
+          href={PLUGIN_REPO_URL}
+          target="_blank"
+          rel="noopener"
+          class="inline-flex items-center gap-2 border border-viindoo-primary/40 bg-white/[0.03] text-viindoo-on-dark font-semibold px-6 py-3.5 rounded-lg transition-all duration-200 hover:bg-white/[0.06]"
+        >
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5C5.7.5.5 5.7.5 12c0 5.1 3.3 9.4 7.9 10.9.6.1.8-.2.8-.6v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.7 1.3 3.4 1 .1-.7.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0C17.3 5 18.3 5.3 18.3 5.3c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6 4.6-1.5 7.9-5.8 7.9-10.9C23.5 5.7 18.3.5 12 .5z" /></svg>
+          View on GitHub
+        </a>
+        <!-- A2: plugin is free; framed as the plugin, NEVER a paid plan -->
+        <span class="font-mono text-[12px] text-viindoo-on-dark-dim">Free Claude Code plugin &middot; one command to install</span>
+      </div>
+
+      <!-- A5: contextual internal links in the hero -->
+      <p class="animate-cv-rise mt-4 text-[13px] text-viindoo-on-dark-dim" style="animation-delay:.32s;">
+        See the
+        <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">25 MCP tools and 7 resources</a>
+        it runs, or the
+        <a href="/benchmark" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">40-task accuracy benchmark</a>.
+      </p>
+
+      <!-- Stat strip (D1 counts, data-driven from props) -->
+      <div
+        class="animate-cv-rise mt-10 grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-5 pt-7 border-t border-white/10"
+        style="animation-delay:.36s;"
+      >
+        <div>
+          <p class="font-mono text-3xl font-semibold text-viindoo-primary-bright tracking-tight">{skillsCount}</p>
+          <p class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest mt-1">Skills</p>
+        </div>
+        <div>
+          <p class="font-mono text-3xl font-semibold text-viindoo-primary-bright tracking-tight">{agentsCount}</p>
+          <p class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest mt-1">Specialist agents</p>
+        </div>
+        <div>
+          <p class="font-mono text-3xl font-semibold text-viindoo-primary-bright tracking-tight">{commandsCount}</p>
+          <p class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest mt-1">Workflow commands</p>
+        </div>
+        <div>
+          <p class="font-mono text-3xl font-semibold text-viindoo-primary-bright tracking-tight">{personasCount}</p>
+          <p class="font-mono text-[11px] text-viindoo-on-dark-dim uppercase tracking-widest mt-1">Personas covered</p>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>

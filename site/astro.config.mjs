@@ -81,7 +81,7 @@ export default defineConfig({
       // content freshness. Using a fixed build-time constant avoids non-determinism
       // from new Date() at config-parse time.
       serialize(item) {
-        item.lastmod = '2026-05-31';
+        item.lastmod = '2026-06-13';
         return item;
       },
     }),

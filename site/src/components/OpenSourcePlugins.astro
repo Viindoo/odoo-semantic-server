@@ -2,25 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // OpenSourcePlugins.astro — homepage promo for the 2 free MIT Claude Code plugins.
 // Sits right after section 06 "WIRE IT UP". Data from plugins-data.ts (SSOT).
+// Card Skills replaced with teaser card linking to /odoo-ai-agents (A6).
 import {
   MCP_PLUGIN,
-  SKILLS_PLUGIN,
+  SKILLS_COUNT,
+  AGENTS_COUNT,
+  COMMANDS_COUNT,
   PLUGIN_REPO_URL,
 } from '../lib/plugins-data';
 import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
-
-const cards = [
-  {
-    plugin: MCP_PLUGIN,
-    accent: 'primary' as const,
-    sub: `MCP server config · ${TOOL_COUNT} tools · ${RESOURCE_COUNT} resources`,
-  },
-  {
-    plugin: SKILLS_PLUGIN,
-    accent: 'secondary' as const,
-    sub: SKILLS_PLUGIN.tagline,
-  },
-];
 ---
 
 <section id="open-source-plugins" class="bg-viindoo-bg-0 pb-24">
@@ -39,7 +29,8 @@ const cards = [
     </div>
     <p class="text-viindoo-on-dark-dim mt-2 text-sm max-w-2xl">
       Start with <strong class="text-viindoo-primary-bright">odoo-semantic-mcp</strong> (the core connector).
-      Add <strong class="text-viindoo-secondary">odoo-semantic-skills</strong> when you want skills, agents &amp; personas on top.
+      Want skills, agents &amp; personas on top? Add the
+      <a href="/odoo-ai-agents" class="text-viindoo-secondary hover:text-viindoo-on-dark transition-colors">Odoo AI Agent Team plugin</a>.
     </p>
     <p class="text-viindoo-on-dark-muted mt-4 text-lg max-w-2xl leading-relaxed">
       Open-source plugins that sit on top of the MCP server &mdash; install in one command, read the
@@ -47,30 +38,47 @@ const cards = [
     </p>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mt-12">
-      {cards.map(({ plugin, accent, sub }) => (
-        <article
-          class:list={[
-            'group relative rounded-2xl border bg-viindoo-bg-1 p-8 transition hover:-translate-y-1 hover:bg-viindoo-bg-2',
-            accent === 'primary' ? 'border-viindoo-primary/20 hover:border-viindoo-primary' : 'border-viindoo-secondary/20 hover:border-viindoo-secondary',
-          ]}
-        >
+      <!-- Card 1: MCP plugin (primary) -->
+      <article class="group relative rounded-2xl border bg-viindoo-bg-1 p-8 transition hover:-translate-y-1 hover:bg-viindoo-bg-2 border-viindoo-primary/20 hover:border-viindoo-primary flex flex-col justify-between">
+        <div>
           <div class="flex items-center gap-3 mb-4">
-            <code class="font-mono text-sm font-semibold text-viindoo-on-dark">{plugin.slug}</code>
-            <span class="font-mono text-[10px] text-viindoo-on-dark-dim">v{plugin.version}</span>
+            <code class="font-mono text-sm font-semibold text-viindoo-on-dark">{MCP_PLUGIN.slug}</code>
+            <span class="font-mono text-[10px] text-viindoo-on-dark-dim">v{MCP_PLUGIN.version}</span>
             <span class="inline-flex items-center rounded-full border border-white/15 px-2 py-0.5 text-[10px] font-medium text-viindoo-on-dark-dim">MIT</span>
           </div>
-          <p class="font-mono text-xs text-viindoo-on-dark-muted mb-4">{sub}</p>
+          <p class="font-mono text-xs text-viindoo-on-dark-muted mb-4">MCP server config · {TOOL_COUNT} tools · {RESOURCE_COUNT} resources</p>
           <ul class="space-y-2.5">
-            {plugin.highlights.map((h) => (
+            {MCP_PLUGIN.highlights.map((h) => (
               <li class="flex gap-2.5 text-sm text-viindoo-on-dark-muted leading-relaxed">
-                <span class:list={[accent === 'primary' ? 'text-viindoo-primary-bright' : 'text-viindoo-secondary', 'mt-0.5 shrink-0']} aria-hidden="true">&#10003;</span>
+                <span class="text-viindoo-primary-bright mt-0.5 shrink-0" aria-hidden="true">&#10003;</span>
                 <span>{h}</span>
               </li>
             ))}
           </ul>
-          <span class:list={['absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-300 rounded-t-2xl', accent === 'primary' ? 'bg-viindoo-primary' : 'bg-viindoo-secondary']}></span>
-        </article>
-      ))}
+        </div>
+        <span class="absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-300 rounded-t-2xl bg-viindoo-primary"></span>
+      </article>
+
+      <!-- Card 2: AI Agent Team teaser (secondary) — full detail at /odoo-ai-agents -->
+      <article class="group relative rounded-2xl border bg-viindoo-bg-1 p-8 transition hover:-translate-y-1 hover:bg-viindoo-bg-2 border-viindoo-secondary/20 hover:border-viindoo-secondary flex flex-col justify-between">
+        <div>
+          <div class="flex items-center gap-3 mb-4">
+            <code class="font-mono text-sm font-semibold text-viindoo-on-dark">odoo-ai-agents</code>
+            <span class="inline-flex items-center rounded-full border border-white/15 px-2 py-0.5 text-[10px] font-medium text-viindoo-on-dark-dim">MIT</span>
+          </div>
+          <p class="text-viindoo-on-dark-muted text-sm leading-relaxed mb-6">
+            {SKILLS_COUNT} skills, {AGENTS_COUNT} specialist agents, {COMMANDS_COUNT} commands &mdash; the complete AI workforce for Odoo engineering,
+            consulting, sales, and QA. Fires from plain-English intent; grounded in the indexed source graph.
+          </p>
+        </div>
+        <a
+          href="/odoo-ai-agents"
+          class="inline-flex items-center gap-2 text-viindoo-secondary font-semibold text-sm hover:text-viindoo-on-dark transition-colors"
+        >
+          Meet the full team &rarr;
+        </a>
+        <span class="absolute top-0 left-0 right-0 h-[3px] origin-left scale-x-0 group-hover:scale-x-100 transition-transform duration-300 rounded-t-2xl bg-viindoo-secondary"></span>
+      </article>
     </div>
 
     <div class="mt-8 flex flex-wrap items-center gap-3">
@@ -78,14 +86,20 @@ const cards = [
         href="/install/"
         class="inline-flex items-center gap-2 bg-viindoo-primary text-viindoo-bg-0 font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-viindoo-primary-bright hover:-translate-y-px transition-all duration-200"
       >
-        Install the plugins
+        Install the MCP plugin
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </a>
+      <a
+        href="/odoo-ai-agents"
+        class="inline-flex items-center gap-2 border border-viindoo-secondary/40 text-viindoo-secondary font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-viindoo-secondary/10 transition-all duration-200"
+      >
+        Explore AI Agent Team &rarr;
       </a>
       <a
         href={PLUGIN_REPO_URL}
         target="_blank"
         rel="noopener"
-        class="inline-flex items-center gap-2 border border-white/20 text-viindoo-on-dark font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-white/5 transition-all duration-200"
+        class="inline-flex items-center gap-2 border border-white/20 text-viindoo-on-dark-dim font-semibold text-sm px-5 py-2.5 rounded-lg hover:bg-white/5 transition-all duration-200"
       >
         View on GitHub
       </a>

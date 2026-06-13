@@ -36,17 +36,19 @@ The demo endpoint gives you 20 read-only queries with a shared public key. No si
 
 ### Claude Code (plugin path)
 
-Two free plugins (MIT): `odoo-semantic-mcp` (MCP config) and `odoo-semantic-skills` (31 skills, 3 agents, 9 commands). The skills plugin pulls in the MCP plugin automatically:
+Two free plugins (MIT): `odoo-semantic-mcp` (MCP config) and `odoo-ai-agents` (41 skills, 7 agents, 9 commands). The skills plugin pulls in the MCP plugin automatically:
 
 ```bash
 claude plugin marketplace add Viindoo/claude-plugins --scope user
-claude plugin install odoo-semantic-skills@viindoo-plugins --scope user
+claude plugin install odoo-ai-agents@viindoo-plugins --scope user
 ```
 
 Then inside Claude Code: `/odoo-semantic-mcp:connect` to enter your URL and API key.
 
 > MCP-only (no persona skills)? Install just `odoo-semantic-mcp@viindoo-plugins` instead.
-> Manual MCP setup or self-hosted? See [manual MCP setup](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md#manual-mcp-setup-advanced--self-hosted).
+> Manual MCP setup or self-hosted? See [manual MCP setup](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/setup.md#manual-mcp-setup-advanced--self-hosted).
+
+> **Migrating from `odoo-semantic-skills`?** The plugin has been renamed to `odoo-ai-agents`. Uninstall the old plugin (`claude plugin uninstall odoo-semantic-skills@viindoo-plugins`) and install `odoo-ai-agents@viindoo-plugins` using the command above.
 
 ### Verify after install
 
@@ -58,7 +60,7 @@ After connecting, verify the MCP server loaded correctly:
 
 The agent should call `model_inspect` or `entity_lookup` and return a real chain. If it answers from memory without calling an MCP tool, the connection did not register - restart Claude Code after running `/odoo-semantic-mcp:connect`.
 
-For other AI tools (Cursor, Codex CLI, Gemini CLI, VS Code, Windsurf, JetBrains AI Assistant, Continue.dev): see the [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md).
+For other AI tools (Cursor, Codex CLI, Gemini CLI, VS Code, Windsurf, JetBrains AI Assistant, Continue.dev): see the [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/setup.md).
 
 ---
 
@@ -196,7 +198,7 @@ OSM is not a replacement for IDE language servers or local code analysis tools. 
 
 ## MCP Tools (25)
 
-OSM exposes 25 tools grouped by function. All tools are read-only against the knowledge index. Full routing matrix with trigger conditions and persona mapping: [mcp-tool-routing.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md).
+OSM exposes 25 tools grouped by function. All tools are read-only against the knowledge index. Full routing matrix with trigger conditions and persona mapping: [mcp-tool-routing.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/reference/mcp-tool-routing.md).
 
 ### Core tools (10)
 
@@ -295,11 +297,11 @@ Choose the guide that matches your role to see which OSM tools are most relevant
 
 | Persona | Primary tools | Guide |
 |---------|--------------|-------|
-| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [CEO Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/ceo.md) |
-| Developer | `model_inspect`, `find_override_point`, `suggest_pattern`, `lint_check` | [Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/dev.md) |
-| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [Consultant Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/consultant.md) |
-| Marketer | `api_version_diff`, `find_examples` | [Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/marketer.md) |
-| Sales | `check_module_exists`, `find_examples`, `model_inspect` | [Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/personas/sales.md) |
+| CEO / Manager | `impact_analysis`, `check_module_exists`, `find_deprecated_usage` | [CEO Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/personas/ceo.md) |
+| Developer | `model_inspect`, `find_override_point`, `suggest_pattern`, `lint_check` | [Dev Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/personas/dev.md) |
+| Consultant | `check_module_exists`, `find_examples`, `lookup_core_api` | [Consultant Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/personas/consultant.md) |
+| Marketer | `api_version_diff`, `find_examples` | [Marketer Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/personas/marketer.md) |
+| Sales | `check_module_exists`, `find_examples`, `model_inspect` | [Sales Guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/personas/sales.md) |
 
 ---
 
@@ -309,14 +311,14 @@ The following reference documents cover installation, tool parameters, and advan
 
 | File | Content |
 |------|---------|
-| [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/setup.md) | End-user client setup: Claude Code, Codex, Gemini, VS Code, and more |
+| [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/setup.md) | End-user client setup: Claude Code, Codex, Gemini, VS Code, and more |
 | [`docs/deploy.md`](docs/deploy.md) | Admin deploy guide: DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
 | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff: 10-item verify + MCP tool sign-off table + resource sign-off |
 | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook: backup frequency, restore order, step-by-step commands, RTO estimate |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Developer setup, running tests, Local E2E, workflow |
 | [`CHANGELOG.md`](CHANGELOG.md) | Full release notes |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
-| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-semantic-skills/docs/reference/mcp-tool-routing.md) | Full routing matrix: 25 tools, trigger conditions, persona mapping |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/reference/mcp-tool-routing.md) | Full routing matrix: 25 tools, trigger conditions, persona mapping |
 
 ---
 
@@ -332,7 +334,7 @@ No. OSM indexes source code only. You do not need an Odoo database, an Odoo serv
 
 **Which AI tools does OSM work with?**
 
-Any tool that supports MCP natively: Claude Code, Cursor, Codex CLI, Gemini CLI, VS Code (v1.99+), Zed, Windsurf, JetBrains AI Assistant, and Continue.dev. ChatGPT requires a separate MCP-compatible bridge layer and does not connect directly. Configuration snippets for each tool are in `odoo-mcp-client/plugins/odoo-semantic-skills/snippets/`.
+Any tool that supports MCP natively: Claude Code, Cursor, Codex CLI, Gemini CLI, VS Code (v1.99+), Zed, Windsurf, JetBrains AI Assistant, and Continue.dev. ChatGPT requires a separate MCP-compatible bridge layer and does not connect directly. Configuration snippets for each tool are in `odoo-mcp-client/plugins/odoo-ai-agents/snippets/`.
 
 **How accurate is OSM compared to ungrounded AI?**
 
