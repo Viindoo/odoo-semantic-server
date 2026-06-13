@@ -14,6 +14,8 @@ from unittest import mock
 
 import pytest
 
+from tests.conftest import get_test_dsn
+
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -262,8 +264,10 @@ class TestLoginMfaRequiredForEnabledUser:
         pg_conn.commit()
 
         # Login should return mfa_required
-        os.environ["PG_DSN"] = os.environ.get("PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        _dsn = get_test_dsn()
+        if _dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
+        os.environ["PG_DSN"] = _dsn
 
         app = create_app()
 
@@ -346,8 +350,10 @@ class TestAdminForceMfaAfterGracePeriod:
 
         pg_conn.commit()
 
-        os.environ["PG_DSN"] = os.environ.get("PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        _dsn = get_test_dsn()
+        if _dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
+        os.environ["PG_DSN"] = _dsn
         from src.db.pg import init_pool
         try:
             init_pool(os.environ["PG_DSN"], min_conn=1, max_conn=3)

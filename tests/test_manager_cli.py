@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from src.db.migrate import run_migrations
+from tests.conftest import get_test_dsn
 
 pytestmark = pytest.mark.postgres
 
@@ -28,11 +29,11 @@ def _run(args: list[str], env_extra: dict | None = None) -> subprocess.Completed
 
 
 def test_add_profile_prints_id(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
         ["add-profile", "viindoo_17", "--version", "17.0"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
@@ -41,7 +42,7 @@ def test_add_profile_prints_id(migrated_pg, tmp_path):
     assert "viindoo_17" in res.stdout
 
     import psycopg2
-    conn = psycopg2.connect("postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+    conn = psycopg2.connect(test_dsn)
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("SELECT name FROM profiles")
@@ -51,11 +52,11 @@ def test_add_profile_prints_id(migrated_pg, tmp_path):
 
 
 def test_add_repo_attaches_to_profile(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
 
     repo_dir = tmp_path / "fake_repo"
@@ -69,7 +70,7 @@ def test_add_repo_attaches_to_profile(migrated_pg, tmp_path):
     assert res.returncode == 0, res.stderr
 
     import psycopg2
-    conn = psycopg2.connect("postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+    conn = psycopg2.connect(test_dsn)
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute("SELECT url FROM repos")
@@ -79,11 +80,11 @@ def test_add_repo_attaches_to_profile(migrated_pg, tmp_path):
 
 
 def test_list_shows_profile_and_repo(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
     repo_dir = tmp_path / "y"
     repo_dir.mkdir()
@@ -100,21 +101,21 @@ def test_list_shows_profile_and_repo(migrated_pg, tmp_path):
 
 
 def test_unknown_subcommand_exits_nonzero(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(["nope-cmd"], env_extra={"ODOO_SEMANTIC_CONF": str(cfg)})
     assert res.returncode != 0
 
 
 def test_add_repo_unknown_profile_exits_2(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
         ["add-repo", "--profile", "does_not_exist",
          "--url", "x", "--branch", "17.0"],
@@ -127,11 +128,11 @@ def test_add_repo_unknown_profile_exits_2(migrated_pg, tmp_path):
 # --- New validation tests (I1, I2, I3) --------------------------------------
 
 def test_add_profile_rejects_invalid_name(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
         ["add-profile", "bad name with space!", "--version", "17.0"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
@@ -141,11 +142,11 @@ def test_add_profile_rejects_invalid_name(migrated_pg, tmp_path):
 
 
 def test_add_profile_rejects_invalid_version(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
         ["add-profile", "viindoo17", "--version", "latest"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
@@ -155,11 +156,11 @@ def test_add_profile_rejects_invalid_version(migrated_pg, tmp_path):
 
 
 def test_add_profile_duplicate_friendly_error(migrated_pg, tmp_path):
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
     _run(["add-profile", "dupe17", "--version", "17.0"], env_extra=env)
     res = _run(["add-profile", "dupe17", "--version", "17.0"], env_extra=env)
@@ -171,11 +172,11 @@ def test_add_repo_url_only_derives_path_and_rejects_local_path(migrated_pg, tmp_
     """WI-G/ADR-0034: add-repo takes only a git URL; local_path is server-derived
     and need NOT pre-exist (the clone step creates it). The --local-path flag is
     removed, so passing it is rejected by argparse."""
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
     _run(["add-profile", "okprofile17", "--version", "17.0"], env_extra=env)
     # URL-only succeeds even though no local dir exists yet (clone creates it).

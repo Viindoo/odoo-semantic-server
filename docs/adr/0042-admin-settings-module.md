@@ -153,6 +153,84 @@ deploy and hotfixed in prod; codified in `fix/admin-settings-grants-dotenv`.
 
 ---
 
+### Amendment 2026-06-13 (RCA-2 fix — env-backed seed for `signup.enabled`)
+
+#### Gap
+
+`bootstrap_settings_safe()` runs on **every** MCP and web-UI process start (not
+just at initial migration). It calls `register_settings_idempotent()` which
+inserts every `SETTINGS_CATALOGUE` entry into `app_settings` with
+`ON CONFLICT (key) WHERE scope='system' AND tenant_id IS NULL DO NOTHING`.
+
+For `signup.enabled` the catalogue default is `False` (invite-only, per
+ADR-0034 Wave 0 security hardening). After first startup that row exists with
+`{"v": false}`; `signup_enabled()` in `config.py` calls `get_overlay_only` which
+returns the seeded row immediately — the `SIGNUP_ENABLED` env var is **never
+consulted** because the fallback path only triggers when no row exists. The
+`ON CONFLICT DO NOTHING` guarantee means "no row exists" is unreachable for any
+key already in the catalogue after the first boot.
+
+Result: deployers who set `SIGNUP_ENABLED=1` in the env found signup closed
+after migration; the admin had to manually enable it via the Admin Settings UI.
+This directly contradicts the documented 3-tier precedence (env > INI > default)
+and the ADR-0042 statement that `signup.enabled` is "ops-control" tunable.
+
+#### Decision
+
+In `register_settings_idempotent()` (`src/settings_registry.py`), the seed
+value for `signup.enabled` is derived from the operator's deploy-time
+configuration at call time instead of always using the catalogue default (`False`).
+
+The helper `_env_seed_signup_enabled()` delegates to
+`src.config.from_env_or_ini("SIGNUP_ENABLED", "webui", "signup_enabled")` so
+that **both** the environment variable **and** the INI file (`[webui]
+signup_enabled` in `odoo-semantic.conf`) are honoured — env wins, then INI,
+then False.  String coercion is handled by `src.config.coerce_bool` (the shared
+helper): `"1"` / `"true"` / `"yes"` (case-insensitive) → `True`; everything
+else (including absent/empty) → `False`.
+
+Importing `src.web_ui.config` is intentionally avoided to prevent a circular
+import (settings_registry ← src.settings ← src.web_ui.config.signup_enabled
+calls get_overlay_only which imports src.settings which imports
+settings_registry).  `src.config` is safe: it only imports stdlib + dotenv.
+
+Key properties preserved:
+
+- **`ON CONFLICT DO NOTHING` is unchanged** — existing deployments (row already
+  present) are not retroactively affected. Admin PATCH at runtime still writes
+  the same row and the DB overlay continues to win (ADR-0042 3-tier resolution
+  unchanged).
+- **`default_value` stays `{"v": false}`** — the Admin Settings UI still shows
+  the catalogue default as `false`; "reset to default" restores invite-only.
+- **Fresh installs honour the operator env** — a new deployment with
+  `SIGNUP_ENABLED=1` seeds `{"v": true}` and signup is open immediately.
+
+Extension point: `SettingDef` carries no `env_seed` field yet (one key, no
+abstraction justified per ETHOS #3). If a second env-backed gate is needed,
+add `env_seed: Callable[[], Any] | None = None` to `SettingDef` and read it
+in the loop.
+
+#### DEPLOY-NOTE
+
+`signup.enabled` is captured **once at first bootstrap** (the first process
+start against a fresh DB), reading from the env var (`SIGNUP_ENABLED`) or the
+INI file (`[webui] signup_enabled` in `odoo-semantic.conf`) — whichever is
+set.  After that:
+
+- The row persists via `ON CONFLICT DO NOTHING`; restarting with a changed
+  `SIGNUP_ENABLED` env (or changed INI) has **no effect** on an existing
+  deployment because the row already exists.
+- Runtime admin overlay always wins: the DB row (once seeded) is the
+  source of truth.  Env and INI are only consulted on first bootstrap.
+- To change the gate at runtime: use the Admin Settings UI
+  (`/admin/settings/auth/signup.enabled`) or update the `app_settings` row
+  directly (`UPDATE app_settings SET value_json = '{"v":true}' WHERE key =
+  'signup.enabled' AND scope = 'system' AND tenant_id IS NULL`).
+- A running deployment (row already seeded) is **never automatically flipped**
+  by env or INI changes — existing installs are unaffected.
+
+---
+
 ### Amendment 2026-06-01 (PR #225 — feat/web-integration)
 
 - **29th catalogue entry:** `analytics.ga_measurement_id` (`analytics` category, `str`, default `""`)

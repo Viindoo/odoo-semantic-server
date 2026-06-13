@@ -23,6 +23,7 @@ from src.cli import (
     _cmd_rotate_fernet,
     _key_fingerprint,
 )
+from tests.conftest import get_test_dsn
 
 # ---------------------------------------------------------------------------
 # Helper: build args via argparse so defaults are applied correctly
@@ -513,13 +514,11 @@ def test_rotation_covers_ssh_and_totp(clean_pg):
     # Run rotation via CLI
     args = _make_rotate_args()
 
-    from tests.conftest import PG_TEST_DSN
-
     with patch.dict(os.environ, {
         "OLD_FERNET_KEY": old_key.decode(),
         "NEW_FERNET_KEY": new_key.decode(),
     }):
-        with patch("src.cli._get_pg_dsn", return_value=PG_TEST_DSN):
+        with patch("src.cli._get_pg_dsn", return_value=get_test_dsn()):
             result = _cmd_rotate_fernet(args)
 
     assert result == 0
@@ -608,13 +607,11 @@ def test_rotation_rollback_leaves_db_unchanged(clean_pg):
 
     args = _make_rotate_args()
 
-    from tests.conftest import PG_TEST_DSN
-
     with patch.dict(os.environ, {
         "OLD_FERNET_KEY": old_key.decode(),
         "NEW_FERNET_KEY": new_key.decode(),
     }):
-        with patch("src.cli._get_pg_dsn", return_value=PG_TEST_DSN):
+        with patch("src.cli._get_pg_dsn", return_value=get_test_dsn()):
             with pytest.raises(SystemExit) as exc_info:
                 _cmd_rotate_fernet(args)
 

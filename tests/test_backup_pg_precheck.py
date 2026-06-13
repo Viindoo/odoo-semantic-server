@@ -24,8 +24,9 @@ def _stub_pg_dsn(monkeypatch):
     """Make _get_pg_dsn() return a non-empty value so we get past the early check."""
     from src import cli as cli_mod
 
+    # Use a safe test-marker DSN (no real connect; psycopg2.connect is mocked in callers).
     monkeypatch.setattr(
-        cli_mod, "_get_pg_dsn", lambda: "postgresql://odoo_semantic:pw@127.0.0.1:5432/odoo_semantic",
+        cli_mod, "_get_pg_dsn", lambda: "postgresql://osm_test_user:pw@127.0.0.1:5432/osm_test_backup",
     )
 
 
