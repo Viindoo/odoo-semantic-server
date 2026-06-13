@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_migration_m13_013.py
-"""Migration tests for m13_013_consolidate_free_plans.sql.
+"""Migration tests for m13_013_consolidate_free_plans.sql — behaviour cases only.
 
-Business intent (5 cases):
-  T1  After migration, no plan with slug='free-grandfathered' exists.
+One-shot catalog assertions (T4a: api_keys.plan_id column_default is an integer
+literal via information_schema) were removed — covered by test_squashed_baseline.py.
+
+Kept behaviour cases:
+  T1  After migration, no plan with slug='free-grandfathered' exists (data check).
   T2  api_keys that were on free-grandfathered now point at the 'unlimited' plan.
-  T3  The 'free' plan still exists and is_public=TRUE (DB DEFAULT is unaffected).
-  T4  api_keys.plan_id column DEFAULT still resolves to the 'free' plan id.
+  T3  The 'free' plan still exists and is_public=TRUE (data preservation check).
+  T4  api_keys.plan_id DEFAULT equals the 'free' plan id; INSERT defaults correctly.
   T5  Migration is idempotent — running run_migrations twice does not raise or
       reintroduce the deleted plan.
 
@@ -242,16 +245,6 @@ class TestPlanIdDefaultUnchanged:
     m13_013 must NOT alter the column DEFAULT — new self-service signups
     continue to receive the 'free' plan (100 calls/month) automatically.
     """
-
-    def test_api_keys_plan_id_default_is_integer(self, migrated_pg):
-        col_default = _col_default(migrated_pg, "api_keys", "plan_id")
-        assert col_default is not None, (
-            "api_keys.plan_id must have a DB-level DEFAULT after migrations"
-        )
-        cleaned = col_default.split("::")[0].strip()
-        assert cleaned.isdigit(), (
-            f"api_keys.plan_id DEFAULT must be an integer literal, got {col_default!r}"
-        )
 
     def test_api_keys_plan_id_default_equals_free_plan_id(self, migrated_pg):
         """The DEFAULT literal must match the id of the 'free' plan."""

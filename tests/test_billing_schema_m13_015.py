@@ -1,16 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Integration tests for schema additions gộp vào m13_014_billing_p1.sql
-(previously in separate migrations m13_015 and m13_016 — now merged into m13_014).
+(previously in separate migrations m13_015 and m13_016 — now merged into m13_014)
+— behaviour cases only.
 
-Business intent:
-  S1  m13_014 (merged) is idempotent: applying it twice produces no error and the
-      expected columns/defaults exist (cancel_at_period_end, prices, terms_accepted_at).
-  S2  cancel_at_period_end DEFAULT FALSE is present on subscriptions.
-  S3  prices JSONB DEFAULT '{}' is present on plans.
+One-shot catalog assertions (S1-S3 column existence/defaults via information_schema,
+S6 terms_accepted_at existence/nullability) were removed — covered by
+test_squashed_baseline.py golden snapshot.
+
+Kept behaviour cases:
   S4  Prices seed applied: pro gets {"USD": 1900}, team gets {"USD": 3900},
-      free/unlimited get {"USD": 0}. VND display deferred — no VND key in seed.
-  S5  Seed is NOT clobbered on re-run (guard condition check).
-  S6  terms_accepted_at TIMESTAMPTZ column exists on webui_users, nullable, idempotent.
+      free/unlimited get {"USD": 0}.
+  S6b terms_accepted_at can store a timestamp (write+read roundtrip).
+
+The S5 / S6b per-file direct-re-run idempotency cases were removed after the
+WI-2A squash folded m13_014_billing_p1.sql into 0001_initial.sql; baseline
+idempotency is covered by test_migrate_is_idempotent (run_migrations twice) and
+test_prod_sim_no_reapply (test_squashed_baseline.py).
   S7  schedule_cancellation sets cancel_at_period_end=TRUE + cancelled_at,
       status stays 'active'.
   S8  list_by_user returns plan_slug + plan_name + cancel_at_period_end.
@@ -66,27 +71,6 @@ def migrated_pg(clean_pg):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _col_exists(conn, table: str, column: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        return cur.fetchone() is not None
-
-
-def _col_default(conn, table: str, column: str) -> str | None:
-    """Return column_default string from information_schema (may be None)."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT column_default FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        row = cur.fetchone()
-    return row[0] if row else None
-
 
 def _free_plan_id(conn) -> int:
     with conn.cursor() as cur:
@@ -101,38 +85,6 @@ def _plan_prices(conn, slug: str) -> dict | None:
         cur.execute("SELECT prices FROM plans WHERE slug = %s", (slug,))
         row = cur.fetchone()
     return row[0] if row else None
-
-
-# ---------------------------------------------------------------------------
-# S1/S2/S3: column existence + defaults after first apply (via run_migrations)
-# ---------------------------------------------------------------------------
-
-class TestM13015ColumnExistence:
-    """S1: Expected columns exist with correct defaults after migrations."""
-
-    def test_cancel_at_period_end_exists_on_subscriptions(self, migrated_pg):
-        assert _col_exists(migrated_pg, "subscriptions", "cancel_at_period_end"), (
-            "cancel_at_period_end column must exist on subscriptions after m13_015"
-        )
-
-    def test_cancel_at_period_end_default_is_false(self, migrated_pg):
-        default = _col_default(migrated_pg, "subscriptions", "cancel_at_period_end")
-        assert default is not None, "cancel_at_period_end must have a column default"
-        assert "false" in default.lower(), (
-            f"cancel_at_period_end DEFAULT must be false, got {default!r}"
-        )
-
-    def test_prices_exists_on_plans(self, migrated_pg):
-        assert _col_exists(migrated_pg, "plans", "prices"), (
-            "prices column must exist on plans after m13_015"
-        )
-
-    def test_prices_default_is_empty_jsonb(self, migrated_pg):
-        default = _col_default(migrated_pg, "plans", "prices")
-        assert default is not None, "prices must have a column default"
-        assert "{}" in default, (
-            f"prices DEFAULT must be '{{}}'::jsonb, got {default!r}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -180,90 +132,19 @@ class TestM13015PricesSeed:
 
 
 # ---------------------------------------------------------------------------
-# S5: idempotency — re-applying m13_015 SQL does not clobber seeded prices
-# ---------------------------------------------------------------------------
-
-class TestM13015Idempotency:
-    """S5: Re-running m13_014 (merged) SQL is a no-op (seeds guarded by WHERE prices='{}').
-
-    These tests re-apply the full merged m13_014_billing_p1.sql to confirm that
-    the cancel_at_period_end / prices / terms_accepted_at / waitlist-check-drop sections
-    (originally from m13_015/m13_016/m13_017) remain idempotent after the merge.
-    """
-
-    def test_rerun_does_not_clobber_prices(self, migrated_pg):
-        """Apply the merged m13_014 SQL a second time; pro prices must remain seeded."""
-        import pathlib
-        sql = (
-            pathlib.Path(__file__).parent.parent
-            / "migrations"
-            / "m13_014_billing_p1.sql"
-        ).read_text()
-        with migrated_pg.cursor() as cur:
-            cur.execute(sql)
-        migrated_pg.commit()
-
-        prices = _plan_prices(migrated_pg, "pro")
-        assert prices is not None
-        assert prices.get("USD") == 1900, (
-            "Re-running m13_014 must NOT reset pro prices (guard WHERE prices='{}' failed)"
-        )
-
-    def test_rerun_cancel_at_period_end_no_error(self, migrated_pg):
-        """ADD COLUMN IF NOT EXISTS — second run of merged m13_014 must not raise."""
-        import pathlib
-        sql = (
-            pathlib.Path(__file__).parent.parent
-            / "migrations"
-            / "m13_014_billing_p1.sql"
-        ).read_text()
-        with migrated_pg.cursor() as cur:
-            cur.execute(sql)
-        migrated_pg.commit()
-        # If we got here with no exception, idempotency holds.
-        assert _col_exists(migrated_pg, "subscriptions", "cancel_at_period_end")
-
-
-# ---------------------------------------------------------------------------
-# S6: m13_016 — terms_accepted_at column on webui_users
+# S6b: m13_016 — terms_accepted_at write-read roundtrip
 # ---------------------------------------------------------------------------
 
 class TestM13016UserConsent:
-    """S6: terms_accepted_at TIMESTAMPTZ column on webui_users, nullable, idempotent.
+    """S6b: terms_accepted_at column can store a timestamp.
 
     Originally verified by m13_016_user_consent.sql; now gộp vào m13_014_billing_p1.sql
-    (section 7). Tests are unchanged — they verify the same business contract.
+    (section 7) and squashed into 0001_initial.sql. Catalog checks (column
+    existence/nullability) removed — baseline covers. The per-file direct-re-run
+    idempotency case was removed post-squash (m13_014_billing_p1.sql no longer
+    exists; idempotency covered by test_migrate_is_idempotent +
+    test_prod_sim_no_reapply in test_squashed_baseline.py).
     """
-
-    def test_terms_accepted_at_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "webui_users", "terms_accepted_at"), (
-            "terms_accepted_at column must exist on webui_users after m13_014 (merged)"
-        )
-
-    def test_terms_accepted_at_is_nullable(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT is_nullable FROM information_schema.columns"
-                " WHERE table_name = 'webui_users' AND column_name = 'terms_accepted_at'"
-            )
-            row = cur.fetchone()
-        assert row is not None
-        assert row[0] == "YES", (
-            "terms_accepted_at must be nullable (NULL = pre-consent legacy user)"
-        )
-
-    def test_m13016_is_idempotent(self, migrated_pg):
-        """ADD COLUMN IF NOT EXISTS — re-running merged m13_014 SQL must not raise."""
-        import pathlib
-        sql = (
-            pathlib.Path(__file__).parent.parent
-            / "migrations"
-            / "m13_014_billing_p1.sql"
-        ).read_text()
-        with migrated_pg.cursor() as cur:
-            cur.execute(sql)
-        migrated_pg.commit()
-        assert _col_exists(migrated_pg, "webui_users", "terms_accepted_at")
 
     def test_terms_accepted_at_can_store_timestamp(self, migrated_pg):
         """Write and read back a consent timestamp."""

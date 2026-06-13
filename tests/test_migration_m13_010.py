@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_migration_m13_010.py
-"""Migration tests for m13_010_app_settings.sql.
+"""Migration tests for m13_010_app_settings.sql — behaviour cases only.
 
-Verifies that after run_migrations():
-- app_settings table exists with correct columns, types, constraints.
-- app_settings_history table exists with correct columns.
-- Indexes are present.
-- CHECK constraint app_settings_tenant_scope_consistency fires correctly.
-- History rows survive parent-setting deletion (no cascade from app_settings).
-- Tenant cascade: DELETE tenant → cascade app_settings + app_settings_history rows.
+One-shot catalog assertions (table/column existence, nullability, index presence,
+constraint name presence) were removed — covered by test_squashed_baseline.py
+golden snapshot.
+
+Kept behaviour cases:
+  2b  Partial unique index enforcement (duplicate raises UniqueViolation).
+  3   CHECK constraint: scope <-> tenant_id consistency (bad combos raise).
+  6   Orphan safety: history survives parent-setting deletion (no cascade).
+  7   Tenant cascade: DELETE tenant -> cascade app_settings + history rows.
+  8   osm_reader GRANT: SELECT + INSERT on app_settings, SELECT-only on history.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
@@ -41,28 +44,6 @@ def _column_info(conn, table: str) -> dict:
         return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
 
 
-def _index_exists(conn, index_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM pg_indexes WHERE indexname = %s",
-            (index_name,),
-        )
-        return cur.fetchone() is not None
-
-
-def _check_constraint_exists(conn, constraint_name: str, table: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT 1 FROM pg_constraint
-             WHERE conname = %s
-               AND conrelid = %s::regclass
-            """,
-            (constraint_name, table),
-        )
-        return cur.fetchone() is not None
-
-
 def _seed_tenant(conn, name="test_tenant_m13009") -> int:
     """Insert a tenant row and return its id."""
     with conn.cursor() as cur:
@@ -93,21 +74,6 @@ def _has_seq_priv(conn, sequence: str, priv: str) -> bool:
         return cur.fetchone()[0]
 
 
-def _seed_user(conn, username="test_user_m13009") -> int:
-    """Insert a webui_users row and return its id."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO webui_users (username, password_hash, is_admin, is_active)
-            VALUES (%s, %s, FALSE, TRUE)
-            ON CONFLICT (username) DO UPDATE SET username=EXCLUDED.username
-            RETURNING id
-            """,
-            (username, "x"),
-        )
-        return cur.fetchone()[0]
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -116,15 +82,6 @@ _M13_009_TABLES = ["app_settings_history", "app_settings"]
 
 
 def _drop_m13_010_tables(conn):
-    """Drop app_settings* tables so run_migrations starts fully clean.
-
-    conftest.clean_pg drops all previously-known tables via DROP ... CASCADE
-    but does NOT yet include app_settings / app_settings_history (they are
-    added in this WI).  We drop them explicitly here so that repeated test
-    runs see a fresh schema with intact FK constraints each time.
-
-    app_settings_history first (no FK referencing it from other tables).
-    """
     for tbl in _M13_009_TABLES:
         with conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
@@ -132,11 +89,6 @@ def _drop_m13_010_tables(conn):
 
 @pytest.fixture
 def migrated_pg(clean_pg):
-    """Run all migrations on a clean Postgres DB and return the connection.
-
-    Extends clean_pg by also dropping the m13_010 tables before + after, so
-    FK constraints are re-created fresh by run_migrations each time.
-    """
     _drop_m13_010_tables(clean_pg)
     run_migrations(clean_pg)
     yield clean_pg
@@ -145,34 +97,19 @@ def migrated_pg(clean_pg):
 
 @pytest.fixture
 def migrated_pg_with_reader(clean_pg):
-    """Like migrated_pg but creates osm_reader BEFORE migrating, so the
-    migration's pg_roles-guarded GRANT block actually fires and is assertable.
-
-    If the test DB user lacks CREATE ROLE privilege the test is individually
-    skipped — not a hard error — because the failure reason is infra, not code.
-    """
     _drop_m13_010_tables(clean_pg)
-    # ensure_osm_reader_or_skip commits on success; skips on InsufficientPrivilege.
     ensure_osm_reader_or_skip(clean_pg)
     run_migrations(clean_pg)
 
-    # Ensure osm_reader can SET ROLE (non-superuser CREATEROLE still needs
-    # GRANT <role> TO CURRENT_USER to succeed at SET ROLE).
-    # Required by test_osm_reader_can_insert_app_settings_end_to_end which
-    # does SET ROLE osm_reader.  Non-fatal: privilege-check tests use
-    # has_table_privilege and don't need SET ROLE.
     try:
         with clean_pg.cursor() as cur:
             cur.execute("GRANT osm_reader TO CURRENT_USER")
         clean_pg.commit()
     except psycopg2.errors.InsufficientPrivilege:
         clean_pg.rollback()
-        # Not fatal for privilege-check tests (SELECT/INSERT assertion tests);
-        # only fatal for the SET ROLE end-to-end test.  Yield so those still run.
 
     yield clean_pg
 
-    # Teardown: reset any SET ROLE + drop osm_reader so it doesn't leak across runs.
     try:
         with clean_pg.cursor() as cur:
             cur.execute("RESET ROLE")
@@ -184,118 +121,6 @@ def migrated_pg_with_reader(clean_pg):
             pass
     _drop_m13_010_tables(clean_pg)
     drop_osm_reader(clean_pg)
-
-
-# ---------------------------------------------------------------------------
-# 1. app_settings table structure
-# ---------------------------------------------------------------------------
-
-
-class TestAppSettingsTableExists:
-    def test_table_exists(self, migrated_pg):
-        """app_settings table must exist after migration."""
-        cols = _column_info(migrated_pg, "app_settings")
-        assert cols, "app_settings table not found"
-
-    def test_required_columns_present(self, migrated_pg):
-        """All expected columns must be present."""
-        cols = _column_info(migrated_pg, "app_settings")
-        expected = {
-            "id",
-            "key",
-            "value_json",
-            "category",
-            "scope",
-            "tenant_id",
-            "data_type",
-            "validation_json",
-            "default_value",
-            "requires_restart",
-            "requires_reseed",
-            "is_secret",
-            "description",
-            "updated_by",
-            "updated_at",
-            "change_reason",
-        }
-        assert expected.issubset(cols.keys()), (
-            f"Missing columns: {expected - cols.keys()}"
-        )
-
-    def test_id_is_primary_key(self, migrated_pg):
-        """id column (BIGSERIAL surrogate PK) must be NOT NULL."""
-        cols = _column_info(migrated_pg, "app_settings")
-        assert "id" in cols, "id column missing"
-        assert cols["id"][1] == "NO", "id must be NOT NULL"
-
-    def test_key_is_not_nullable(self, migrated_pg):
-        """key column must be NOT NULL (unique constraints enforced via partial indexes)."""
-        cols = _column_info(migrated_pg, "app_settings")
-        assert cols["key"][1] == "NO", "key must be NOT NULL"
-
-    def test_value_json_is_not_nullable(self, migrated_pg):
-        """value_json must be NOT NULL."""
-        cols = _column_info(migrated_pg, "app_settings")
-        assert cols["value_json"][1] == "NO", "value_json must be NOT NULL"
-
-    def test_boolean_columns_not_nullable(self, migrated_pg):
-        """Boolean flags must be NOT NULL (have defaults)."""
-        cols = _column_info(migrated_pg, "app_settings")
-        for col in ("requires_restart", "requires_reseed", "is_secret"):
-            assert cols[col][1] == "NO", f"{col} must be NOT NULL"
-
-    def test_updated_at_not_nullable(self, migrated_pg):
-        """updated_at must be NOT NULL (has DEFAULT now())."""
-        cols = _column_info(migrated_pg, "app_settings")
-        assert cols["updated_at"][1] == "NO", "updated_at must be NOT NULL"
-
-    def test_tenant_id_nullable(self, migrated_pg):
-        """tenant_id must be nullable (system-scope rows have NULL)."""
-        cols = _column_info(migrated_pg, "app_settings")
-        assert cols["tenant_id"][1] == "YES", "tenant_id must be nullable"
-
-    def test_scope_consistency_constraint_exists(self, migrated_pg):
-        """CHECK constraint app_settings_tenant_scope_consistency must exist."""
-        assert _check_constraint_exists(
-            migrated_pg,
-            "app_settings_tenant_scope_consistency",
-            "app_settings",
-        ), "app_settings_tenant_scope_consistency CHECK constraint missing"
-
-
-# ---------------------------------------------------------------------------
-# 2. app_settings indexes
-# ---------------------------------------------------------------------------
-
-
-class TestAppSettingsIndexesExist:
-    def test_category_index_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_app_settings_category"), (
-            "idx_app_settings_category missing"
-        )
-
-    def test_scope_tenant_index_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_app_settings_scope_tenant"), (
-            "idx_app_settings_scope_tenant missing"
-        )
-
-    def test_partial_unique_system_key_exists(self, migrated_pg):
-        """Partial unique index uq_app_settings_system_key must exist."""
-        assert _index_exists(migrated_pg, "uq_app_settings_system_key"), (
-            "uq_app_settings_system_key partial unique index missing"
-        )
-
-    def test_partial_unique_tenant_key_exists(self, migrated_pg):
-        """Partial unique index uq_app_settings_tenant_key must exist."""
-        assert _index_exists(migrated_pg, "uq_app_settings_tenant_key"), (
-            "uq_app_settings_tenant_key partial unique index missing"
-        )
-
-    def test_partial_unique_per_key_exists(self, migrated_pg):
-        """Partial unique index uq_app_settings_per_key must exist."""
-        assert _index_exists(migrated_pg, "uq_app_settings_per_key"), (
-            "uq_app_settings_per_key partial unique index missing"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +152,6 @@ class TestPartialUniqueIndexEnforcement:
                     """
                 )
         migrated_pg.rollback()
-        # Cleanup
         with migrated_pg.cursor() as cur:
             cur.execute("DELETE FROM app_settings WHERE key = 'test.dup_system'")
         migrated_pg.commit()
@@ -351,7 +175,6 @@ class TestPartialUniqueIndexEnforcement:
         with migrated_pg.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM app_settings WHERE key = 'test.coexist'")
             assert cur.fetchone()[0] == 2
-        # Cleanup
         with migrated_pg.cursor() as cur:
             cur.execute("DELETE FROM app_settings WHERE key = 'test.coexist'")
         migrated_pg.commit()
@@ -414,7 +237,7 @@ class TestPartialUniqueIndexEnforcement:
 
 
 # ---------------------------------------------------------------------------
-# 3. CHECK constraint: scope ↔ tenant_id consistency
+# 3. CHECK constraint: scope <-> tenant_id consistency
 # ---------------------------------------------------------------------------
 
 
@@ -480,68 +303,6 @@ class TestCheckScopeConsistency:
 
 
 # ---------------------------------------------------------------------------
-# 4. app_settings_history table structure
-# ---------------------------------------------------------------------------
-
-
-class TestAppSettingsHistoryTableExists:
-    def test_table_exists(self, migrated_pg):
-        """app_settings_history must exist after migration."""
-        cols = _column_info(migrated_pg, "app_settings_history")
-        assert cols, "app_settings_history table not found"
-
-    def test_required_columns_present(self, migrated_pg):
-        """All expected columns must be present."""
-        cols = _column_info(migrated_pg, "app_settings_history")
-        expected = {
-            "id",
-            "setting_key",
-            "tenant_id",
-            "old_value",
-            "new_value",
-            "changed_by",
-            "changed_at",
-            "change_reason",
-            "audit_log_id",
-        }
-        assert expected.issubset(cols.keys()), (
-            f"Missing history columns: {expected - cols.keys()}"
-        )
-
-    def test_id_not_nullable(self, migrated_pg):
-        """id (BIGSERIAL PK) must be NOT NULL."""
-        cols = _column_info(migrated_pg, "app_settings_history")
-        assert cols["id"][1] == "NO", "history.id must be NOT NULL"
-
-    def test_setting_key_not_nullable(self, migrated_pg):
-        """setting_key must be NOT NULL."""
-        cols = _column_info(migrated_pg, "app_settings_history")
-        assert cols["setting_key"][1] == "NO", "history.setting_key must be NOT NULL"
-
-    def test_new_value_not_nullable(self, migrated_pg):
-        """new_value must be NOT NULL."""
-        cols = _column_info(migrated_pg, "app_settings_history")
-        assert cols["new_value"][1] == "NO", "history.new_value must be NOT NULL"
-
-    def test_old_value_nullable(self, migrated_pg):
-        """old_value must be nullable (first set has no prior value)."""
-        cols = _column_info(migrated_pg, "app_settings_history")
-        assert cols["old_value"][1] == "YES", "history.old_value must be nullable"
-
-
-# ---------------------------------------------------------------------------
-# 5. app_settings_history index
-# ---------------------------------------------------------------------------
-
-
-class TestAppSettingsHistoryIndexKeyTime:
-    def test_key_time_index_exists(self, migrated_pg):
-        assert _index_exists(
-            migrated_pg, "idx_app_settings_history_key_time"
-        ), "idx_app_settings_history_key_time missing"
-
-
-# ---------------------------------------------------------------------------
 # 6. Orphan safety: history survives parent-setting deletion
 # ---------------------------------------------------------------------------
 
@@ -553,7 +314,6 @@ class TestHistoryOrphanAfterSettingDelete:
         This is the key forensic invariant: orphaned history rows for a
         removed setting must remain queryable.
         """
-        # Insert a system-scope setting
         with migrated_pg.cursor() as cur:
             cur.execute(
                 """
@@ -567,7 +327,6 @@ class TestHistoryOrphanAfterSettingDelete:
                 """
             )
 
-        # Insert a history row referencing that setting key
         with migrated_pg.cursor() as cur:
             cur.execute(
                 """
@@ -580,13 +339,11 @@ class TestHistoryOrphanAfterSettingDelete:
             )
             history_id = cur.fetchone()[0]
 
-        # Delete the parent setting
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "DELETE FROM app_settings WHERE key = 'test.orphan_check'"
             )
 
-        # History row must still exist (orphan is intentional)
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "SELECT id FROM app_settings_history WHERE id = %s",
@@ -601,7 +358,7 @@ class TestHistoryOrphanAfterSettingDelete:
 
 
 # ---------------------------------------------------------------------------
-# 7. Tenant cascade: DELETE tenant → cascade both tables
+# 7. Tenant cascade: DELETE tenant -> cascade both tables
 # ---------------------------------------------------------------------------
 
 
@@ -610,7 +367,6 @@ class TestTenantCascadeDelete:
         """DELETE tenants row must cascade to app_settings + app_settings_history rows."""
         tenant_id = _seed_tenant(migrated_pg, "tenant_cascade_m13009")
 
-        # Insert a tenant-scoped setting
         with migrated_pg.cursor() as cur:
             cur.execute(
                 """
@@ -624,7 +380,6 @@ class TestTenantCascadeDelete:
                 (tenant_id,),
             )
 
-        # Insert a history row for that tenant
         with migrated_pg.cursor() as cur:
             cur.execute(
                 """
@@ -638,11 +393,9 @@ class TestTenantCascadeDelete:
             )
             history_id = cur.fetchone()[0]
 
-        # Delete the tenant
         with migrated_pg.cursor() as cur:
             cur.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
 
-        # Both rows must be gone
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "SELECT key FROM app_settings WHERE key = 'test.cascade_tenant'"
@@ -669,18 +422,7 @@ class TestTenantCascadeDelete:
 
 
 class TestOsmReaderGrants:
-    """The migration must self-grant the osm_reader read role.
-
-    MCP (:8002) connects as osm_reader under RLS and reads app_settings on
-    every authed request via get_setting().  Without the grant the read hits
-    permission-denied, which the code swallows → silent fallback to the
-    in-process code default (the operator-tunable layer goes dead with no
-    500 and no log).  `python -m src.db.migrate` does NOT run
-    ops/rls_create_osm_reader.sql, so the grant must live in the migration.
-
-    app_settings needs INSERT too because bootstrap_settings_safe() UPSERTs
-    catalogue rows ON CONFLICT DO NOTHING on MCP startup.
-    """
+    """The migration must self-grant the osm_reader read role."""
 
     def test_app_settings_select_insert(self, migrated_pg_with_reader):
         assert _has_priv(migrated_pg_with_reader, "app_settings", "SELECT"), (
@@ -696,16 +438,13 @@ class TestOsmReaderGrants:
         assert _has_priv(
             migrated_pg_with_reader, "app_settings_history", "SELECT"
         ), "osm_reader missing SELECT on app_settings_history"
-        # History is written only by FastAPI (DB owner); MCP must not mutate it.
         for priv in ("INSERT", "UPDATE", "DELETE"):
             assert not _has_priv(
                 migrated_pg_with_reader, "app_settings_history", priv
             ), f"osm_reader unexpectedly has {priv} on app_settings_history"
 
     def test_migration_safe_without_osm_reader(self, migrated_pg):
-        """With no osm_reader role the migration must still apply cleanly
-        (GRANT guarded by pg_roles EXISTS). migrated_pg does not create the
-        role, so reaching this assertion proves no failure."""
+        """With no osm_reader role the migration must still apply cleanly."""
         cols = _column_info(migrated_pg, "app_settings")
         assert cols, "app_settings table missing after migrate without osm_reader"
 
@@ -717,7 +456,6 @@ class TestOsmReaderGrants:
         evaluates nextval('app_settings_id_seq') for the `id` column default
         BEFORE the ON CONFLICT DO NOTHING check, so bootstrap_settings_safe()
         UPSERT fails with "permission denied for sequence" if this is missing.
-        This is exactly the prod deploy bug that was hotfixed live.
         """
         assert _has_seq_priv(
             migrated_pg_with_reader, "app_settings_id_seq", "USAGE"
@@ -730,19 +468,11 @@ class TestOsmReaderGrants:
     def test_osm_reader_can_insert_app_settings_end_to_end(
         self, migrated_pg_with_reader
     ):
-        """End-to-end proof: SET ROLE osm_reader can INSERT into app_settings.
-
-        Exercises the table grant AND the sequence grant together inside a
-        rolled-back transaction (no committed side effects).  This is the
-        regression that would have caught the prod deploy bug: with INSERT
-        granted but sequence USAGE missing, this INSERT raises
-        InsufficientPrivilege on the implicit nextval().
-        """
+        """End-to-end proof: SET ROLE osm_reader can INSERT into app_settings."""
         conn = migrated_pg_with_reader
         try:
             with conn.cursor() as cur:
                 cur.execute("SET ROLE osm_reader")
-                # Mirrors bootstrap_settings_safe()'s catalogue UPSERT shape.
                 cur.execute(
                     """
                     INSERT INTO app_settings

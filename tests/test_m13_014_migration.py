@@ -1,22 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_m13_014_migration.py
-"""Migration tests for m13_014_billing_p1.sql.
+"""Migration tests for m13_014_billing_p1.sql — behaviour cases only.
 
-m13_014 is the single unified billing migration (gộp từ m13_014..m13_017).
-It covers: commercial plans columns + CHECK constraints, subscriptions table,
-billing_webhook_events table, pricing seed, cancel_at_period_end flag,
-per-currency prices JSONB, terms_accepted_at consent column, and
-waitlist_emails.plan CHECK drop.
+One-shot catalog assertions (T1-T3 column/index/constraint existence checks via
+information_schema, pg_indexes, pg_constraint) were removed — covered by
+test_squashed_baseline.py golden snapshot.
 
-Business intent (7 test classes):
-  T1  plans table gains new commercial columns + CHECK constraints (incl. prices JSONB).
-  T2  subscriptions table exists with right columns (incl. cancel_at_period_end),
-      constraints, and indexes.
-  T3  billing_webhook_events table exists with right columns + UNIQUE constraint.
-  T4  external_ref UNIQUE constraint rejects duplicate inserts.
-  T5  subscriptions_no_orphan_active CHECK rejects active row with all claim fields NULL.
-  T6  Pricing seed applied correctly (free=200 calls, pro price_cents=1900, team=3900).
-  T7  Migration is idempotent — running the m13_014 SQL a second time raises no error.
+Kept behaviour cases:
+  T1  plans CHECK constraints reject invalid values; valid ISO codes accepted.
+  T1b plans.price_cents and subscriptions.amount_cents are BIGINT (overflow guard).
+  T2  subscriptions CHECK constraints reject invalid values; UNIQUE enforced.
+  T3  billing_webhook_events vendor CHECK rejects invalid vendor.
+  T4  external_ref UNIQUE(source, external_ref) composite constraint behaviour.
+  T5  subscriptions_no_orphan_active CHECK rejects active rows with all claims NULL.
+  T6  Pricing seed applied correctly (free=200 calls, pro=1900, team=3900).
+  T7  Migration is idempotent — running run_migrations twice raises no error
+      and preserves seed data + merged columns. The per-file direct-re-run
+      cases were removed post-squash (m13_014_billing_p1.sql no longer exists;
+      covered by test_migrate_is_idempotent + test_prod_sim_no_reapply).
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
@@ -64,16 +65,6 @@ def migrated_pg(clean_pg):
 # ---------------------------------------------------------------------------
 
 
-def _column_exists(conn, table: str, column: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        return cur.fetchone() is not None
-
-
 def _column_data_type(conn, table: str, column: str) -> str | None:
     """Return the data_type string from information_schema for a column."""
     with conn.cursor() as cur:
@@ -95,21 +86,12 @@ def _constraint_exists(conn, conname: str) -> bool:
         return cur.fetchone() is not None
 
 
-def _table_exists(conn, table: str) -> bool:
+def _column_exists(conn, table: str, column: str) -> bool:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT 1 FROM information_schema.tables"
-            " WHERE table_name = %s AND table_schema = 'public'",
-            (table,),
-        )
-        return cur.fetchone() is not None
-
-
-def _index_exists(conn, indexname: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM pg_indexes WHERE indexname = %s",
-            (indexname,),
+            "SELECT 1 FROM information_schema.columns"
+            " WHERE table_name = %s AND column_name = %s",
+            (table, column),
         )
         return cur.fetchone() is not None
 
@@ -136,24 +118,6 @@ def _plan_row(conn, slug: str) -> dict | None:
     }
 
 
-def _insert_plan(conn, slug: str) -> int:
-    """Insert a minimal plan and return its id."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO plans (slug, display_name, quota_calls_per_month, rate_limit_rpm)"
-            " VALUES (%s, %s, 1000, 60) ON CONFLICT (slug) DO NOTHING RETURNING id",
-            (slug, f"Test Plan {slug}"),
-        )
-        row = cur.fetchone()
-    if row:
-        conn.commit()
-        return row[0]
-    # Plan already exists (conflict) — fetch existing id
-    with conn.cursor() as cur:
-        cur.execute("SELECT id FROM plans WHERE slug = %s", (slug,))
-        return cur.fetchone()[0]
-
-
 def _insert_subscription(conn, plan_id: int, **kwargs) -> int:
     """Insert a minimal subscription and return its id."""
     fields = ["plan_id"]
@@ -174,61 +138,12 @@ def _insert_subscription(conn, plan_id: int, **kwargs) -> int:
 
 
 # ---------------------------------------------------------------------------
-# T1: plans table gains new commercial columns + CHECK constraints
+# T1: plans CHECK constraints reject invalid values
 # ---------------------------------------------------------------------------
 
 
 class TestPlansNewColumns:
-    """T1: plans table has the commercial columns and their CHECK constraints.
-
-    Includes prices JSONB (gộp từ m13_015 section 6.2).
-    """
-
-    def test_price_cents_column_exists(self, migrated_pg):
-        assert _column_exists(migrated_pg, "plans", "price_cents"), (
-            "plans.price_cents must exist after m13_014"
-        )
-
-    def test_currency_column_exists(self, migrated_pg):
-        assert _column_exists(migrated_pg, "plans", "currency"), (
-            "plans.currency must exist after m13_014"
-        )
-
-    def test_billing_interval_column_exists(self, migrated_pg):
-        assert _column_exists(migrated_pg, "plans", "billing_interval"), (
-            "plans.billing_interval must exist after m13_014"
-        )
-
-    def test_trial_days_column_exists(self, migrated_pg):
-        assert _column_exists(migrated_pg, "plans", "trial_days"), (
-            "plans.trial_days must exist after m13_014"
-        )
-
-    def test_is_archived_column_exists(self, migrated_pg):
-        assert _column_exists(migrated_pg, "plans", "is_archived"), (
-            "plans.is_archived must exist after m13_014"
-        )
-
-    def test_prices_jsonb_column_exists(self, migrated_pg):
-        """plans.prices JSONB per-currency map — gộp từ m13_015 section 6.2."""
-        assert _column_exists(migrated_pg, "plans", "prices"), (
-            "plans.prices JSONB must exist after m13_014 (merged from m13_015)"
-        )
-
-    def test_billing_interval_check_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "plans_billing_interval_check"), (
-            "plans_billing_interval_check constraint must exist"
-        )
-
-    def test_price_cents_nonneg_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "plans_price_cents_nonneg"), (
-            "plans_price_cents_nonneg constraint must exist"
-        )
-
-    def test_trial_days_nonneg_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "plans_trial_days_nonneg"), (
-            "plans_trial_days_nonneg constraint must exist"
-        )
+    """T1: plans CHECK constraints + BIGINT type guard."""
 
     def test_billing_interval_check_rejects_invalid_value(self, migrated_pg):
         """billing_interval CHECK must reject a value not in the allowed set."""
@@ -266,26 +181,16 @@ class TestPlansNewColumns:
                 )
         migrated_pg.rollback()
 
-    # --- #3 BIGINT assertions ---
-
     def test_price_cents_is_bigint(self, migrated_pg):
-        """plans.price_cents must be BIGINT (not INTEGER) — #3 money-critical."""
+        """plans.price_cents must be BIGINT (not INTEGER) — VND overflow guard."""
         dtype = _column_data_type(migrated_pg, "plans", "price_cents")
         assert dtype == "bigint", (
             f"plans.price_cents must be BIGINT, got {dtype!r}. "
             "VND whole-units can exceed INT4 2.1B max."
         )
 
-    # --- #9 currency CHECK assertions ---
-
-    def test_plans_currency_iso4217_constraint_exists(self, migrated_pg):
-        """plans_currency_iso4217 CHECK constraint must exist — #9."""
-        assert _constraint_exists(migrated_pg, "plans_currency_iso4217"), (
-            "plans_currency_iso4217 CHECK constraint must exist after m13_014"
-        )
-
     def test_plans_currency_check_rejects_invalid_value(self, migrated_pg):
-        """plans.currency CHECK must reject a value not matching ^[A-Z]{3}$ — #9."""
+        """plans.currency CHECK must reject a value not matching ^[A-Z]{3}$."""
         with pytest.raises(psycopg2.errors.CheckViolation):
             with migrated_pg.cursor() as cur:
                 cur.execute(
@@ -311,84 +216,12 @@ class TestPlansNewColumns:
 
 
 # ---------------------------------------------------------------------------
-# T2: subscriptions table exists with right columns and constraints
+# T2: subscriptions CHECK constraints + BIGINT + UNIQUE behaviour
 # ---------------------------------------------------------------------------
 
 
 class TestSubscriptionsTable:
-    """T2: subscriptions table has the required columns, constraints, and indexes."""
-
-    def test_subscriptions_table_exists(self, migrated_pg):
-        assert _table_exists(migrated_pg, "subscriptions"), (
-            "subscriptions table must exist after m13_014"
-        )
-
-    def test_required_columns_exist(self, migrated_pg):
-        required = [
-            "id", "plan_id", "claimed_user_id", "api_key_id", "tenant_id",
-            "buyer_email", "status", "seats", "source", "external_ref",
-            "amount_cents", "currency", "billing_interval",
-            "current_period_start", "current_period_end", "trial_ends_at",
-            "cancelled_at", "created_at", "updated_at",
-            # cancel_at_period_end — gộp từ m13_015 section 6.1
-            "cancel_at_period_end",
-            # last_event_at — #5 monotonic guard for out-of-order webhook events
-            "last_event_at",
-        ]
-        for col in required:
-            assert _column_exists(migrated_pg, "subscriptions", col), (
-                f"subscriptions.{col} must exist after m13_014"
-            )
-
-    def test_status_check_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "subscriptions_status_check"), (
-            "subscriptions_status_check must exist"
-        )
-
-    def test_seats_positive_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "subscriptions_seats_positive"), (
-            "subscriptions_seats_positive must exist"
-        )
-
-    def test_source_check_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "subscriptions_source_check"), (
-            "subscriptions_source_check must exist"
-        )
-
-    def test_no_orphan_active_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "subscriptions_no_orphan_active"), (
-            "subscriptions_no_orphan_active must exist"
-        )
-
-    def test_billing_interval_check_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(migrated_pg, "subscriptions_billing_interval_check"), (
-            "subscriptions_billing_interval_check must exist"
-        )
-
-    def test_index_user_id_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_subscriptions_user_id"), (
-            "idx_subscriptions_user_id must exist"
-        )
-
-    def test_index_api_key_id_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_subscriptions_api_key_id"), (
-            "idx_subscriptions_api_key_id must exist"
-        )
-
-    def test_index_tenant_id_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_subscriptions_tenant_id"), (
-            "idx_subscriptions_tenant_id must exist"
-        )
-
-    def test_index_plan_status_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_subscriptions_plan_status"), (
-            "idx_subscriptions_plan_status must exist"
-        )
-
-    def test_index_buyer_email_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_subscriptions_buyer_email"), (
-            "idx_subscriptions_buyer_email partial index must exist"
-        )
+    """T2: subscriptions table CHECK constraints, BIGINT guard, UNIQUE behaviour."""
 
     def test_status_check_rejects_invalid_value(self, migrated_pg):
         """status CHECK must reject a value not in the allowed set."""
@@ -416,48 +249,16 @@ class TestSubscriptionsTable:
                 )
         migrated_pg.rollback()
 
-    # --- #3 BIGINT assertions ---
-
     def test_amount_cents_is_bigint(self, migrated_pg):
-        """subscriptions.amount_cents must be BIGINT — #3 money-critical."""
+        """subscriptions.amount_cents must be BIGINT — VND overflow guard."""
         dtype = _column_data_type(migrated_pg, "subscriptions", "amount_cents")
         assert dtype == "bigint", (
             f"subscriptions.amount_cents must be BIGINT, got {dtype!r}. "
             "VND whole-units can exceed INT4 2.1B max."
         )
 
-    # --- #5 last_event_at ---
-
-    def test_last_event_at_column_exists(self, migrated_pg):
-        """subscriptions.last_event_at TIMESTAMPTZ must exist — #5 monotonic guard."""
-        assert _column_exists(migrated_pg, "subscriptions", "last_event_at"), (
-            "subscriptions.last_event_at must exist after m13_014 (#5 out-of-order guard)"
-        )
-
-    def test_last_event_at_is_nullable(self, migrated_pg):
-        """subscriptions.last_event_at must be nullable (NULL until first webhook)."""
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT is_nullable FROM information_schema.columns"
-                " WHERE table_name = 'subscriptions'"
-                " AND column_name = 'last_event_at'"
-            )
-            row = cur.fetchone()
-        assert row is not None
-        assert row[0] == "YES", (
-            "subscriptions.last_event_at must be nullable"
-        )
-
-    # --- #8 UNIQUE(source, external_ref) ---
-
-    def test_source_external_ref_unique_constraint_exists(self, migrated_pg):
-        """subscriptions_source_external_ref_key UNIQUE constraint must exist — #8."""
-        assert _constraint_exists(
-            migrated_pg, "subscriptions_source_external_ref_key"
-        ), "subscriptions_source_external_ref_key UNIQUE constraint must exist"
-
     def test_composite_unique_rejects_same_source_and_ref(self, migrated_pg):
-        """UNIQUE(source, external_ref) must reject duplicate (source, external_ref) — #8."""
+        """UNIQUE(source, external_ref) must reject duplicate (source, external_ref)."""
         free = _plan_row(migrated_pg, "free")
         assert free is not None
         with migrated_pg.cursor() as cur:
@@ -493,16 +294,8 @@ class TestSubscriptionsTable:
             )
         migrated_pg.commit()
 
-    # --- #9 currency CHECK ---
-
-    def test_subscriptions_currency_iso4217_constraint_exists(self, migrated_pg):
-        """subscriptions_currency_iso4217 CHECK constraint must exist — #9."""
-        assert _constraint_exists(
-            migrated_pg, "subscriptions_currency_iso4217"
-        ), "subscriptions_currency_iso4217 CHECK constraint must exist"
-
     def test_subscriptions_currency_check_rejects_invalid(self, migrated_pg):
-        """subscriptions.currency CHECK must reject a value not matching ^[A-Z]{3}$ — #9."""
+        """subscriptions.currency CHECK must reject a value not matching ^[A-Z]{3}$."""
         free = _plan_row(migrated_pg, "free")
         assert free is not None
         with pytest.raises(psycopg2.errors.CheckViolation):
@@ -515,7 +308,7 @@ class TestSubscriptionsTable:
         migrated_pg.rollback()
 
     def test_subscriptions_currency_check_accepts_null(self, migrated_pg):
-        """subscriptions.currency is nullable — NULL must be accepted by the CHECK — #9."""
+        """subscriptions.currency is nullable — NULL must be accepted by the CHECK."""
         free = _plan_row(migrated_pg, "free")
         assert free is not None
         with migrated_pg.cursor() as cur:
@@ -530,38 +323,12 @@ class TestSubscriptionsTable:
 
 
 # ---------------------------------------------------------------------------
-# T3: billing_webhook_events table exists with right columns + UNIQUE
+# T3: billing_webhook_events vendor CHECK rejects invalid vendor
 # ---------------------------------------------------------------------------
 
 
 class TestBillingWebhookEventsTable:
-    """T3: billing_webhook_events table has the required columns and UNIQUE constraint."""
-
-    def test_billing_webhook_events_table_exists(self, migrated_pg):
-        assert _table_exists(migrated_pg, "billing_webhook_events"), (
-            "billing_webhook_events table must exist after m13_014"
-        )
-
-    def test_required_columns_exist(self, migrated_pg):
-        required = [
-            "id", "vendor", "event_id", "event_type",
-            "signature_valid", "payload", "received_at",
-            "processed_at", "processing_error", "subscription_id",
-        ]
-        for col in required:
-            assert _column_exists(migrated_pg, "billing_webhook_events", col), (
-                f"billing_webhook_events.{col} must exist after m13_014"
-            )
-
-    def test_vendor_event_unique_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(
-            migrated_pg, "billing_webhook_events_vendor_event_unique"
-        ), "billing_webhook_events_vendor_event_unique must exist"
-
-    def test_vendor_check_constraint_exists(self, migrated_pg):
-        assert _constraint_exists(
-            migrated_pg, "billing_webhook_events_vendor_check"
-        ), "billing_webhook_events_vendor_check must exist"
+    """T3: billing_webhook_events vendor CHECK rejects invalid vendor."""
 
     def test_vendor_check_rejects_invalid_vendor(self, migrated_pg):
         """vendor CHECK must reject a value not in the allowed set."""
@@ -574,29 +341,14 @@ class TestBillingWebhookEventsTable:
                 )
         migrated_pg.rollback()
 
-    def test_index_bwe_vendor_received_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_bwe_vendor_received"), (
-            "idx_bwe_vendor_received must exist"
-        )
-
-    def test_index_bwe_unprocessed_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_bwe_unprocessed"), (
-            "idx_bwe_unprocessed must exist"
-        )
-
-    def test_index_bwe_subscription_exists(self, migrated_pg):
-        assert _index_exists(migrated_pg, "idx_bwe_subscription"), (
-            "idx_bwe_subscription must exist"
-        )
-
 
 # ---------------------------------------------------------------------------
-# T4: external_ref UNIQUE constraint rejects duplicate inserts
+# T4: external_ref UNIQUE(source, external_ref) composite constraint behaviour
 # ---------------------------------------------------------------------------
 
 
 class TestExternalRefUnique:
-    """T4: UNIQUE(source, external_ref) composite constraint — #8.
+    """T4: UNIQUE(source, external_ref) composite constraint.
 
     The old global external_ref UNIQUE has been replaced with a composite
     UNIQUE(source, external_ref) so the same vendor order ID cannot bleed
@@ -605,7 +357,7 @@ class TestExternalRefUnique:
     """
 
     def test_duplicate_source_and_external_ref_raises(self, migrated_pg):
-        """Same (source, external_ref) pair must raise UniqueViolation — #8."""
+        """Same (source, external_ref) pair must raise UniqueViolation."""
         free = _plan_row(migrated_pg, "free")
         assert free is not None
 
@@ -627,7 +379,7 @@ class TestExternalRefUnique:
         migrated_pg.rollback()
 
     def test_same_external_ref_different_source_is_allowed(self, migrated_pg):
-        """Same external_ref but different source must NOT raise — cross-vendor OK — #8."""
+        """Same external_ref but different source must NOT raise — cross-vendor OK."""
         free = _plan_row(migrated_pg, "free")
         assert free is not None
 
@@ -810,12 +562,19 @@ class TestPricingSeed:
 
 
 # ---------------------------------------------------------------------------
-# T7: Migration is idempotent — running m13_014 SQL a second time raises no error
+# T7: Migration is idempotent
 # ---------------------------------------------------------------------------
 
 
 class TestMigrationIdempotent:
-    """T7: Applying m13_014 SQL a second time against the already-migrated DB raises no error."""
+    """T7: run_migrations is idempotent — a second full run preserves seed data.
+
+    The per-file direct-re-run idempotency cases (which read
+    migrations/m13_014_billing_p1.sql) were removed after the WI-2A squash
+    folded that file into migrations/0001_initial.sql; baseline idempotency is
+    now covered by test_migrate_is_idempotent (run_migrations twice) and
+    test_prod_sim_no_reapply (test_squashed_baseline.py).
+    """
 
     def test_double_run_via_run_migrations(self, clean_pg):
         """run_migrations is idempotent — yoyo tracks applied migrations
@@ -828,90 +587,14 @@ class TestMigrationIdempotent:
                 f"run_migrations raised on second run (not idempotent): {exc}"
             )
 
-    def test_m13_014_sql_idempotent_when_run_directly(self, clean_pg):
-        """Execute the m13_014 SQL file directly against an already-migrated DB.
-
-        Strategy: run_migrations first (full stack including m13_014), then
-        read and execute the m13_014 SQL file a second time. Every statement
-        uses IF NOT EXISTS / guarded DO blocks so re-execution must be a no-op.
-        """
-        from pathlib import Path
-
-        run_migrations(clean_pg)
-
-        migration_path = (
-            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
-        )
-        sql = migration_path.read_text()
-
-        try:
-            with clean_pg.cursor() as cur:
-                cur.execute(sql)
-            clean_pg.commit()
-        except Exception as exc:
-            clean_pg.rollback()
-            pytest.fail(
-                f"m13_014_billing_p1.sql raised on second direct execution: {exc}"
-            )
-
-    def test_schema_intact_after_double_run(self, clean_pg):
-        """After two run_migrations calls, schema objects are still present and correct."""
+    def test_pricing_seed_intact_after_double_run(self, clean_pg):
+        """After two run_migrations calls, pricing seed data is still present and correct."""
         run_migrations(clean_pg)
         run_migrations(clean_pg)
 
-        assert _table_exists(clean_pg, "subscriptions"), (
-            "subscriptions table must still exist after double run"
-        )
-        assert _table_exists(clean_pg, "billing_webhook_events"), (
-            "billing_webhook_events table must still exist after double run"
-        )
         row = _plan_row(clean_pg, "free")
         assert row is not None and row["price_cents"] == 0, (
             "free plan price_cents must still be 0 after double run"
-        )
-
-    def test_admin_price_cents_zero_not_reverted_by_rerun(self, clean_pg):
-        """#12 dual-sentinel: an admin who sets price_cents=0 on a paid plan whose
-        prices JSONB is already custom must NOT have the seed re-run revert it.
-
-        Before the fix, section 2 seeded price_cents with only a price_cents=0 guard
-        while section 6.3 seeded prices with a prices='{}' guard.  An admin promo
-        that set pro.price_cents=0 (prices already {"USD":1900,...}) was reverted to
-        1900 on the next migration run.  The combined dual-sentinel seed in section
-        6.3 (WHERE price_cents=0 AND prices='{}') makes the re-run a true no-op
-        because prices is no longer '{}'.
-        """
-        from pathlib import Path
-
-        run_migrations(clean_pg)
-
-        # Admin promo: set pro price_cents=0; prices stays custom (non-empty).
-        with clean_pg.cursor() as cur:
-            cur.execute(
-                "UPDATE plans SET price_cents = 0 WHERE slug = 'pro'"
-            )
-        clean_pg.commit()
-        row = _plan_row(clean_pg, "pro")
-        assert row["price_cents"] == 0, "precondition: admin set pro price_cents=0"
-        with clean_pg.cursor() as cur:
-            cur.execute("SELECT prices FROM plans WHERE slug = 'pro'")
-            prices = cur.fetchone()[0]
-        assert prices != {}, (
-            "precondition: pro.prices must already be custom (non-empty) after seed"
-        )
-
-        # Re-run the migration SQL directly (yoyo would skip it as applied).
-        migration_path = (
-            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
-        )
-        with clean_pg.cursor() as cur:
-            cur.execute(migration_path.read_text())
-        clean_pg.commit()
-
-        row = _plan_row(clean_pg, "pro")
-        assert row["price_cents"] == 0, (
-            "#12: migration re-run must NOT revert an admin-set price_cents=0 when "
-            "prices is already custom (dual-sentinel guard)"
         )
 
     def test_merged_columns_present_after_double_run(self, clean_pg):
@@ -937,65 +620,6 @@ class TestMigrationIdempotent:
             row = cur.fetchone()
         assert row is None, (
             "waitlist_emails_plan_check must be dropped by m13_014 (merged m13_017)"
-        )
-
-    def test_free_unlimited_currency_not_reverted_by_rerun(self, clean_pg):
-        """P2-A guard: admin-set currency on free/unlimited must NOT be reverted by a re-run.
-
-        §2 of m13_014 seeds free/unlimited currency='USD'.  Guard: AND currency='USD'.
-        If an admin sets free.currency='EUR' (cosmetic change on a $0 plan), a subsequent
-        migration re-run must leave it as 'EUR'.  Without the guard the seed would revert it.
-        """
-        from pathlib import Path
-
-        run_migrations(clean_pg)
-
-        # Admin changes free.currency to 'EUR'.
-        with clean_pg.cursor() as cur:
-            cur.execute("UPDATE plans SET currency = 'EUR' WHERE slug = 'free'")
-        clean_pg.commit()
-        with clean_pg.cursor() as cur:
-            cur.execute("SELECT currency FROM plans WHERE slug = 'free'")
-            assert cur.fetchone()[0] == "EUR", "precondition: admin set free.currency='EUR'"
-
-        # Re-run the m13_014 SQL directly (yoyo would skip; direct exec tests the guard).
-        migration_path = (
-            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
-        )
-        with clean_pg.cursor() as cur:
-            cur.execute(migration_path.read_text())
-        clean_pg.commit()
-
-        with clean_pg.cursor() as cur:
-            cur.execute("SELECT currency FROM plans WHERE slug = 'free'")
-            after = cur.fetchone()[0]
-        assert after == "EUR", (
-            "P2-A: §2 seed re-run must NOT revert free.currency='EUR' back to 'USD'. "
-            "Guard AND currency='USD' must prevent the UPDATE from matching."
-        )
-
-    def test_unlimited_currency_not_reverted_by_rerun(self, clean_pg):
-        """P2-A guard: same as above but for the 'unlimited' plan."""
-        from pathlib import Path
-
-        run_migrations(clean_pg)
-
-        with clean_pg.cursor() as cur:
-            cur.execute("UPDATE plans SET currency = 'EUR' WHERE slug = 'unlimited'")
-        clean_pg.commit()
-
-        migration_path = (
-            Path(__file__).parent.parent / "migrations" / "m13_014_billing_p1.sql"
-        )
-        with clean_pg.cursor() as cur:
-            cur.execute(migration_path.read_text())
-        clean_pg.commit()
-
-        with clean_pg.cursor() as cur:
-            cur.execute("SELECT currency FROM plans WHERE slug = 'unlimited'")
-            after = cur.fetchone()[0]
-        assert after == "EUR", (
-            "P2-A: §2 seed re-run must NOT revert unlimited.currency='EUR' back to 'USD'."
         )
 
     def test_schema_review_fixes_present_after_double_run(self, clean_pg):

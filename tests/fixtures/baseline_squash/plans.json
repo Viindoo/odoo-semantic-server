@@ -1,0 +1,46 @@
+[
+  {
+    "id": "2",
+    "slug": "free",
+    "display_name": "Free",
+    "quota_calls_per_month": "200",
+    "rate_limit_rpm": "30",
+    "seat_limit": "1",
+    "is_public": "t",
+    "billing_interval": "free",
+    "pricing_model": "flat"
+  },
+  {
+    "id": "3",
+    "slug": "pro",
+    "display_name": "Pro",
+    "quota_calls_per_month": "10000",
+    "rate_limit_rpm": "120",
+    "seat_limit": "5",
+    "is_public": "t",
+    "billing_interval": "monthly",
+    "pricing_model": "per_seat"
+  },
+  {
+    "id": "4",
+    "slug": "team",
+    "display_name": "Team",
+    "quota_calls_per_month": "100000",
+    "rate_limit_rpm": "300",
+    "seat_limit": "20",
+    "is_public": "t",
+    "billing_interval": "monthly",
+    "pricing_model": "per_seat"
+  },
+  {
+    "id": "5",
+    "slug": "unlimited",
+    "display_name": "Unlimited (admin-granted)",
+    "quota_calls_per_month": "0",
+    "rate_limit_rpm": "0",
+    "seat_limit": "99",
+    "is_public": "f",
+    "billing_interval": "free",
+    "pricing_model": "flat"
+  }
+]

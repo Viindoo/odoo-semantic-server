@@ -1,0 +1,13 @@
+[
+  {
+    "tablename": "embeddings",
+    "policyname": "embeddings_tenant",
+    "permissive": "PERMISSIVE",
+    "roles": [
+      "public"
+    ],
+    "cmd": "ALL",
+    "qual": "((current_setting('app.allowed_profiles'::text, true) = '*'::text) OR (profile_name = '__global__'::text) OR (profile_name = ANY (string_to_array(current_setting('app.allowed_profiles'::text, true), ','::text))))",
+    "with_check": null
+  }
+]

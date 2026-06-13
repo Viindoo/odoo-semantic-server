@@ -1,0 +1,507 @@
+[
+  {
+    "tablename": "_yoyo_log",
+    "indexname": "_yoyo_log_pkey",
+    "indexdef": "CREATE UNIQUE INDEX _yoyo_log_pkey ON public._yoyo_log USING btree (id)"
+  },
+  {
+    "tablename": "_yoyo_migration",
+    "indexname": "_yoyo_migration_pkey",
+    "indexdef": "CREATE UNIQUE INDEX _yoyo_migration_pkey ON public._yoyo_migration USING btree (migration_hash)"
+  },
+  {
+    "tablename": "_yoyo_version",
+    "indexname": "_yoyo_version_pkey",
+    "indexdef": "CREATE UNIQUE INDEX _yoyo_version_pkey ON public._yoyo_version USING btree (version)"
+  },
+  {
+    "tablename": "active_sessions",
+    "indexname": "active_sessions_pkey",
+    "indexdef": "CREATE UNIQUE INDEX active_sessions_pkey ON public.active_sessions USING btree (session_id)"
+  },
+  {
+    "tablename": "active_sessions",
+    "indexname": "idx_active_sessions_user_id",
+    "indexdef": "CREATE INDEX idx_active_sessions_user_id ON public.active_sessions USING btree (user_id)"
+  },
+  {
+    "tablename": "active_sessions",
+    "indexname": "idx_sessions_expires",
+    "indexdef": "CREATE INDEX idx_sessions_expires ON public.active_sessions USING btree (expires_at)"
+  },
+  {
+    "tablename": "active_sessions",
+    "indexname": "idx_sessions_user_id",
+    "indexdef": "CREATE INDEX idx_sessions_user_id ON public.active_sessions USING btree (user_id)"
+  },
+  {
+    "tablename": "admin_audit_log",
+    "indexname": "admin_audit_log_pkey",
+    "indexdef": "CREATE UNIQUE INDEX admin_audit_log_pkey ON public.admin_audit_log USING btree (id)"
+  },
+  {
+    "tablename": "admin_audit_log",
+    "indexname": "idx_admin_audit_created",
+    "indexdef": "CREATE INDEX idx_admin_audit_created ON public.admin_audit_log USING btree (created_at DESC)"
+  },
+  {
+    "tablename": "admin_audit_log",
+    "indexname": "idx_audit_action_created",
+    "indexdef": "CREATE INDEX idx_audit_action_created ON public.admin_audit_log USING btree (action, created_at DESC)"
+  },
+  {
+    "tablename": "admin_audit_log",
+    "indexname": "idx_audit_actor_created",
+    "indexdef": "CREATE INDEX idx_audit_actor_created ON public.admin_audit_log USING btree (actor, created_at DESC)"
+  },
+  {
+    "tablename": "api_key_session_state",
+    "indexname": "api_key_session_state_pkey",
+    "indexdef": "CREATE UNIQUE INDEX api_key_session_state_pkey ON public.api_key_session_state USING btree (api_key_id)"
+  },
+  {
+    "tablename": "api_key_session_state",
+    "indexname": "ix_api_key_session_state_updated_at",
+    "indexdef": "CREATE INDEX ix_api_key_session_state_updated_at ON public.api_key_session_state USING btree (updated_at)"
+  },
+  {
+    "tablename": "api_keys",
+    "indexname": "api_keys_key_hash_key",
+    "indexdef": "CREATE UNIQUE INDEX api_keys_key_hash_key ON public.api_keys USING btree (key_hash)"
+  },
+  {
+    "tablename": "api_keys",
+    "indexname": "api_keys_pkey",
+    "indexdef": "CREATE UNIQUE INDEX api_keys_pkey ON public.api_keys USING btree (id)"
+  },
+  {
+    "tablename": "api_keys",
+    "indexname": "idx_api_keys_tenant_id",
+    "indexdef": "CREATE INDEX idx_api_keys_tenant_id ON public.api_keys USING btree (tenant_id)"
+  },
+  {
+    "tablename": "api_keys",
+    "indexname": "idx_api_keys_user_id",
+    "indexdef": "CREATE INDEX idx_api_keys_user_id ON public.api_keys USING btree (user_id)"
+  },
+  {
+    "tablename": "app_settings",
+    "indexname": "app_settings_pkey",
+    "indexdef": "CREATE UNIQUE INDEX app_settings_pkey ON public.app_settings USING btree (id)"
+  },
+  {
+    "tablename": "app_settings",
+    "indexname": "idx_app_settings_category",
+    "indexdef": "CREATE INDEX idx_app_settings_category ON public.app_settings USING btree (category)"
+  },
+  {
+    "tablename": "app_settings",
+    "indexname": "idx_app_settings_scope_tenant",
+    "indexdef": "CREATE INDEX idx_app_settings_scope_tenant ON public.app_settings USING btree (scope, tenant_id)"
+  },
+  {
+    "tablename": "app_settings",
+    "indexname": "uq_app_settings_per_key",
+    "indexdef": "CREATE UNIQUE INDEX uq_app_settings_per_key ON public.app_settings USING btree (key) WHERE (scope = 'per_key'::text)"
+  },
+  {
+    "tablename": "app_settings",
+    "indexname": "uq_app_settings_system_key",
+    "indexdef": "CREATE UNIQUE INDEX uq_app_settings_system_key ON public.app_settings USING btree (key) WHERE ((scope = 'system'::text) AND (tenant_id IS NULL))"
+  },
+  {
+    "tablename": "app_settings",
+    "indexname": "uq_app_settings_tenant_key",
+    "indexdef": "CREATE UNIQUE INDEX uq_app_settings_tenant_key ON public.app_settings USING btree (key, tenant_id) WHERE ((scope = 'tenant'::text) AND (tenant_id IS NOT NULL))"
+  },
+  {
+    "tablename": "app_settings_history",
+    "indexname": "app_settings_history_pkey",
+    "indexdef": "CREATE UNIQUE INDEX app_settings_history_pkey ON public.app_settings_history USING btree (id)"
+  },
+  {
+    "tablename": "app_settings_history",
+    "indexname": "idx_app_settings_history_key_time",
+    "indexdef": "CREATE INDEX idx_app_settings_history_key_time ON public.app_settings_history USING btree (setting_key, changed_at DESC)"
+  },
+  {
+    "tablename": "billing_webhook_events",
+    "indexname": "billing_webhook_events_pkey",
+    "indexdef": "CREATE UNIQUE INDEX billing_webhook_events_pkey ON public.billing_webhook_events USING btree (id)"
+  },
+  {
+    "tablename": "billing_webhook_events",
+    "indexname": "billing_webhook_events_vendor_event_unique",
+    "indexdef": "CREATE UNIQUE INDEX billing_webhook_events_vendor_event_unique ON public.billing_webhook_events USING btree (vendor, event_id)"
+  },
+  {
+    "tablename": "billing_webhook_events",
+    "indexname": "idx_bwe_subscription",
+    "indexdef": "CREATE INDEX idx_bwe_subscription ON public.billing_webhook_events USING btree (subscription_id) WHERE (subscription_id IS NOT NULL)"
+  },
+  {
+    "tablename": "billing_webhook_events",
+    "indexname": "idx_bwe_unprocessed",
+    "indexdef": "CREATE INDEX idx_bwe_unprocessed ON public.billing_webhook_events USING btree (received_at) WHERE (processed_at IS NULL)"
+  },
+  {
+    "tablename": "billing_webhook_events",
+    "indexname": "idx_bwe_vendor_received",
+    "indexdef": "CREATE INDEX idx_bwe_vendor_received ON public.billing_webhook_events USING btree (vendor, received_at DESC)"
+  },
+  {
+    "tablename": "ee_modules",
+    "indexname": "ee_modules_name_key",
+    "indexdef": "CREATE UNIQUE INDEX ee_modules_name_key ON public.ee_modules USING btree (name)"
+  },
+  {
+    "tablename": "ee_modules",
+    "indexname": "ee_modules_pkey",
+    "indexdef": "CREATE UNIQUE INDEX ee_modules_pkey ON public.ee_modules USING btree (id)"
+  },
+  {
+    "tablename": "ee_modules",
+    "indexname": "idx_ee_modules_name",
+    "indexdef": "CREATE INDEX idx_ee_modules_name ON public.ee_modules USING btree (name)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "email_verifications_pkey",
+    "indexdef": "CREATE UNIQUE INDEX email_verifications_pkey ON public.email_verifications USING btree (token)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "idx_email_verif_token_hash",
+    "indexdef": "CREATE INDEX idx_email_verif_token_hash ON public.email_verifications USING btree (token_hash)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "idx_email_verif_user_id",
+    "indexdef": "CREATE INDEX idx_email_verif_user_id ON public.email_verifications USING btree (user_id)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "idx_email_verify_expires",
+    "indexdef": "CREATE INDEX idx_email_verify_expires ON public.email_verifications USING btree (expires_at)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "idx_email_verify_user",
+    "indexdef": "CREATE INDEX idx_email_verify_user ON public.email_verifications USING btree (user_id)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "ix_email_verif_created",
+    "indexdef": "CREATE INDEX ix_email_verif_created ON public.email_verifications USING btree (created_at DESC)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "ix_email_verif_token",
+    "indexdef": "CREATE INDEX ix_email_verif_token ON public.email_verifications USING btree (token)"
+  },
+  {
+    "tablename": "email_verifications",
+    "indexname": "ix_email_verif_user",
+    "indexdef": "CREATE INDEX ix_email_verif_user ON public.email_verifications USING btree (user_id)"
+  },
+  {
+    "tablename": "embeddings",
+    "indexname": "embeddings_pkey",
+    "indexdef": "CREATE UNIQUE INDEX embeddings_pkey ON public.embeddings USING btree (id)"
+  },
+  {
+    "tablename": "embeddings",
+    "indexname": "idx_embeddings_filter",
+    "indexdef": "CREATE INDEX idx_embeddings_filter ON public.embeddings USING btree (odoo_version, chunk_type, module, profile_name)"
+  },
+  {
+    "tablename": "embeddings",
+    "indexname": "idx_embeddings_model",
+    "indexdef": "CREATE INDEX idx_embeddings_model ON public.embeddings USING btree (embedding_model) WHERE (embedding_model IS NOT NULL)"
+  },
+  {
+    "tablename": "embeddings",
+    "indexname": "idx_embeddings_vec",
+    "indexdef": "CREATE INDEX idx_embeddings_vec ON public.embeddings USING hnsw (vec vector_cosine_ops) WITH (m='16', ef_construction='200')"
+  },
+  {
+    "tablename": "embeddings",
+    "indexname": "ux_embeddings_chunk",
+    "indexdef": "CREATE UNIQUE INDEX ux_embeddings_chunk ON public.embeddings USING btree (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx, profile_name) NULLS NOT DISTINCT"
+  },
+  {
+    "tablename": "indexer_jobs",
+    "indexname": "indexer_jobs_pkey",
+    "indexdef": "CREATE UNIQUE INDEX indexer_jobs_pkey ON public.indexer_jobs USING btree (id)"
+  },
+  {
+    "tablename": "indexer_jobs",
+    "indexname": "ix_indexer_jobs_created",
+    "indexdef": "CREATE INDEX ix_indexer_jobs_created ON public.indexer_jobs USING btree (created_at DESC)"
+  },
+  {
+    "tablename": "indexer_jobs",
+    "indexname": "ix_indexer_jobs_profile",
+    "indexdef": "CREATE INDEX ix_indexer_jobs_profile ON public.indexer_jobs USING btree (profile_name)"
+  },
+  {
+    "tablename": "indexer_jobs",
+    "indexname": "ix_indexer_jobs_status",
+    "indexdef": "CREATE INDEX ix_indexer_jobs_status ON public.indexer_jobs USING btree (status)"
+  },
+  {
+    "tablename": "key_rotation_log",
+    "indexname": "idx_key_rotation_log_time",
+    "indexdef": "CREATE INDEX idx_key_rotation_log_time ON public.key_rotation_log USING btree (rotated_at DESC)"
+  },
+  {
+    "tablename": "key_rotation_log",
+    "indexname": "key_rotation_log_pkey",
+    "indexdef": "CREATE UNIQUE INDEX key_rotation_log_pkey ON public.key_rotation_log USING btree (id)"
+  },
+  {
+    "tablename": "login_attempts",
+    "indexname": "idx_login_attempts_identifier_time",
+    "indexdef": "CREATE INDEX idx_login_attempts_identifier_time ON public.login_attempts USING btree (identifier, attempted_at DESC)"
+  },
+  {
+    "tablename": "login_attempts",
+    "indexname": "idx_login_attempts_ip_time",
+    "indexdef": "CREATE INDEX idx_login_attempts_ip_time ON public.login_attempts USING btree (ip_address, attempted_at DESC)"
+  },
+  {
+    "tablename": "login_attempts",
+    "indexname": "login_attempts_pkey",
+    "indexdef": "CREATE UNIQUE INDEX login_attempts_pkey ON public.login_attempts USING btree (id)"
+  },
+  {
+    "tablename": "pattern_feedback",
+    "indexname": "idx_pattern_feedback_node",
+    "indexdef": "CREATE INDEX idx_pattern_feedback_node ON public.pattern_feedback USING btree (pattern_node_id)"
+  },
+  {
+    "tablename": "pattern_feedback",
+    "indexname": "pattern_feedback_pkey",
+    "indexdef": "CREATE UNIQUE INDEX pattern_feedback_pkey ON public.pattern_feedback USING btree (id)"
+  },
+  {
+    "tablename": "patterns",
+    "indexname": "idx_patterns_intent_keywords_gin",
+    "indexdef": "CREATE INDEX idx_patterns_intent_keywords_gin ON public.patterns USING gin (intent_keywords)"
+  },
+  {
+    "tablename": "patterns",
+    "indexname": "idx_patterns_language",
+    "indexdef": "CREATE INDEX idx_patterns_language ON public.patterns USING btree (language)"
+  },
+  {
+    "tablename": "patterns",
+    "indexname": "idx_patterns_version_min",
+    "indexdef": "CREATE INDEX idx_patterns_version_min ON public.patterns USING btree (odoo_version_min)"
+  },
+  {
+    "tablename": "patterns",
+    "indexname": "patterns_pkey",
+    "indexdef": "CREATE UNIQUE INDEX patterns_pkey ON public.patterns USING btree (pattern_id)"
+  },
+  {
+    "tablename": "plans",
+    "indexname": "plans_pkey",
+    "indexdef": "CREATE UNIQUE INDEX plans_pkey ON public.plans USING btree (id)"
+  },
+  {
+    "tablename": "plans",
+    "indexname": "plans_slug_key",
+    "indexdef": "CREATE UNIQUE INDEX plans_slug_key ON public.plans USING btree (slug)"
+  },
+  {
+    "tablename": "profiles",
+    "indexname": "idx_profiles_parent",
+    "indexdef": "CREATE INDEX idx_profiles_parent ON public.profiles USING btree (parent_profile_id)"
+  },
+  {
+    "tablename": "profiles",
+    "indexname": "idx_profiles_tenant_id",
+    "indexdef": "CREATE INDEX idx_profiles_tenant_id ON public.profiles USING btree (tenant_id)"
+  },
+  {
+    "tablename": "profiles",
+    "indexname": "profiles_name_key",
+    "indexdef": "CREATE UNIQUE INDEX profiles_name_key ON public.profiles USING btree (name)"
+  },
+  {
+    "tablename": "profiles",
+    "indexname": "profiles_pkey",
+    "indexdef": "CREATE UNIQUE INDEX profiles_pkey ON public.profiles USING btree (id)"
+  },
+  {
+    "tablename": "repos",
+    "indexname": "idx_repos_profile_id",
+    "indexdef": "CREATE INDEX idx_repos_profile_id ON public.repos USING btree (profile_id)"
+  },
+  {
+    "tablename": "repos",
+    "indexname": "idx_repos_tenant_id",
+    "indexdef": "CREATE INDEX idx_repos_tenant_id ON public.repos USING btree (tenant_id)"
+  },
+  {
+    "tablename": "repos",
+    "indexname": "repos_pkey",
+    "indexdef": "CREATE UNIQUE INDEX repos_pkey ON public.repos USING btree (id)"
+  },
+  {
+    "tablename": "repos",
+    "indexname": "repos_url_branch_profile_key",
+    "indexdef": "CREATE UNIQUE INDEX repos_url_branch_profile_key ON public.repos USING btree (url, branch, profile_id)"
+  },
+  {
+    "tablename": "ssh_key_pairs",
+    "indexname": "idx_ssh_key_pairs_tenant",
+    "indexdef": "CREATE INDEX idx_ssh_key_pairs_tenant ON public.ssh_key_pairs USING btree (tenant_id)"
+  },
+  {
+    "tablename": "ssh_key_pairs",
+    "indexname": "ssh_key_pairs_pkey",
+    "indexdef": "CREATE UNIQUE INDEX ssh_key_pairs_pkey ON public.ssh_key_pairs USING btree (id)"
+  },
+  {
+    "tablename": "ssh_key_pairs",
+    "indexname": "ux_ssh_deploy_key_per_tenant",
+    "indexdef": "CREATE UNIQUE INDEX ux_ssh_deploy_key_per_tenant ON public.ssh_key_pairs USING btree (tenant_id) WHERE (key_type = 'deploy_key'::text)"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "idx_subscriptions_api_key_id",
+    "indexdef": "CREATE INDEX idx_subscriptions_api_key_id ON public.subscriptions USING btree (api_key_id) WHERE (api_key_id IS NOT NULL)"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "idx_subscriptions_buyer_email",
+    "indexdef": "CREATE INDEX idx_subscriptions_buyer_email ON public.subscriptions USING btree (buyer_email) WHERE ((buyer_email IS NOT NULL) AND (claimed_user_id IS NULL))"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "idx_subscriptions_plan_status",
+    "indexdef": "CREATE INDEX idx_subscriptions_plan_status ON public.subscriptions USING btree (plan_id, status)"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "idx_subscriptions_tenant_id",
+    "indexdef": "CREATE INDEX idx_subscriptions_tenant_id ON public.subscriptions USING btree (tenant_id) WHERE (tenant_id IS NOT NULL)"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "idx_subscriptions_user_id",
+    "indexdef": "CREATE INDEX idx_subscriptions_user_id ON public.subscriptions USING btree (claimed_user_id) WHERE (claimed_user_id IS NOT NULL)"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "idx_subscriptions_waiver_consumer",
+    "indexdef": "CREATE INDEX idx_subscriptions_waiver_consumer ON public.subscriptions USING btree (withdrawal_waiver_accepted_at) WHERE ((buyer_type = 'consumer'::text) AND (withdrawal_waiver_accepted_at IS NOT NULL))"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "subscriptions_pkey",
+    "indexdef": "CREATE UNIQUE INDEX subscriptions_pkey ON public.subscriptions USING btree (id)"
+  },
+  {
+    "tablename": "subscriptions",
+    "indexname": "subscriptions_source_external_ref_key",
+    "indexdef": "CREATE UNIQUE INDEX subscriptions_source_external_ref_key ON public.subscriptions USING btree (source, external_ref)"
+  },
+  {
+    "tablename": "tenant_members",
+    "indexname": "idx_tenant_members_tenant",
+    "indexdef": "CREATE INDEX idx_tenant_members_tenant ON public.tenant_members USING btree (tenant_id)"
+  },
+  {
+    "tablename": "tenant_members",
+    "indexname": "tenant_members_pkey",
+    "indexdef": "CREATE UNIQUE INDEX tenant_members_pkey ON public.tenant_members USING btree (user_id, tenant_id)"
+  },
+  {
+    "tablename": "tenants",
+    "indexname": "tenants_name_key",
+    "indexdef": "CREATE UNIQUE INDEX tenants_name_key ON public.tenants USING btree (name)"
+  },
+  {
+    "tablename": "tenants",
+    "indexname": "tenants_pkey",
+    "indexdef": "CREATE UNIQUE INDEX tenants_pkey ON public.tenants USING btree (id)"
+  },
+  {
+    "tablename": "totp_secrets",
+    "indexname": "totp_secrets_pkey",
+    "indexdef": "CREATE UNIQUE INDEX totp_secrets_pkey ON public.totp_secrets USING btree (user_id)"
+  },
+  {
+    "tablename": "usage_counter",
+    "indexname": "usage_counter_period_idx",
+    "indexdef": "CREATE INDEX usage_counter_period_idx ON public.usage_counter USING btree (period_yyyymm)"
+  },
+  {
+    "tablename": "usage_counter",
+    "indexname": "usage_counter_pkey",
+    "indexdef": "CREATE UNIQUE INDEX usage_counter_pkey ON public.usage_counter USING btree (api_key_id, period_yyyymm)"
+  },
+  {
+    "tablename": "usage_log",
+    "indexname": "idx_usage_log_api_key",
+    "indexdef": "CREATE INDEX idx_usage_log_api_key ON public.usage_log USING btree (api_key_id)"
+  },
+  {
+    "tablename": "usage_log",
+    "indexname": "idx_usage_log_called_at",
+    "indexdef": "CREATE INDEX idx_usage_log_called_at ON public.usage_log USING btree (called_at)"
+  },
+  {
+    "tablename": "usage_log",
+    "indexname": "usage_log_pkey",
+    "indexdef": "CREATE UNIQUE INDEX usage_log_pkey ON public.usage_log USING btree (id)"
+  },
+  {
+    "tablename": "waitlist_emails",
+    "indexname": "waitlist_emails_created_at_idx",
+    "indexdef": "CREATE INDEX waitlist_emails_created_at_idx ON public.waitlist_emails USING btree (created_at DESC)"
+  },
+  {
+    "tablename": "waitlist_emails",
+    "indexname": "waitlist_emails_email_key",
+    "indexdef": "CREATE UNIQUE INDEX waitlist_emails_email_key ON public.waitlist_emails USING btree (email)"
+  },
+  {
+    "tablename": "waitlist_emails",
+    "indexname": "waitlist_emails_pkey",
+    "indexdef": "CREATE UNIQUE INDEX waitlist_emails_pkey ON public.waitlist_emails USING btree (id)"
+  },
+  {
+    "tablename": "webui_users",
+    "indexname": "ux_webui_users_email",
+    "indexdef": "CREATE UNIQUE INDEX ux_webui_users_email ON public.webui_users USING btree (email) WHERE (email IS NOT NULL)"
+  },
+  {
+    "tablename": "webui_users",
+    "indexname": "ux_webui_users_id",
+    "indexdef": "CREATE UNIQUE INDEX ux_webui_users_id ON public.webui_users USING btree (id)"
+  },
+  {
+    "tablename": "webui_users",
+    "indexname": "webui_users_email_unique",
+    "indexdef": "CREATE UNIQUE INDEX webui_users_email_unique ON public.webui_users USING btree (email)"
+  },
+  {
+    "tablename": "webui_users",
+    "indexname": "webui_users_id_unique",
+    "indexdef": "CREATE UNIQUE INDEX webui_users_id_unique ON public.webui_users USING btree (id)"
+  },
+  {
+    "tablename": "webui_users",
+    "indexname": "webui_users_pkey",
+    "indexdef": "CREATE UNIQUE INDEX webui_users_pkey ON public.webui_users USING btree (username)"
+  },
+  {
+    "tablename": "yoyo_lock",
+    "indexname": "yoyo_lock_pkey",
+    "indexdef": "CREATE UNIQUE INDEX yoyo_lock_pkey ON public.yoyo_lock USING btree (locked)"
+  }
+]

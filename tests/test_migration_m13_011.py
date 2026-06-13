@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_migration_m13_011.py
-"""Migration tests for m13_011_ee_modules.sql.
+"""Migration tests for m13_011_ee_modules.sql — behaviour cases only.
 
-Verifies that after run_migrations():
-- ee_modules table exists with correct columns, types, and UNIQUE constraint.
-- idx_ee_modules_name index exists.
-- Backfill count == 16 (matching _FALLBACK_EE_MODULES).
-- Backfill data matches the static fallback list exactly.
-- Migration is idempotent (re-run is safe, count stays 16).
-- UNIQUE name constraint rejects duplicates.
-- Soft-delete via deprecated=TRUE is honoured by the active-row filtered query.
+One-shot catalog assertions (T1 table/column existence/nullability, T2 index
+existence) were removed — covered by test_squashed_baseline.py golden snapshot.
+
+Kept behaviour cases:
+  T3   Backfill count == 16 (matching _FALLBACK_EE_MODULES).
+  T4   Backfill data matches the static fallback list exactly.
+  T5   Migration is idempotent (re-run is safe, count stays 16).
+  T6   UNIQUE name constraint rejects duplicates.
+  T7   Soft-delete via deprecated=TRUE is honoured by the active-row filtered query.
+  T8   osm_reader READ grant exists; no write grant; migration safe without the role.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
@@ -43,15 +45,6 @@ def _column_info(conn, table: str) -> dict:
         return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
 
 
-def _index_exists(conn, index_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM pg_indexes WHERE indexname = %s",
-            (index_name,),
-        )
-        return cur.fetchone() is not None
-
-
 def _count_ee_modules(conn) -> int:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM ee_modules")
@@ -71,11 +64,11 @@ def _has_priv(conn, table: str, priv: str) -> bool:
 # Fixture
 # ---------------------------------------------------------------------------
 
-_M13_010_TABLES = ["ee_modules"]
+_M13_011_TABLES = ["ee_modules"]
 
 
 def _drop_m13_011_tables(conn):
-    for tbl in _M13_010_TABLES:
+    for tbl in _M13_011_TABLES:
         with conn.cursor() as cur:
             cur.execute(f"DROP TABLE IF EXISTS {tbl} CASCADE")
 
@@ -107,70 +100,7 @@ def migrated_pg_with_reader(clean_pg):
 
 
 # ---------------------------------------------------------------------------
-# 1. ee_modules table structure
-# ---------------------------------------------------------------------------
-
-
-class TestEeModulesTableExists:
-    def test_table_exists(self, migrated_pg):
-        """ee_modules table must exist after migration."""
-        cols = _column_info(migrated_pg, "ee_modules")
-        assert cols, "ee_modules table not found"
-
-    def test_required_columns_present(self, migrated_pg):
-        """All expected columns must be present."""
-        cols = _column_info(migrated_pg, "ee_modules")
-        expected = {
-            "id",
-            "name",
-            "since_version",
-            "vt_equivalent",
-            "description",
-            "deprecated",
-            "created_at",
-            "updated_at",
-            "updated_by",
-        }
-        assert expected.issubset(cols.keys()), (
-            f"Missing columns: {expected - cols.keys()}"
-        )
-
-    def test_name_not_nullable(self, migrated_pg):
-        """name column must be NOT NULL."""
-        cols = _column_info(migrated_pg, "ee_modules")
-        assert cols["name"][1] == "NO", "name must be NOT NULL"
-
-    def test_deprecated_not_nullable(self, migrated_pg):
-        """deprecated column must be NOT NULL (has DEFAULT FALSE)."""
-        cols = _column_info(migrated_pg, "ee_modules")
-        assert cols["deprecated"][1] == "NO", "deprecated must be NOT NULL"
-
-    def test_since_version_nullable(self, migrated_pg):
-        """since_version must be nullable."""
-        cols = _column_info(migrated_pg, "ee_modules")
-        assert cols["since_version"][1] == "YES", "since_version must be nullable"
-
-    def test_vt_equivalent_nullable(self, migrated_pg):
-        """vt_equivalent must be nullable."""
-        cols = _column_info(migrated_pg, "ee_modules")
-        assert cols["vt_equivalent"][1] == "YES", "vt_equivalent must be nullable"
-
-
-# ---------------------------------------------------------------------------
-# 2. Index
-# ---------------------------------------------------------------------------
-
-
-class TestEeModulesIndexName:
-    def test_index_name_exists(self, migrated_pg):
-        """idx_ee_modules_name must exist."""
-        assert _index_exists(migrated_pg, "idx_ee_modules_name"), (
-            "idx_ee_modules_name missing after migration"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 3. Backfill count
+# T3. Backfill count
 # ---------------------------------------------------------------------------
 
 
@@ -184,7 +114,7 @@ class TestBackfillCount:
 
 
 # ---------------------------------------------------------------------------
-# 4. Backfill data matches static fallback
+# T4. Backfill data matches static fallback
 # ---------------------------------------------------------------------------
 
 
@@ -209,7 +139,7 @@ class TestBackfillDataMatchesStaticFallback:
 
 
 # ---------------------------------------------------------------------------
-# 5. Idempotent re-run
+# T5. Idempotent re-run
 # ---------------------------------------------------------------------------
 
 
@@ -226,7 +156,7 @@ class TestIdempotentRerun:
 
 
 # ---------------------------------------------------------------------------
-# 6. UNIQUE name constraint
+# T6. UNIQUE name constraint
 # ---------------------------------------------------------------------------
 
 
@@ -242,7 +172,7 @@ class TestUniqueNameConstraint:
 
 
 # ---------------------------------------------------------------------------
-# 7. Soft-delete via deprecated flag
+# T7. Soft-delete via deprecated flag
 # ---------------------------------------------------------------------------
 
 
@@ -272,7 +202,7 @@ class TestSoftDeleteViaDeprecatedFlag:
 
 
 # ---------------------------------------------------------------------------
-# 8. osm_reader read grant (deploy-blocking R1 — ADR-0042 / ADR-0034)
+# T8. osm_reader read grant (deploy-blocking R1 — ADR-0042 / ADR-0034)
 # ---------------------------------------------------------------------------
 
 

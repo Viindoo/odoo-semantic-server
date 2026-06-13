@@ -2,12 +2,13 @@
 # tests/test_m13_007_migration.py
 """m13_007 usage_counter ON DELETE CASCADE migration tests.
 
-Business intent (3 cases):
-  T1  usage_counter.api_key_id FK exists after m13_007.
-  T2  FK has ON DELETE CASCADE action (`pg_constraint.confdeltype = 'c'`).
+Business intent (1 behaviour case kept post-squash):
   T3  DELETE FROM api_keys actually cascades — usage_counter rows for that
       key are removed automatically (the behavioural guarantee m13_007 buys,
       and the one cross-test contamination relies on at teardown).
+
+One-shot catalog assertions (T1: FK exists, T2: confdeltype='c') were removed
+— both are now covered by test_squashed_baseline.py golden snapshot.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
@@ -23,61 +24,6 @@ def migrated_pg(clean_pg):
     """Apply all migrations on a clean DB and yield the connection."""
     run_migrations(clean_pg)
     yield clean_pg
-
-
-def _usage_counter_fk_row(conn) -> tuple[str, str] | None:
-    """Return (constraint_name, confdeltype) for the FK on usage_counter.api_key_id.
-
-    `confdeltype` codes (per pg docs):
-      'a' = NO ACTION (default)
-      'r' = RESTRICT
-      'c' = CASCADE
-      'n' = SET NULL
-      'd' = SET DEFAULT
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT con.conname, con.confdeltype
-              FROM pg_constraint con
-              JOIN pg_class    src_cls ON src_cls.oid = con.conrelid
-              JOIN pg_class    ref_cls ON ref_cls.oid = con.confrelid
-              JOIN pg_attribute att    ON att.attrelid = src_cls.oid
-                                      AND att.attnum   = ANY(con.conkey)
-             WHERE con.contype = 'f'
-               AND src_cls.relname = 'usage_counter'
-               AND ref_cls.relname = 'api_keys'
-               AND att.attname     = 'api_key_id'
-             LIMIT 1
-            """
-        )
-        row = cur.fetchone()
-        return (row[0], row[1]) if row else None
-
-
-class TestUsageCounterCascadeFk:
-    """T1 + T2: FK is present AND declares ON DELETE CASCADE."""
-
-    def test_fk_exists_after_m13_007(self, migrated_pg):
-        row = _usage_counter_fk_row(migrated_pg)
-        assert row is not None, (
-            "usage_counter.api_key_id must have an FK referencing api_keys"
-            " after m13_007 (lookup via pg_constraint returned no row)"
-        )
-
-    def test_fk_on_delete_cascade(self, migrated_pg):
-        row = _usage_counter_fk_row(migrated_pg)
-        assert row is not None, "Precondition: FK must exist"
-        conname, confdeltype = row
-        # 'c' is the pg_constraint code for CASCADE.
-        assert confdeltype == "c", (
-            f"usage_counter_api_key_id_fkey must declare ON DELETE CASCADE"
-            f" (confdeltype='c'); got constraint={conname!r}"
-            f" confdeltype={confdeltype!r}."
-            " Without CASCADE, DELETE FROM api_keys leaves orphan usage_counter"
-            " rows that re-bind to the next SERIAL id and cause cross-test"
-            " quota contamination (PR #200 CI iter 3 root cause)."
-        )
 
 
 class TestCascadeBehaviourEndToEnd:

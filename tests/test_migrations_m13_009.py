@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_migrations_m13_009.py
-"""Migration tests for m13_009_unlimited_plan_and_key_overrides.sql.
+"""Migration tests for m13_009_unlimited_plan_and_key_overrides.sql
+— behaviour cases only.
 
-Business intent (4 cases):
-  T1  api_keys gains rate_limit_override + quota_override columns (INT, nullable)
-      with named CHECK constraints.
-  T2  'unlimited' plan seeded with correct values (quota=0, rpm=0, is_public=FALSE).
-  T3  Migration is idempotent (run twice: no duplicate columns, no duplicate plan row,
-      no duplicate constraints).
-  T4  CHECK constraint rejects negative override values; 0 and NULL are valid.
+One-shot catalog assertions (T1 column existence/type/nullability, T2 plan
+seeded data values, T3 constraint name presence) were removed — covered by
+test_squashed_baseline.py golden snapshot.
+
+Kept behaviour cases:
+  T3   Idempotency: double run does not raise, no duplicate rows/constraints.
+  T4   CHECK constraint rejects negative override values; 0 and NULL are valid.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
@@ -20,7 +21,7 @@ pytestmark = pytest.mark.postgres
 
 
 # ---------------------------------------------------------------------------
-# Fixture — clean slate + full migration applied
+# Fixture
 # ---------------------------------------------------------------------------
 
 
@@ -32,42 +33,8 @@ def migrated_pg(clean_pg):
 
 
 # ---------------------------------------------------------------------------
-# Helpers (local — avoid cross-file imports)
+# Helpers
 # ---------------------------------------------------------------------------
-
-
-def _col_exists(conn, table: str, column: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        return cur.fetchone() is not None
-
-
-def _col_nullable(conn, table: str, column: str) -> bool:
-    """Return True if column is nullable (is_nullable = 'YES')."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT is_nullable FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        row = cur.fetchone()
-        return row is not None and row[0] == "YES"
-
-
-def _col_data_type(conn, table: str, column: str) -> str | None:
-    """Return the data_type string for a column, or None if not found."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT data_type FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        row = cur.fetchone()
-        return row[0] if row else None
 
 
 def _pg_constraint_count(conn, table: str, constraint_name: str) -> int:
@@ -84,128 +51,6 @@ def _pg_constraint_count(conn, table: str, constraint_name: str) -> int:
             (table, constraint_name),
         )
         return cur.fetchone()[0]
-
-
-# ---------------------------------------------------------------------------
-# T1: Override columns created correctly
-# ---------------------------------------------------------------------------
-
-
-class TestMigrationCreatesOverrideColumns:
-    """T1: api_keys.rate_limit_override and quota_override columns exist after migration."""
-
-    def test_rate_limit_override_column_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "api_keys", "rate_limit_override"), (
-            "api_keys.rate_limit_override must exist after m13_009"
-        )
-
-    def test_quota_override_column_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "api_keys", "quota_override"), (
-            "api_keys.quota_override must exist after m13_009"
-        )
-
-    def test_rate_limit_override_is_integer(self, migrated_pg):
-        dtype = _col_data_type(migrated_pg, "api_keys", "rate_limit_override")
-        assert dtype == "integer", (
-            f"api_keys.rate_limit_override must be integer type, got {dtype!r}"
-        )
-
-    def test_quota_override_is_integer(self, migrated_pg):
-        dtype = _col_data_type(migrated_pg, "api_keys", "quota_override")
-        assert dtype == "integer", (
-            f"api_keys.quota_override must be integer type, got {dtype!r}"
-        )
-
-    def test_rate_limit_override_is_nullable(self, migrated_pg):
-        assert _col_nullable(migrated_pg, "api_keys", "rate_limit_override"), (
-            "api_keys.rate_limit_override must be nullable (NULL = use plan default)"
-        )
-
-    def test_quota_override_is_nullable(self, migrated_pg):
-        assert _col_nullable(migrated_pg, "api_keys", "quota_override"), (
-            "api_keys.quota_override must be nullable (NULL = use plan default)"
-        )
-
-    def test_rate_limit_override_check_constraint_exists(self, migrated_pg):
-        count = _pg_constraint_count(
-            migrated_pg, "api_keys", "api_keys_rate_limit_override_nonneg"
-        )
-        assert count == 1, (
-            f"api_keys_rate_limit_override_nonneg CHECK constraint must exist (count={count})"
-        )
-
-    def test_quota_override_check_constraint_exists(self, migrated_pg):
-        count = _pg_constraint_count(
-            migrated_pg, "api_keys", "api_keys_quota_override_nonneg"
-        )
-        assert count == 1, (
-            f"api_keys_quota_override_nonneg CHECK constraint must exist (count={count})"
-        )
-
-
-# ---------------------------------------------------------------------------
-# T2: 'unlimited' plan seeded
-# ---------------------------------------------------------------------------
-
-
-class TestMigrationSeedsUnlimitedPlan:
-    """T2: 'unlimited' plan is seeded with correct values."""
-
-    def test_unlimited_plan_exists(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM plans WHERE slug = 'unlimited'")
-            count = cur.fetchone()[0]
-        assert count == 1, (
-            f"Exactly 1 'unlimited' plan must be seeded after m13_009, got {count}"
-        )
-
-    def test_unlimited_plan_quota_is_zero(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT quota_calls_per_month FROM plans WHERE slug = 'unlimited'"
-            )
-            row = cur.fetchone()
-        assert row is not None and row[0] == 0, (
-            f"unlimited plan.quota_calls_per_month must be 0 (sentinel), got {row}"
-        )
-
-    def test_unlimited_plan_rpm_is_zero(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT rate_limit_rpm FROM plans WHERE slug = 'unlimited'")
-            row = cur.fetchone()
-        assert row is not None and row[0] == 0, (
-            f"unlimited plan.rate_limit_rpm must be 0 (sentinel), got {row}"
-        )
-
-    def test_unlimited_plan_is_not_public(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT is_public FROM plans WHERE slug = 'unlimited'")
-            row = cur.fetchone()
-        assert row is not None and row[0] is False, (
-            "unlimited plan must have is_public=FALSE (admin-granted only)"
-        )
-
-    def test_unlimited_plan_display_name_conveys_unlimited(self, migrated_pg):
-        """display_name must be a non-empty label that reads as 'unlimited'.
-
-        The business contract is that the admin dropdown shows a human-readable
-        label identifying this as the unlimited plan — not one exact marketing
-        string. Asserting the exact copy ("Unlimited (admin-granted)") only
-        mirrors the migration's literal and turns a label tweak into a false
-        failure. We assert the semantic content (non-empty + says "unlimited")
-        instead.
-        """
-        with migrated_pg.cursor() as cur:
-            cur.execute("SELECT display_name FROM plans WHERE slug = 'unlimited'")
-            row = cur.fetchone()
-        assert row is not None, "unlimited plan must be seeded"
-        display_name = row[0]
-        assert display_name and display_name.strip(), (
-            "unlimited plan display_name must be a non-empty label"
-        )
-        assert "unlimited" in display_name.lower(), (
-            f"display_name must read as the unlimited plan, got {display_name!r}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -332,7 +177,6 @@ class TestOverrideConstraintRejectsNegative:
     def test_null_rate_limit_override_accepted(self, migrated_pg):
         """NULL is valid (means use plan default)."""
         key_id = self._insert_test_key(migrated_pg)
-        # First set to a value, then reset to NULL to confirm nullability
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "UPDATE api_keys SET rate_limit_override = NULL WHERE id = %s",

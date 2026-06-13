@@ -1,45 +1,28 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Integration tests for migration m13_021_embeddings_global_sentinel.sql.
+"""Live constraint-enforcement tests for the __global__ sentinel schema.
 
-FUFU-2 (root fix, supersedes FU-2's ck_embeddings_null_profile_scope CHECK):
-Replace the NULL-as-global overloading in embeddings.profile_name with an
-explicit '__global__' sentinel and make the column NOT NULL.
+After the migration squash, one-shot existence/introspection tests (column
+NOT NULL, old CHECK absent, new CHECK present, idempotent re-apply) are covered
+by tests/test_squashed_baseline.py.  This file keeps ONLY the five tests that
+protect LIVE CONSTRAINT BEHAVIOUR by attempting invalid/valid INSERTs and
+asserting the database raises (or allows) them.  These tests cannot be replaced
+by introspection because they verify the constraints actually fire at runtime.
 
-Cases covered:
-  1. Post-migration: 0 NULL profile_name rows (backfill succeeded).
-  2. Column is NOT NULL after migration.
-  3. Old ck_embeddings_null_profile_scope CHECK is absent (superseded).
-  4. New ck_embeddings_global_sentinel_scope CHECK exists and is validated.
-  5. Narrowed sentinel CHECK rejects a non-pattern '__global__' insert.
-  6. Sentinel CHECK allows pattern_example/__patterns__/'__global__' insert.
-  7. NOT NULL rejects a NULL profile_name insert.
-  8. profiles_name_no_dunder CHECK exists and is validated.
-  9. profiles_name_no_dunder CHECK rejects a '__global__' profile insert.
- 10. Idempotent re-apply: run the migration SQL twice; constraint counts stable.
- 11. RLS policy updated: embeddings_tenant policy body contains '__global__' sentinel
-     branch and does NOT contain 'IS NULL'.
+Constraints exercised:
+  - ck_embeddings_global_sentinel_scope  (embeddings table)
+  - NOT NULL on embeddings.profile_name
+  - profiles_name_no_dunder              (profiles table)
 
+All tests run against the baseline schema produced by migrations/0001_initial.sql.
 Requires PostgreSQL + pgvector (pytestmark = pytest.mark.postgres).
-PROD-SAFETY: NEVER run against the default localhost DSN on this box — it points
-at the prod database. Run in CI or against an isolated throwaway container only.
-See docs/adr/0021 + conftest.py §PG_TEST_DSN for context.
 """
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.postgres
 
-_MIGRATION_SQL = (
-    Path(__file__).resolve().parents[1]
-    / "migrations"
-    / "m13_021_embeddings_global_sentinel.sql"
-)
-
 _SENTINEL_CHECK = "ck_embeddings_global_sentinel_scope"
-_OLD_CHECK = "ck_embeddings_null_profile_scope"
 _DUNDER_CHECK = "profiles_name_no_dunder"
 
 # A zero-vector literal compatible with the default embedder dim (1024).
@@ -47,30 +30,6 @@ _ZERO_VEC = "[" + ",".join(["0.0"] * 1024) + "]"
 
 # Unique version sentinel for this test module to avoid row collisions.
 _TV = "98.0"
-
-
-def _apply_m13_021(conn) -> None:
-    """Execute the migration SQL directly (for idempotency re-run checks)."""
-    sql = _MIGRATION_SQL.read_text(encoding="utf-8")
-    with conn.cursor() as cur:
-        cur.execute(sql)
-    if not conn.autocommit:
-        conn.commit()
-
-
-def _constraint_rows(conn, conname: str, table: str) -> list[dict]:
-    """Return pg_constraint rows for the given constraint name + table."""
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT conname, convalidated
-              FROM pg_constraint
-             WHERE conname = %s
-               AND conrelid = %s::regclass
-            """,
-            (conname, f"public.{table}"),
-        )
-        return [{"conname": r[0], "convalidated": r[1]} for r in cur.fetchall()]
 
 
 def _insert_embedding(conn, *, chunk_type, module, profile_name, idx=0):
@@ -114,7 +73,7 @@ def _insert_embedding(conn, *, chunk_type, module, profile_name, idx=0):
 
 @pytest.fixture
 def migrated_pg(clean_pg):
-    """Apply all migrations (including m13_021) on a clean schema."""
+    """Apply all migrations (including squashed baseline) on a clean schema."""
     from src.db.migrate import run_migrations
 
     run_migrations(clean_pg)
@@ -131,50 +90,16 @@ def migrated_pg_vec(migrated_pg):
     return migrated_pg
 
 
-class TestMigrationM13021GlobalSentinel:
-    def test_zero_null_profile_name_rows(self, migrated_pg_vec):
-        """Case 1: post-migration 0 NULL profile_name rows."""
-        with migrated_pg_vec.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM embeddings WHERE profile_name IS NULL")
-            count = cur.fetchone()[0]
-        assert count == 0, (
-            f"Expected 0 NULL profile_name rows post-migration, got {count}"
-        )
-
-    def test_column_not_null(self, migrated_pg_vec):
-        """Case 2: embeddings.profile_name column is NOT NULL."""
-        with migrated_pg_vec.cursor() as cur:
-            cur.execute(
-                """SELECT is_nullable FROM information_schema.columns
-                    WHERE table_name = 'embeddings'
-                      AND column_name = 'profile_name'"""
-            )
-            row = cur.fetchone()
-        assert row is not None, "embeddings.profile_name column not found"
-        assert row[0] == "NO", (
-            f"embeddings.profile_name must be NOT NULL, got is_nullable={row[0]!r}"
-        )
-
-    def test_old_check_absent(self, migrated_pg_vec):
-        """Case 3: ck_embeddings_null_profile_scope (FU-2) is absent."""
-        rows = _constraint_rows(migrated_pg_vec, _OLD_CHECK, "embeddings")
-        assert rows == [], (
-            f"Old superseded CHECK {_OLD_CHECK!r} must not exist after m13_021; "
-            f"got {rows}"
-        )
-
-    def test_sentinel_check_present_and_validated(self, migrated_pg_vec):
-        """Case 4: ck_embeddings_global_sentinel_scope exists and convalidated=true."""
-        rows = _constraint_rows(migrated_pg_vec, _SENTINEL_CHECK, "embeddings")
-        assert len(rows) == 1, (
-            f"Expected exactly 1 constraint {_SENTINEL_CHECK!r}, got {len(rows)}"
-        )
-        assert rows[0]["convalidated"] is True, (
-            "Sentinel CHECK must be VALIDATED (convalidated=true)"
-        )
+class TestM13021LiveConstraintEnforcement:
+    """Five enforcement tests: attempt bad/good INSERTs and assert the DB fires correctly."""
 
     def test_sentinel_check_rejects_non_pattern_global(self, migrated_pg_vec):
-        """Case 5: non-pattern '__global__' insert raises CheckViolation."""
+        """ck_embeddings_global_sentinel_scope rejects non-pattern '__global__' insert.
+
+        A method-type row carrying profile_name='__global__' is a data error —
+        the sentinel is reserved exclusively for pattern_example catalogue rows.
+        The CHECK constraint must fire and raise CheckViolation.
+        """
         import psycopg2.errors
 
         with pytest.raises(psycopg2.errors.CheckViolation):
@@ -188,7 +113,11 @@ class TestMigrationM13021GlobalSentinel:
         migrated_pg_vec.rollback()
 
     def test_sentinel_check_allows_pattern_global(self, migrated_pg_vec):
-        """Case 6: pattern_example/__patterns__/'__global__' row is allowed."""
+        """ck_embeddings_global_sentinel_scope allows pattern_example + __patterns__ + __global__.
+
+        This is the ONE valid combination for the global pattern catalogue.
+        Confirms the CHECK is not over-restrictive.
+        """
         _insert_embedding(
             migrated_pg_vec,
             chunk_type="pattern_example",
@@ -207,7 +136,7 @@ class TestMigrationM13021GlobalSentinel:
         assert count == 1, "Global pattern row must have been inserted"
 
     def test_not_null_rejects_null_profile(self, migrated_pg_vec):
-        """Case 7: NULL profile_name raises NotNullViolation."""
+        """embeddings.profile_name NOT NULL constraint rejects a NULL insert."""
         import psycopg2.errors
 
         with pytest.raises(psycopg2.errors.NotNullViolation):
@@ -220,18 +149,12 @@ class TestMigrationM13021GlobalSentinel:
             )
         migrated_pg_vec.rollback()
 
-    def test_dunder_check_present_and_validated(self, migrated_pg):
-        """Case 8: profiles_name_no_dunder CHECK exists and convalidated=true."""
-        rows = _constraint_rows(migrated_pg, _DUNDER_CHECK, "profiles")
-        assert len(rows) == 1, (
-            f"Expected exactly 1 constraint {_DUNDER_CHECK!r}, got {len(rows)}"
-        )
-        assert rows[0]["convalidated"] is True, (
-            "Dunder CHECK must be VALIDATED (convalidated=true)"
-        )
-
     def test_dunder_check_rejects_global_profile(self, migrated_pg):
-        """Case 9: profiles_name_no_dunder CHECK rejects '__global__' profile name."""
+        """profiles_name_no_dunder CHECK rejects a '__global__' profile name.
+
+        The profiles table must not allow dunder-named profiles; '__global__' is
+        a sentinel reserved for the embeddings catalogue, not a real profile.
+        """
         import psycopg2.errors
 
         with pytest.raises(psycopg2.errors.CheckViolation):
@@ -241,25 +164,6 @@ class TestMigrationM13021GlobalSentinel:
                     "VALUES ('__global__', '17.0')"
                 )
         migrated_pg.rollback()
-
-    def test_idempotent_reapply(self, migrated_pg_vec):
-        """Case 10: running the migration SQL a second time is a no-op;
-        constraint counts remain exactly 1 for each CHECK."""
-        _apply_m13_021(migrated_pg_vec)
-        # Sentinel CHECK must still be exactly 1.
-        sentinel_rows = _constraint_rows(migrated_pg_vec, _SENTINEL_CHECK, "embeddings")
-        assert len(sentinel_rows) == 1, (
-            f"Idempotent re-run must not duplicate {_SENTINEL_CHECK!r}; "
-            f"got {len(sentinel_rows)}"
-        )
-        assert sentinel_rows[0]["convalidated"] is True
-        # Dunder CHECK must still be exactly 1.
-        dunder_rows = _constraint_rows(migrated_pg_vec, _DUNDER_CHECK, "profiles")
-        assert len(dunder_rows) == 1, (
-            f"Idempotent re-run must not duplicate {_DUNDER_CHECK!r}; "
-            f"got {len(dunder_rows)}"
-        )
-        assert dunder_rows[0]["convalidated"] is True
 
     def test_sentinel_check_rejects_pattern_global_wrong_module(self, migrated_pg_vec):
         """AND-boundary: chunk_type='pattern_example' but module != '__patterns__' must raise.
@@ -280,25 +184,3 @@ class TestMigrationM13021GlobalSentinel:
                 idx=11,
             )
         migrated_pg_vec.rollback()
-
-    def test_rls_policy_uses_sentinel_not_is_null(self, migrated_pg_vec):
-        """Case 11: embeddings_tenant RLS policy uses '__global__' branch, not IS NULL.
-
-        Confirms the policy body was updated by m13_021 Block 2.
-        """
-        with migrated_pg_vec.cursor() as cur:
-            cur.execute(
-                """SELECT pg_get_expr(polqual, polrelid)
-                     FROM pg_policy
-                    WHERE polname = 'embeddings_tenant'
-                      AND polrelid = 'public.embeddings'::regclass"""
-            )
-            row = cur.fetchone()
-        assert row is not None, "embeddings_tenant policy not found"
-        policy_text = row[0]
-        assert "__global__" in policy_text, (
-            f"Policy must contain '__global__' sentinel branch. Got: {policy_text!r}"
-        )
-        assert "IS NULL" not in policy_text, (
-            f"Policy must NOT contain 'IS NULL' branch post-m13_021. Got: {policy_text!r}"
-        )
