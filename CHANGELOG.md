@@ -9,9 +9,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
 > **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
 
-## [Unreleased]
-
-### Read-side timeout hardening (#287) — landing toward v0.14.1
+## [0.14.1] — 2026-06-13 — Read-side timeout hardening (#287 complete) + odoo-ai-agents plugin rename + landing page
 
 - **PR-1 (#289):** systemic ADR-0023 contract hardening across the highest-traffic
   read surface. New pool-less `@offload_neo4j` decorator (catch `OrmQueryTimeout` →
@@ -26,8 +24,60 @@ All notable changes to Odoo Semantic MCP are documented here.
   unified to the model-resource contract: a transient timeout is **never cached**
   (was poisoning the LRU for the full 300s TTL) → caught at the handler → metric
   once → clean degraded body. Read-side only: no migration, no deps, wire contract
-  unchanged (25 tools / 7 resources). PR-2 (spec/lint/cli/style tools) and PR-3
-  (metric uniformity) remain per #287.
+  unchanged (25 tools / 7 resources).
+- **PR-2 (#287, ec503de + 5d6fe5f + c1e32c8):** bound + catch `OrmQueryTimeout`
+  across the remaining 9 PURE spec/lint/cli/pattern/style read tools
+  (`lookup_core_api`, `api_version_diff`, `find_deprecated_usage`, `lint_check`,
+  `cli_help`, `check_module_exists`, `find_override_point`, `resolve_stylesheet`,
+  `list_available_versions`) + `set_active_version` (mutating; was swallowing
+  timeouts silently) + `resources_index` discovery reads. Three async EMBED tools
+  (`suggest_pattern` / `find_examples` / `find_style_override`) catch
+  `OrmQueryTimeout` inline (no `@offload_neo4j` backstop on the async path) for
+  both the main query and version-resolution (Tier-3 `_latest_version()`) — the
+  latter was a blind spot: explicit-version tests short-circuit Tier-1 and never
+  touched Neo4j, so the resolution read sat unguarded despite a deliberate
+  timeout-harness suite. De-duped `_lookup_core_api` via `_fetch_core_symbol`.
+  Structural guard (`tests/test_resolve_timeout_guard.py`, AST-level, per-read)
+  + Tier-3 end-to-end coverage (`version='auto'` without `_resolve_version` stub)
+  close the blind-spot class for future tools.
+- **PR-3 (#287, a7a61cd — Closes #287):** metric uniformity M1–M4 — the four
+  tool-path timeouts in `_resolve_field` (inherited-fallback), `_resolve_method`,
+  `_list_fields`, and `_list_methods` that returned a clean string without counting
+  now emit `nonorm_query_timeout_total{tool="model_inspect"}` exactly once (M1/M2
+  placed after `if _reraise_timeout: raise` to avoid double-count with the resource
+  path). All 7 `odoo://` resource handlers' identical try/except backstop collapsed
+  into `_serve_resource_with_metric()` helper. Repeated two-line inline catch body
+  across 3 EMBED tools + `set_active_version` consolidated into
+  `_nonorm_timeout_response(exc, tool)` (handler preserved verbatim so the
+  structural guard still sees a timeout-catching try). ADR-0050 documents the full
+  read-side timeout-hardening pattern: 4 `@offload*` decorator variants, decorator
+  + `_data_bounded`/`_single_bounded` division of labour, resource
+  `_reraise_timeout` anti-poison, `nonorm_query_timeout_total{tool}` metric SSOT.
+- **Refactor wave (no behavior change):** `server.py` god-file split into
+  `src/mcp/tools/*` (ORM, stylesheet, spec, inspect/session, discovery, guidance)
+  + `listings.py` / `describe.py`; `auth_registry` → `src/db/auth/*` +
+  `auth_plans.py`; indexer pipeline/writer split by node-type (B4–B7); `cli` →
+  `src/cli_commands/*`; `repos.py` → `repos_profiles` / `crud` / `indexing`; Era1
+  text-parser extracted to `parser_python_era1.py`; cold-import safety guards +
+  re-export-shim removal codemod. Tool count unchanged (25 tools / 7 resources).
+- **odoo-ai-agents (#291):** plugin renamed `odoo-semantic-skills` → `odoo-ai-agents`
+  across site, README, CONTRIBUTING, deploy docs, and `/install` static page.
+  New `/odoo-ai-agents` landing page (Astro prerender): full-width BPMN delivery
+  pipeline hero, 7 agents / 41 skills / 9 commands / 9 personas stats, comparison
+  table, FAQ; bespoke 1200×630 OG card (satori + `@resvg/resvg-js`); self-hosted
+  Montserrat fonts; 3 JSON-LD schemas (SoftwareApplication + FAQPage +
+  BreadcrumbList). SEO/GEO: nav entry, `/tools` Agent-Team section, `llms.txt` +
+  `robots.txt` AI-crawler allow, sitemap fixed-constant `lastmod`. Capability
+  counts (41 skills / 7 agents / 9 commands) drift-guarded by test.
+- **CI hardening:** nightly-smoke `smoke-real-odoo-17` — escape `$v` shell variable
+  + retarget ORM imports post-refactor (#292/#307, #308); report-failure job now
+  gated on `github.event_name == 'schedule'` so manual `workflow_dispatch` runs no
+  longer auto-file spurious issues.
+- **Test-infra (pre-deploy hardening):** `make test-integration` now creates an
+  ephemeral per-run Postgres DB (`osm_test_<uuid>`) via `PG_ADMIN_DSN`, migrated
+  and dropped in `try/finally` — eliminates the prior `DROP CASCADE` data-loss
+  risk on prod DSN. 14 PG-marked test files routed to the shared ephemeral DSN.
+  CI supplies `PG_ADMIN_DSN`; ADR-0040 amendment 3.
 
 ## [0.14.0] — 2026-06-11 — Billing P1 + Admin Settings + embedding provider + auth unify + ORM/lint/session hardening
 
