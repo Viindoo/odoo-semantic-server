@@ -1827,3 +1827,104 @@ def test_t3_non_selection_char_positional_label_still_works(tmp_path, sale_modul
     assert field_map["name"].string == "My Label", (
         "Char positional label must still be extracted (non-Selection/Reference)"
     )
+
+
+# --- #285: era2 SyntaxError must fall back to text-regex, not silently drop ---
+
+@pytest.fixture
+def v10_base_module(tmp_path) -> ModuleInfo:
+    # v10 dispatches to era2 (AST). Residual Py2 idioms in a v10 fork
+    # raise SyntaxError under Python 3's ast.parse — the #285 trigger.
+    return ModuleInfo(
+        name="base", odoo_version="10.0", repo="odoo_10.0",
+        path=str(tmp_path), depends=[], version_raw="10.0.1.0.0",
+    )
+
+
+@pytest.mark.parametrize("py2_line", [
+    "        sortby = lambda (a, _): a.sequence or 0",       # tuple-arg lambda (inside _helper)
+    "        raise to_type, message, tb",                    # 3-arg raise
+    "        print k, v",                                    # print statement
+    "        if record.balance <> 0.0:\n            pass",   # <> operator
+])
+def test_era2_syntaxerror_falls_back_to_text_regex(tmp_path, v10_base_module, py2_line):
+    # A file whose model is valid but contains ONE Py2 idiom must still yield the
+    # definition node — not get silently dropped (the #285 orphan bug).
+    f = write_py(tmp_path, "res_users.py", f"""
+        from odoo import models, fields
+
+        class ResUsers(models.Model):
+            _name = 'res.users'
+            _description = 'Users'
+
+            login = fields.Char()
+
+            def _helper(self):
+        {py2_line}
+    """)
+    models_found = parse_file(f, v10_base_module)
+    names = {m.name: m for m in models_found}
+    assert "res.users" in names, "definition lost on SyntaxError (regression #285)"
+    ru = names["res.users"]
+    assert ru.had_explicit_name is True
+    assert "res.users" not in ru.inherit          # writer stamps is_definition=true
+    assert ru.module == "base"
+
+
+def test_clean_py3_file_does_not_use_fallback(tmp_path, v10_base_module, caplog):
+    # Negative/blast-radius guard: a clean Py3 file must parse via AST with NO
+    # fallback warning emitted (proves the fallback is SyntaxError-gated only).
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+            name = fields.Char()
+    """)
+    with caplog.at_level("WARNING", logger="src.indexer.parser"):
+        models_found = parse_file(f, v10_base_module)
+    assert models_found[0].name == "res.partner"
+    assert "falling back to text-regex" not in caplog.text
+
+
+def test_local_base_class_model_is_detected(tmp_path, v10_base_module):
+    # cash.box.in extends a same-file CashBox(TransientModel) base class, not a
+    # framework base directly. It has an explicit _name and must be indexed.
+    # FIX 1 (review): is_transient must be propagated from the resolved framework base.
+    f = write_py(tmp_path, "pos_box.py", """
+        from odoo import models, fields
+
+        class CashBox(models.TransientModel):
+            _register = False
+            name = fields.Char()
+
+        class CashBoxIn(CashBox):
+            _name = 'cash.box.in'
+    """)
+    result = parse_file(f, v10_base_module)
+    names = {m.name: m for m in result}
+    assert "cash.box.in" in names
+    cash = names["cash.box.in"]
+    assert cash.is_transient is True, "is_transient must be propagated via local base widening"
+
+
+def test_local_base_class_transitive_chain_detected(tmp_path, v10_base_module):
+    # FIX 2 (review): 2-level transitive same-file chain must be promoted and carry
+    # correct model-type flags.  AbstractCashBox → CashBox → CashBoxIn.
+    f = write_py(tmp_path, "pos_box_deep.py", """
+        from odoo import models, fields
+
+        class AbstractCashBox(models.TransientModel):
+            _register = False
+
+        class CashBox(AbstractCashBox):
+            name = fields.Char()
+
+        class CashBoxIn(CashBox):
+            _name = 'cash.box.in'
+    """)
+    result = parse_file(f, v10_base_module)
+    names = {m.name: m for m in result}
+    assert "cash.box.in" in names, "2-level transitive local-base widening must promote the class"
+    cash = names["cash.box.in"]
+    assert cash.is_transient is True, "is_transient must propagate through 2-level local base chain"

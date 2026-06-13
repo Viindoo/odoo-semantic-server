@@ -6,7 +6,7 @@ export const RESOURCE_COUNT = 7;
 
 /** Current server version shown in SiteFooter.
  *  Sync manually from [project].version in pyproject.toml (root). */
-export const SITE_VERSION = '0.14.1';
+export const SITE_VERSION = '0.14.2';
 
 /** Brand name SSOT.
  *  BRAND_FULL  — full product name; use in title/meta SEO, H1, legal copy,

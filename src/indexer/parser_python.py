@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/parser_python.py
 import ast
+import logging
 import re
 from pathlib import Path
 
-from src.constants import LEGACY_ERA_MAX_MAJOR
-
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from .parser_util import parse_external_source
-from .version_registry import VersionRegistry
+
+_logger = logging.getLogger("src.indexer.parser")
 
 # v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
@@ -444,21 +444,6 @@ def _derive_copyright_owner(manifest: dict, license_value: str) -> str | None:
     return None
 
 
-# Version-dispatch registry for Python parser era selection (ADR-0032).
-# era1: v8/v9 (Python 2 AST, _columns dict).
-# era2: v10+ (modern AST).
-# To add v20 support (if Odoo changes parser strategy): append one entry here.
-_ERA_REGISTRY: VersionRegistry[str] = VersionRegistry([
-    (8,  LEGACY_ERA_MAX_MAJOR, "era1"),   # v8–v9
-    (10, None,                 "era2"),   # v10+, open-ended
-])
-
-
-def _detect_era(odoo_version: str) -> str:
-    """era1: Odoo v8/v9 (Python 2, _columns dict). era2: v10+ (modern AST)."""
-    return _ERA_REGISTRY.resolve_version(odoo_version, default="era2")  # type: ignore[return-value]
-
-
 def _extract_string(node: ast.expr) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -593,12 +578,45 @@ def _extract_columns_dict_fields(dict_node: ast.Dict) -> list[FieldInfo]:
     return fields_out
 
 
+def _resolve_local_model_base(
+    base_names: set[str],
+    class_map: dict[str, "ast.ClassDef"],
+    seen: set[str] | None = None,
+) -> set[str] | None:
+    """Walk same-file local base classes transitively until a framework base is reached.
+
+    Returns the set of MODEL_BASE_CLASSES names ultimately inherited (e.g.
+    {'TransientModel'}), or None if no framework base is reachable.  Cycle-safe
+    via the ``seen`` set.  Same-file only — ``class_map`` contains only top-level
+    ClassDef nodes from the current file (#285 follow-up review).
+    """
+    if seen is None:
+        seen = set()
+    for base in base_names:
+        if base in seen:
+            continue
+        local_cls = class_map.get(base)
+        if local_cls is None:
+            continue
+        seen.add(base)
+        local_base_names = _get_base_class_names(local_cls)
+        framework_bases = local_base_names & MODEL_BASE_CLASSES
+        if framework_bases:
+            return framework_bases
+        # Recurse one level deeper into same-file local bases.
+        result = _resolve_local_model_base(local_base_names, class_map, seen)
+        if result is not None:
+            return result
+    return None
+
+
 def _parse_class(
     cls_node: ast.ClassDef,
     module_info: ModuleInfo,
     source: str = "",
     scope_map: dict[str, str] | None = None,
     local_defs: set[str] | None = None,
+    class_map: dict[str, ast.ClassDef] | None = None,
 ) -> ModelInfo | None:
     base_names = _get_base_class_names(cls_node)
     is_model_class = bool(base_names & MODEL_BASE_CLASSES)
@@ -783,6 +801,21 @@ def _parse_class(
     # Not an Odoo model if no _name and not a Model subclass + no _columns dict
     if not name:
         return None
+
+    # Same-file local base-class widening (#285, review): when the class's Python bases
+    # are not framework bases (e.g. ``CashBoxIn(CashBox)`` where ``CashBox`` is a
+    # same-file ``TransientModel`` subclass), walk the same-file local base chain
+    # transitively (cycle-safe) to reach a framework base.  Only promote when the
+    # subclass has an explicit ``_name`` or ``_inherit`` so plain helper subclasses
+    # are not falsely indexed.  Propagate is_abstract/is_transient from the resolved
+    # framework base so Neo4j gets correct model-type flags.
+    if not is_model_class and (had_explicit_name or inherit) and class_map:
+        resolved = _resolve_local_model_base(base_names, class_map)
+        if resolved:
+            is_model_class = True
+            is_abstract = is_abstract or ('AbstractModel' in resolved)
+            is_transient = is_transient or ('TransientModel' in resolved)
+
     if not is_model_class and not inherit and not inherits and not has_columns_dict:
         return None
 
@@ -805,21 +838,31 @@ def _parse_era2_ast(
 ) -> list[ModelInfo]:
     """Modern AST parser (v10+ and v8/v9 when source happens to be Py3-compatible).
 
-    Builds a per-file import scope map and module-level local def set once, then
-    passes them into each _parse_class call so that _extract_core_symbol_refs (V0.5)
-    can filter false-positive USES_CORE_SYMBOL refs caused by local name collisions.
+    Builds a per-file import scope map, module-level local def set, and a
+    class-name-to-node map once, then passes them into each _parse_class call so
+    that _extract_core_symbol_refs (V0.5) can filter false-positive
+    USES_CORE_SYMBOL refs caused by local name collisions, and so that same-file
+    local base classes can be resolved for model-class detection (#285).
     """
     # External third-party addon source — scope away SyntaxWarning noise, pass the
     # real path so any diagnostic is attributable (not <unknown>). See parser_util.
     tree = parse_external_source(source, filename=filename)
     scope_map = _build_import_scope_map(tree)
     local_defs = _collect_module_local_defs(tree)
+    # class_map: short-name → ClassDef for all top-level classes in this file.
+    # Used by _parse_class to resolve same-file local base classes (#285).
+    class_map: dict[str, ast.ClassDef] = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+    }
     models = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             model = _parse_class(
                 node, module_info, source=source,
                 scope_map=scope_map, local_defs=local_defs,
+                class_map=class_map,
             )
             if model:
                 models.append(model)
@@ -827,30 +870,41 @@ def _parse_era2_ast(
 
 
 def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
-    """Parse a Python file → list[ModelInfo]. Era-aware dispatch (M4.5 WI1.2):
+    """Parse a Python file → list[ModelInfo]. Era-aware dispatch (M4.5 WI1.2).
 
-    - era2 (v10+): AST only. SyntaxError → return [].
-    - era1 (v8/v9): try AST first; fall back to text-regex on SyntaxError
-      (Python 2-only syntax like `print 'x'`, `except E, e:`).
+    Primary path is the AST parser for ALL eras. On ``SyntaxError`` (a file that
+    Python 3's ``ast`` cannot parse — e.g. residual Python-2 idioms that survived
+    a forked v10 checkout, or a stray bad file on the v19 dev branch), fall back
+    to the era1 text-regex extractor so the file's model IDENTITY (``_name`` /
+    ``_inherit`` / best-effort fields) is still recovered instead of silently
+    dropping the whole file. The fallback is reached ONLY on SyntaxError, so
+    syntactically-valid files are never affected (#285, ADR-0032 graceful
+    degradation; era1=v8/v9 already did this — era2 now matches).
     """
     try:
         source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
     except OSError:
         return []
 
-    era = _detect_era(module_info.odoo_version)
-
-    if era == "era1":
-        try:
-            models = _parse_era2_ast(source, module_info, filename=filepath)
-        except SyntaxError:
-            models = _parse_era1_text(source, module_info)
-    else:
-        # era2: AST-only
-        try:
-            models = _parse_era2_ast(source, module_info, filename=filepath)
-        except SyntaxError:
-            models = []
+    try:
+        models = _parse_era2_ast(source, module_info, filename=filepath)
+    except SyntaxError as exc:
+        # Graceful degradation: a SyntaxError means ast.parse rejected the file.
+        # Recover model identity via the text-regex extractor rather than
+        # dropping every model in the file (the #285 orphan bug). Logged so a
+        # future straggler is visible, never silent.
+        _logger.warning(
+            "parse_file: ast.parse failed for %s (Odoo %s): %s — "
+            "falling back to text-regex extraction",
+            filepath, module_info.odoo_version, exc,
+        )
+        models = _parse_era1_text(source, module_info)
+        if not models:
+            _logger.error(
+                "parse_file: text-regex fallback recovered 0 models from %s "
+                "(Odoo %s) — models in this file are LOST",
+                filepath, module_info.odoo_version,
+            )
 
     # A3: stamp real source file path on every returned ModelInfo
     for m in models:
