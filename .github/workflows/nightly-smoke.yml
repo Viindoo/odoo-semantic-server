@@ -669,8 +669,11 @@ jobs:
 
   report-failure:
     needs: [smoke-real-odoo-17, smoke-real-odoo-8, check-ollama, recall-benchmark]
-    # Run when any needed job failed (ignore recall-benchmark when skipped).
-    if: always() && (needs.smoke-real-odoo-17.result == 'failure' || needs.smoke-real-odoo-8.result == 'failure' || needs.recall-benchmark.result == 'failure')
+    # Run when any needed job failed (ignore recall-benchmark when skipped), but
+    # ONLY for the scheduled nightly — a manual `workflow_dispatch` verify-run that
+    # fails (e.g. while iterating a fix on a branch) must NOT auto-file a noise issue
+    # (this is what created the spurious #309).
+    if: always() && github.event_name == 'schedule' && (needs.smoke-real-odoo-17.result == 'failure' || needs.smoke-real-odoo-8.result == 'failure' || needs.recall-benchmark.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       issues: write
