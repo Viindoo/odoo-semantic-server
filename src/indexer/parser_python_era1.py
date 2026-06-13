@@ -23,9 +23,9 @@ import tokenize
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo
 
-# NOTE: shared constants (FIELD_TYPES / FIELD_TYPES_LEGACY / RELATIONAL_FIELD_TYPES)
-# and _classify_method_convention live in parser_python.py, which imports THIS
-# module at the bottom of its body for re-export. Importing them at module level
+# NOTE: shared constants (FIELD_TYPES / FIELD_TYPES_LEGACY / RELATIONAL_FIELD_TYPES /
+# MODEL_BASE_CLASSES) and _classify_method_convention live in parser_python.py, which
+# imports THIS module at the bottom of its body for re-export. Importing them at module level
 # here forms an import cycle that breaks a cold `import parser_python_era1` (the
 # bottom re-export sees this module only partially initialized). They are used
 # only inside _parse_era1_text, so we import them lazily there instead.

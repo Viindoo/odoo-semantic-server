@@ -160,7 +160,7 @@ ADR-0005 is kept as historical record and MUST NOT be deleted.
 | File | Change |
 |------|--------|
 | `src/indexer/version_registry.py` | **New** — `VersionRegistry` class + `make_version_registry` |
-| `src/indexer/parser_python.py` | `_ERA_REGISTRY` module constant; `_detect_era` delegates to it |
+| `src/indexer/parser_python.py` | `_ERA_REGISTRY` module constant; `_detect_era` delegates to it — **both removed in PR #314 (#285); see Amendment below** |
 | `src/indexer/parser_odoo_core.py` | `_PREFIX_REGISTRY` module constant; `_version_prefix` delegates to it |
 | `src/indexer/parser_js.py` | `_OWL_ENABLED_REGISTRY` constant; two `if major_version < 14` guards replaced |
 | `src/indexer/parser_cli.py` | `_PKG_PREFIX_REGISTRY` module constant; `_pkg_prefix` delegates to it (PR#160 follow-up) |

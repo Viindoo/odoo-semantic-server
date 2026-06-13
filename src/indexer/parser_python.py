@@ -899,7 +899,9 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
     except SyntaxError as exc:
         # Graceful degradation: a SyntaxError means ast.parse rejected the file.
         # Recover model identity via the text-regex extractor rather than
-        # dropping every model in the file (the #285 orphan bug). Never silent.
+        # dropping every model in the file (the #285 orphan bug). Never a silent
+        # drop — the fallback is always logged below (DEBUG for v8/v9, WARNING for
+        # v10+), plus an ERROR if it recovers nothing.
         #
         # Severity is version-aware: v8/v9 source is Python 2 and routinely fails
         # Python 3 ast.parse — that is the EXPECTED era1 path, logged at DEBUG to
