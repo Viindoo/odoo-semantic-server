@@ -1,5 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Integration tests for src.db.migrate — requires PostgreSQL.
+"""Integration tests for src.db.migrate — behaviour cases only.
+
+One-shot catalog assertions (column/index/constraint existence via
+information_schema, pg_indexes, pg_constraint) were removed — covered by
+test_squashed_baseline.py golden snapshot.
+
+Kept behaviour cases:
+  - Idempotency (run twice, yoyo reports 0 pending on second run)
+  - UNIQUE / CHECK / FK-cascade enforcement via INSERT+raises
+  - Data preservation across baseline re-detection
+  - REQUIRE_PGVECTOR fail-fast guard unit tests (no DB needed)
 
 Unit tests for REQUIRE_PGVECTOR fail-fast guard (no Docker needed) are at the
 bottom of this file; they are NOT marked postgres/neo4j and run under make test-unit.
@@ -16,109 +26,10 @@ from src.db.migrate import (
 
 
 @pytest.mark.postgres
-def test_migrate_creates_profiles_table(clean_pg):
-    """profiles must expose its full column contract with correct type + nullability.
-
-    RW-19: previously this snapshotted the exact declaration ORDER
-    (`assert cols == [...]`), an implementation detail — a harmless column
-    reorder (e.g. a future migration re-emitting the table) would break the test
-    without any behavioral regression. The business contract is *which* columns
-    exist and *what shape* they have (type + NOT NULL + UNIQUE), not their
-    ordinal position. We assert that contract directly, order-independently.
-    """
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name, data_type, is_nullable
-              FROM information_schema.columns
-             WHERE table_name = 'profiles'
-        """)
-        meta = {r[0]: {"type": r[1], "nullable": r[2]} for r in cur.fetchall()}
-
-    # Contract 1: exactly these columns exist (no missing, no unexpected).
-    # tenant_id added by m13_002_tenants_and_fks.sql (additive, nullable FK);
-    # parent_profile_id by the profile-hierarchy migration (ADR-0016, nullable FK).
-    expected_columns = {
-        "id", "name", "odoo_version", "description", "created_at",
-        "parent_profile_id", "tenant_id",
-    }
-    assert set(meta) == expected_columns, (
-        f"profiles column set mismatch: "
-        f"missing={sorted(expected_columns - set(meta))}, "
-        f"unexpected={sorted(set(meta) - expected_columns)}"
-    )
-
-    # Contract 2: type + nullability per column (the real schema invariants).
-    assert meta["id"]["type"] == "integer" and meta["id"]["nullable"] == "NO", meta["id"]
-    assert meta["name"]["type"] == "text" and meta["name"]["nullable"] == "NO", meta["name"]
-    assert meta["odoo_version"]["type"] == "text", meta["odoo_version"]
-    assert meta["odoo_version"]["nullable"] == "NO", meta["odoo_version"]
-    assert meta["description"]["type"] == "text", meta["description"]
-    assert meta["description"]["nullable"] == "YES", meta["description"]
-    assert meta["created_at"]["type"].startswith("timestamp"), meta["created_at"]
-    # Additive FK columns are nullable by design.
-    assert meta["parent_profile_id"]["nullable"] == "YES", meta["parent_profile_id"]
-    assert meta["tenant_id"]["nullable"] == "YES", meta["tenant_id"]
-
-    # Contract 3: name carries a UNIQUE constraint (business identity of a profile).
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT 1
-              FROM information_schema.table_constraints tc
-              JOIN information_schema.constraint_column_usage ccu
-                ON tc.constraint_name = ccu.constraint_name
-             WHERE tc.table_name = 'profiles'
-               AND tc.constraint_type = 'UNIQUE'
-               AND ccu.column_name = 'name'
-        """)
-        assert cur.fetchone() is not None, "profiles.name must carry a UNIQUE constraint"
-
-
-@pytest.mark.postgres
-def test_migrate_creates_repos_table(clean_pg):
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'repos' ORDER BY ordinal_position
-        """)
-        cols = [r[0] for r in cur.fetchall()]
-    assert "profile_id" in cols
-    assert "url" in cols
-    assert "branch" in cols
-    assert "local_path" in cols
-    assert "status" in cols
-
-
-@pytest.mark.postgres
 def test_migrate_is_idempotent(clean_pg):
     """Running migrate twice must not fail."""
     run_migrations(clean_pg)
     run_migrations(clean_pg)
-
-
-@pytest.mark.postgres
-def test_migrate_creates_embeddings_table(clean_pg):
-    run_migrations(clean_pg)
-    if not _vector_extension_available(clean_pg):
-        pytest.skip("pgvector extension not installed")
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'embeddings' ORDER BY ordinal_position
-        """)
-        cols = [r[0] for r in cur.fetchall()]
-    assert "chunk_type" in cols
-    assert "module" in cols
-    assert "odoo_version" in cols
-    assert "entity_name" in cols
-    assert "content" in cols
-    assert "vec" in cols
-
-
-# NOTE: the former `test_migrate_embeddings_idempotent` (pure double-run no-raise)
-# was removed — fully covered by the canonical `test_migrate_is_idempotent` above,
-# which runs the full migration stack (incl. embeddings) twice.
 
 
 @pytest.mark.postgres
@@ -340,62 +251,8 @@ def test_migrate_preserves_existing_data(clean_pg):
 
 
 # ---------------------------------------------------------------------------
-# M9 schema tests — verify all M9 migration columns and tables are present
+# M9 behaviour tests — CHECK / FK-cascade enforcement
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.postgres
-def test_m9_001_oauth_columns_present(clean_pg):
-    """m9_001: webui_users must have all M9 auth columns after migrate."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'webui_users'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    expected = {
-        "oauth_provider",
-        "oauth_id",
-        "email",
-        "email_verified",
-        "is_admin",
-        "is_active",
-        "role",
-        "created_at",
-    }
-    missing = expected - cols
-    assert not missing, f"webui_users missing M9 columns: {sorted(missing)}"
-
-
-@pytest.mark.postgres
-def test_m9_001_webui_users_id_column(clean_pg):
-    """m9_001: webui_users.id SERIAL UNIQUE must exist for downstream FK references."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name, is_nullable
-              FROM information_schema.columns
-             WHERE table_name = 'webui_users' AND column_name = 'id'
-        """)
-        row = cur.fetchone()
-    assert row is not None, "webui_users.id column missing"
-
-
-@pytest.mark.postgres
-def test_m9_001_email_unique_constraint(clean_pg):
-    """m9_001: webui_users.email must have a UNIQUE constraint."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT constraint_name
-              FROM information_schema.table_constraints
-             WHERE table_name = 'webui_users'
-               AND constraint_type = 'UNIQUE'
-               AND constraint_name = 'webui_users_email_unique'
-        """)
-        row = cur.fetchone()
-    assert row is not None, "webui_users_email_unique constraint missing"
 
 
 @pytest.mark.postgres
@@ -413,20 +270,6 @@ def test_m9_001_role_check_constraint(clean_pg):
                 "UPDATE webui_users SET role = 'superuser' "
                 "WHERE username = 'check_role_test'"
             )
-
-
-@pytest.mark.postgres
-def test_m9_002_api_keys_user_fk(clean_pg):
-    """m9_002: api_keys must have user_id FK and expires_at column."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'api_keys'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    assert "user_id" in cols, "api_keys.user_id missing"
-    assert "expires_at" in cols, "api_keys.expires_at missing"
 
 
 @pytest.mark.postgres
@@ -451,98 +294,6 @@ def test_m9_002_api_keys_user_id_fk_references(clean_pg):
 
 
 @pytest.mark.postgres
-def test_m9_002_api_keys_user_id_index(clean_pg):
-    """m9_002: idx_api_keys_user_id index must exist for lookup performance."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT indexname FROM pg_indexes
-             WHERE tablename = 'api_keys'
-               AND indexname = 'idx_api_keys_user_id'
-        """)
-        row = cur.fetchone()
-    assert row is not None, "idx_api_keys_user_id index missing"
-
-
-@pytest.mark.postgres
-def test_m9_003_admin_audit_log(clean_pg):
-    """m9_003: admin_audit_log table must exist with all required columns."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'admin_audit_log'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    expected = {"id", "actor", "action", "target", "success", "detail", "created_at"}
-    missing = expected - cols
-    assert not missing, f"admin_audit_log missing columns: {sorted(missing)}"
-
-
-@pytest.mark.postgres
-def test_m9_003_admin_audit_log_indexes(clean_pg):
-    """m9_003: both composite indexes on admin_audit_log must exist."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT indexname FROM pg_indexes
-             WHERE tablename = 'admin_audit_log'
-        """)
-        indexes = {r[0] for r in cur.fetchall()}
-    assert "idx_audit_actor_created" in indexes, "idx_audit_actor_created missing"
-    assert "idx_audit_action_created" in indexes, "idx_audit_action_created missing"
-
-
-@pytest.mark.postgres
-def test_m9_004_login_attempts(clean_pg):
-    """m9_004: login_attempts table must exist with all required columns."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'login_attempts'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    expected = {"id", "identifier", "attempted_at", "success", "ip_address", "user_agent"}
-    missing = expected - cols
-    assert not missing, f"login_attempts missing columns: {sorted(missing)}"
-
-
-@pytest.mark.postgres
-def test_m9_004_login_attempts_indexes(clean_pg):
-    """m9_004: both composite indexes on login_attempts must exist."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT indexname FROM pg_indexes
-             WHERE tablename = 'login_attempts'
-        """)
-        indexes = {r[0] for r in cur.fetchall()}
-    assert "idx_login_attempts_identifier_time" in indexes, \
-        "idx_login_attempts_identifier_time missing"
-    assert "idx_login_attempts_ip_time" in indexes, \
-        "idx_login_attempts_ip_time missing"
-
-
-@pytest.mark.postgres
-def test_m9_005_active_sessions(clean_pg):
-    """m9_005: active_sessions table must exist with all required columns."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'active_sessions'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    expected = {
-        "session_id", "user_id", "created_at", "expires_at",
-        "last_seen", "ip_address", "user_agent", "mfa_verified_at",
-    }
-    missing = expected - cols
-    assert not missing, f"active_sessions missing columns: {sorted(missing)}"
-
-
-@pytest.mark.postgres
 def test_m9_005_active_sessions_fk_cascade(clean_pg):
     """m9_005: active_sessions.user_id FK must reference webui_users with CASCADE."""
     run_migrations(clean_pg)
@@ -561,35 +312,6 @@ def test_m9_005_active_sessions_fk_cascade(clean_pg):
     delete_rule, referenced_table = rows[0]
     assert delete_rule == "CASCADE"
     assert referenced_table == "webui_users"
-
-
-@pytest.mark.postgres
-def test_m9_005_active_sessions_indexes(clean_pg):
-    """m9_005: idx_sessions_user_id and idx_sessions_expires must exist."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT indexname FROM pg_indexes
-             WHERE tablename = 'active_sessions'
-        """)
-        indexes = {r[0] for r in cur.fetchall()}
-    assert "idx_sessions_user_id" in indexes, "idx_sessions_user_id missing"
-    assert "idx_sessions_expires" in indexes, "idx_sessions_expires missing"
-
-
-@pytest.mark.postgres
-def test_m9_006_email_verifications(clean_pg):
-    """m9_006: email_verifications table must exist with all required columns."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'email_verifications'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    expected = {"token", "user_id", "purpose", "created_at", "expires_at", "used_at"}
-    missing = expected - cols
-    assert not missing, f"email_verifications missing columns: {sorted(missing)}"
 
 
 @pytest.mark.postgres
@@ -614,38 +336,6 @@ def test_m9_006_email_verifications_purpose_check(clean_pg):
 
 
 @pytest.mark.postgres
-def test_m9_006_email_verifications_indexes(clean_pg):
-    """m9_006: idx_email_verify_user and idx_email_verify_expires must exist."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT indexname FROM pg_indexes
-             WHERE tablename = 'email_verifications'
-        """)
-        indexes = {r[0] for r in cur.fetchall()}
-    assert "idx_email_verify_user" in indexes, "idx_email_verify_user missing"
-    assert "idx_email_verify_expires" in indexes, "idx_email_verify_expires missing"
-
-
-@pytest.mark.postgres
-def test_m9_007_totp_secrets(clean_pg):
-    """m9_007: totp_secrets table must exist with all required columns."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'totp_secrets'
-        """)
-        cols = {r[0] for r in cur.fetchall()}
-    expected = {
-        "user_id", "secret_encrypted", "enabled",
-        "enrolled_at", "backup_codes_hash", "last_used_at",
-    }
-    missing = expected - cols
-    assert not missing, f"totp_secrets missing columns: {sorted(missing)}"
-
-
-@pytest.mark.postgres
 def test_m9_007_totp_secrets_fk_cascade(clean_pg):
     """m9_007: totp_secrets.user_id FK must reference webui_users with CASCADE."""
     run_migrations(clean_pg)
@@ -666,118 +356,10 @@ def test_m9_007_totp_secrets_fk_cascade(clean_pg):
     assert referenced_table == "webui_users"
 
 
-# NOTE: the former `test_m9_all_new_tables_present` (table-existence umbrella for
-# the 6 M9 tables) was removed — each table's existence is already enforced by its
-# individual column test (table missing → `expected - cols` fails):
-#   webui_users → test_m9_001_oauth_columns_present
-#   admin_audit_log → test_m9_003_admin_audit_log
-#   login_attempts → test_m9_004_login_attempts
-#   active_sessions → test_m9_005_active_sessions
-#   email_verifications → test_m9_006_email_verifications
-#   totp_secrets → test_m9_007_totp_secrets
-
-
-@pytest.mark.postgres
-def test_migrate_fresh_db_creates_all_tables(clean_pg):
-    """W15: run_migrations on empty schema must create all tables from 0001_initial.sql.
-
-    Uses clean_pg (pre-wiped schema), runs migrate once, then asserts every
-    non-embeddings table defined in 0001_initial.sql exists in information_schema.
-    Embeddings table is conditional on pgvector — excluded from this assertion.
-    """
-    run_migrations(clean_pg)
-
-    # Tables defined in 0001_initial.sql + additive migrations
-    # (excluding embeddings which requires pgvector).
-    expected_tables = {
-        "profiles",
-        "repos",
-        "api_keys",
-        "ssh_key_pairs",
-        "usage_log",
-        "pattern_feedback",
-        "indexer_jobs",
-        "key_rotation_log",
-        # M13 — tenants table added by m13_002_tenants_and_fks.sql
-        "tenants",
-    }
-
-    with clean_pg.cursor() as cur:
-        cur.execute(
-            """
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_type = 'BASE TABLE'
-            """
-        )
-        found = {row[0] for row in cur.fetchall()}
-
-    missing = expected_tables - found
-    assert not missing, (
-        f"Fresh migrate is missing expected tables: {sorted(missing)}. "
-        f"Found: {sorted(found)}"
-    )
-
-
-@pytest.mark.postgres
-def test_migrate_creates_key_rotation_log(clean_pg):
-    """M9 W-FE: key_rotation_log audit table must be created by migration m9_008."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'key_rotation_log'
-            ORDER BY ordinal_position
-        """)
-        cols = [r[0] for r in cur.fetchall()]
-    assert cols, "key_rotation_log table not found after migrate"
-    assert "id" in cols
-    assert "rotated_at" in cols
-    assert "actor" in cols
-    assert "row_count" in cols
-    assert "old_key_id" in cols
-    assert "new_key_id" in cols
-
-
-@pytest.mark.postgres
-def test_key_rotation_log_index_exists(clean_pg):
-    """M9 W-FE: idx_key_rotation_log_time index must be present after migrate."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT indexname
-            FROM pg_indexes
-            WHERE tablename = 'key_rotation_log'
-        """)
-        indexes = [r[0] for r in cur.fetchall()]
-    assert "idx_key_rotation_log_time" in indexes, (
-        f"Expected idx_key_rotation_log_time in {indexes}"
-    )
-
-
 # ---------------------------------------------------------------------------
-# M13 schema tests — tenants table + tenant_id FKs + key_type + repos UNIQUE
+# M13 behaviour tests — tenants table + tenant_id FKs + key_type + repos UNIQUE
 # (m13_002_tenants_and_fks.sql, ADR-0034 D1 + D7)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.postgres
-def test_m13_tenants_table_exists(clean_pg):
-    """m13_002: tenants table must exist with id, name, created_at, active columns."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_name FROM information_schema.columns
-             WHERE table_name = 'tenants'
-             ORDER BY ordinal_position
-        """)
-        cols = [r[0] for r in cur.fetchall()]
-    assert "id" in cols, "tenants.id missing"
-    assert "name" in cols, "tenants.name missing"
-    assert "created_at" in cols, "tenants.created_at missing"
-    assert "active" in cols, "tenants.active missing"
 
 
 @pytest.mark.postgres
@@ -790,21 +372,6 @@ def test_m13_tenants_name_unique(clean_pg):
         cur.execute("INSERT INTO tenants (name) VALUES ('acme')")
         with pytest.raises(psycopg2.errors.UniqueViolation):
             cur.execute("INSERT INTO tenants (name) VALUES ('acme')")
-
-
-@pytest.mark.postgres
-def test_m13_tenant_id_fk_columns_exist(clean_pg):
-    """m13_002: tenant_id column must be present on api_keys, profiles, ssh_key_pairs, repos."""
-    run_migrations(clean_pg)
-    tables = ["api_keys", "profiles", "ssh_key_pairs", "repos"]
-    for table in tables:
-        with clean_pg.cursor() as cur:
-            cur.execute("""
-                SELECT column_name FROM information_schema.columns
-                 WHERE table_name = %s AND column_name = 'tenant_id'
-            """, (table,))
-            row = cur.fetchone()
-        assert row is not None, f"{table}.tenant_id column missing after m13_002"
 
 
 @pytest.mark.postgres
@@ -842,25 +409,6 @@ def test_m13_tenant_id_fk_references_tenants(clean_pg):
     delete_rule, referenced_table = rows[0]
     assert delete_rule == "CASCADE"
     assert referenced_table == "tenants"
-
-
-@pytest.mark.postgres
-def test_m13_ssh_key_pairs_key_type_column(clean_pg):
-    """m13_002: ssh_key_pairs.key_type must exist with default 'access_key' (ADR-0034 D7)."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute("""
-            SELECT column_default, is_nullable
-              FROM information_schema.columns
-             WHERE table_name = 'ssh_key_pairs' AND column_name = 'key_type'
-        """)
-        row = cur.fetchone()
-    assert row is not None, "ssh_key_pairs.key_type column missing"
-    column_default, is_nullable = row
-    assert "access_key" in str(column_default), (
-        f"ssh_key_pairs.key_type default should be 'access_key', got: {column_default}"
-    )
-    assert is_nullable == "NO", "ssh_key_pairs.key_type must be NOT NULL"
 
 
 @pytest.mark.postgres
@@ -944,29 +492,6 @@ def test_m13_repos_unique_within_same_profile(clean_pg):
 
 
 @pytest.mark.postgres
-def test_m13_repos_old_global_unique_constraint_dropped(clean_pg):
-    """m13_002 must DROP the old global UNIQUE(url, branch) (repos_url_branch_key).
-
-    Asserts the business rule directly: if the drop silently failed, cross-profile
-    registration of the same upstream URL would wrongly raise — and the positive
-    test test_m13_repos_unique_per_profile_not_global would be the only signal.
-    """
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute(
-            "SELECT constraint_name FROM information_schema.table_constraints "
-            "WHERE table_name = 'repos' AND constraint_type = 'UNIQUE'"
-        )
-        names = {r[0] for r in cur.fetchall()}
-    assert "repos_url_branch_key" not in names, (
-        "old global UNIQUE(url, branch) must be dropped by m13_002"
-    )
-    assert "repos_url_branch_profile_key" in names, (
-        "per-profile UNIQUE(url, branch, profile_id) must be present"
-    )
-
-
-@pytest.mark.postgres
 def test_m13_deploy_key_unique_per_tenant(clean_pg):
     """m13_002 partial UNIQUE index allows at most ONE deploy_key per tenant.
 
@@ -1021,92 +546,8 @@ def test_m13_deploy_key_unique_per_tenant(clean_pg):
 
 
 # ---------------------------------------------------------------------------
-# m13_021 sentinel tests (FUFU-2 root fix — global sentinel + NOT NULL)
+# m13_021 sentinel tests — CHECK enforcement (FUFU-2 root fix)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.postgres
-def test_m13_021_no_null_profile_name_after_migrate(clean_pg):
-    """m13_021: post-migration embeddings must have 0 NULL profile_name rows.
-
-    The migration backfills all NULLs to '__global__' before adding NOT NULL.
-    On a fresh schema there are no rows, so the count is trivially 0.  The
-    important assertion is that the NOT NULL column is in place (covered by
-    test_m13_021_profile_name_not_null below).
-    """
-    run_migrations(clean_pg)
-    if not _vector_extension_available(clean_pg):
-        pytest.skip("pgvector extension not installed")
-    with clean_pg.cursor() as cur:
-        cur.execute(
-            "SELECT COUNT(*) FROM embeddings WHERE profile_name IS NULL"
-        )
-        count = cur.fetchone()[0]
-    assert count == 0, (
-        f"post-m13_021 migration must leave 0 NULL profile_name rows, got {count}"
-    )
-
-
-@pytest.mark.postgres
-def test_m13_021_profile_name_not_null(clean_pg):
-    """m13_021: embeddings.profile_name column must be NOT NULL after migrate."""
-    run_migrations(clean_pg)
-    if not _vector_extension_available(clean_pg):
-        pytest.skip("pgvector extension not installed")
-    with clean_pg.cursor() as cur:
-        cur.execute(
-            """SELECT is_nullable
-                 FROM information_schema.columns
-                WHERE table_name = 'embeddings'
-                  AND column_name = 'profile_name'"""
-        )
-        row = cur.fetchone()
-    assert row is not None, "embeddings.profile_name column not found"
-    assert row[0] == "NO", (
-        f"embeddings.profile_name must be NOT NULL after m13_021, got is_nullable={row[0]!r}"
-    )
-
-
-@pytest.mark.postgres
-def test_m13_021_sentinel_check_present(clean_pg):
-    """m13_021: ck_embeddings_global_sentinel_scope CHECK must be present and validated."""
-    run_migrations(clean_pg)
-    if not _vector_extension_available(clean_pg):
-        pytest.skip("pgvector extension not installed")
-    with clean_pg.cursor() as cur:
-        cur.execute(
-            """SELECT conname, convalidated
-                 FROM pg_constraint
-                WHERE conname = 'ck_embeddings_global_sentinel_scope'
-                  AND conrelid = 'public.embeddings'::regclass"""
-        )
-        row = cur.fetchone()
-    assert row is not None, (
-        "ck_embeddings_global_sentinel_scope CHECK constraint missing after m13_021"
-    )
-    assert row[1] is True, (
-        "ck_embeddings_global_sentinel_scope must be VALIDATED (convalidated=true)"
-    )
-
-
-@pytest.mark.postgres
-def test_m13_021_dunder_check_present(clean_pg):
-    """m13_021: profiles_name_no_dunder CHECK must be present and validated."""
-    run_migrations(clean_pg)
-    with clean_pg.cursor() as cur:
-        cur.execute(
-            """SELECT conname, convalidated
-                 FROM pg_constraint
-                WHERE conname = 'profiles_name_no_dunder'
-                  AND conrelid = 'public.profiles'::regclass"""
-        )
-        row = cur.fetchone()
-    assert row is not None, (
-        "profiles_name_no_dunder CHECK constraint missing after m13_021"
-    )
-    assert row[1] is True, (
-        "profiles_name_no_dunder must be VALIDATED (convalidated=true)"
-    )
 
 
 @pytest.mark.postgres

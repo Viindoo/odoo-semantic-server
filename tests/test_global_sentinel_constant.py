@@ -33,13 +33,13 @@ def test_migration_contains_sentinel():
     migration = (
         Path(__file__).resolve().parents[1]
         / "migrations"
-        / "m13_021_embeddings_global_sentinel.sql"
+        / "0001_initial.sql"
     )
     text = migration.read_text(encoding="utf-8")
     assert "'__global__'" in text, (
-        "m13_021_embeddings_global_sentinel.sql must contain the literal '__global__' "
+        "migrations/0001_initial.sql must contain the literal '__global__' "
         "(used in backfill UPDATE, RLS policy, and sentinel CHECK). "
-        "If you renamed the sentinel, update the migration too."
+        "If you renamed the sentinel, update the squashed baseline migration too."
     )
 
 

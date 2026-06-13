@@ -1,0 +1,614 @@
+[
+  {
+    "table_name": "active_sessions",
+    "conname": "active_sessions_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (session_id)"
+  },
+  {
+    "table_name": "active_sessions",
+    "conname": "active_sessions_user_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (user_id) REFERENCES webui_users(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "admin_audit_log",
+    "conname": "admin_audit_log_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_key_hash_key",
+    "contype": "u",
+    "def": "UNIQUE (key_hash)"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_plan_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (plan_id) REFERENCES plans(id)"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_quota_override_nonneg",
+    "contype": "c",
+    "def": "CHECK (((quota_override IS NULL) OR (quota_override >= 0)))"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_rate_limit_override_nonneg",
+    "contype": "c",
+    "def": "CHECK (((rate_limit_override IS NULL) OR (rate_limit_override >= 0)))"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "api_keys",
+    "conname": "api_keys_user_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (user_id) REFERENCES webui_users(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "api_key_session_state",
+    "conname": "api_key_session_state_api_key_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "api_key_session_state",
+    "conname": "api_key_session_state_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (api_key_id)"
+  },
+  {
+    "table_name": "app_settings",
+    "conname": "app_settings_data_type_check",
+    "contype": "c",
+    "def": "CHECK ((data_type = ANY (ARRAY['int'::text, 'float'::text, 'str'::text, 'bool'::text, 'duration_seconds'::text, 'list_str'::text, 'struct'::text])))"
+  },
+  {
+    "table_name": "app_settings",
+    "conname": "app_settings_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "app_settings",
+    "conname": "app_settings_scope_check",
+    "contype": "c",
+    "def": "CHECK ((scope = ANY (ARRAY['system'::text, 'tenant'::text, 'per_key'::text])))"
+  },
+  {
+    "table_name": "app_settings",
+    "conname": "app_settings_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "app_settings",
+    "conname": "app_settings_tenant_scope_consistency",
+    "contype": "c",
+    "def": "CHECK ((((scope = 'system'::text) AND (tenant_id IS NULL)) OR ((scope = 'tenant'::text) AND (tenant_id IS NOT NULL)) OR ((scope = 'per_key'::text) AND (tenant_id IS NULL))))"
+  },
+  {
+    "table_name": "app_settings",
+    "conname": "app_settings_updated_by_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (updated_by) REFERENCES webui_users(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "app_settings_history",
+    "conname": "app_settings_history_audit_log_fk",
+    "contype": "f",
+    "def": "FOREIGN KEY (audit_log_id) REFERENCES admin_audit_log(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "app_settings_history",
+    "conname": "app_settings_history_changed_by_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (changed_by) REFERENCES webui_users(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "app_settings_history",
+    "conname": "app_settings_history_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "app_settings_history",
+    "conname": "app_settings_history_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "conname": "billing_webhook_events_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "conname": "billing_webhook_events_subscription_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (subscription_id) REFERENCES subscriptions(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "conname": "billing_webhook_events_vendor_check",
+    "contype": "c",
+    "def": "CHECK ((vendor = ANY (ARRAY['polar'::text, 'erp'::text, 'test'::text])))"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "conname": "billing_webhook_events_vendor_event_unique",
+    "contype": "u",
+    "def": "UNIQUE (vendor, event_id)"
+  },
+  {
+    "table_name": "ee_modules",
+    "conname": "ee_modules_name_key",
+    "contype": "u",
+    "def": "UNIQUE (name)"
+  },
+  {
+    "table_name": "ee_modules",
+    "conname": "ee_modules_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "ee_modules",
+    "conname": "ee_modules_updated_by_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (updated_by) REFERENCES webui_users(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "email_verifications",
+    "conname": "email_verifications_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (token)"
+  },
+  {
+    "table_name": "email_verifications",
+    "conname": "email_verifications_purpose_check",
+    "contype": "c",
+    "def": "CHECK ((purpose = ANY (ARRAY['email_verify'::text, 'password_reset'::text])))"
+  },
+  {
+    "table_name": "embeddings",
+    "conname": "ck_embeddings_global_sentinel_scope",
+    "contype": "c",
+    "def": "CHECK (((profile_name <> '__global__'::text) OR ((chunk_type = 'pattern_example'::text) AND (module = '__patterns__'::text))))"
+  },
+  {
+    "table_name": "embeddings",
+    "conname": "embeddings_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "embeddings",
+    "conname": "ux_embeddings_chunk",
+    "contype": "u",
+    "def": "UNIQUE NULLS NOT DISTINCT (chunk_type, module, odoo_version, entity_name, file_path, chunk_idx, profile_name)"
+  },
+  {
+    "table_name": "indexer_jobs",
+    "conname": "indexer_jobs_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "indexer_jobs",
+    "conname": "indexer_jobs_status_check",
+    "contype": "c",
+    "def": "CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'done'::text, 'error'::text])))"
+  },
+  {
+    "table_name": "key_rotation_log",
+    "conname": "key_rotation_log_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "login_attempts",
+    "conname": "login_attempts_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "pattern_feedback",
+    "conname": "pattern_feedback_api_key_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "pattern_feedback",
+    "conname": "pattern_feedback_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "pattern_feedback",
+    "conname": "pattern_feedback_rating_check",
+    "contype": "c",
+    "def": "CHECK ((rating = ANY (ARRAY['up'::text, 'down'::text])))"
+  },
+  {
+    "table_name": "patterns",
+    "conname": "patterns_language_check",
+    "contype": "c",
+    "def": "CHECK ((language = ANY (ARRAY['python'::text, 'xml'::text, 'js'::text])))"
+  },
+  {
+    "table_name": "patterns",
+    "conname": "patterns_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (pattern_id)"
+  },
+  {
+    "table_name": "patterns",
+    "conname": "patterns_updated_by_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (updated_by) REFERENCES webui_users(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_billing_interval_check",
+    "contype": "c",
+    "def": "CHECK ((billing_interval = ANY (ARRAY['free'::text, 'monthly'::text, 'annual'::text, 'one_time'::text])))"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_currency_iso4217",
+    "contype": "c",
+    "def": "CHECK ((currency ~ '^[A-Z]{3}$'::text))"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_min_seats_check",
+    "contype": "c",
+    "def": "CHECK (((min_seats IS NULL) OR (min_seats >= 1)))"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_price_cents_nonneg",
+    "contype": "c",
+    "def": "CHECK ((price_cents >= 0))"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_pricing_model_check",
+    "contype": "c",
+    "def": "CHECK ((pricing_model = ANY (ARRAY['flat'::text, 'per_seat'::text])))"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_slug_key",
+    "contype": "u",
+    "def": "UNIQUE (slug)"
+  },
+  {
+    "table_name": "plans",
+    "conname": "plans_trial_days_nonneg",
+    "contype": "c",
+    "def": "CHECK ((trial_days >= 0))"
+  },
+  {
+    "table_name": "profiles",
+    "conname": "profiles_name_key",
+    "contype": "u",
+    "def": "UNIQUE (name)"
+  },
+  {
+    "table_name": "profiles",
+    "conname": "profiles_name_no_comma",
+    "contype": "c",
+    "def": "CHECK ((name !~~ '%,%'::text))"
+  },
+  {
+    "table_name": "profiles",
+    "conname": "profiles_name_no_dunder",
+    "contype": "c",
+    "def": "CHECK ((name !~~ like_escape('\\_\\_%'::text, '\\'::text)))"
+  },
+  {
+    "table_name": "profiles",
+    "conname": "profiles_parent_profile_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (parent_profile_id) REFERENCES profiles(id) ON DELETE RESTRICT"
+  },
+  {
+    "table_name": "profiles",
+    "conname": "profiles_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "profiles",
+    "conname": "profiles_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "repos",
+    "conname": "repos_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "repos",
+    "conname": "repos_profile_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "repos",
+    "conname": "repos_ssh_key_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (ssh_key_id) REFERENCES ssh_key_pairs(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "repos",
+    "conname": "repos_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "repos",
+    "conname": "repos_url_branch_profile_key",
+    "contype": "u",
+    "def": "UNIQUE (url, branch, profile_id)"
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "conname": "ssh_key_pairs_key_type_check",
+    "contype": "c",
+    "def": "CHECK ((key_type = ANY (ARRAY['deploy_key'::text, 'access_key'::text])))"
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "conname": "ssh_key_pairs_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "conname": "ssh_key_pairs_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_api_key_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_billing_interval_check",
+    "contype": "c",
+    "def": "CHECK (((billing_interval IS NULL) OR (billing_interval = ANY (ARRAY['free'::text, 'monthly'::text, 'annual'::text, 'one_time'::text]))))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_buyer_type_check",
+    "contype": "c",
+    "def": "CHECK ((buyer_type = ANY (ARRAY['business'::text, 'consumer'::text])))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_claimed_user_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (claimed_user_id) REFERENCES webui_users(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_currency_iso4217",
+    "contype": "c",
+    "def": "CHECK (((currency IS NULL) OR (currency ~ '^[A-Z]{3}$'::text)))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_no_orphan_active",
+    "contype": "c",
+    "def": "CHECK (((status <> ALL (ARRAY['active'::text, 'trialing'::text])) OR (claimed_user_id IS NOT NULL) OR (api_key_id IS NOT NULL) OR (tenant_id IS NOT NULL) OR (buyer_email IS NOT NULL)))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_plan_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (plan_id) REFERENCES plans(id)"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_seats_positive",
+    "contype": "c",
+    "def": "CHECK ((seats > 0))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_source_check",
+    "contype": "c",
+    "def": "CHECK ((source = ANY (ARRAY['polar'::text, 'erp'::text, 'admin'::text, 'promo'::text])))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_source_external_ref_key",
+    "contype": "u",
+    "def": "UNIQUE (source, external_ref)"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_status_check",
+    "contype": "c",
+    "def": "CHECK ((status = ANY (ARRAY['pending'::text, 'active'::text, 'past_due'::text, 'cancelled'::text, 'expired'::text, 'trialing'::text, 'refunded'::text])))"
+  },
+  {
+    "table_name": "subscriptions",
+    "conname": "subscriptions_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "tenant_members",
+    "conname": "tenant_members_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (user_id, tenant_id)"
+  },
+  {
+    "table_name": "tenant_members",
+    "conname": "tenant_members_role_check",
+    "contype": "c",
+    "def": "CHECK ((role = ANY (ARRAY['member'::text, 'tenant_admin'::text])))"
+  },
+  {
+    "table_name": "tenant_members",
+    "conname": "tenant_members_tenant_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "tenant_members",
+    "conname": "tenant_members_user_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (user_id) REFERENCES webui_users(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "tenants",
+    "conname": "tenants_name_key",
+    "contype": "u",
+    "def": "UNIQUE (name)"
+  },
+  {
+    "table_name": "tenants",
+    "conname": "tenants_owner_user_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (owner_user_id) REFERENCES webui_users(id)"
+  },
+  {
+    "table_name": "tenants",
+    "conname": "tenants_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "totp_secrets",
+    "conname": "totp_secrets_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (user_id)"
+  },
+  {
+    "table_name": "totp_secrets",
+    "conname": "totp_secrets_user_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (user_id) REFERENCES webui_users(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "usage_counter",
+    "conname": "usage_counter_api_key_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE"
+  },
+  {
+    "table_name": "usage_counter",
+    "conname": "usage_counter_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (api_key_id, period_yyyymm)"
+  },
+  {
+    "table_name": "usage_log",
+    "conname": "usage_log_api_key_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "usage_log",
+    "conname": "usage_log_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "waitlist_emails",
+    "conname": "waitlist_emails_email_key",
+    "contype": "u",
+    "def": "UNIQUE (email)"
+  },
+  {
+    "table_name": "waitlist_emails",
+    "conname": "waitlist_emails_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "webui_users",
+    "conname": "webui_users_email_unique",
+    "contype": "u",
+    "def": "UNIQUE (email)"
+  },
+  {
+    "table_name": "webui_users",
+    "conname": "webui_users_id_unique",
+    "contype": "u",
+    "def": "UNIQUE (id)"
+  },
+  {
+    "table_name": "webui_users",
+    "conname": "webui_users_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (username)"
+  },
+  {
+    "table_name": "webui_users",
+    "conname": "webui_users_role_check",
+    "contype": "c",
+    "def": "CHECK ((role = ANY (ARRAY['admin'::text, 'viewer'::text])))"
+  },
+  {
+    "table_name": "yoyo_lock",
+    "conname": "yoyo_lock_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (locked)"
+  },
+  {
+    "table_name": "_yoyo_log",
+    "conname": "_yoyo_log_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "_yoyo_migration",
+    "conname": "_yoyo_migration_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (migration_hash)"
+  },
+  {
+    "table_name": "_yoyo_version",
+    "conname": "_yoyo_version_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (version)"
+  }
+]

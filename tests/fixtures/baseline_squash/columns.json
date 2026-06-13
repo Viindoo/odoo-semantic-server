@@ -1,0 +1,1885 @@
+[
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "id",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "migration_hash",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "migration_id",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "operation",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "username",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "hostname",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "comment",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_log",
+    "column_name": "created_at_utc",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_migration",
+    "column_name": "migration_hash",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_migration",
+    "column_name": "migration_id",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_migration",
+    "column_name": "applied_at_utc",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_version",
+    "column_name": "version",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "_yoyo_version",
+    "column_name": "installed_at_utc",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "session_id",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "user_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "expires_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "(now() + '08:00:00'::interval)"
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "last_seen",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "ip_address",
+    "data_type": "inet",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "user_agent",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "active_sessions",
+    "column_name": "mfa_verified_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('admin_audit_log_id_seq'::regclass)"
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "actor",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "action",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "target",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "success",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "true"
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "detail",
+    "data_type": "jsonb",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "admin_audit_log",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "api_key_session_state",
+    "column_name": "api_key_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "api_key_session_state",
+    "column_name": "odoo_version",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_key_session_state",
+    "column_name": "profile_name",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_key_session_state",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('api_keys_id_seq'::regclass)"
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "key_hash",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "key_prefix",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "active",
+    "data_type": "boolean",
+    "is_nullable": "YES",
+    "column_default": "true"
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "last_used_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "plan_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "2"
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "rate_limit_override",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "quota_override",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "user_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "api_keys",
+    "column_name": "expires_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('app_settings_id_seq'::regclass)"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "key",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "value_json",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "category",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "scope",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'system'::text"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "data_type",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "validation_json",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": "'{}'::jsonb"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "default_value",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "requires_restart",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "requires_reseed",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "is_secret",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "description",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "updated_by",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "app_settings",
+    "column_name": "change_reason",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('app_settings_history_id_seq'::regclass)"
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "setting_key",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "old_value",
+    "data_type": "jsonb",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "new_value",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "changed_by",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "changed_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "change_reason",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "app_settings_history",
+    "column_name": "audit_log_id",
+    "data_type": "bigint",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('billing_webhook_events_id_seq'::regclass)"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "vendor",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "event_id",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "event_type",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "signature_valid",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "payload",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "received_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "processed_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "processing_error",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "billing_webhook_events",
+    "column_name": "subscription_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('ee_modules_id_seq'::regclass)"
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "since_version",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "vt_equivalent",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "description",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "deprecated",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "ee_modules",
+    "column_name": "updated_by",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "token",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "user_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "purpose",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'email_verify'::text"
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "token_hash",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "expires_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "used_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "email_verifications",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('embeddings_id_seq'::regclass)"
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "chunk_type",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "module",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "odoo_version",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "entity_name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "model_name",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "file_path",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "chunk_idx",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "0"
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "content",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "vec",
+    "data_type": "USER-DEFINED",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "indexed_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "embedding_model",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "embedding_dim",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "profile_name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "line_start",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "repo",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "embeddings",
+    "column_name": "repo_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('indexer_jobs_id_seq'::regclass)"
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "profile_name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "status",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'queued'::text"
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "pid",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "started_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "finished_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "error_msg",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "key_rotation_log",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('key_rotation_log_id_seq'::regclass)"
+  },
+  {
+    "table_name": "key_rotation_log",
+    "column_name": "rotated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "key_rotation_log",
+    "column_name": "actor",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "key_rotation_log",
+    "column_name": "row_count",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "key_rotation_log",
+    "column_name": "old_key_id",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "key_rotation_log",
+    "column_name": "new_key_id",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "login_attempts",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('login_attempts_id_seq'::regclass)"
+  },
+  {
+    "table_name": "login_attempts",
+    "column_name": "identifier",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "login_attempts",
+    "column_name": "attempted_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "login_attempts",
+    "column_name": "success",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "login_attempts",
+    "column_name": "ip_address",
+    "data_type": "inet",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "login_attempts",
+    "column_name": "user_agent",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "pattern_feedback",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('pattern_feedback_id_seq'::regclass)"
+  },
+  {
+    "table_name": "pattern_feedback",
+    "column_name": "pattern_node_id",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "pattern_feedback",
+    "column_name": "api_key_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "pattern_feedback",
+    "column_name": "rating",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "pattern_feedback",
+    "column_name": "comment",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "pattern_feedback",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "pattern_id",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "intent_keywords",
+    "data_type": "ARRAY",
+    "is_nullable": "NO",
+    "column_default": "'{}'::text[]"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "file_ref",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "snippet_text",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "gotchas",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": "'[]'::jsonb"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "odoo_version_min",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "odoo_version_max",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "language",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "core_symbol_names",
+    "data_type": "ARRAY",
+    "is_nullable": "NO",
+    "column_default": "'{}'::text[]"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "metadata",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": "'{}'::jsonb"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "updated_by",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "patterns",
+    "column_name": "soft_deleted",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('plans_id_seq'::regclass)"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "slug",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "plans",
+    "column_name": "display_name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "plans",
+    "column_name": "quota_calls_per_month",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "plans",
+    "column_name": "rate_limit_rpm",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "plans",
+    "column_name": "seat_limit",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "1"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "is_public",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "metadata",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": "'{}'::jsonb"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "price_cents",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "0"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "currency",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'USD'::text"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "billing_interval",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'free'::text"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "trial_days",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "0"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "is_archived",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "prices",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": "'{}'::jsonb"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "pricing_model",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'flat'::text"
+  },
+  {
+    "table_name": "plans",
+    "column_name": "min_seats",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('profiles_id_seq'::regclass)"
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "odoo_version",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "description",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "parent_profile_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "profiles",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('repos_id_seq'::regclass)"
+  },
+  {
+    "table_name": "repos",
+    "column_name": "profile_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "url",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "branch",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "local_path",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "status",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": "'pending'::text"
+  },
+  {
+    "table_name": "repos",
+    "column_name": "last_indexed_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "head_sha",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "error_msg",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "repos",
+    "column_name": "ssh_key_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "clone_status",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'manual'::text"
+  },
+  {
+    "table_name": "repos",
+    "column_name": "clone_error_msg",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "repos",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('ssh_key_pairs_id_seq'::regclass)"
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "public_key",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "private_key_encrypted",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "key_version",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "1"
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "ssh_key_pairs",
+    "column_name": "key_type",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'access_key'::text"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('subscriptions_id_seq'::regclass)"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "plan_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "claimed_user_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "api_key_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "buyer_email",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "status",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'pending'::text"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "seats",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "1"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "source",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'polar'::text"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "external_ref",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "amount_cents",
+    "data_type": "bigint",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "currency",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "billing_interval",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "current_period_start",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "current_period_end",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "trial_ends_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "cancelled_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "last_event_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "cancel_at_period_end",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "buyer_type",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "subscriptions",
+    "column_name": "withdrawal_waiver_accepted_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "tenant_members",
+    "column_name": "user_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "tenant_members",
+    "column_name": "tenant_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "tenant_members",
+    "column_name": "role",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'member'::text"
+  },
+  {
+    "table_name": "tenant_members",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('tenants_id_seq'::regclass)"
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "active",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "true"
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "owner_user_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "billing_email",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "tenants",
+    "column_name": "seat_limit_override",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "totp_secrets",
+    "column_name": "user_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "totp_secrets",
+    "column_name": "secret_encrypted",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "totp_secrets",
+    "column_name": "enabled",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "totp_secrets",
+    "column_name": "enrolled_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "totp_secrets",
+    "column_name": "backup_codes_hash",
+    "data_type": "jsonb",
+    "is_nullable": "NO",
+    "column_default": "'[]'::jsonb"
+  },
+  {
+    "table_name": "totp_secrets",
+    "column_name": "last_used_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "usage_counter",
+    "column_name": "api_key_id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "usage_counter",
+    "column_name": "period_yyyymm",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "usage_counter",
+    "column_name": "call_count",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "0"
+  },
+  {
+    "table_name": "usage_counter",
+    "column_name": "updated_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "usage_log",
+    "column_name": "id",
+    "data_type": "bigint",
+    "is_nullable": "NO",
+    "column_default": "nextval('usage_log_id_seq'::regclass)"
+  },
+  {
+    "table_name": "usage_log",
+    "column_name": "api_key_id",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "usage_log",
+    "column_name": "tool_name",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "usage_log",
+    "column_name": "called_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "usage_log",
+    "column_name": "response_ms",
+    "data_type": "integer",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "waitlist_emails",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('waitlist_emails_id_seq'::regclass)"
+  },
+  {
+    "table_name": "waitlist_emails",
+    "column_name": "email",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "waitlist_emails",
+    "column_name": "plan",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "waitlist_emails",
+    "column_name": "source",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'pricing-page'::text"
+  },
+  {
+    "table_name": "waitlist_emails",
+    "column_name": "created_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "NO",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "username",
+    "data_type": "character varying",
+    "is_nullable": "NO",
+    "column_default": null
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "password_hash",
+    "data_type": "character varying",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "is_admin",
+    "data_type": "boolean",
+    "is_nullable": "YES",
+    "column_default": "false"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "is_active",
+    "data_type": "boolean",
+    "is_nullable": "YES",
+    "column_default": "true"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "created_at",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": "now()"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "id",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "nextval('webui_users_id_seq'::regclass)"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "email",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "mfa_enabled",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "email_verified",
+    "data_type": "boolean",
+    "is_nullable": "NO",
+    "column_default": "false"
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "terms_accepted_at",
+    "data_type": "timestamp with time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "oauth_provider",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "oauth_id",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "webui_users",
+    "column_name": "role",
+    "data_type": "text",
+    "is_nullable": "NO",
+    "column_default": "'admin'::text"
+  },
+  {
+    "table_name": "yoyo_lock",
+    "column_name": "locked",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": "1"
+  },
+  {
+    "table_name": "yoyo_lock",
+    "column_name": "ctime",
+    "data_type": "timestamp without time zone",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "yoyo_lock",
+    "column_name": "pid",
+    "data_type": "integer",
+    "is_nullable": "NO",
+    "column_default": null
+  }
+]

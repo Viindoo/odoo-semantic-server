@@ -1,20 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_m13_006_migration.py
-"""M10B P0 control-plane DDL migration tests (ADR-0039).
+"""M10B P0 control-plane DDL migration tests (ADR-0039) — behaviour cases only.
 
-Business intent (7 cases):
-  T1  plans table created with correct columns, UNIQUE on slug, NOT NULL on required cols.
-  T2  4 plans seeded — free-grandfathered, free, pro, team (m13_006 original intent).
-      NOTE: m13_013_consolidate_free_plans later removes 'free-grandfathered'.
-      Because tests use run_migrations() (applies ALL migrations), T2 now asserts the
-      post-m13_013 SSOT baseline: {free, pro, team, unlimited} (4 plans).
-  T3  api_keys.plan_id column exists as FK to plans(id), is NOT NULL.
-  T4  Existing api_keys are backfilled to free-grandfathered before NOT NULL enforcement.
-      test_backfill_via_direct_sql exercises this via controlled SQL; the higher-level
-      helper test now verifies against 'free' (post-m13_013 surviving plan).
-  T5  tenants extensions — owner_user_id, billing_email, seat_limit_override columns exist.
-  T6  usage_counter table created with composite PK and period_yyyymm index.
-  T7  Migration is idempotent — running twice does not raise.
+One-shot catalog assertions (column existence/nullability, FK catalog lookup,
+index presence, table existence) were removed — all now covered by
+test_squashed_baseline.py golden snapshot.
+
+Kept behaviour cases:
+  T1b  plans.slug UNIQUE violation (duplicate slug insert raises).
+  T2   Seeded plan slugs match the SSOT set after all migrations.
+  T3b  api_keys.plan_id FK violation (non-existent plan_id raises).
+  T4   Backfill logic exercised via direct SQL simulation.
+  T6b  usage_counter upsert (ON CONFLICT DO UPDATE increments call_count).
+  T7   Migration is idempotent (run twice does not raise).
+  T8   api_keys.plan_id DB-level DEFAULT resolves to 'free' plan id.
 
 All tests require PostgreSQL (pytestmark = pytest.mark.postgres).
 """
@@ -85,112 +84,15 @@ def migrated_pg(clean_pg):
 
 
 # ---------------------------------------------------------------------------
-# Helper: read a column's property from information_schema
+# T1b: plans.slug UNIQUE violation
 # ---------------------------------------------------------------------------
 
 
-def _col_exists(conn, table: str, column: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        return cur.fetchone() is not None
-
-
-def _col_nullable(conn, table: str, column: str) -> bool:
-    """Return True if the column is nullable (is_nullable = 'YES')."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT is_nullable FROM information_schema.columns"
-            " WHERE table_name = %s AND column_name = %s",
-            (table, column),
-        )
-        row = cur.fetchone()
-        return row is not None and row[0] == "YES"
-
-
-def _constraint_exists(conn, table: str, constraint_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM information_schema.table_constraints"
-            " WHERE table_name = %s AND constraint_name = %s",
-            (table, constraint_name),
-        )
-        return cur.fetchone() is not None
-
-
-def _fk_target(conn, table: str, column: str) -> str | None:
-    """Return the referenced table name for a FK column, or None.
-
-    Uses pg_constraint + pg_attribute for reliability across FK types
-    (including constraints added via ALTER TABLE ... ADD CONSTRAINT).
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT ref_cls.relname
-              FROM pg_constraint con
-              JOIN pg_class    src_cls ON src_cls.oid = con.conrelid
-              JOIN pg_class    ref_cls ON ref_cls.oid = con.confrelid
-              JOIN pg_attribute att    ON att.attrelid = src_cls.oid
-                                      AND att.attnum = ANY(con.conkey)
-             WHERE con.contype = 'f'
-               AND src_cls.relname = %s
-               AND att.attname    = %s
-             LIMIT 1
-            """,
-            (table, column),
-        )
-        row = cur.fetchone()
-        return row[0] if row else None
-
-
-def _index_exists(conn, index_name: str) -> bool:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM pg_indexes WHERE indexname = %s",
-            (index_name,),
-        )
-        return cur.fetchone() is not None
-
-
-# ---------------------------------------------------------------------------
-# T1: plans table created
-# ---------------------------------------------------------------------------
-
-
-class TestPlansTableCreated:
-    """T1: plans table exists with correct schema after migration."""
-
-    def test_plans_table_exists(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM information_schema.tables WHERE table_name = 'plans'"
-            )
-            assert cur.fetchone() is not None, "plans table must exist after m13_006"
-
-    def test_plans_required_columns_exist(self, migrated_pg):
-        required = [
-            "id",
-            "slug",
-            "display_name",
-            "quota_calls_per_month",
-            "rate_limit_rpm",
-            "seat_limit",
-            "is_public",
-            "metadata",
-            "created_at",
-        ]
-        for col in required:
-            assert _col_exists(migrated_pg, "plans", col), (
-                f"plans.{col} must exist after m13_006"
-            )
+class TestPlansSlugUnique:
+    """T1b: plans.slug has a UNIQUE constraint — duplicate slug raises."""
 
     def test_plans_slug_unique_constraint(self, migrated_pg):
         """plans.slug has a UNIQUE constraint."""
-        # Attempt double-insert with same slug must raise.
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "INSERT INTO plans (slug, display_name, quota_calls_per_month,"
@@ -210,45 +112,17 @@ class TestPlansTableCreated:
             f"Expected UNIQUE violation on plans.slug, got: {exc_info.value}"
         )
 
-    def test_plans_not_null_columns(self, migrated_pg):
-        """slug, display_name, quota_calls_per_month, rate_limit_rpm are NOT NULL."""
-        for col in ("slug", "display_name", "quota_calls_per_month", "rate_limit_rpm"):
-            assert not _col_nullable(migrated_pg, "plans", col), (
-                f"plans.{col} must be NOT NULL"
-            )
-
 
 # ---------------------------------------------------------------------------
 # T2: plans seeded by the migration baseline
 # ---------------------------------------------------------------------------
-#
-# Intent these tests protect: the migration baseline produces a known,
-# enumerated SSOT set of plan slugs — no silent additions, no silent removals.
-#
-# Cross-migration note (ADR-0041): m13_006 originally seeded 4 plans
-# ({free, free-grandfathered, pro, team}). m13_009 (M10B P0-ext, PR #206)
-# adds the 5th plan 'unlimited' (admin-granted, is_public=FALSE) as the SSOT
-# for unlimited entitlement per ADR-0041 D5.
-#
-# Cross-migration note (m13_013): m13_013_consolidate_free_plans.sql removes
-# 'free-grandfathered' — it repoints all keys on that plan to 'unlimited' and
-# then DELETEs the plan row. The `migrated_pg` fixture calls run_migrations()
-# which applies ALL migrations in sequence (including m13_013), so by the time
-# any test here runs, 'free-grandfathered' no longer exists. EXPECTED_SLUGS has
-# been updated to reflect the 4-plan post-m13_013 baseline. The original intent
-# of T2 (asserting a known SSOT plan set after all migrations) is preserved.
-# See tests/test_migration_m13_013.py for m13_013-specific assertions.
-#
-# If a future migration adds/removes a plan, update the expected set here AND
-# link the migration's ADR in the cross-migration notes above.
 
 
 class TestPlansBaselineSeeded:
     """T2: the migration baseline seeds the SSOT set of plan slugs."""
 
     # SSOT for seeded plan slugs after all migrations (including m13_013 which
-    # removes 'free-grandfathered').  Updated from 5→4 slugs in m13_013.
-    # Prior value was {"free-grandfathered", "free", "pro", "team", "unlimited"}.
+    # removes 'free-grandfathered').
     EXPECTED_SLUGS = {"free", "pro", "team", "unlimited"}
 
     def test_seeded_plan_count_matches_ssot(self, migrated_pg):
@@ -269,16 +143,7 @@ class TestPlansBaselineSeeded:
         )
 
     def test_free_grandfathered_absent_post_m13_013(self, migrated_pg):
-        """free-grandfathered is absent after all migrations (removed by m13_013).
-
-        The original T2 intent tested that m13_006 seeds 'free-grandfathered'
-        with is_public=FALSE. m13_013 subsequently deletes that plan; because
-        migrated_pg runs ALL migrations, free-grandfathered no longer exists
-        at assertion time. This test guards the correct post-consolidation state:
-        the plan must be gone, not present with a wrong is_public value.
-        See test_migration_m13_013.py::TestFreeGrandfatheredRemoved for the
-        dedicated m13_013 assertion.
-        """
+        """free-grandfathered is absent after all migrations (removed by m13_013)."""
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "SELECT 1 FROM plans WHERE slug = 'free-grandfathered'"
@@ -291,31 +156,14 @@ class TestPlansBaselineSeeded:
 
 
 # ---------------------------------------------------------------------------
-# T3: api_keys.plan_id FK and NOT NULL
+# T3b: api_keys.plan_id FK violation
 # ---------------------------------------------------------------------------
 
 
-class TestApiKeysPlanIdFkNotNull:
-    """T3: api_keys.plan_id exists, is NOT NULL, and FKs to plans(id)."""
-
-    def test_plan_id_column_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "api_keys", "plan_id"), (
-            "api_keys.plan_id must exist after m13_006"
-        )
-
-    def test_plan_id_not_null(self, migrated_pg):
-        assert not _col_nullable(migrated_pg, "api_keys", "plan_id"), (
-            "api_keys.plan_id must be NOT NULL after backfill"
-        )
-
-    def test_plan_id_fk_references_plans(self, migrated_pg):
-        target = _fk_target(migrated_pg, "api_keys", "plan_id")
-        assert target == "plans", (
-            f"api_keys.plan_id must FK to plans, got {target!r}"
-        )
+class TestApiKeysPlanIdFkEnforcement:
+    """T3b: inserting api_key with non-existent plan_id must raise FK violation."""
 
     def test_plan_id_fk_violation_rejected(self, migrated_pg):
-        """Inserting api_key with non-existent plan_id must raise FK violation."""
         with pytest.raises(Exception) as exc_info:
             with migrated_pg.cursor() as cur:
                 cur.execute(
@@ -331,7 +179,7 @@ class TestApiKeysPlanIdFkNotNull:
 
 
 # ---------------------------------------------------------------------------
-# T4: Existing api_keys backfilled to free-grandfathered
+# T4: Backfill via direct SQL
 # ---------------------------------------------------------------------------
 
 
@@ -342,50 +190,9 @@ class TestExistingApiKeysBackfilled:
         """Insert 2 api_keys before migration, run migration, verify plan_id set."""
         _drop_m13_006_objects(clean_pg)
 
-        # Run base migrations (up to m13_005) to get api_keys table in shape.
-        # We call run_migrations which applies ALL including m13_006.
-        # Strategy: insert keys BEFORE running, but since run_migrations applies
-        # sequentially we need to insert after base tables but before m13_006.
-        # Instead, we test the backfill logic directly:
-        #   1. Run full migration (m13_006 included) on clean DB.
-        #   2. Insert a new api_key with NULL plan_id bypassing NOT NULL via
-        #      a direct UPDATE-then-verify pattern... but plan_id is NOT NULL
-        #      after migration, so we cannot INSERT with NULL.
-        #
-        # Correct approach: run base migrations ONLY, insert keys, then apply
-        # m13_006 manually via apply_migration().
-        #
-        # We achieve this by running run_migrations() (which applies all including
-        # m13_006), then verifying all keys have plan_id = free-grandfathered id.
-        # This is valid because: on a fresh DB the backfill only touches keys
-        # inserted BEFORE m13_006's UPDATE step, and run_migrations applies
-        # migrations in order — so if we insert AFTER full migration the backfill
-        # already ran. The correct test is to apply migrations one by one.
-        #
-        # Simpler: apply the SQL file directly via psycopg2 BEFORE the NOT NULL
-        # step to verify backfill works on pre-existing rows.
-
-        # Step 1: Apply all migrations except m13_006 (run_migrations without it).
-        # We do this by running run_migrations normally up to m13_005 via yoyo,
-        # then manually applying m13_006 SQL.
-        # Since we can't easily stop yoyo mid-way, we use the direct SQL approach:
-        # apply m13_006.sql ourselves after seeding keys but testing the invariant.
-
-        # Practical approach: run_migrations applies all migrations atomically.
-        # To test backfill we run the SQL file in two phases:
-        #   Phase 1: apply only up to (but not including) the backfill step.
-        #   Phase 2: verify plan_id IS NULL on inserted rows, then apply rest.
-        # This is too complex. Instead, verify the invariant AFTER full migration:
-        # any key present in the DB must have plan_id = free-grandfathered.
-
         run_migrations(clean_pg)
 
-        # m13_013 removes 'free-grandfathered' and repoints its keys to 'unlimited'.
-        # The original backfill intent (m13_006: new keys default to free-grandfathered)
-        # is now superseded: post-m13_013 the column DEFAULT points at 'free'.
-        # We verify the current post-all-migrations invariant: INSERT without plan_id
-        # lands on 'free' (T8 in TestApiKeysPlanIdDefault).  Here we use 'free' as the
-        # test plan since that's the only sensible default after m13_013.
+        # m13_013 removes 'free-grandfathered'; use 'free' as the post-migration default.
         with clean_pg.cursor() as cur:
             cur.execute("SELECT id FROM plans WHERE slug = 'free'")
             free_id = cur.fetchone()[0]
@@ -401,7 +208,6 @@ class TestExistingApiKeysBackfilled:
             inserted_ids = [row[0] for row in cur.fetchall()]
         clean_pg.commit()
 
-        # Verify plan_id is 'free' on both inserted keys (post-m13_013 baseline).
         with clean_pg.cursor() as cur:
             cur.execute(
                 "SELECT plan_id FROM api_keys WHERE id = ANY(%s)",
@@ -420,18 +226,11 @@ class TestExistingApiKeysBackfilled:
         by running the migration SQL manually after inserting keys into a schema
         that already has the plans table + nullable plan_id column (pre-backfill).
         """
-        # Drop m13_006 objects first.
         _drop_m13_006_objects(clean_pg)
 
-        # Apply base migrations (up to m13_005) so api_keys and tenants tables
-        # exist, then manually apply the "setup" portion of m13_006 (plans table
-        # + nullable plan_id) WITHOUT the backfill step, insert pre-existing keys,
-        # then run the backfill step and verify.
         run_migrations(clean_pg)
 
-        # run_migrations already applied m13_006 fully (including backfill + NOT NULL).
-        # We need to undo plan_id's NOT NULL and reset to simulate a pre-backfill state.
-        # Remove plan_id from api_keys, drop plans table, then re-apply partially.
+        # Undo plan_id's NOT NULL and reset to simulate a pre-backfill state.
         with clean_pg.cursor() as cur:
             cur.execute("ALTER TABLE api_keys DROP COLUMN IF EXISTS plan_id")
         with clean_pg.cursor() as cur:
@@ -515,112 +314,14 @@ class TestExistingApiKeysBackfilled:
 
 
 # ---------------------------------------------------------------------------
-# T5: tenants extensions
+# T6b: usage_counter upsert
 # ---------------------------------------------------------------------------
 
 
-class TestTenantsExtensions:
-    """T5: tenants table gains owner_user_id, billing_email, seat_limit_override."""
-
-    def test_owner_user_id_column_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "tenants", "owner_user_id"), (
-            "tenants.owner_user_id must exist after m13_006"
-        )
-
-    def test_billing_email_column_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "tenants", "billing_email"), (
-            "tenants.billing_email must exist after m13_006"
-        )
-
-    def test_seat_limit_override_column_exists(self, migrated_pg):
-        assert _col_exists(migrated_pg, "tenants", "seat_limit_override"), (
-            "tenants.seat_limit_override must exist after m13_006"
-        )
-
-    def test_billing_email_is_nullable(self, migrated_pg):
-        """billing_email is optional — must be nullable."""
-        assert _col_nullable(migrated_pg, "tenants", "billing_email"), (
-            "tenants.billing_email must be nullable (optional field)"
-        )
-
-    def test_seat_limit_override_is_nullable(self, migrated_pg):
-        """seat_limit_override is optional — must be nullable."""
-        assert _col_nullable(migrated_pg, "tenants", "seat_limit_override"), (
-            "tenants.seat_limit_override must be nullable (optional override)"
-        )
-
-    def test_owner_user_id_fk_to_webui_users_if_table_exists(self, migrated_pg):
-        """If webui_users exists, tenants_owner_user_id_fkey must reference it."""
-        # Check if webui_users table exists in this run.
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM information_schema.tables"
-                " WHERE table_name = 'webui_users'"
-            )
-            webui_exists = cur.fetchone() is not None
-
-        if not webui_exists:
-            pytest.skip("webui_users table absent — FK constraint not expected")
-
-        # FK constraint must exist.
-        assert _constraint_exists(migrated_pg, "tenants", "tenants_owner_user_id_fkey"), (
-            "tenants_owner_user_id_fkey must exist when webui_users table is present"
-        )
-        target = _fk_target(migrated_pg, "tenants", "owner_user_id")
-        assert target == "webui_users", (
-            f"tenants.owner_user_id must FK to webui_users, got {target!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# T6: usage_counter table
-# ---------------------------------------------------------------------------
-
-
-class TestUsageCounterTable:
-    """T6: usage_counter table with composite PK and period index."""
-
-    def test_usage_counter_table_exists(self, migrated_pg):
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT 1 FROM information_schema.tables"
-                " WHERE table_name = 'usage_counter'"
-            )
-            assert cur.fetchone() is not None, "usage_counter table must exist"
-
-    def test_usage_counter_columns(self, migrated_pg):
-        for col in ("api_key_id", "period_yyyymm", "call_count", "updated_at"):
-            assert _col_exists(migrated_pg, "usage_counter", col), (
-                f"usage_counter.{col} must exist"
-            )
-
-    def test_usage_counter_composite_pk(self, migrated_pg):
-        """usage_counter has a PRIMARY KEY on (api_key_id, period_yyyymm)."""
-        with migrated_pg.cursor() as cur:
-            cur.execute(
-                "SELECT count(*) FROM information_schema.table_constraints"
-                " WHERE table_name = 'usage_counter' AND constraint_type = 'PRIMARY KEY'"
-            )
-            count = cur.fetchone()[0]
-        assert count == 1, "usage_counter must have exactly one PRIMARY KEY"
-
-    def test_usage_counter_period_index(self, migrated_pg):
-        assert _index_exists(migrated_pg, "usage_counter_period_idx"), (
-            "usage_counter_period_idx must exist for fast quota-period scans"
-        )
-
-    def test_usage_counter_api_key_id_fk(self, migrated_pg):
-        target = _fk_target(migrated_pg, "usage_counter", "api_key_id")
-        assert target == "api_keys", (
-            f"usage_counter.api_key_id must FK to api_keys, got {target!r}"
-        )
+class TestUsageCounterUpsert:
+    """T6b: INSERT ... ON CONFLICT DO UPDATE increments call_count atomically."""
 
     def test_usage_counter_upsert_works(self, migrated_pg):
-        """INSERT ... ON CONFLICT DO UPDATE increments call_count atomically.
-
-        Originally used 'free-grandfathered' as the test plan; m13_013 removes
-        that plan, so we use 'free' (the post-m13_013 default plan) instead.
-        """
         with migrated_pg.cursor() as cur:
             cur.execute("SELECT id FROM plans WHERE slug = 'free'")
             fg_id = cur.fetchone()[0]
@@ -665,13 +366,8 @@ class TestMigrationIdempotent:
 
     def test_double_migration_does_not_raise(self, clean_pg):
         """Applying m13_006 twice (via run_migrations x2) must be idempotent."""
-        # Drop m13_006 objects for a clean start.
         _drop_m13_006_objects(clean_pg)
-
-        # First run.
         run_migrations(clean_pg)
-
-        # Second run — must not raise.
         try:
             run_migrations(clean_pg)
         except Exception as exc:
@@ -681,7 +377,7 @@ class TestMigrationIdempotent:
 
 
 # ---------------------------------------------------------------------------
-# T8: api_keys.plan_id has DB-level DEFAULT → 'free' tier
+# T8: api_keys.plan_id has DB-level DEFAULT -> 'free' tier
 # ---------------------------------------------------------------------------
 
 
@@ -691,8 +387,7 @@ class TestApiKeysPlanIdDefault:
     Business intent: app-code INSERT paths (src/db/auth_registry.py) that do
     not pass plan_id must succeed AFTER migration, with the new key landing
     on the 'free' tier (100 calls/month).  Without this default, all such
-    INSERTs fail with a NOT NULL constraint violation — which is exactly the
-    CI-red root cause this regression-guard prevents.
+    INSERTs fail with a NOT NULL constraint violation.
     """
 
     def test_api_keys_plan_id_has_default_after_migration(self, migrated_pg):
@@ -710,8 +405,6 @@ class TestApiKeysPlanIdDefault:
             " omitting plan_id do not violate NOT NULL"
             f" (got column_default={column_default!r})"
         )
-        # Default should resolve to an integer literal (plans.id).
-        # information_schema returns the default as text — strip casts like '::integer'.
         cleaned = column_default.split("::")[0].strip()
         assert cleaned.isdigit(), (
             f"api_keys.plan_id DEFAULT must be an integer literal,"
@@ -719,16 +412,13 @@ class TestApiKeysPlanIdDefault:
         )
 
     def test_insert_api_key_without_plan_id_uses_default_free_tier(self, migrated_pg):
-        """INSERT without plan_id → row gets plan_id of the 'free' plan."""
-        # Resolve free plan id.
+        """INSERT without plan_id -> row gets plan_id of the 'free' plan."""
         with migrated_pg.cursor() as cur:
             cur.execute("SELECT id FROM plans WHERE slug = 'free'")
             row = cur.fetchone()
             assert row is not None, "'free' plan must be seeded"
             free_plan_id = row[0]
 
-        # INSERT a key WITHOUT plan_id in the column list — this mirrors the
-        # exact code path in src/db/auth_registry.py::AuthRegistry.create_api_key.
         with migrated_pg.cursor() as cur:
             cur.execute(
                 "INSERT INTO api_keys (name, key_hash, key_prefix)"
