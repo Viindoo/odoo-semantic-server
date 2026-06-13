@@ -395,13 +395,24 @@ jobs:
                     AND NOT coalesce(b.is_definition, false)
                   CALL (r) { DELETE r } IN TRANSACTIONS OF 10000 ROWS
               ''', v=TEST_VERSION)
+              # Count ONLY same-name-to-NON-definition mesh edges (the set Phase 2
+              # removes). The K×D extender->definition edges are KEPT by design
+              # (ADR-0048: cleanup collapses the K*(K-1) mesh to K×D extender->
+              # definition, it does not delete those), so counting ALL
+              # smoke.order->smoke.order edges would include the ~K legit kept edges
+              # and never reach 0. Mirror Phase 2's `NOT b.is_definition` filter.
               mesh_after = s.run(
                   'MATCH (a:Model {name:\"smoke.order\", odoo_version:\$v})'
                   '-[r:INHERITS]->(b:Model {name:\"smoke.order\", odoo_version:\$v})'
+                  ' WHERE NOT coalesce(b.is_definition, false)'
                   ' RETURN count(r) AS c', v=TEST_VERSION
               ).single()['c']
-          print(f'Post-cleanup mesh edges remaining: {mesh_after} (expected 0)')
-          assert mesh_after == 0, f'Cleanup did not remove mesh edges: {mesh_after} remaining'
+          print(f'Post-cleanup same-name->non-definition mesh edges: {mesh_after} (expected 0)')
+          assert mesh_after == 0, (
+              f'Cleanup left {mesh_after} same-name->non-definition mesh edges '
+              '(Phase 2 should remove all of them; K×D extender->definition edges '
+              'are kept and counted separately)'
+          )
 
           # Verify ORM resolution still works on K×D topology
           from src.mcp.orm_validators import _resolve_orm_chain
