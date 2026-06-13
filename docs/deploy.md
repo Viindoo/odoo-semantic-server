@@ -389,6 +389,45 @@ repos_base_dir = /srv/odoo-repos
 
 ### 3.3 Bootstrap PostgreSQL schema
 
+> **WARNING - pgvector on managed or split-tier Postgres:**
+> `docker compose up` automatically runs `docker/initdb.d/01-pgvector.sql`
+> (which issues `CREATE EXTENSION vector;`) via the Docker init mount. This
+> does NOT happen when Postgres runs outside docker-compose - for example when
+> using a managed service (Amazon RDS, Google Cloud SQL, Azure Database for
+> PostgreSQL) or a separately provisioned Postgres host in a split-tier
+> deployment.
+>
+> In those cases you MUST run the following as a superuser **before**
+> `python -m src.db.migrate`:
+>
+> ```sql
+> CREATE EXTENSION IF NOT EXISTS vector;
+> ```
+>
+> If the extension is missing, `migrate` silently skips the `embeddings` table
+> (a stderr warning is printed, not an error). The migrate run appears to
+> succeed, but all ANN-backed tools (`find_examples`, `suggest_pattern`,
+> `find_style_override`, `find_deprecated_usage`) will fail with a query error
+> at runtime.
+>
+> **Verify after migrate:**
+> ```bash
+> psql "$PG_DSN" -c "SELECT to_regclass('public.embeddings');"
+> # Must return  public.embeddings  (not NULL).
+> # NULL means the table was skipped -- re-create extension and re-run migrate.
+> ```
+>
+> To make `migrate` fail loudly (exit 1) instead of silently skipping the
+> embeddings table, set `REQUIRE_PGVECTOR=1` before running:
+> ```bash
+> sudo -u odoo-semantic -H bash -c '
+>     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+>     export REQUIRE_PGVECTOR=1
+>     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+> '
+> ```
+> This is the recommended setting for production managed-Postgres deployments.
+
 Chạy **một lần** sau khi DB tier (§2) healthy + venv (§3.1) đã tạo:
 
 ```bash
@@ -859,7 +898,7 @@ sudo -u odoo-semantic -H tmux new -d -s odoo-semantic-mcp \
 sudo -u odoo-semantic tmux attach -t odoo-semantic-mcp   # để xem logs
 ```
 
-### 3.8 RLS read-tier hardening (tùy chọn — multi-tenant isolation)
+### 3.8 RLS read-tier hardening (single-tenant: skip; multi-tenant: mandatory)
 
 Mặc định MCP `:8002` connect Postgres bằng owner role → RLS trên `embeddings` (ENABLE qua
 migration m13_004) **không enforce** (owner-superuser bypass). Để bật enforcement thật (MCP
@@ -874,10 +913,21 @@ sudo ops/rls_cutover.sh
 
 Script tạo `osm_reader` (non-superuser, non-owner, SELECT-only trên embeddings + đúng grants
 mà :8002 cần — xem `ops/rls_create_osm_reader.sql`), `FORCE ROW LEVEL SECURITY`, ghi `mcp.env`,
-restart MCP, verify (cross-tenant + `/health`), rollback nếu fail. Bỏ qua bước này = MCP chạy
-owner DSN, RLS off (chấp nhận được nếu single-tenant). Re-runnable trên mọi host (install mới
-/ migration). Chi tiết: [runbook §5.14](deploy/reindex-v8-v19-runbook.md) +
+restart MCP, verify (cross-tenant + `/health`), rollback nếu fail. Re-runnable trên mọi host
+(install mới / migration). Chi tiết: [runbook §5.14](deploy/reindex-v8-v19-runbook.md) +
 [ADR-0034 A5](adr/0034-multi-tenant-pooled-isolation.md).
+
+**When to run this cutover:**
+
+- **Single-tenant deployment:** SKIP this step. The migration arms RLS on the `embeddings`
+  table (ENABLE), but without FORCE the owner connection used by MCP bypasses it by design.
+  This is safe and intentional - there is only one tenant, so row-level isolation provides
+  no additional protection. The `osm_reader` role is not required.
+
+- **Multi-tenant production (read-tier isolation required):** MANDATORY. Without running
+  `sudo ops/rls_cutover.sh`, the RLS policy is ENABLED but not FORCED. The owner connection
+  that MCP `:8002` uses bypasses RLS entirely, meaning cross-tenant embedding reads are not
+  isolated despite the policy being present. Run the cutover before serving multiple tenants.
 
 ---
 
