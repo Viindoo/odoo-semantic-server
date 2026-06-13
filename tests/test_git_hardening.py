@@ -7,7 +7,6 @@
 Advisory-lock tests require Postgres (marked postgres).
 Refresh/lock-file tests use local temp git repos (no network).
 """
-import os
 import subprocess
 import threading
 from pathlib import Path
@@ -17,6 +16,7 @@ import pytest
 
 from src.git_utils import PINNED_KNOWN_HOSTS, _clean_git_locks, clone_repo, refresh_repo
 from src.indexer.pipeline import _repo_git_lock, _repo_lock_id
+from tests.conftest import get_test_dsn
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -331,10 +331,9 @@ class TestRepoGitLock:
         """Two concurrent workers on the same repo_id: second must fail."""
         import psycopg2
 
-        dsn = os.environ.get(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
         conn2 = psycopg2.connect(dsn)
         conn2.autocommit = True
         try:
@@ -382,10 +381,9 @@ class TestRepoGitLock:
             with _repo_git_lock(pg_conn, repo_id=9005):
                 raise ValueError("simulated")
 
-        dsn = os.environ.get(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
         conn2 = psycopg2.connect(dsn)
         conn2.autocommit = True
         try:
@@ -417,10 +415,9 @@ class TestRepoGitLock:
         """
         import psycopg2
 
-        dsn = os.environ.get(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
 
         bare = _make_bare_repo_with_branch(tmp_path, "concurrent", "main")
         clone = _make_clone(bare, tmp_path / "concurrent_local", "main")
@@ -469,10 +466,9 @@ class TestRepoGitLock:
         """Refreshes on DIFFERENT repos run in parallel (no blocking each other)."""
         import psycopg2
 
-        dsn = os.environ.get(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
 
         bare_a = _make_bare_repo_with_branch(tmp_path, "repo_a", "main")
         bare_b = _make_bare_repo_with_branch(tmp_path, "repo_b", "main")

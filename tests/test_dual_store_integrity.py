@@ -229,7 +229,7 @@ def test_split_sentinel_detects_partial_state(clean_neo4j, tmp_path, monkeypatch
 
 @pytest.mark.postgres
 def test_pgvector_count_matches_neo4j_after_full_seed(
-    clean_neo4j, tmp_path, monkeypatch
+    clean_neo4j, clean_pg_embeddings, tmp_path, monkeypatch
 ):
     """After a full seed (with embedder), both stores must have data.
 
@@ -238,32 +238,17 @@ def test_pgvector_count_matches_neo4j_after_full_seed(
     - Neo4j PatternExample count > 0
     - pgvector embeddings count > 0
     - Both patterns_neo4j and patterns_pgvector sentinels are set with the same sha
+
+    ``clean_pg_embeddings`` provides the ephemeral pgvector-enabled connection
+    (skips automatically when pgvector extension is not installed).
     """
     neo4j_uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
     neo4j_user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
     neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
 
-    # Check pgvector availability before attempting
-    try:
-        import psycopg2  # noqa: PLC0415
-
-        from tests.conftest import PG_TEST_DSN
-
-        pg = psycopg2.connect(PG_TEST_DSN)
-        pg.autocommit = True
-        from src.db.pg import init_pool
-        init_pool(PG_TEST_DSN, min_conn=1, max_conn=3)
-    except Exception as e:
-        pytest.skip(f"PostgreSQL not available: {e}")
-
-    try:
-        from src.db.migrate import _vector_extension_available, run_migrations
-        run_migrations(pg)
-        if not _vector_extension_available(pg):
-            pytest.skip("pgvector extension not installed")
-    except Exception as e:
-        pg.close()
-        pytest.skip(f"DB migration failed: {e}")
+    # clean_pg_embeddings already ran run_migrations + pgvector availability check.
+    # Use the connection it provides rather than opening a new one.
+    pg = clean_pg_embeddings
 
     patterns_file = _make_patterns_file(tmp_path)
     _wipe_seed_meta(clean_neo4j)
@@ -333,7 +318,6 @@ def test_pgvector_count_matches_neo4j_after_full_seed(
         )
     _wipe_seed_meta(clean_neo4j)
     _wipe_pattern_examples(clean_neo4j)
-    pg.close()
 
 
 # ---------------------------------------------------------------------------

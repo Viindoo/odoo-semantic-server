@@ -9,7 +9,6 @@ Tests cover:
   - Hash comparison security
   - Middleware /health bypass and key validation
 """
-import os
 import time
 import unittest.mock as mock
 from contextlib import contextmanager
@@ -35,6 +34,7 @@ from src.mcp.middleware import (
     _cache_invalidate_by_key_id,
     _cache_set,
 )
+from tests.conftest import get_test_dsn
 
 pytestmark = pytest.mark.postgres
 
@@ -50,12 +50,6 @@ def _checkout_pg_yielding(conn):
     def _cm():
         yield conn
     return _cm
-
-
-PG_TEST_DSN = os.getenv(
-    "PG_TEST_DSN",
-    "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-)
 
 
 @pytest.fixture
@@ -517,8 +511,8 @@ class TestAdvisoryLockConcurrency:
 
     def test_second_acquire_blocked_on_different_connection(self, pg_conn):
         """While one connection holds advisory lock, another cannot acquire."""
-        # Use PG_TEST_DSN to create second connection (same DB as fixture)
-        conn2 = psycopg2.connect(PG_TEST_DSN)
+        # Use the ephemeral test DSN (set by _ephemeral_pg_db fixture via pg_conn)
+        conn2 = psycopg2.connect(get_test_dsn())
         conn2.autocommit = True
         try:
             # Hold lock on pg_conn
@@ -545,7 +539,7 @@ class TestAdvisoryLockConcurrency:
     def test_concurrent_index_profile_via_second_connection(self, pg_conn):
         """If lock is held on one connection, second connection cannot acquire same profile."""
         # Hold lock on pg_conn via _indexer_lock
-        conn2 = psycopg2.connect(PG_TEST_DSN)
+        conn2 = psycopg2.connect(get_test_dsn())
         conn2.autocommit = True
 
         try:

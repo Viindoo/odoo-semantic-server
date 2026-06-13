@@ -163,10 +163,10 @@ def live_connections():
     neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
     neo4j_user = os.getenv("NEO4J_USER", "neo4j")
     neo4j_pass = os.getenv("NEO4J_PASSWORD", "password")
-    pg_dsn = os.getenv(
-        "PG_DSN",
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-    )
+    from tests.conftest import get_test_dsn
+    pg_dsn = os.getenv("PG_DSN") or get_test_dsn()
+    if pg_dsn is None:
+        pytest.skip("PG_DSN / PG_TEST_DSN not set — ephemeral DB unavailable")
     ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     ollama_model = os.getenv("OLLAMA_MODEL", "qwen3-embedding-q5km")
 

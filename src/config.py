@@ -101,6 +101,21 @@ def from_env_or_ini(
     return get(section, key, fallback=fallback)
 
 
+def coerce_bool(raw: str | None, default: bool = False) -> bool:
+    """Coerce a string config value to bool.
+
+    Treats "1", "true", "yes" (case-insensitive) as ``True``; any other
+    non-empty string as ``False``; ``None`` / empty string as ``default``.
+
+    This is the single source of truth for boolean coercion across all config
+    layers: :func:`src.web_ui.config._bool_flag` and
+    :func:`src.settings_registry._env_seed_signup_enabled` both delegate here.
+    """
+    if raw is None or not raw.strip():
+        return default
+    return raw.strip().lower() in ("1", "true", "yes")
+
+
 def mask_dsn(dsn: str) -> str:
     """Replace the password in a DSN with `***` for safe logging.
 

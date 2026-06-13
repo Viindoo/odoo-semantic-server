@@ -32,7 +32,8 @@ def _reset_pg_pool():
     """Close + reset the module-level pool before and after each test.
 
     Ensures tests are independent — each test starts with a fresh pool using
-    PG_TEST_DSN from conftest.py (set via PG_TEST_DSN env var or default).
+    PG_TEST_DSN from conftest.py (set via the PG_ADMIN_DSN-driven ephemeral DB,
+    or an explicit PG_TEST_DSN override).
     Pool is now managed in src.db.pg._pool (PgPool), not src.mcp.server._pg_pool.
 
     Saves and restores the session-scoped pool so other tests (e.g., seed_patterns
@@ -56,14 +57,13 @@ def _reset_pg_pool():
 
     # Initialize a fresh test-scoped pool so tests calling get_pool() directly
     # (not via _checkout_pg / _ensure_pg) have a pool available.
-    import os
 
     from src.db.pg import init_pool
+    from tests.conftest import get_test_dsn
 
-    test_dsn = os.getenv(
-        "PG_TEST_DSN",
-        "postgresql://odoo_semantic:password@127.0.0.1:5432/odoo_semantic",
-    )
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     try:
         init_pool(test_dsn, min_conn=1, max_conn=5)
     except Exception:
@@ -98,9 +98,8 @@ def _inject_pg_dsn(monkeypatch, pg_conn):
     Also skips if the pgvector extension is not installed — _checkout_pg()
     calls register_vector() which requires the vector type to exist.
     """
-    import os
-
     from src.db.migrate import _vector_extension_available, run_migrations
+    from tests.conftest import get_test_dsn
 
     run_migrations(pg_conn)
     if not _vector_extension_available(pg_conn):
@@ -109,10 +108,9 @@ def _inject_pg_dsn(monkeypatch, pg_conn):
             "run as superuser: CREATE EXTENSION vector;"
         )
 
-    test_dsn = os.getenv(
-        "PG_TEST_DSN",
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-    )
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     monkeypatch.setenv("PG_DSN", test_dsn)
 
 

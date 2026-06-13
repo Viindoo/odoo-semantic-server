@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_indexer_lock.py
 """Tests for Postgres advisory lock in indexer pipeline."""
-import os
-
 import pytest
 
 from src.indexer.pipeline import _indexer_lock, _profile_lock_id
+from tests.conftest import get_test_dsn
 
 pytestmark = pytest.mark.postgres
 
@@ -24,10 +23,9 @@ class TestIndexerLock:
         """Second acquire while first is held raises RuntimeError."""
         import psycopg2
 
-        dsn = os.environ.get(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
         conn2 = psycopg2.connect(dsn)
         conn2.autocommit = True
         try:
@@ -75,10 +73,9 @@ class TestIndexerLock:
         """Same profile from two connections — second must fail."""
         import psycopg2
 
-        dsn = os.environ.get(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
         id_a = _profile_lock_id("profile_a")
         conn2 = psycopg2.connect(dsn)
         conn2.autocommit = True

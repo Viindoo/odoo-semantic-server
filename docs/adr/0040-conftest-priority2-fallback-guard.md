@@ -159,3 +159,105 @@ Same rationale as the Priority-2 guard above: a hard fail would turn a
 misconfiguration into a red suite on machines that legitimately have no local
 DB. A skip surfaces the reason (the message names the offending env var, the
 resolved host, and the override) without breaking the no-DB-present story.
+
+---
+
+## Amendment (2026-06-13) — ephemeral PG DB + host-independent prod-name guard (RCA-1 fix)
+
+### Gap
+
+The 2026-06-05 amendment closed the *remote-with-valid-creds* hole for Postgres
+but left a separate, **critical** path open: `PG_TEST_DSN` had a **hardcoded
+default pointing at the production database** (`postgresql://odoo_semantic:password
+@localhost:5432/odoo_semantic`). Because `localhost` is a loopback host, the
+remote-host guard passes unconditionally — and `wipe_pg_tables()` (called twice
+per test via `clean_pg`) issues `DROP TABLE IF EXISTS ... CASCADE` on all 24
+production tables.
+
+Three compounding factors (RCA-1):
+
+1. **Default DSN = prod DSN.** `PG_TEST_DSN` fell back to
+   `postgresql://...@localhost:5432/odoo_semantic` — the same db-name used by
+   `.env.example` `PG_DSN`. Any dev box running the server at `localhost:5432`
+   was exposed.
+2. **Remote-host guard misses localhost.** `_assert_test_db_target_is_safe` only
+   blocks non-loopback hosts; `localhost` is always treated as safe-by-definition.
+3. **`CI=true` fully disarms the remote-host guard** (`conftest.py:125`). If a
+   self-hosted CI runner doubles as the prod host, the guard is inert regardless
+   of host. The new name-based guard does NOT have a `CI` bypass — CI must use a
+   compliant db-name.
+
+Neo4j is shielded by testcontainers (isolated container); PG fixtures connect
+directly to the DSN with no prior container layer, making the exposure asymmetric.
+
+### Decision
+
+Two layers, both small, applied together:
+
+**Layer 1 — no default DSN, dynamic ephemeral DB (primary):**
+
+`PG_TEST_DSN` module-level default is removed. The new `_ephemeral_pg_db`
+session-scoped fixture manages the full lifecycle:
+
+1. If `PG_TEST_DSN` is set explicitly by the operator (env override), use it
+   directly — the operator owns the lifecycle. Both `_assert_pg_db_name_is_safe`
+   and `_assert_test_db_target_is_safe` are called against the explicit DSN.
+2. Otherwise, require `PG_ADMIN_DSN` (a superuser / CREATEDB connection to the
+   maintenance database). Absent → `pytest.skip`.
+3. Generate a unique db-name: `osm_test_<uuid4-hex-8>` plus an optional
+   pytest-xdist worker suffix (`_gw0`, `_gw1`, …) for parallel-safe isolation.
+   Explicit `PG_TEST_DB` env overrides the UUID name.
+4. `CREATE DATABASE "<name>"` via the admin connection.
+5. Apply schema/migrations via `run_migrations`.
+6. Yield the test DSN; all PG fixtures depend on `_ephemeral_pg_db`.
+7. Teardown: `pg_terminate_backend` for all connections, then `DROP DATABASE`.
+
+`pg_conn` is now a session fixture wrapping `_ephemeral_pg_db`. The DB is created
+fresh per test session and dropped cleanly afterwards — equivalent to Neo4j's
+testcontainer isolation posture without requiring a container daemon.
+
+**Layer 2 — host-independent db-name guard (defence-in-depth):**
+
+`_assert_pg_db_name_is_safe(db_name)` is a new name-only guard called:
+
+- inside `_ephemeral_pg_db` before any `CREATE DATABASE`, and
+- whenever an explicit `PG_TEST_DSN` is supplied.
+
+It skips (via `pytest.skip`) when the resolved db-name is NOT:
+
+- prefixed with `osm_test_` (the auto-generated UUID prefix), OR
+- suffixed with `_test`.
+
+Additionally it hard-skips for **known production db-names** (`odoo_semantic`)
+regardless of any prefix/suffix match — catching the exact RCA-1 case even if
+someone re-introduces a hardcoded default later.
+
+`CI=true` does **NOT** bypass this guard — CI must use a compliant db-name.
+Escape hatch: `OSM_ALLOW_NONTEST_DB=1` (explicit, documented).
+
+### What the guards do NOT change
+
+- The existing `_priority2_guard_blocks_run` (Neo4j default-creds guard) is
+  unchanged.
+- The existing `_assert_test_db_target_is_safe` (remote-host guard) is unchanged
+  and still wired at the `neo4j_driver` fixture and the explicit-`PG_TEST_DSN`
+  path in `_ephemeral_pg_db`.
+- `wipe_pg_tables` semantics are unchanged — the fixture still issues
+  `DROP TABLE IF EXISTS ... CASCADE` per test, but now always against a freshly
+  created `osm_test_*` database that is dropped at session end.
+
+### CI compatibility
+
+CI sets `PG_ADMIN_DSN` to a superuser connection for the postgres service
+container. The auto-generated name (`osm_test_<uuid8>`) satisfies
+`_assert_pg_db_name_is_safe` without any exemption. The `CI=true` check in the
+remote-host guard (`_assert_test_db_target_is_safe`) remains a backstop but is
+never the sole safety mechanism.
+
+### Follow-up (deferred)
+
+Full PG testcontainers (Priority-1 spin-up, no `PG_ADMIN_DSN` required) is the
+long-term target — it mirrors the Neo4j isolation model exactly. Deferred to
+M-next: it requires `testcontainers[postgresql]`, pgvector-in-container, and
+rework of the `web_ui_server` fixture chain. The ephemeral-DB approach ships as
+the pre-deploy fix; testcontainers replaces it later without a protocol change.

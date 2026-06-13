@@ -66,10 +66,21 @@ def _priority2_guard_blocks_run() -> bool:
     # CI detection tolerates common values across providers:
     # GitHub Actions sets "true"; Jenkins/GitLab/Travis often set "1";
     # some environments use "True" / "TRUE" / "yes".
-    _is_ci = os.getenv("CI", "").lower() in {"true", "1", "yes"}
+    _is_ci = _is_truthy_env("CI")
     _default_uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687") == "bolt://localhost:7687"
     _default_pw = os.getenv("NEO4J_TEST_PASSWORD", "password") == "password"
     return _default_uri and _default_pw and not _is_ci
+
+
+def _is_truthy_env(name: str) -> bool:
+    """Return True if the named env var is set to a truthy value.
+
+    Recognised truthy values (case-insensitive): "1", "true", "yes".
+    Returns False when the env var is absent or set to any other value.
+    Used by remote-host guard, db-name guard, and other opt-in escape hatches
+    so every truthy check in conftest uses identical semantics.
+    """
+    return os.getenv(name, "").lower() in {"1", "true", "yes"}
 
 
 # Loopback hosts that are always safe to target with destructive test fixtures.
@@ -122,9 +133,9 @@ def _assert_test_db_target_is_safe(env_var: str, default: str) -> None:
     Local default (``localhost``) is loopback → never blocked. Only an explicit
     remote target on a dev box is refused. See ADR-0040.
     """
-    if os.getenv("CI", "").lower() in {"true", "1", "yes"}:
+    if _is_truthy_env("CI"):
         return
-    if os.getenv("OSM_ALLOW_REMOTE_TEST_DB", "").lower() in {"true", "1", "yes"}:
+    if _is_truthy_env("OSM_ALLOW_REMOTE_TEST_DB"):
         return
     target = os.getenv(env_var, default)
     host = _host_from_target(target)
@@ -136,6 +147,83 @@ def _assert_test_db_target_is_safe(env_var: str, default: str) -> None:
             f"If this host really is a disposable test instance, set "
             f"OSM_ALLOW_REMOTE_TEST_DB=1 to override. See "
             f"docs/adr/0040-conftest-priority2-fallback-guard.md."
+        )
+
+
+# Safe db-name patterns: must start with "osm_test_" OR end with "_test".
+# This guard is host-independent: it fires for both localhost and remote targets
+# so a prod db-name is always rejected regardless of where Postgres runs.
+# Escape hatch: OSM_ALLOW_NONTEST_DB=1 (explicit opt-in, documents intent).
+# NOTE: CI=true does NOT bypass this guard — CI must use a compliant db-name.
+_TEST_DB_NAME_PREFIXES = ("osm_test_",)
+_TEST_DB_NAME_SUFFIXES = ("_test",)
+_KNOWN_PROD_DB_NAMES = frozenset({"odoo_semantic"})
+
+
+def _dbname_from_dsn(dsn: str) -> str:
+    """Extract the database name from a postgresql:// URL or keyword DSN.
+
+    Delegates to ``psycopg2.extensions.parse_dsn`` which is the same parser
+    the driver itself uses, so keyword and URL forms are handled identically
+    and this function cannot diverge from the driver's own interpretation.
+    Returns empty string when the db-name cannot be determined.
+    """
+    dsn = (dsn or "").strip()
+    if not dsn:
+        return ""
+    try:
+        import psycopg2.extensions as _pext
+        return _pext.parse_dsn(dsn).get("dbname", "")
+    except Exception:
+        return ""
+
+
+def _assert_pg_db_name_is_safe(db_name: str) -> None:
+    """Fail-closed name-based guard for PG destructive fixtures.
+
+    Skips the test (via pytest.skip) when the target db-name is NEITHER:
+      - prefixed with one of ``_TEST_DB_NAME_PREFIXES`` (e.g. ``osm_test_abc123``), NOR
+      - suffixed with one of ``_TEST_DB_NAME_SUFFIXES`` (e.g. ``mydb_test``).
+
+    Additionally hard-skips for known production db-names (``odoo_semantic``)
+    regardless of any suffix/prefix match.
+
+    Escape hatch: ``OSM_ALLOW_NONTEST_DB=1`` — set this only when you
+    intentionally target a non-standard test DB (e.g. a manually-provisioned QA
+    database with a legacy name). This bypass is intentional and documented;
+    it is NOT triggered by ``CI=true`` (unlike the remote-host guard). CI must
+    use a compliant db-name.
+
+    This guard is orthogonal to the remote-host guard: it fires for localhost
+    prod DBs that the host guard misses, closing the primary RCA-1 hole.
+    """
+    if _is_truthy_env("OSM_ALLOW_NONTEST_DB"):
+        return
+    if not db_name:
+        # Unknown name — safe-by-omission: we cannot verify, so skip.
+        pytest.skip(
+            "DESTRUCTIVE PG guard: cannot determine db-name from DSN. "
+            "Set a recognisable postgresql:// URL or OSM_ALLOW_NONTEST_DB=1."
+        )
+    # Hard-block known production names (host-independent).
+    if db_name in _KNOWN_PROD_DB_NAMES:
+        pytest.skip(
+            f"DESTRUCTIVE PG guard: db-name {db_name!r} is a known production "
+            f"database. PG test fixtures DROP/TRUNCATE tables and must never "
+            f"run against a production store. Use a test database whose name "
+            f"starts with 'osm_test_' or ends with '_test', or set "
+            f"OSM_ALLOW_NONTEST_DB=1 to override explicitly."
+        )
+    # Require a test-marker pattern (prefix or suffix).
+    is_safe = any(db_name.startswith(p) for p in _TEST_DB_NAME_PREFIXES) or any(
+        db_name.endswith(s) for s in _TEST_DB_NAME_SUFFIXES
+    )
+    if not is_safe:
+        pytest.skip(
+            f"DESTRUCTIVE PG guard: db-name {db_name!r} does not match a safe "
+            f"test-db pattern (must start with 'osm_test_' or end with '_test'). "
+            f"PG test fixtures DROP/TRUNCATE tables. Use a disposable test DB or "
+            f"set OSM_ALLOW_NONTEST_DB=1 to override explicitly."
         )
 
 
@@ -634,29 +722,202 @@ def seed_stylesheets(
 
 # --- PostgreSQL fixtures (for src/db tests) ---
 
-PG_TEST_DSN = os.getenv(
-    "PG_TEST_DSN",
-    "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-)
+# PG_TEST_DSN has NO default. It is derived at session-start from the ephemeral
+# DB created by _ephemeral_pg_db. This module-level variable is set by that
+# fixture; it starts as None so that any direct import before the fixture runs
+# is always None (never a prod DSN).
+PG_TEST_DSN: str | None = os.getenv("PG_TEST_DSN")  # explicit override only; no default
+
+# PG_ADMIN_DSN: superuser / CREATEDB connection to the maintenance database.
+# Required for ephemeral-DB lifecycle (CREATE DATABASE / DROP DATABASE).
+# Example: postgresql://postgres:password@localhost:5432/postgres
+# If not set, all postgres-marked tests are skipped.
+_PG_ADMIN_DSN: str | None = os.getenv("PG_ADMIN_DSN")
+
+
+def get_test_dsn() -> str | None:
+    """Return the live ``PG_TEST_DSN`` module attribute, or None when not yet set.
+
+    Callers (typically other test modules) should skip the test when this
+    returns None — it means the ephemeral DB fixture has not run yet (or
+    PG_ADMIN_DSN was not supplied) and no PostgreSQL connection is available.
+
+    Usage::
+
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
+
+    This function reads the live module-level ``PG_TEST_DSN`` each time it is
+    called so it correctly reflects the value written by ``_ephemeral_pg_db``
+    during session setup. Never cache the return value before the test session
+    starts — it will be None until the fixture has run.
+    """
+    return PG_TEST_DSN
+
+
+def _build_ephemeral_db_name() -> str:
+    """Return a unique, per-run test database name.
+
+    Priority:
+      1. ``PG_TEST_DB`` env — explicit operator override (analogous to odoo-bin -d).
+      2. Auto: ``osm_test_<uuid4-hex-8>`` + optional xdist worker suffix for
+         parallel safety. Multiple concurrent agents or pytest-xdist workers each
+         get their own database.
+    """
+    import uuid
+
+    explicit = os.getenv("PG_TEST_DB", "").strip()
+    if explicit:
+        return explicit
+    worker = os.getenv("PYTEST_XDIST_WORKER", "").strip()
+    uid = uuid.uuid4().hex[:8]
+    suffix = f"_{worker}" if worker else ""
+    return f"osm_test_{uid}{suffix}"
+
+
+def _drop_ephemeral_db(admin_conn, db_name: str) -> None:
+    """Best-effort terminate-connections + DROP DATABASE for an ephemeral test DB.
+
+    Shared by the migrate-failure cleanup path inside ``_ephemeral_pg_db`` and
+    the normal teardown path so the SQL is written exactly once (SSOT).
+    Silently swallows all errors — caller logs / pytest.skips independently.
+
+    ``admin_conn`` must have ``autocommit = True`` and be connected to the
+    maintenance database (NOT to ``db_name`` itself).
+    """
+    import psycopg2.extensions as _pext
+
+    try:
+        with admin_conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (db_name,),
+            )
+    except Exception:
+        pass
+    try:
+        with admin_conn.cursor() as cur:
+            cur.execute(f"DROP DATABASE IF EXISTS {_pext.quote_ident(db_name, admin_conn)}")
+    except Exception:
+        pass
 
 
 @pytest.fixture(scope="session")
-def pg_conn():
-    """Session-scoped PostgreSQL connection. Skips if not reachable."""
+def _ephemeral_pg_db():
+    """Session-scoped: create an ephemeral test DB, yield its DSN, then drop it.
+
+    Lifecycle (mirrors odoo-bin -d but for testing):
+      1. Connect to the maintenance database via PG_ADMIN_DSN (needs CREATEDB).
+      2. Choose a unique db-name (osm_test_<uuid8>[_worker]) or PG_TEST_DB.
+      3. Validate the db-name via _assert_pg_db_name_is_safe (hard guard).
+      4. CREATE DATABASE <name>.
+      5. Apply schema/migrations via run_migrations (once; web_ui_server reuses this).
+      6. Yield the test DSN (postgresql://.../<name>).
+      7. Teardown: terminate connections then DROP DATABASE.
+
+    Skips all postgres tests when PG_ADMIN_DSN is absent — never falls back to
+    a hardcoded production DSN.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
     import psycopg2
-    # Refuse a positively-remote PG_TEST_DSN on a dev box (destructive fixtures).
-    _assert_test_db_target_is_safe(
-        "PG_TEST_DSN",
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-    )
+
+    global PG_TEST_DSN  # noqa: PLW0603
+
+    # If PG_TEST_DSN is explicitly set by the operator (env override), use it
+    # directly WITHOUT ephemeral CREATE/DROP — operator owns the lifecycle.
+    if PG_TEST_DSN is not None:
+        db_name = _dbname_from_dsn(PG_TEST_DSN)
+        _assert_pg_db_name_is_safe(db_name)
+        _assert_test_db_target_is_safe("PG_TEST_DSN", "")
+        try:
+            conn = psycopg2.connect(PG_TEST_DSN)
+        except Exception as e:
+            pytest.skip(f"PostgreSQL not reachable at {PG_TEST_DSN}: {e}")
+        conn.autocommit = True
+        try:
+            from src.db.migrate import run_migrations
+            run_migrations(conn)
+        except Exception as e:
+            conn.close()
+            pytest.skip(f"Could not apply migrations to {PG_TEST_DSN!r}: {e}")
+        conn.close()
+        yield PG_TEST_DSN
+        return  # operator manages lifecycle; no DROP
+
+    # Require PG_ADMIN_DSN for ephemeral lifecycle.
+    if _PG_ADMIN_DSN is None:
+        pytest.skip(
+            "PG_ADMIN_DSN not set — cannot create ephemeral test database. "
+            "Set PG_ADMIN_DSN=postgresql://postgres:password@localhost:5432/postgres "
+            "(a user with CREATEDB) or set PG_TEST_DSN to an existing '*_test' DB."
+        )
+
+    db_name = _build_ephemeral_db_name()
+    _assert_pg_db_name_is_safe(db_name)
+
+    # Build the test DSN by replacing the db-name in PG_ADMIN_DSN.
+    parsed = urlsplit(_PG_ADMIN_DSN)
+    test_dsn = urlunsplit(parsed._replace(path=f"/{db_name}"))
+
+    # Connect to maintenance DB to CREATE the ephemeral database.
     try:
-        conn = psycopg2.connect(PG_TEST_DSN)
+        admin_conn = psycopg2.connect(_PG_ADMIN_DSN)
     except Exception as e:
-        pytest.skip(f"PostgreSQL not reachable at {PG_TEST_DSN}: {e}")
+        pytest.skip(f"PG_ADMIN_DSN not reachable ({_PG_ADMIN_DSN!r}): {e}")
+    admin_conn.autocommit = True
+    import psycopg2.extensions as _pext
+    try:
+        with admin_conn.cursor() as cur:
+            cur.execute(f"CREATE DATABASE {_pext.quote_ident(db_name, admin_conn)}")
+    except Exception as e:
+        admin_conn.close()
+        pytest.skip(f"Could not CREATE DATABASE {db_name!r}: {e}")
+
+    # Apply schema/migrations to the fresh ephemeral DB.
+    try:
+        setup_conn = psycopg2.connect(test_dsn)
+        setup_conn.autocommit = True
+        from src.db.migrate import run_migrations
+        run_migrations(setup_conn)
+        setup_conn.close()
+    except Exception as e:
+        # Best-effort cleanup: terminate connections + drop then skip.
+        _drop_ephemeral_db(admin_conn, db_name)
+        admin_conn.close()
+        pytest.skip(f"Could not apply migrations to ephemeral DB {db_name!r}: {e}")
+
+    # Publish DSN to the module-level variable so pg_conn and direct importers see it.
+    PG_TEST_DSN = test_dsn  # noqa: PLW0603
+
+    yield test_dsn
+
+    # --- Teardown: terminate connections + drop DB ---
+    _drop_ephemeral_db(admin_conn, db_name)
+    admin_conn.close()
+
+
+@pytest.fixture(scope="session")
+def pg_conn(_ephemeral_pg_db):
+    """Session-scoped PostgreSQL connection against the ephemeral test database.
+
+    Depends on _ephemeral_pg_db (session-scoped) which creates the DB,
+    applies migrations, and ensures teardown (DROP DATABASE) after the session.
+    Skips automatically when PG_ADMIN_DSN is absent (no ephemeral DB available).
+    """
+    import psycopg2
+
+    dsn = _ephemeral_pg_db  # DSN to the ephemeral (or explicit) test DB
+    try:
+        conn = psycopg2.connect(dsn)
+    except Exception as e:
+        pytest.skip(f"PostgreSQL not reachable at {dsn}: {e}")
     conn.autocommit = True
     # Initialize centralized pool so store accessors (auth_store, repo_store, etc.) work in tests
     from src.db.pg import init_pool
-    init_pool(PG_TEST_DSN, min_conn=1, max_conn=3)
+    init_pool(dsn, min_conn=1, max_conn=3)
     yield conn
     import src.db.pg as _pg_mod
     try:
@@ -850,13 +1111,40 @@ def clean_pg_embeddings(pg_conn):
 
     Skips automatically if the pgvector extension is not installed in the database.
     Admin setup (once): run  CREATE EXTENSION vector;  as PostgreSQL superuser.
+
+    When pgvector is absent, the fixture probes whether the current DB role is a
+    superuser to produce a precise diagnostic skip message instead of a generic
+    "extension not installed" message.
     """
     from pgvector.psycopg2 import register_vector
 
     from src.db.migrate import _vector_extension_available, run_migrations
     run_migrations(pg_conn)
     if not _vector_extension_available(pg_conn):
-        pytest.skip("pgvector extension not installed — run as superuser: CREATE EXTENSION vector;")
+        # Probe whether the current role is a superuser so we can explain WHY
+        # the extension is missing — lack of superuser is the most common cause.
+        try:
+            with pg_conn.cursor() as _cur:
+                _cur.execute("SELECT pg_catalog.current_setting('is_superuser')")
+                _is_super = (_cur.fetchone() or ("off",))[0].lower() in ("on", "true", "1")
+        except Exception:
+            _is_super = None  # cannot determine — give generic message
+        if _is_super is False:
+            pytest.skip(
+                "pgvector extension not installed and the current DB role is NOT a "
+                "superuser — CREATE EXTENSION vector requires superuser. "
+                "Fix: connect as superuser and run: CREATE EXTENSION IF NOT EXISTS vector; "
+                "then re-run the tests. "
+                "Alternatively set PG_ADMIN_DSN to a superuser DSN so the ephemeral-DB "
+                "fixture can install the extension during setup."
+            )
+        pytest.skip(
+            "pgvector extension not installed — run as superuser: CREATE EXTENSION vector; "
+            "then re-run migrations. "
+            "(Could not determine current role privilege level.)"
+            if _is_super is None
+            else "pgvector extension not installed — run as superuser: CREATE EXTENSION vector;"
+        )
     register_vector(pg_conn)
     with pg_conn.cursor() as cur:
         cur.execute("DELETE FROM embeddings WHERE odoo_version = %s", (PG_EMBED_VERSION,))
@@ -911,16 +1199,18 @@ def web_ui_server(pg_conn):
 
     Session-scoped: one server instance shared across all browser tests.
     Sets PG_DSN + FERNET_KEY env vars (read at request-time by _get_conn/_get_fernet).
+
+    Depends on ``pg_conn`` (which already depends on ``_ephemeral_pg_db``).
+    The schema is applied by ``_ephemeral_pg_db`` at DB creation time; no
+    second ``run_migrations`` call is needed here.
     """
     from cryptography.fernet import Fernet
 
-    from src.db.migrate import run_migrations
     from src.web_ui.app import create_app
 
-    # Bootstrap schema once at session start
-    run_migrations(pg_conn)
-
-    # PG_DSN read by _get_conn() via os.getenv() at each request — set before first request
+    # PG_DSN read by _get_conn() via os.getenv() at each request — set before first request.
+    # PG_TEST_DSN is written by _ephemeral_pg_db before pg_conn is yielded, so it
+    # is non-None by the time this fixture runs.
     os.environ["PG_DSN"] = PG_TEST_DSN
     # FERNET_KEY required for SSH key routes
     if not os.environ.get("FERNET_KEY"):

@@ -288,17 +288,53 @@ def validate_setting_value(sdef: SettingDef, value: object) -> None:
         )
 
 
+def _env_seed_signup_enabled() -> bool:
+    """Read SIGNUP_ENABLED via env-or-INI using the shared bool-coercion from src.config.
+
+    Resolution order: env var SIGNUP_ENABLED wins; if absent/empty, falls back
+    to [webui] signup_enabled in odoo-semantic.conf (via from_env_or_ini); if
+    still absent, returns False.  String coercion is delegated to
+    :func:`src.config.coerce_bool`: "1", "true", "yes" (case-insensitive)
+    → True; everything else (including absent/empty) → False.
+
+    This is called ONLY at seed time inside register_settings_idempotent() to
+    capture the operator's deploy-time intent on a FRESH install.
+
+    Import src.web_ui.config is intentionally avoided here to prevent a circular
+    import (settings_registry <- src.settings <- src.web_ui.config.signup_enabled
+    calls get_overlay_only which imports src.settings which imports
+    settings_registry).  src.config itself has no such cycle — it only imports
+    stdlib + dotenv — so the shared coerce_bool lives there as a safe anchor.
+    """
+    from src import config as _cfg
+    raw = _cfg.from_env_or_ini("SIGNUP_ENABLED", "webui", "signup_enabled")
+    return _cfg.coerce_bool(raw)
+
+
 def register_settings_idempotent(conn) -> int:
     """Insert SETTINGS_CATALOGUE rows into app_settings table.
 
     ON CONFLICT (key) DO NOTHING — safe to call on every process start.
     Returns number of rows actually inserted (new settings on this run).
+
+    For ``signup.enabled`` specifically, the seed value is derived from the
+    ``SIGNUP_ENABLED`` env var at call time instead of using the catalogue
+    default (False).  This honours the operator's deploy-time env on a fresh
+    install.  Existing deployments (row already present) are never affected
+    because ON CONFLICT DO NOTHING skips the INSERT entirely.  Admin PATCH
+    at runtime still wins — it overwrites the same row (ADR-0042 honoured).
     """
     inserted = 0
     with conn.cursor() as cur:
         for sdef in SETTINGS_CATALOGUE:
-            value_json = json.dumps({"v": sdef.default_value})
-            default_json = value_json
+            # For the signup gate: capture operator deploy-time intent from env.
+            # default_json always stays catalogue False (reset-to-default = invite-only).
+            if sdef.key == "signup.enabled":
+                seed_value = _env_seed_signup_enabled()
+            else:
+                seed_value = sdef.default_value
+            value_json = json.dumps({"v": seed_value})
+            default_json = json.dumps({"v": sdef.default_value})
             validation_json = json.dumps(sdef.validation)
             cur.execute(
                 """

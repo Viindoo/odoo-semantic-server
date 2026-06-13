@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from src.db.migrate import run_migrations
+from tests.conftest import get_test_dsn
 
 pytestmark = pytest.mark.postgres
 
@@ -40,12 +41,12 @@ def _run(
 
 
 def _setup_db_conf(tmp_path):
-    """Create config file and return env dict."""
+    """Create config file and return env dict with ODOO_SEMANTIC_CONF pointing at the test DB."""
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     cfg = tmp_path / "odoo-semantic.conf"
-    cfg.write_text(
-        "[database]\npg_dsn = "
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic\n"
-    )
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     return {"ODOO_SEMANTIC_CONF": str(cfg)}
 
 
@@ -69,9 +70,7 @@ class TestCreateWebUIUserAdminFlag:
 
         # Verify in DB
         import psycopg2
-        conn = psycopg2.connect(
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic"
-        )
+        conn = psycopg2.connect(get_test_dsn())
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(
@@ -94,9 +93,7 @@ class TestCreateWebUIUserAdminFlag:
 
         # Verify in DB
         import psycopg2
-        conn = psycopg2.connect(
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic"
-        )
+        conn = psycopg2.connect(get_test_dsn())
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute(
@@ -131,7 +128,7 @@ class TestDeleteProfile:
 
         # Verify deleted
         import psycopg2
-        conn = psycopg2.connect("postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        conn = psycopg2.connect(get_test_dsn())
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("SELECT name FROM profiles WHERE name = %s", ("profile1",))
@@ -156,7 +153,7 @@ class TestDeleteProfile:
 
         # Verify repos also deleted
         import psycopg2
-        conn = psycopg2.connect("postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        conn = psycopg2.connect(get_test_dsn())
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("SELECT url FROM repos WHERE url = %s", ("https://example.com/repo1",))
@@ -182,7 +179,7 @@ class TestDeleteRepo:
 
         # Get repo id
         import psycopg2
-        conn = psycopg2.connect("postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        conn = psycopg2.connect(get_test_dsn())
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("SELECT id FROM repos WHERE url = %s", ("https://example.com/repo1",))
@@ -237,7 +234,7 @@ class TestDeleteWebUIUser:
 
         # Verify deleted
         import psycopg2
-        conn = psycopg2.connect("postgresql://odoo_semantic:password@localhost:5432/odoo_semantic")
+        conn = psycopg2.connect(get_test_dsn())
         conn.autocommit = True
         with conn.cursor() as cur:
             cur.execute("SELECT username FROM webui_users WHERE username = %s", ("testuser",))

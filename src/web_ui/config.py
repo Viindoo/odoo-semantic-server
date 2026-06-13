@@ -20,14 +20,12 @@ def _bool_flag(env_var: str, section: str, key: str, default: bool) -> bool:
 
     Source resolution is delegated to :func:`src.config.from_env_or_ini` (env
     var wins, then the ``[section] key`` entry in ``odoo-semantic.conf``), then
-    the string is coerced to bool: "1", "true", "yes" (case-insensitive) are
-    True; any other non-empty value is False; an unset/empty source falls
-    through to ``default``.
+    the string is coerced to bool via :func:`src.config.coerce_bool`: "1",
+    "true", "yes" (case-insensitive) are True; any other non-empty value is
+    False; an unset/empty source falls through to ``default``.
     """
     raw = _config.from_env_or_ini(env_var, section, key)
-    if raw is None or not raw.strip():
-        return default
-    return raw.strip().lower() in ("1", "true", "yes")
+    return _config.coerce_bool(raw, default=default)
 
 
 # ---------------------------------------------------------------------------

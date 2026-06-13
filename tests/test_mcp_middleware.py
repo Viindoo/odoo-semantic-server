@@ -17,6 +17,7 @@ from asgi_lifespan import LifespanManager
 from starlette.middleware import Middleware
 
 from src.mcp.middleware import AuthMiddleware
+from tests.conftest import get_test_dsn
 
 
 @pytest.fixture()
@@ -73,13 +74,10 @@ async def test_auth_middleware_returns_401_not_500_when_pool_not_pre_initialized
     accepts traffic, so AuthMiddleware can safely call auth_store() and return
     401 for an invalid key.
     """
-    import os
-
     # Point _ensure_pg() at the test DB so the lifespan hook can connect.
-    test_dsn = os.getenv(
-        "PG_TEST_DSN",
-        "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-    )
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
     monkeypatch.setenv("PG_DSN", test_dsn)
 
     # Ensure migrations are applied — other tests using clean_pg may have
@@ -150,7 +148,6 @@ async def test_lifespan_warns_when_legacy_nodes_exist(
     The startup warning surfaces the count so ops can schedule a reindex.
     """
     import logging
-    import os
 
     # Seed a Module node WITHOUT profile property to simulate pre-M8 legacy data.
     with neo4j_driver.session() as _s:
@@ -160,10 +157,9 @@ async def test_lifespan_warns_when_legacy_nodes_exist(
         )
 
     try:
-        test_dsn = os.getenv(
-            "PG_TEST_DSN",
-            "postgresql://odoo_semantic:password@localhost:5432/odoo_semantic",
-        )
+        test_dsn = get_test_dsn()
+        if test_dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
         monkeypatch.setenv("PG_DSN", test_dsn)
 
         from contextlib import asynccontextmanager

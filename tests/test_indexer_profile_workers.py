@@ -5,10 +5,12 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import psycopg2
 import pytest
 
 from src.db.migrate import run_migrations
 from src.db.pg import repo_store
+from tests.conftest import get_test_dsn
 
 # WS-D / DD2 demote: the five orchestration tests below mock all Neo4j + Postgres
 # I/O (``mock_pg_conn`` / ``mock_writer`` are MagicMocks, ``_neo4j_creds`` patched),
@@ -406,12 +408,15 @@ def test_two_profiles_neo4j_isolation_at_version_boundary(
     # obtain their own psycopg2 connection.  In tests PG_DSN is not set as an env
     # var — we patch open_production_pg to open a real connection to the test DB
     # using the same DSN the session-scoped pg_conn fixture uses.
-    import psycopg2
-
-    from tests.conftest import PG_TEST_DSN  # same DSN as the pg_conn fixture
-
+    # get_test_dsn() reads the live conftest.PG_TEST_DSN module attribute on every
+    # call (set by the _ephemeral_pg_db fixture via clean_pg → pg_conn →
+    # _ephemeral_pg_db), so it always reflects the value written during session
+    # setup — never a stale snapshot from an early import.
     def _open_test_pg() -> psycopg2.extensions.connection:
-        conn = psycopg2.connect(PG_TEST_DSN)
+        dsn = get_test_dsn()
+        if dsn is None:
+            pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
+        conn = psycopg2.connect(dsn)
         conn.autocommit = True
         return conn
 
