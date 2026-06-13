@@ -9,6 +9,14 @@ All notable changes to Odoo Semantic MCP are documented here.
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
 > **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
 
+## [0.14.2] — 2026-06-13 — Parser era2 fallback + base-class recognition (#285)
+
+**Fixed:** `parser_python.py` era2 path silently dropped an entire file when Python-3 `ast.parse` raised `SyntaxError` (residual Python-2 idioms in forked v10 source), causing core models (incl `res.users`) on Odoo 10.0 to lose their `base` definition node and mis-resolve "Defined in" (#285). The parser now falls back to the text-regex extractor on `SyntaxError` for all versions, with WARNING/ERROR logging instead of a silent drop.
+
+**Fixed:** `_parse_class` now recognises models whose base class is a same-file local class (e.g. `cash.box.in`/`cash.box.out`), gated on an explicit `_name`/`_inherit`.
+
+**Note:** Requires a `--full` re-index of v10 profiles to populate the recovered definition nodes (additive; no migration).
+
 ## [0.14.1] — 2026-06-13 — Read-side timeout hardening (#287 complete) + odoo-ai-agents plugin rename + landing page
 
 - **PR-1 (#289):** systemic ADR-0023 contract hardening across the highest-traffic
