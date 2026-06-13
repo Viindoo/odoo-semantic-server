@@ -91,23 +91,23 @@ jobs:
 
       - name: Smoke v17 — verify Neo4j counts against B1 thresholds
         run: |
-          python -c "
+          python - <<'PYEOF'
           from neo4j import GraphDatabase
           driver = GraphDatabase.driver(
               'bolt://localhost:7687', auth=('neo4j', 'password')
           )
           with driver.session() as s:
               cs = s.run(
-                  \"MATCH (cs:CoreSymbol {odoo_version:'17.0'}) RETURN count(cs) AS c\"
+                  "MATCH (cs:CoreSymbol {odoo_version:'17.0'}) RETURN count(cs) AS c"
               ).single()['c']
               lr = s.run(
-                  \"MATCH (lr:LintRule {odoo_version:'17.0'}) RETURN count(lr) AS c\"
+                  "MATCH (lr:LintRule {odoo_version:'17.0'}) RETURN count(lr) AS c"
               ).single()['c']
               cc = s.run(
-                  \"MATCH (cc:CLICommand {odoo_version:'17.0'}) RETURN count(cc) AS c\"
+                  "MATCH (cc:CLICommand {odoo_version:'17.0'}) RETURN count(cc) AS c"
               ).single()['c']
               cf = s.run(
-                  \"MATCH (cf:CLIFlag {odoo_version:'17.0'}) RETURN count(cf) AS c\"
+                  "MATCH (cf:CLIFlag {odoo_version:'17.0'}) RETURN count(cf) AS c"
               ).single()['c']
           driver.close()
           print(f'v17 counts: CoreSymbol={cs} LintRule={lr} CLICommand={cc} CLIFlag={cf}')
@@ -116,11 +116,11 @@ jobs:
           assert cc >= 10, f'CLICommand {cc} < 10 — B1 regression? Check odoo/cli/*.py parse'
           assert cf >= 50, f'CLIFlag {cf} < 50 — B1 regression? Check odoo/tools/config.py parse'
           print('v17 smoke PASS')
-          "
+          PYEOF
 
       - name: "ORM read smoke — per-hop name-dedup regression guard (ADR-0048)"
-        # Regression guard for #273: the inherited-field fallback (orm.py
-        # _lookup_field step-3) must complete under a wall-clock bound on a dense
+        # Regression guard for #273: the inherited-field fallback
+        # (orm_queries.py _lookup_field step-3) must complete under a wall-clock bound on a dense
         # graph that reproduces the EXACT condition that made the old VLP query hang.
         #
         # Two design requirements (H2 — the previous version could not fail):
@@ -139,7 +139,7 @@ jobs:
         # index-core does NOT produce Model/Field nodes (only CoreSymbol/LintRule/
         # CLICommand/CLIFlag), so this synthetic dense graph is the correct vehicle.
         run: |
-          timeout 120 python -c "
+          timeout 120 python - <<'PYEOF'
           import time, os
           from neo4j import GraphDatabase
 
@@ -156,60 +156,60 @@ jobs:
 
           with driver.session() as s:
               # Clean any prior run of this version (idempotent CI).
-              s.run('MATCH (n {odoo_version:\$v}) DETACH DELETE n', v=TEST_VERSION)
+              s.run('MATCH (n {odoo_version:$v}) DETACH DELETE n', v=TEST_VERSION)
               # smoke.order definition + K-1 same-name extenders.
               s.run(
-                  'MERGE (m:Model {name:\"smoke.order\", module:\"smoke_base\", '
-                  '       odoo_version:\$v, is_definition:true, field_count:5, '
-                  '       had_explicit_name:true, profile:[\"__global__\"]})',
+                  'MERGE (m:Model {name:"smoke.order", module:"smoke_base", '
+                  '       odoo_version:$v, is_definition:true, field_count:5, '
+                  '       had_explicit_name:true, profile:["__global__"]})',
                   v=TEST_VERSION
               )
               for i in range(K - 1):
                   s.run(
-                      'MERGE (m:Model {name:\"smoke.order\", module:\$mod, '
-                      '       odoo_version:\$v, is_definition:false, field_count:0, '
-                      '       had_explicit_name:true, profile:[\"__global__\"]})',
+                      'MERGE (m:Model {name:"smoke.order", module:$mod, '
+                      '       odoo_version:$v, is_definition:false, field_count:0, '
+                      '       had_explicit_name:true, profile:["__global__"]})',
                       mod=f'smoke_ext_{i}', v=TEST_VERSION
                   )
               # FULL K*(K-1) same-name mesh (un-cleaned prod shape): every
               # same-name node INHERITS every OTHER same-name node.
               s.run(
-                  'MATCH (a:Model {name:\"smoke.order\", odoo_version:\$v}), '
-                  '      (b:Model {name:\"smoke.order\", odoo_version:\$v}) '
+                  'MATCH (a:Model {name:"smoke.order", odoo_version:$v}), '
+                  '      (b:Model {name:"smoke.order", odoo_version:$v}) '
                   'WHERE a.module <> b.module '
                   'MERGE (a)-[:INHERITS {order:0}]->(b)',
                   v=TEST_VERSION
               )
               mesh = s.run(
-                  'MATCH (a:Model {name:\"smoke.order\", odoo_version:\$v}) '
-                  '-[r:INHERITS]->(b:Model {name:\"smoke.order\", odoo_version:\$v}) '
+                  'MATCH (a:Model {name:"smoke.order", odoo_version:$v}) '
+                  '-[r:INHERITS]->(b:Model {name:"smoke.order", odoo_version:$v}) '
                   'RETURN count(r) AS c', v=TEST_VERSION
               ).single()['c']
               # Separate mixin model that actually OWNS the field; the definition
               # INHERITS it. amount_total has NO direct Field under smoke.order, so
               # only step-3 (inherited) can resolve it.
               s.run(
-                  'MERGE (mx:Model {name:\"smoke.mixin\", module:\"smoke_base\", '
-                  '       odoo_version:\$v, is_definition:true, field_count:1, '
-                  '       had_explicit_name:true, profile:[\"__global__\"]})',
+                  'MERGE (mx:Model {name:"smoke.mixin", module:"smoke_base", '
+                  '       odoo_version:$v, is_definition:true, field_count:1, '
+                  '       had_explicit_name:true, profile:["__global__"]})',
                   v=TEST_VERSION
               )
               s.run(
-                  'MATCH (def:Model {name:\"smoke.order\", odoo_version:\$v, is_definition:true}), '
-                  '      (mx:Model {name:\"smoke.mixin\", odoo_version:\$v}) '
+                  'MATCH (def:Model {name:"smoke.order", odoo_version:$v, is_definition:true}), '
+                  '      (mx:Model {name:"smoke.mixin", odoo_version:$v}) '
                   'MERGE (def)-[:INHERITS {order:0}]->(mx)',
                   v=TEST_VERSION
               )
               s.run(
-                  'MERGE (f:Field {name:\"amount_total\", model:\"smoke.mixin\", '
-                  '       module:\"smoke_base\", odoo_version:\$v, ttype:\"monetary\", '
-                  '       profile:[\"__global__\"]})',
+                  'MERGE (f:Field {name:"amount_total", model:"smoke.mixin", '
+                  '       module:"smoke_base", odoo_version:$v, ttype:"monetary", '
+                  '       profile:["__global__"]})',
                   v=TEST_VERSION
               )
               # Assert there is NO direct Field under smoke.order (so step-1 cannot answer).
               direct = s.run(
-                  'MATCH (f:Field {name:\"amount_total\", model:\"smoke.order\", '
-                  '       odoo_version:\$v}) RETURN count(f) AS c', v=TEST_VERSION
+                  'MATCH (f:Field {name:"amount_total", model:"smoke.order", '
+                  '       odoo_version:$v}) RETURN count(f) AS c', v=TEST_VERSION
               ).single()['c']
               assert direct == 0, 'amount_total must NOT be a direct field on smoke.order'
               # Relational self-referential field for the validate_relation MISMATCH
@@ -220,9 +220,9 @@ jobs:
               # reviewer asked the smoke to exercise (a non-relational field would
               # exit early at the 'not relational' branch and never reach the 5 hops).
               s.run(
-                  'MERGE (f:Field {name:\"parent_id\", model:\"smoke.order\", '
-                  '       module:\"smoke_base\", odoo_version:\$v, ttype:\"many2one\", '
-                  '       comodel_name:\"smoke.order\", profile:[\"__global__\"]})',
+                  'MERGE (f:Field {name:"parent_id", model:"smoke.order", '
+                  '       module:"smoke_base", odoo_version:$v, ttype:"many2one", '
+                  '       comodel_name:"smoke.order", profile:["__global__"]})',
                   v=TEST_VERSION
               )
           print(f'Seeded: K={K} same-name nodes, {mesh} mesh edges, field on smoke.mixin only')
@@ -232,7 +232,8 @@ jobs:
           os.environ.setdefault('NEO4J_PASSWORD', 'password')
           os.environ.setdefault('PG_DSN', 'postgresql://odoo_semantic:password@localhost:5432/odoo_semantic')
 
-          from src.mcp.orm import _resolve_orm_chain, _lookup_field
+          from src.mcp.orm_validators import _resolve_orm_chain
+          from src.mcp.orm_queries import _lookup_field
           from src.mcp import server as srv
 
           # (A) Direct step-3 assertion: source must be 'inherited' (NOT 'direct').
@@ -240,10 +241,10 @@ jobs:
               info = _lookup_field('smoke.order', 'amount_total', TEST_VERSION, s)
           assert info is not None, 'step-3 inherited fallback returned None — regression'
           assert info['source'] == 'inherited', (
-              f\"expected source=='inherited' (field lives on mixin), got {info!r} — \"
+              f"expected source=='inherited' (field lives on mixin), got {info!r} — "
               'regression: step-3 per-hop fallback broken or field became direct.'
           )
-          print(f'_lookup_field source = {info[\"source\"]} (correct: resolved via step-3)')
+          print(f'_lookup_field source = {info["source"]} (correct: resolved via step-3)')
 
           # (B) End-to-end rendered chain under a wall-clock bound on the mesh.
           t0 = time.monotonic()
@@ -255,12 +256,12 @@ jobs:
           assert elapsed < 10, (
               f'_resolve_orm_chain took {elapsed:.1f}s > 10s bound on the K*(K-1) mesh — '
               'regression to VLP all-K or ORDER BY before LIMIT. '
-              'Check orm.py _lookup_field step-3 per-hop name-dedup.'
+              'Check orm_queries.py _lookup_field step-3 per-hop name-dedup.'
           )
           assert 'smoke.order.amount_total' in result, f'Field not found in result: {result!r}'
           assert 'BROKEN' not in result, f'Unexpected BROKEN in result: {result!r}'
           print(f'ORM read smoke PASS (source=inherited, elapsed {elapsed:.2f}s < 10s bound)')
-          "
+          PYEOF
         env:
           NEO4J_URI: bolt://localhost:7687
           NEO4J_USER: neo4j
@@ -273,12 +274,12 @@ jobs:
         # NOTE: LintRule nodes come ONLY from index-core (not index-repo). The preceding
         # smoke_v17_core step guarantees they are present before this assertion runs.
         run: |
-          python -c "
+          python - <<'PYEOF'
           from neo4j import GraphDatabase
           driver = GraphDatabase.driver('bolt://localhost:7687', auth=('neo4j', 'password'))
           with driver.session() as s:
               row = s.run(
-                  'MATCH (lr:LintRule {rule_id:\"W8140\", odoo_version:\"17.0\"}) '
+                  'MATCH (lr:LintRule {rule_id:"W8140", odoo_version:"17.0"}) '
                   'RETURN lr.code_pattern AS cp LIMIT 1'
               ).single()
           driver.close()
@@ -296,7 +297,7 @@ jobs:
           )
           print(f'W8140 code_pattern present: {cp!r}')
           print('LintRule code_pattern smoke PASS')
-          "
+          PYEOF
         env:
           NEO4J_URI: bolt://localhost:7687
           NEO4J_USER: neo4j
@@ -319,7 +320,7 @@ jobs:
         #     data shape matches what prod will have post-cleanup). This smoke-tests
         #     the cleanup script logic itself in CI.
         run: |
-          timeout 120 python -c "
+          timeout 120 python - <<'PYEOF'
           import time, os
           from neo4j import GraphDatabase
 
@@ -334,7 +335,7 @@ jobs:
           os.environ.setdefault('NEO4J_PASSWORD', 'password')
           os.environ.setdefault('PG_DSN', 'postgresql://odoo_semantic:password@localhost:5432/odoo_semantic')
 
-          from src.mcp.orm import _validate_relation
+          from src.mcp.orm_validators import _validate_relation
           from src.mcp import server as srv
 
           # (A) validate_relation MISMATCH on K² mesh: smoke.order.parent_id is a
@@ -353,7 +354,7 @@ jobs:
           print(f'validate_relation MISMATCH elapsed {elapsed_mismatch:.2f}s: {result_mismatch!r}')
           assert elapsed_mismatch < 10, (
               f'validate_relation MISMATCH took {elapsed_mismatch:.1f}s > 10s on K² mesh — '
-              'regression to VLP all-K traversal. Check orm.py validate_relation per-hop dedup.'
+              'regression to VLP all-K traversal. Check orm_validators.py _validate_relation per-hop dedup.'
           )
           # Lock in that we actually exercised the 5-hop subtype check (relational
           # field), not the 'not relational' early exit that a monetary field hit.
@@ -363,47 +364,78 @@ jobs:
           )
           print(f'validate_relation MISMATCH smoke PASS ({elapsed_mismatch:.2f}s < 10s)')
 
-          # (B) Post-cleanup K×D regression: run cleanup Phase1+Phase2 on the mesh,
-          # then verify resolve_orm_chain still works with K×D topology.
+          # (B) Post-cleanup K×D regression: run the REAL ops cleanup script on the
+          # mesh, then verify resolve_orm_chain still works with K×D topology.
+          #
+          # F1 (smoke-copy drift fix): the smoke used to copy the Phase 1 BACKFILL +
+          # Phase 2 DELETE Cypher inline (scoped to $v). That copy drifted from the
+          # production script and was the root of bug #3. The smoke now READS and RUNS
+          # the actual ops/cleanup_same_name_inherits_mesh.cypher so it always tests
+          # the code that prod runs — drift is structurally impossible.
+          #
+          # The ops script is GLOBAL (NOT version-scoped). A SAFETY GUARD below asserts
+          # the DB contains Model nodes at TEST_VERSION only before running it. On a
+          # fresh CI service-container DB that holds true (this job seeds only its own
+          # TEST_VERSION synthetic data plus index-core CoreSymbol/LintRule/CLICommand/
+          # CLIFlag nodes, none of which are :Model); the guard protects against
+          # accidentally wiping a non-fresh DB if this step is ever run elsewhere.
+          cypher_text = open('ops/cleanup_same_name_inherits_mesh.cypher').read()
+          # Strip `//` comment lines, then split the runnable body on `;`. The ops file
+          # has exactly two runnable statements (Phase 1 backfill MERGE, Phase 2 delete);
+          # Phase 0 / DIAGNOSE / VERIFY are commented-out and drop out here.
+          code_lines = [
+              ln for ln in cypher_text.splitlines() if not ln.strip().startswith('//')
+          ]
+          statements = [
+              stmt.strip()
+              for stmt in '\n'.join(code_lines).split(';')
+              if stmt.strip()
+          ]
+          assert len(statements) == 2, (
+              f'expected exactly 2 runnable statements in the ops cleanup script '
+              f'(Phase 1 backfill + Phase 2 delete), parsed {len(statements)} — '
+              'the script shape changed; update this smoke parse + guard.'
+          )
+
           with driver.session() as s:
-              # Phase 1 BACKFILL: create missing extender->definition edges
-              s.run('''
-                  MATCH (ext:Model)
-                  WHERE ext.odoo_version = \$v
-                    AND NOT coalesce(ext.is_definition, false)
-                    AND ext.module <> '__unresolved__'
-                  OPTIONAL MATCH (ext)-[er:INHERITS]->(sn:Model)
-                  WHERE sn.name = ext.name AND sn.odoo_version = ext.odoo_version
-                  WITH ext, min(er.order) AS edge_order
-                  MATCH (def:Model)
-                  WHERE def.name = ext.name AND def.odoo_version = ext.odoo_version
-                    AND coalesce(def.is_definition, false) = true
-                    AND def.module <> ext.module
-                    AND NOT (ext)-[:INHERITS]->(def)
-                  MERGE (ext)-[r:INHERITS]->(def)
-                  ON CREATE SET r.order = coalesce(edge_order, 0)
-              ''', v=TEST_VERSION)
-              # Phase 2 DELETE: remove same-name edges to non-definition targets.
-              # The ops script (ops/cleanup_same_name_inherits_mesh.cypher) runs
-              # this GLOBALLY; here we scope it to $v so the smoke only ever touches
-              # its own dedicated TEST_VERSION data on the shared CI database (and
-              # so the v= parameter is actually referenced, not misleadingly unused).
-              s.run('''
-                  MATCH (a:Model {odoo_version: $v})-[r:INHERITS]->(b:Model {odoo_version: $v})
-                  WHERE a.name = b.name
-                    AND NOT coalesce(b.is_definition, false)
-                  CALL (r) { DELETE r } IN TRANSACTIONS OF 10000 ROWS
-              ''', v=TEST_VERSION)
+              # SAFETY GUARD (mandatory): the ops script is GLOBAL (no version scope).
+              # Refuse to run it unless every :Model node is at TEST_VERSION, so the
+              # smoke can never touch real data on a non-fresh DB.
+              foreign = s.run(
+                  'MATCH (m:Model) WHERE m.odoo_version <> $v RETURN count(m) AS c',
+                  v=TEST_VERSION
+              ).single()['c']
+              assert foreign == 0, (
+                  f'Refusing to run GLOBAL cleanup: {foreign} Model nodes at other '
+                  'versions exist (ops script is not version-scoped; smoke must run on '
+                  'a DB containing only its TEST_VERSION synthetic data)'
+              )
+              # Run the REAL ops statements. They use CALL ... IN TRANSACTIONS, which
+              # requires an implicit (auto-commit) transaction — drive each via a bare
+              # session.run (NOT execute_write / an explicit managed transaction).
+              for stmt in statements:
+                  s.run(stmt)
+              # Count ONLY same-name-to-NON-definition mesh edges (the set Phase 2
+              # removes). The K×D extender->definition edges are KEPT by design
+              # (ADR-0048: cleanup collapses the K*(K-1) mesh to K×D extender->
+              # definition, it does not delete those), so counting ALL
+              # smoke.order->smoke.order edges would include the ~K legit kept edges
+              # and never reach 0. Mirror Phase 2's `NOT b.is_definition` filter.
               mesh_after = s.run(
-                  'MATCH (a:Model {name:\"smoke.order\", odoo_version:\$v})'
-                  '-[r:INHERITS]->(b:Model {name:\"smoke.order\", odoo_version:\$v})'
+                  'MATCH (a:Model {name:"smoke.order", odoo_version:$v})'
+                  '-[r:INHERITS]->(b:Model {name:"smoke.order", odoo_version:$v})'
+                  ' WHERE NOT coalesce(b.is_definition, false)'
                   ' RETURN count(r) AS c', v=TEST_VERSION
               ).single()['c']
-          print(f'Post-cleanup mesh edges remaining: {mesh_after} (expected 0)')
-          assert mesh_after == 0, f'Cleanup did not remove mesh edges: {mesh_after} remaining'
+          print(f'Post-cleanup same-name->non-definition mesh edges: {mesh_after} (expected 0)')
+          assert mesh_after == 0, (
+              f'Cleanup left {mesh_after} same-name->non-definition mesh edges '
+              '(Phase 2 should remove all of them; K×D extender->definition edges '
+              'are kept and counted separately)'
+          )
 
           # Verify ORM resolution still works on K×D topology
-          from src.mcp.orm import _resolve_orm_chain
+          from src.mcp.orm_validators import _resolve_orm_chain
           t0 = time.monotonic()
           result_kd = _resolve_orm_chain('smoke.order', 'amount_total', TEST_VERSION)
           elapsed_kd = time.monotonic() - t0
@@ -417,7 +449,7 @@ jobs:
           )
           assert 'BROKEN' not in result_kd, f'BROKEN in K×D result: {result_kd!r}'
           print(f'K×D post-cleanup smoke PASS (elapsed {elapsed_kd:.2f}s)')
-          "
+          PYEOF
         env:
           NEO4J_URI: bolt://localhost:7687
           NEO4J_USER: neo4j
@@ -521,20 +553,20 @@ jobs:
 
       - name: Smoke v8 — verify Module + Model + Method counts (Phase-0 + WI-F5)
         run: |
-          python -c "
+          python - <<'PYEOF'
           from neo4j import GraphDatabase
           driver = GraphDatabase.driver(
               'bolt://localhost:7687', auth=('neo4j', 'password')
           )
           with driver.session() as s:
               modules = s.run(
-                  \"MATCH (m:Module {odoo_version:'8.0'}) RETURN count(m) AS c\"
+                  "MATCH (m:Module {odoo_version:'8.0'}) RETURN count(m) AS c"
               ).single()['c']
               models = s.run(
-                  \"MATCH (m:Model {odoo_version:'8.0'}) RETURN count(m) AS c\"
+                  "MATCH (m:Model {odoo_version:'8.0'}) RETURN count(m) AS c"
               ).single()['c']
               methods = s.run(
-                  \"MATCH (m:Method {odoo_version:'8.0'}) RETURN count(m) AS c\"
+                  "MATCH (m:Method {odoo_version:'8.0'}) RETURN count(m) AS c"
               ).single()['c']
           driver.close()
           print(f'v8 counts: Module={modules} Model={models} Method={methods}')
@@ -551,7 +583,7 @@ jobs:
               'Check parser_python era1 method extraction'
           )
           print('v8 smoke PASS')
-          "
+          PYEOF
 
   check-ollama:
     # Lightweight gate job: checks whether OLLAMA_URL secret is set and exposes
