@@ -1,17 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Integration tests for src.db.migrate — requires PostgreSQL."""
+"""Integration tests for src.db.migrate — requires PostgreSQL.
+
+Unit tests for REQUIRE_PGVECTOR fail-fast guard (no Docker needed) are at the
+bottom of this file; they are NOT marked postgres/neo4j and run under make test-unit.
+"""
 import pytest
 
 from src.db.migrate import (
     _MIGRATIONS_DIR,
+    _check_pgvector_or_exit,
     _conn_to_uri,
     _vector_extension_available,
     run_migrations,
 )
 
-pytestmark = pytest.mark.postgres
 
-
+@pytest.mark.postgres
 def test_migrate_creates_profiles_table(clean_pg):
     """profiles must expose its full column contract with correct type + nullability.
 
@@ -70,6 +74,7 @@ def test_migrate_creates_profiles_table(clean_pg):
         assert cur.fetchone() is not None, "profiles.name must carry a UNIQUE constraint"
 
 
+@pytest.mark.postgres
 def test_migrate_creates_repos_table(clean_pg):
     run_migrations(clean_pg)
     with clean_pg.cursor() as cur:
@@ -85,12 +90,14 @@ def test_migrate_creates_repos_table(clean_pg):
     assert "status" in cols
 
 
+@pytest.mark.postgres
 def test_migrate_is_idempotent(clean_pg):
     """Running migrate twice must not fail."""
     run_migrations(clean_pg)
     run_migrations(clean_pg)
 
 
+@pytest.mark.postgres
 def test_migrate_creates_embeddings_table(clean_pg):
     run_migrations(clean_pg)
     if not _vector_extension_available(clean_pg):
@@ -114,6 +121,7 @@ def test_migrate_creates_embeddings_table(clean_pg):
 # which runs the full migration stack (incl. embeddings) twice.
 
 
+@pytest.mark.postgres
 def test_migrate_embeddings_unique_index(clean_pg):
     """UNIQUE NULLS NOT DISTINCT on (chunk_type, module, odoo_version, entity_name,
     file_path, chunk_idx, profile_name).
@@ -149,6 +157,7 @@ def test_migrate_embeddings_unique_index(clean_pg):
             )
 
 
+@pytest.mark.postgres
 def test_repos_unique_constraint_on_url_branch(clean_pg):
     import psycopg2.errors
     run_migrations(clean_pg)
@@ -170,6 +179,7 @@ def test_repos_unique_constraint_on_url_branch(clean_pg):
             )
 
 
+@pytest.mark.postgres
 def test_repos_ssh_key_id_fk_ordering(clean_pg):
     """Regression guard: repos.ssh_key_id FK must reference ssh_key_pairs after fresh migrate.
 
@@ -229,10 +239,42 @@ def test_schema_sql_alias_includes_w4_columns():
 
 
 # ---------------------------------------------------------------------------
+# REQUIRE_PGVECTOR fail-fast guard — unit tests (no Docker / Postgres needed)
+# ---------------------------------------------------------------------------
+
+def test_require_pgvector_set_exits_when_extension_unavailable(monkeypatch):
+    """REQUIRE_PGVECTOR=1 + pgvector unavailable must call sys.exit(1).
+
+    When an operator sets REQUIRE_PGVECTOR=1 on a managed Postgres where the
+    app-user cannot install the vector extension, migrate must fail loudly
+    (sys.exit(1)) rather than silently skipping the embeddings table.
+    """
+    monkeypatch.setenv("REQUIRE_PGVECTOR", "1")
+
+    with pytest.raises(SystemExit) as exc_info:
+        _check_pgvector_or_exit(available=False)
+
+    assert exc_info.value.code == 1
+
+
+def test_default_pgvector_unavailable_is_fail_soft(monkeypatch):
+    """REQUIRE_PGVECTOR unset (default) + pgvector unavailable must NOT raise SystemExit.
+
+    The default behaviour is fail-soft: print a warning and continue so that
+    existing deployments where pgvector is not installed are not broken.
+    """
+    monkeypatch.delenv("REQUIRE_PGVECTOR", raising=False)
+
+    # Must not raise — fail-soft path only prints a warning (not tested here).
+    _check_pgvector_or_exit(available=False)
+
+
+# ---------------------------------------------------------------------------
 # yoyo-specific tests (M7 W15)
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.postgres
 def test_migrate_idempotent_zero_pending_on_second_run(clean_pg):
     """Second run of yoyo must report 0 migrations pending (all already applied).
 
@@ -259,6 +301,7 @@ def test_migrate_idempotent_zero_pending_on_second_run(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_migrate_preserves_existing_data(clean_pg):
     """Migrate against a database with live data must not destroy rows.
 
@@ -301,6 +344,7 @@ def test_migrate_preserves_existing_data(clean_pg):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.postgres
 def test_m9_001_oauth_columns_present(clean_pg):
     """m9_001: webui_users must have all M9 auth columns after migrate."""
     run_migrations(clean_pg)
@@ -324,6 +368,7 @@ def test_m9_001_oauth_columns_present(clean_pg):
     assert not missing, f"webui_users missing M9 columns: {sorted(missing)}"
 
 
+@pytest.mark.postgres
 def test_m9_001_webui_users_id_column(clean_pg):
     """m9_001: webui_users.id SERIAL UNIQUE must exist for downstream FK references."""
     run_migrations(clean_pg)
@@ -337,6 +382,7 @@ def test_m9_001_webui_users_id_column(clean_pg):
     assert row is not None, "webui_users.id column missing"
 
 
+@pytest.mark.postgres
 def test_m9_001_email_unique_constraint(clean_pg):
     """m9_001: webui_users.email must have a UNIQUE constraint."""
     run_migrations(clean_pg)
@@ -352,6 +398,7 @@ def test_m9_001_email_unique_constraint(clean_pg):
     assert row is not None, "webui_users_email_unique constraint missing"
 
 
+@pytest.mark.postgres
 def test_m9_001_role_check_constraint(clean_pg):
     """m9_001: webui_users.role must only accept 'admin' or 'viewer'."""
     import psycopg2.errors
@@ -368,6 +415,7 @@ def test_m9_001_role_check_constraint(clean_pg):
             )
 
 
+@pytest.mark.postgres
 def test_m9_002_api_keys_user_fk(clean_pg):
     """m9_002: api_keys must have user_id FK and expires_at column."""
     run_migrations(clean_pg)
@@ -381,6 +429,7 @@ def test_m9_002_api_keys_user_fk(clean_pg):
     assert "expires_at" in cols, "api_keys.expires_at missing"
 
 
+@pytest.mark.postgres
 def test_m9_002_api_keys_user_id_fk_references(clean_pg):
     """m9_002: api_keys.user_id must be a FK referencing webui_users(id) with CASCADE."""
     run_migrations(clean_pg)
@@ -401,6 +450,7 @@ def test_m9_002_api_keys_user_id_fk_references(clean_pg):
     assert referenced_table == "webui_users"
 
 
+@pytest.mark.postgres
 def test_m9_002_api_keys_user_id_index(clean_pg):
     """m9_002: idx_api_keys_user_id index must exist for lookup performance."""
     run_migrations(clean_pg)
@@ -414,6 +464,7 @@ def test_m9_002_api_keys_user_id_index(clean_pg):
     assert row is not None, "idx_api_keys_user_id index missing"
 
 
+@pytest.mark.postgres
 def test_m9_003_admin_audit_log(clean_pg):
     """m9_003: admin_audit_log table must exist with all required columns."""
     run_migrations(clean_pg)
@@ -428,6 +479,7 @@ def test_m9_003_admin_audit_log(clean_pg):
     assert not missing, f"admin_audit_log missing columns: {sorted(missing)}"
 
 
+@pytest.mark.postgres
 def test_m9_003_admin_audit_log_indexes(clean_pg):
     """m9_003: both composite indexes on admin_audit_log must exist."""
     run_migrations(clean_pg)
@@ -441,6 +493,7 @@ def test_m9_003_admin_audit_log_indexes(clean_pg):
     assert "idx_audit_action_created" in indexes, "idx_audit_action_created missing"
 
 
+@pytest.mark.postgres
 def test_m9_004_login_attempts(clean_pg):
     """m9_004: login_attempts table must exist with all required columns."""
     run_migrations(clean_pg)
@@ -455,6 +508,7 @@ def test_m9_004_login_attempts(clean_pg):
     assert not missing, f"login_attempts missing columns: {sorted(missing)}"
 
 
+@pytest.mark.postgres
 def test_m9_004_login_attempts_indexes(clean_pg):
     """m9_004: both composite indexes on login_attempts must exist."""
     run_migrations(clean_pg)
@@ -470,6 +524,7 @@ def test_m9_004_login_attempts_indexes(clean_pg):
         "idx_login_attempts_ip_time missing"
 
 
+@pytest.mark.postgres
 def test_m9_005_active_sessions(clean_pg):
     """m9_005: active_sessions table must exist with all required columns."""
     run_migrations(clean_pg)
@@ -487,6 +542,7 @@ def test_m9_005_active_sessions(clean_pg):
     assert not missing, f"active_sessions missing columns: {sorted(missing)}"
 
 
+@pytest.mark.postgres
 def test_m9_005_active_sessions_fk_cascade(clean_pg):
     """m9_005: active_sessions.user_id FK must reference webui_users with CASCADE."""
     run_migrations(clean_pg)
@@ -507,6 +563,7 @@ def test_m9_005_active_sessions_fk_cascade(clean_pg):
     assert referenced_table == "webui_users"
 
 
+@pytest.mark.postgres
 def test_m9_005_active_sessions_indexes(clean_pg):
     """m9_005: idx_sessions_user_id and idx_sessions_expires must exist."""
     run_migrations(clean_pg)
@@ -520,6 +577,7 @@ def test_m9_005_active_sessions_indexes(clean_pg):
     assert "idx_sessions_expires" in indexes, "idx_sessions_expires missing"
 
 
+@pytest.mark.postgres
 def test_m9_006_email_verifications(clean_pg):
     """m9_006: email_verifications table must exist with all required columns."""
     run_migrations(clean_pg)
@@ -534,6 +592,7 @@ def test_m9_006_email_verifications(clean_pg):
     assert not missing, f"email_verifications missing columns: {sorted(missing)}"
 
 
+@pytest.mark.postgres
 def test_m9_006_email_verifications_purpose_check(clean_pg):
     """m9_006: email_verifications.purpose must only accept defined values."""
     import psycopg2.errors
@@ -554,6 +613,7 @@ def test_m9_006_email_verifications_purpose_check(clean_pg):
             )
 
 
+@pytest.mark.postgres
 def test_m9_006_email_verifications_indexes(clean_pg):
     """m9_006: idx_email_verify_user and idx_email_verify_expires must exist."""
     run_migrations(clean_pg)
@@ -567,6 +627,7 @@ def test_m9_006_email_verifications_indexes(clean_pg):
     assert "idx_email_verify_expires" in indexes, "idx_email_verify_expires missing"
 
 
+@pytest.mark.postgres
 def test_m9_007_totp_secrets(clean_pg):
     """m9_007: totp_secrets table must exist with all required columns."""
     run_migrations(clean_pg)
@@ -584,6 +645,7 @@ def test_m9_007_totp_secrets(clean_pg):
     assert not missing, f"totp_secrets missing columns: {sorted(missing)}"
 
 
+@pytest.mark.postgres
 def test_m9_007_totp_secrets_fk_cascade(clean_pg):
     """m9_007: totp_secrets.user_id FK must reference webui_users with CASCADE."""
     run_migrations(clean_pg)
@@ -615,6 +677,7 @@ def test_m9_007_totp_secrets_fk_cascade(clean_pg):
 #   totp_secrets → test_m9_007_totp_secrets
 
 
+@pytest.mark.postgres
 def test_migrate_fresh_db_creates_all_tables(clean_pg):
     """W15: run_migrations on empty schema must create all tables from 0001_initial.sql.
 
@@ -657,6 +720,7 @@ def test_migrate_fresh_db_creates_all_tables(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_migrate_creates_key_rotation_log(clean_pg):
     """M9 W-FE: key_rotation_log audit table must be created by migration m9_008."""
     run_migrations(clean_pg)
@@ -677,6 +741,7 @@ def test_migrate_creates_key_rotation_log(clean_pg):
     assert "new_key_id" in cols
 
 
+@pytest.mark.postgres
 def test_key_rotation_log_index_exists(clean_pg):
     """M9 W-FE: idx_key_rotation_log_time index must be present after migrate."""
     run_migrations(clean_pg)
@@ -698,6 +763,7 @@ def test_key_rotation_log_index_exists(clean_pg):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.postgres
 def test_m13_tenants_table_exists(clean_pg):
     """m13_002: tenants table must exist with id, name, created_at, active columns."""
     run_migrations(clean_pg)
@@ -714,6 +780,7 @@ def test_m13_tenants_table_exists(clean_pg):
     assert "active" in cols, "tenants.active missing"
 
 
+@pytest.mark.postgres
 def test_m13_tenants_name_unique(clean_pg):
     """m13_002: tenants.name must be UNIQUE — duplicate insert raises UniqueViolation."""
     import psycopg2.errors
@@ -725,6 +792,7 @@ def test_m13_tenants_name_unique(clean_pg):
             cur.execute("INSERT INTO tenants (name) VALUES ('acme')")
 
 
+@pytest.mark.postgres
 def test_m13_tenant_id_fk_columns_exist(clean_pg):
     """m13_002: tenant_id column must be present on api_keys, profiles, ssh_key_pairs, repos."""
     run_migrations(clean_pg)
@@ -739,6 +807,7 @@ def test_m13_tenant_id_fk_columns_exist(clean_pg):
         assert row is not None, f"{table}.tenant_id column missing after m13_002"
 
 
+@pytest.mark.postgres
 def test_m13_tenant_id_defaults_null(clean_pg):
     """m13_002: tenant_id must default to NULL — existing-row compatibility (ADR-0034 D1)."""
     run_migrations(clean_pg)
@@ -754,6 +823,7 @@ def test_m13_tenant_id_defaults_null(clean_pg):
     assert row[0] is None, "profiles.tenant_id should default to NULL for shared/global rows"
 
 
+@pytest.mark.postgres
 def test_m13_tenant_id_fk_references_tenants(clean_pg):
     """m13_002: api_keys.tenant_id must be a FK referencing tenants(id) with CASCADE."""
     run_migrations(clean_pg)
@@ -774,6 +844,7 @@ def test_m13_tenant_id_fk_references_tenants(clean_pg):
     assert referenced_table == "tenants"
 
 
+@pytest.mark.postgres
 def test_m13_ssh_key_pairs_key_type_column(clean_pg):
     """m13_002: ssh_key_pairs.key_type must exist with default 'access_key' (ADR-0034 D7)."""
     run_migrations(clean_pg)
@@ -792,6 +863,7 @@ def test_m13_ssh_key_pairs_key_type_column(clean_pg):
     assert is_nullable == "NO", "ssh_key_pairs.key_type must be NOT NULL"
 
 
+@pytest.mark.postgres
 def test_m13_ssh_key_pairs_key_type_check_constraint(clean_pg):
     """m13_002: ssh_key_pairs.key_type must only accept 'deploy_key' or 'access_key'."""
     import psycopg2.errors
@@ -818,6 +890,7 @@ def test_m13_ssh_key_pairs_key_type_check_constraint(clean_pg):
             )
 
 
+@pytest.mark.postgres
 def test_m13_repos_unique_per_profile_not_global(clean_pg):
     """m13_002: same (url, branch) under DIFFERENT profiles must succeed (ADR-0034 D2)."""
     run_migrations(clean_pg)
@@ -845,6 +918,7 @@ def test_m13_repos_unique_per_profile_not_global(clean_pg):
         )
 
 
+@pytest.mark.postgres
 def test_m13_repos_unique_within_same_profile(clean_pg):
     """m13_002: same (url, branch, profile_id) under the SAME profile must raise UniqueViolation."""
     import psycopg2.errors
@@ -869,6 +943,7 @@ def test_m13_repos_unique_within_same_profile(clean_pg):
             )
 
 
+@pytest.mark.postgres
 def test_m13_repos_old_global_unique_constraint_dropped(clean_pg):
     """m13_002 must DROP the old global UNIQUE(url, branch) (repos_url_branch_key).
 
@@ -891,6 +966,7 @@ def test_m13_repos_old_global_unique_constraint_dropped(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_m13_deploy_key_unique_per_tenant(clean_pg):
     """m13_002 partial UNIQUE index allows at most ONE deploy_key per tenant.
 
@@ -949,6 +1025,7 @@ def test_m13_deploy_key_unique_per_tenant(clean_pg):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.postgres
 def test_m13_021_no_null_profile_name_after_migrate(clean_pg):
     """m13_021: post-migration embeddings must have 0 NULL profile_name rows.
 
@@ -970,6 +1047,7 @@ def test_m13_021_no_null_profile_name_after_migrate(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_m13_021_profile_name_not_null(clean_pg):
     """m13_021: embeddings.profile_name column must be NOT NULL after migrate."""
     run_migrations(clean_pg)
@@ -989,6 +1067,7 @@ def test_m13_021_profile_name_not_null(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_m13_021_sentinel_check_present(clean_pg):
     """m13_021: ck_embeddings_global_sentinel_scope CHECK must be present and validated."""
     run_migrations(clean_pg)
@@ -1010,6 +1089,7 @@ def test_m13_021_sentinel_check_present(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_m13_021_dunder_check_present(clean_pg):
     """m13_021: profiles_name_no_dunder CHECK must be present and validated."""
     run_migrations(clean_pg)
@@ -1029,6 +1109,7 @@ def test_m13_021_dunder_check_present(clean_pg):
     )
 
 
+@pytest.mark.postgres
 def test_m13_021_dunder_check_rejects_global_profile(clean_pg):
     """m13_021: profiles_name_no_dunder CHECK rejects a profile named '__global__'.
 

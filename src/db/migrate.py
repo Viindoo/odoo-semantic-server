@@ -286,6 +286,30 @@ def _ensure_extension(conn: PgConn) -> bool:
         return False
 
 
+_REQUIRE_PGVECTOR_FATAL_MSG = (
+    "FATAL: REQUIRE_PGVECTOR=1 but pgvector extension is unavailable; "
+    "embeddings table will be skipped. "
+    "Run as superuser: CREATE EXTENSION vector; "
+    "(or unset REQUIRE_PGVECTOR to allow fail-soft)."
+)
+
+
+def _check_pgvector_or_exit(available: bool) -> None:
+    """Exit with code 1 when REQUIRE_PGVECTOR is set and pgvector is unavailable.
+
+    Call immediately after _ensure_extension() when its return value is False.
+    When REQUIRE_PGVECTOR is not set (or falsy), this is a no-op so the
+    existing fail-soft warn-and-continue behaviour is preserved.
+    """
+    import os
+    if available:
+        return
+    require = config.coerce_bool(os.environ.get("REQUIRE_PGVECTOR"), default=False)
+    if require:
+        print(_REQUIRE_PGVECTOR_FATAL_MSG, file=sys.stderr)
+        sys.exit(1)
+
+
 def _schema_already_exists(conn: PgConn) -> bool:
     """Return True if the schema was previously bootstrapped by the legacy SCHEMA_SQL approach.
 
@@ -348,13 +372,15 @@ def run_migrations(conn: PgConn) -> None:
 
     # pgvector / embeddings: handled separately before yoyo because CREATE EXTENSION
     # requires superuser and cannot be inside a transaction (yoyo would wrap it).
-    if _ensure_extension(conn):
+    _ext_ok = _ensure_extension(conn)
+    if _ext_ok:
         with conn.cursor() as cur:
             cur.execute(_EMBEDDINGS_SQL)
             cur.execute(_EMBEDDINGS_UPGRADE_SQL)
         if not conn.autocommit:
             conn.commit()
     else:
+        _check_pgvector_or_exit(_ext_ok)
         print(
             "⚠ pgvector extension not available — embeddings table skipped.\n"
             "  Run as superuser: CREATE EXTENSION vector; then re-run migrations.",
@@ -539,11 +565,13 @@ def main() -> int:
                 return 1
 
         # pgvector / embeddings handled before yoyo (needs superuser; not transactional).
-        if _ensure_extension(conn):
+        _ext_ok = _ensure_extension(conn)
+        if _ext_ok:
             with conn.cursor() as cur:
                 cur.execute(_EMBEDDINGS_SQL)
                 cur.execute(_EMBEDDINGS_UPGRADE_SQL)
         else:
+            _check_pgvector_or_exit(_ext_ok)
             print(
                 "⚠ pgvector extension not available — embeddings table skipped.\n"
                 "  Run as superuser: CREATE EXTENSION vector; then re-run migrations.",
