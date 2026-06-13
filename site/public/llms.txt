@@ -1,36 +1,49 @@
 # Odoo Semantic MCP (OSM)
 
-> Knowledge engine that understands Odoo codebases deeply — inheritance chains, view overrides, JS patches, field/method resolution — and exposes the graph via the MCP (Model Context Protocol) so any AI coding tool can query it without hallucinating.
+> Knowledge engine for Odoo: inheritance chains, view overrides, JS patches,
+> field/method resolution across v8 to latest, exposed via MCP protocol for AI tools.
+
+## Plugin: Odoo AI Agent Team
+
+- Landing: https://odoo-semantic.viindoo.com/odoo-ai-agents
+- 41 pre-built AI skills, 7 autonomous agents, 9 slash commands for Claude Code
+- Every agent grounded on the OSM knowledge graph (12,400+ models, 184,000+ fields)
+- Install: claude plugin marketplace add Viindoo/claude-plugins --scope user
+           claude plugin install odoo-ai-agents@viindoo-plugins --scope user
+- GitHub (MIT): https://github.com/Viindoo/odoo-mcp-client
 
 ## MCP Endpoint
 
-- MCP server: https://odoo-semantic.viindoo.com/mcp
+- Server: https://odoo-semantic.viindoo.com/mcp
 - Protocol: MCP over HTTP (Streamable HTTP transport)
 - Auth: X-API-Key header (obtain a key after signup)
 
 ## Tools & Resources
 
-- [24 MCP tools + 7 MCP resources](/tools) — resolve models, trace overrides, validate ORM domains, measure impact, find deprecated usage, suggest patterns, and more
-- Covers Odoo v8 through v19+ (v18 indexer-ready)
-- Tool categories: resolve, version lifecycle, quality/lint, superset discriminators, session state, CSS/SCSS stylesheet, ORM validation
+- 25 MCP tools + 7 resources (https://odoo-semantic.viindoo.com/tools)
+- Covers Odoo 8 to the latest version (recent releases actively maintained)
+- Categories: model/field/method resolution, version lifecycle, quality/lint,
+  superset discriminators, session state, CSS/SCSS stylesheet, ORM validation
 
 ## Pricing & Install
 
-- [Pricing](/pricing) — Free plan available; Pro and Team plans (per-seat) for professional developers and teams
-- [Install & setup guide](/install/) — zero-install for end users; add the URL + API key to your AI tool config in under 5 minutes
-- [Benchmark methodology](/benchmarks) — 99% fewer tokens vs. grep-based approaches; 100% precision vs. 43% without MCP, measured on 40 real Odoo developer tasks
+- Pricing: https://odoo-semantic.viindoo.com/pricing
+  Free tier: 30 queries/day, no credit card. Paid from $19/month.
+- Install guide: https://odoo-semantic.viindoo.com/install/
+- Accuracy benchmark: 95% vs 43% on 40 real Odoo tasks
+  (Claude claude-sonnet-4-5, tested 2026-05)
 
 ## Source & Community
 
-- Client plugins (MIT): https://github.com/Viindoo/odoo-mcp-client — Claude Code, Codex CLI, Gemini CLI, VS Code, Cursor snippets
-- Built by Viindoo: https://viindoo.com
+- Plugin (MIT): https://github.com/Viindoo/odoo-mcp-client
+- Viindoo: https://viindoo.com
 
 ## Key capabilities for AI agents
 
-- Resolve any Odoo model's full field/method/view tree (cross-repo, cross-version)
-- Trace XPath override chains and JS OWL component patches
-- Validate `@api.depends` paths, domain operators, and relation comodels against the indexed graph before suggesting code
+- Resolve any Odoo model's full field/method/view tree (cross-repo, cross-version, v8 to latest)
+- Trace XPath override chains and OWL JS component patches
+- Validate @api.depends paths, domain operators, relation comodels before suggesting code
 - Impact analysis: every model/method/view/report affected by a field change
-- Module architecture overview: manifest, dependencies, model inventory
+- Module architecture: manifest, dependencies, model inventory
 - CSS/SCSS stylesheet indexing: variable definitions, import chains, mixin resolution
-- Session-sticky odoo_version + profile_name (24 h TTL) — no need to repeat version on every call
+- Session-sticky odoo_version + profile_name (24h TTL)

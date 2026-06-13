@@ -10,6 +10,35 @@
   <!-- Dark hljs theme: code blocks render on a dark (#1e1e2e) background, so the
        light github theme would paint near-black text on dark = unreadable. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/styles/github-dark.min.css">
+  <script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "Install Odoo AI Agent Team for Claude Code",
+  "description": "Install the Odoo AI Agent Team Claude Code plugin in under 2 minutes.",
+  "totalTime": "PT2M",
+  "step": [
+    {
+      "@type": "HowToStep",
+      "position": 1,
+      "name": "Get a free API key",
+      "text": "Sign up at https://odoo-semantic.viindoo.com/signup/ - no credit card required. Takes 30 seconds."
+    },
+    {
+      "@type": "HowToStep",
+      "position": 2,
+      "name": "Install the plugin",
+      "text": "Run: claude plugin marketplace add Viindoo/claude-plugins --scope user && claude plugin install odoo-ai-agents@viindoo-plugins --scope user"
+    },
+    {
+      "@type": "HowToStep",
+      "position": 3,
+      "name": "Connect to your API key",
+      "text": "Inside Claude Code, run /odoo-semantic-mcp:connect and enter your server URL and API key. Setup complete."
+    }
+  ]
+}
+  </script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, -apple-system, sans-serif; background: #f5f5f5; color: #222; line-height: 1.6; }
@@ -235,7 +264,7 @@
         <pre class="code-block" id="code-claude-plugin-step1"><code class="language-bash">claude plugin marketplace add Viindoo/claude-plugins --scope user</code></pre>
       </div>
 
-      <div class="step-label">Step 2 — Install the MCP plugin (24 tools + 7 resources)</div>
+      <div class="step-label">Step 2 — Install the MCP plugin (25 tools + 7 resources)</div>
       <div class="code-wrap">
         <button class="copy-btn" data-target="code-claude-plugin-step2">Copy</button>
         <pre class="code-block" id="code-claude-plugin-step2"><code class="language-bash">claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user</code></pre>
@@ -254,14 +283,15 @@
       <!-- Optional: skills add-on -->
       <div style="margin-top:1.25rem;padding:0.9rem 1rem;border-radius:8px;background:rgba(127,66,130,0.07);border:1px solid rgba(127,66,130,0.25);">
         <div style="font-size:0.8rem;font-weight:700;color:#7F4282;margin-bottom:0.4rem;">Optional — Supercharge with the free skills plugin</div>
+        <div style="font-size:0.75rem;color:#666;margin-bottom:0.5rem;font-style:italic;">Migrating from <code>odoo-semantic-skills</code>? It has been renamed to <code>odoo-ai-agents</code>. Simply run the command below to upgrade.</div>
         <div style="font-size:0.8rem;color:#555;margin-bottom:0.6rem;">
-          <strong>odoo-semantic-skills</strong> (MIT · free forever) adds 26 skills · 3 agents · 9 personas on top of the MCP tools —
+          <strong>odoo-ai-agents</strong> (free forever) adds 41 skills · 7 agents · 9 commands on top of the MCP tools —
           fire from plain-English intent, no tool names to memorize.
           Also auto-pulls <code>odoo-semantic-mcp</code> if you skipped Step 2.
         </div>
         <div class="code-wrap" style="margin-bottom:0;">
           <button class="copy-btn" data-target="code-claude-plugin-skills">Copy</button>
-          <pre class="code-block" id="code-claude-plugin-skills"><code class="language-bash">claude plugin install odoo-semantic-skills@viindoo-plugins --scope user</code></pre>
+          <pre class="code-block" id="code-claude-plugin-skills"><code class="language-bash">claude plugin install odoo-ai-agents@viindoo-plugins --scope user</code></pre>
         </div>
       </div>
     </div>
@@ -389,7 +419,7 @@ http_headers = { "X-API-Key" = "YOUR_API_KEY" }</code></pre>
       <span>&middot;</span>
       <a href="/install/">Install</a>
       <span>&middot;</span>
-      <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener" title="2 free MIT plugins: odoo-semantic-mcp + odoo-semantic-skills">Contribute</a>
+      <a href="https://github.com/Viindoo/odoo-mcp-client" target="_blank" rel="noopener" title="Free plugins: odoo-semantic-mcp + odoo-ai-agents">Contribute</a>
       <span>&middot;</span>
       <a href="/bootstrap">Bootstrap reference</a>
       <span>&middot;</span>

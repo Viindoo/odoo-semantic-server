@@ -3,4 +3,17 @@ Allow: /
 Disallow: /admin/
 Disallow: /account/
 Disallow: /tenant/
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
 Sitemap: https://odoo-semantic.viindoo.com/sitemap-index.xml
