@@ -9,6 +9,14 @@ All notable changes to Odoo Semantic MCP are documented here.
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
 > **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
 
+## [0.14.3] — 2026-06-14 — Parser era2-fallback follow-up (#285 review)
+
+**Fixed:** the era1 text-regex fallback now recovers `is_transient` / `is_abstract` from a model's framework base (directly, or transitively through a same-file local base), mirroring the era2 AST parser. Previously a `TransientModel` / `AbstractModel` recovered via the `SyntaxError` fallback was written to Neo4j with both flags `False`.
+
+**Changed:** the fallback log severity is now version-aware — DEBUG for v8/v9 (Python-2 source routinely fails Python-3 `ast.parse`; the expected era1 path) and WARNING for v10+ (an unexpected straggler worth surfacing). The ERROR "models in this file are LOST" path (fallback recovers nothing) is unchanged.
+
+**Internal:** `parser_python.py` logger now uses `getLogger(__name__)` (was a hardcoded channel); ADR-0032 + CLAUDE.md amended to record that `_ERA_REGISTRY`/`_detect_era` were removed from `parser_python.py` (era selection there is a parse-outcome decision, not a version lookup); the misleading "ADR-0032 graceful degradation" docstring citation corrected. No tool/schema/migration change.
+
 ## [0.14.2] — 2026-06-13 — Parser era2 fallback + base-class recognition (#285)
 
 **Fixed:** `parser_python.py` era2 path silently dropped an entire file when Python-3 `ast.parse` raised `SyntaxError` (residual Python-2 idioms in forked v10 source), causing core models (incl `res.users`) on Odoo 10.0 to lose their `base` definition node and mis-resolve "Defined in" (#285). The parser now falls back to the text-regex extractor on `SyntaxError` for all versions, with WARNING/ERROR logging instead of a silent drop.

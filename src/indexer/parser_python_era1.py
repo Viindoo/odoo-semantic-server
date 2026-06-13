@@ -296,18 +296,69 @@ def _extract_era1_field_entry(block: str, match_start: int) -> str:
     return ""
 
 
+def _era1_base_short_names(bases_src: str) -> set[str]:
+    """Short base-class names from a ``class X(<bases_src>):`` header.
+
+    ``'models.TransientModel, SomeMixin'`` → ``{'TransientModel', 'SomeMixin'}``.
+    Keyword bases (``metaclass=...``) and empty entries are ignored; only the
+    last dotted segment is kept (``osv.osv`` → ``osv``).
+    """
+    names: set[str] = set()
+    for raw in bases_src.split(','):
+        token = raw.strip()
+        if not token or '=' in token:
+            continue
+        names.add(token.rsplit('.', 1)[-1])
+    return names
+
+
+def _resolve_era1_framework_bases(
+    base_names: set[str],
+    class_bases: dict[str, set[str]],
+    framework_bases: set[str],
+    seen: set[str] | None = None,
+) -> set[str]:
+    """Walk same-file local base classes (by name) until framework bases are reached.
+
+    Text-regex mirror of ``parser_python._resolve_local_model_base`` (era1 has no
+    AST node map). Returns the subset of ``framework_bases`` (``MODEL_BASE_CLASSES``)
+    reachable from ``base_names`` directly or via same-file local base classes
+    (e.g. ``CashBoxIn(CashBox)`` where ``CashBox(TransientModel)``). Empty set when
+    none is reachable. Cycle-safe via ``seen``.
+    """
+    if seen is None:
+        seen = set()
+    direct = base_names & framework_bases
+    if direct:
+        return direct
+    for base in base_names:
+        if base in seen:
+            continue
+        seen.add(base)
+        local = class_bases.get(base)
+        if local is None:
+            continue
+        result = _resolve_era1_framework_bases(local, class_bases, framework_bases, seen)
+        if result:
+            return result
+    return set()
+
+
 def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
-    """Best-effort regex extract for v8/v9 modules that fail ast.parse.
+    """Best-effort regex extract for modules that fail ast.parse (v8/v9, or any
+    version whose source hits a SyntaxError and falls back here — see #285).
 
     Splits source by top-level `class X(...):` headers, then for each class block
-    pulls out _name / _inherit / fields-from-_columns. Methods are NOT extracted
-    in fallback mode — defer to era2 AST when source is Py3-parseable.
+    pulls out _name / _inherit / fields-from-_columns, method names + decorators,
+    and the is_transient / is_abstract model-type flags (resolved from the class's
+    framework base, transitively through same-file local bases — mirrors era2).
     """
     # Lazy import (see module-top NOTE): breaks the parser_python <-> era1 cycle
     # so this module stays cold-importable.
     from .parser_python import (
         FIELD_TYPES,
         FIELD_TYPES_LEGACY,
+        MODEL_BASE_CLASSES,
         RELATIONAL_FIELD_TYPES,
         _classify_method_convention,
     )
@@ -316,11 +367,26 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
     if not classes:
         return []
 
+    # name → direct base short-names, for is_transient/is_abstract resolution
+    # (mirrors era2 _parse_class + _resolve_local_model_base). #285 follow-up.
+    class_bases: dict[str, set[str]] = {
+        head.group(1): _era1_base_short_names(head.group(2)) for head in classes
+    }
+
     models: list[ModelInfo] = []
     for idx, head in enumerate(classes):
         body_start = head.end()
         body_end = classes[idx + 1].start() if idx + 1 < len(classes) else len(source)
         body = source[body_start:body_end]
+
+        # is_transient/is_abstract from the class's (possibly local) framework base
+        # — mirrors era2 so a TransientModel/AbstractModel recovered via the
+        # fallback still gets the right model-type flag in Neo4j (#285 follow-up).
+        resolved_bases = _resolve_era1_framework_bases(
+            class_bases.get(head.group(1), set()), class_bases, MODEL_BASE_CLASSES,
+        )
+        is_abstract = 'AbstractModel' in resolved_bases
+        is_transient = 'TransientModel' in resolved_bases
 
         name_match = _RE_NAME_ASSIGN.search(body)
         name = name_match.group(1) if name_match else None
@@ -450,6 +516,8 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
             name=name,
             module=module_info.name,
             odoo_version=module_info.odoo_version,
+            is_abstract=is_abstract,
+            is_transient=is_transient,
             inherit=inherit,
             inherits={},
             fields=fields_list,

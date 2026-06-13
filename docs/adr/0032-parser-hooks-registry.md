@@ -166,3 +166,31 @@ ADR-0005 is kept as historical record and MUST NOT be deleted.
 | `src/indexer/parser_cli.py` | `_PKG_PREFIX_REGISTRY` module constant; `_pkg_prefix` delegates to it (PR#160 follow-up) |
 | `tests/test_version_registry.py` | **New** — unit tests for registry semantics, boundaries, v20 append |
 | `docs/adr/0032-parser-hooks-registry.md` | **This file** |
+
+---
+
+## Amendment (PR #314, #285 follow-up) — `_ERA_REGISTRY` removed from `parser_python.py`
+
+The Python parser's `_ERA_REGISTRY` and `_detect_era()` were **removed** while
+fixing #285 (the era2 path silently dropped a whole file on `SyntaxError`).
+
+**Why:** the #285 fix made `parse_file()` version-agnostic — it now *always*
+tries the AST parser first and falls back to the era1 text-regex extractor on
+`SyntaxError` (the orphan-recovery path). Era selection is therefore no longer a
+**version** decision (`major <= 9` → era1) but a **parse-outcome** decision
+(`ast.parse` raised → text-regex). A version-dispatch registry no longer maps
+onto how the Python parser chooses its strategy, so keeping `_ERA_REGISTRY`
+would be dead indirection. `LEGACY_ERA_MAX_MAJOR` is still imported — now only to
+pick the fallback **log severity** (DEBUG for expected v8/v9 Python-2 source,
+WARNING for an unexpected v10+ straggler).
+
+**Scope:** this removal is **local to `parser_python.py` only**. The three other
+registries remain as ADR-0032 prescribes and are unchanged:
+`_PREFIX_REGISTRY` (`parser_odoo_core.py`), `_OWL_ENABLED_REGISTRY`
+(`parser_js.py`), `_PKG_PREFIX_REGISTRY` (`parser_cli.py`).
+
+**New v20 extension point for the Python parser:** if a future version needs a
+genuinely different *parse strategy* (not just text-regex recovery), branch
+inside `parse_file()` on the parsed major version (the boundary constant lives
+in `src/constants.py`), or reintroduce a `VersionRegistry` at that point. Until
+then, AST-first-with-text-regex-fallback covers every indexed version.

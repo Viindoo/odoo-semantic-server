@@ -95,7 +95,14 @@ class TestSortingGuarantee:
 
 class TestBoundaries:
     def test_python_era_boundary_9_10(self):
-        """Mirror the actual _ERA_REGISTRY used in parser_python.py."""
+        """VersionRegistry boundary semantics at the v9/v10 era split.
+
+        NOTE: parser_python.py no longer wires a _ERA_REGISTRY — it was removed
+        in the #285 follow-up (its era dispatch is now an unconditional AST-first
+        parse with a SyntaxError → text-regex fallback, not a version lookup).
+        This test still exercises the generic VersionRegistry boundary contract
+        that parser_odoo_core.py / parser_js.py / parser_cli.py rely on.
+        """
         from src.constants import LEGACY_ERA_MAX_MAJOR
         reg = VersionRegistry([
             (8,  LEGACY_ERA_MAX_MAJOR, "era1"),

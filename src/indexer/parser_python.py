@@ -5,10 +5,12 @@ import logging
 import re
 from pathlib import Path
 
+from src.constants import LEGACY_ERA_MAX_MAJOR
+
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from .parser_util import parse_external_source
 
-_logger = logging.getLogger("src.indexer.parser")
+_logger = logging.getLogger(__name__)
 
 # v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
@@ -588,7 +590,11 @@ def _resolve_local_model_base(
     Returns the set of MODEL_BASE_CLASSES names ultimately inherited (e.g.
     {'TransientModel'}), or None if no framework base is reachable.  Cycle-safe
     via the ``seen`` set.  Same-file only — ``class_map`` contains only top-level
-    ClassDef nodes from the current file (#285 follow-up review).
+    ClassDef nodes from the current file (#285 follow-up review).  Nested classes
+    (declared inside a function or another class) are intentionally NOT resolved:
+    real Odoo models are always module-level, so a nested ``ClassDef`` whose base
+    is absent from ``class_map`` simply falls through to no-widening (the same
+    outcome as before #285).
     """
     if seen is None:
         seen = set()
@@ -807,8 +813,10 @@ def _parse_class(
     # same-file ``TransientModel`` subclass), walk the same-file local base chain
     # transitively (cycle-safe) to reach a framework base.  Only promote when the
     # subclass has an explicit ``_name`` or ``_inherit`` so plain helper subclasses
-    # are not falsely indexed.  Propagate is_abstract/is_transient from the resolved
-    # framework base so Neo4j gets correct model-type flags.
+    # are not falsely indexed.  is_abstract/is_transient are OR-merged with the
+    # resolved framework base (AbstractModel/TransientModel) — they only ever turn
+    # True here, since this branch runs solely when the class has no direct
+    # framework base — so Neo4j gets correct model-type flags.
     if not is_model_class and (had_explicit_name or inherit) and class_map:
         resolved = _resolve_local_model_base(base_names, class_map)
         if resolved:
@@ -878,8 +886,8 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
     to the era1 text-regex extractor so the file's model IDENTITY (``_name`` /
     ``_inherit`` / best-effort fields) is still recovered instead of silently
     dropping the whole file. The fallback is reached ONLY on SyntaxError, so
-    syntactically-valid files are never affected (#285, ADR-0032 graceful
-    degradation; era1=v8/v9 already did this — era2 now matches).
+    syntactically-valid files are never affected (#285; the era1 v8/v9 path
+    already fell back this way — the era2 v10+ path now matches it).
     """
     try:
         source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
@@ -891,9 +899,18 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
     except SyntaxError as exc:
         # Graceful degradation: a SyntaxError means ast.parse rejected the file.
         # Recover model identity via the text-regex extractor rather than
-        # dropping every model in the file (the #285 orphan bug). Logged so a
-        # future straggler is visible, never silent.
-        _logger.warning(
+        # dropping every model in the file (the #285 orphan bug). Never silent.
+        #
+        # Severity is version-aware: v8/v9 source is Python 2 and routinely fails
+        # Python 3 ast.parse — that is the EXPECTED era1 path, logged at DEBUG to
+        # avoid flooding legacy reindexes. v10+ source should be clean Python 3,
+        # so a SyntaxError there is an unexpected straggler worth a WARNING (#285).
+        major_str = module_info.odoo_version.split('.')[0]
+        major = int(major_str) if major_str.isdigit() else None
+        level = (logging.DEBUG if major is not None and major <= LEGACY_ERA_MAX_MAJOR
+                 else logging.WARNING)
+        _logger.log(
+            level,
             "parse_file: ast.parse failed for %s (Odoo %s): %s — "
             "falling back to text-regex extraction",
             filepath, module_info.odoo_version, exc,

@@ -332,11 +332,18 @@ def test_parse_method_depends_default_empty(tmp_path, sale_module):
     assert method_map["plain_method"].depends == []
 
 
-def test_parse_skips_syntax_error_files(tmp_path, sale_module):
+def test_parse_unparseable_file_recovers_no_models(tmp_path, sale_module, caplog):
+    # A file Python 3 cannot parse AND from which the text-regex fallback can
+    # recover NO model (no `class X(...):` header at all) yields [] — and hits
+    # the ERROR "models in this file are LOST" branch (never a silent drop).
+    # (#285 follow-up; renamed from test_parse_skips_syntax_error_files — the
+    # parser no longer "skips" SyntaxError files, it falls back then logs.)
     bad = tmp_path / "bad.py"
     bad.write_text("def broken(: invalid syntax {{{")
-    result = parse_file(str(bad), sale_module)
+    with caplog.at_level("ERROR", logger="src.indexer.parser_python"):
+        result = parse_file(str(bad), sale_module)
     assert result == []
+    assert "models in this file are LOST" in caplog.text
 
 
 def test_parse_skips_non_model_classes(tmp_path, sale_module):
@@ -1881,7 +1888,7 @@ def test_clean_py3_file_does_not_use_fallback(tmp_path, v10_base_module, caplog)
             _name = 'res.partner'
             name = fields.Char()
     """)
-    with caplog.at_level("WARNING", logger="src.indexer.parser"):
+    with caplog.at_level("WARNING", logger="src.indexer.parser_python"):
         models_found = parse_file(f, v10_base_module)
     assert models_found[0].name == "res.partner"
     assert "falling back to text-regex" not in caplog.text
@@ -1928,3 +1935,72 @@ def test_local_base_class_transitive_chain_detected(tmp_path, v10_base_module):
     assert "cash.box.in" in names, "2-level transitive local-base widening must promote the class"
     cash = names["cash.box.in"]
     assert cash.is_transient is True, "is_transient must propagate through 2-level local base chain"
+
+
+# --- #285 follow-up review: era1 SyntaxError fallback must recover model-type flags ---
+
+def test_era1_fallback_recovers_transient_flag(tmp_path, v10_base_module):
+    # A TransientModel wizard in a v10 file with a residual Py2 idiom falls back
+    # to the text-regex extractor. The recovered model must still carry
+    # is_transient=True (era1 fallback now mirrors era2 base-class detection),
+    # else Neo4j gets the wrong model-type flag (#285 follow-up).
+    f = write_py(tmp_path, "cash_box.py", """
+        from odoo import models, fields
+
+        class CashBoxIn(models.TransientModel):
+            _name = 'cash.box.in'
+            name = fields.Char()
+
+            def _helper(self):
+                print self.name
+    """)
+    result = parse_file(f, v10_base_module)
+    names = {m.name: m for m in result}
+    assert "cash.box.in" in names, "TransientModel lost on SyntaxError fallback (#285)"
+    assert names["cash.box.in"].is_transient is True, (
+        "era1 fallback must recover is_transient from the TransientModel base"
+    )
+    assert names["cash.box.in"].is_abstract is False
+
+
+def test_era1_fallback_recovers_abstract_flag(tmp_path, v10_base_module):
+    # AbstractModel mixin with a Py2 idiom → fallback must recover is_abstract.
+    f = write_py(tmp_path, "mail_thread.py", """
+        from odoo import models, fields
+
+        class MailThread(models.AbstractModel):
+            _name = 'mail.thread'
+
+            def _notify(self):
+                print self.id
+    """)
+    result = parse_file(f, v10_base_module)
+    names = {m.name: m for m in result}
+    assert "mail.thread" in names, "AbstractModel lost on SyntaxError fallback (#285)"
+    assert names["mail.thread"].is_abstract is True, (
+        "era1 fallback must recover is_abstract from the AbstractModel base"
+    )
+    assert names["mail.thread"].is_transient is False
+
+
+def test_era1_fallback_recovers_transient_via_local_base(tmp_path, v10_base_module):
+    # Same-file local base (CashBoxIn -> CashBox(TransientModel)) recovered through
+    # the SyntaxError text-regex fallback must still resolve is_transient=True.
+    f = write_py(tmp_path, "cash_box_local.py", """
+        from odoo import models, fields
+
+        class CashBox(models.TransientModel):
+            _register = False
+
+        class CashBoxIn(CashBox):
+            _name = 'cash.box.in'
+
+            def _helper(self):
+                print self.name
+    """)
+    result = parse_file(f, v10_base_module)
+    names = {m.name: m for m in result}
+    assert "cash.box.in" in names, "local-base TransientModel lost on SyntaxError fallback (#285)"
+    assert names["cash.box.in"].is_transient is True, (
+        "era1 fallback must resolve is_transient transitively through a same-file local base"
+    )

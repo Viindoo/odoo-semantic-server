@@ -352,7 +352,7 @@ The MCP client library (`odoo-mcp-client`, the package you install locally) is M
 
 ## Status
 
-Latest release: **v0.14.2**. Tool count: **25** (unchanged since v0.8). See [CHANGELOG.md](CHANGELOG.md) for full release notes.
+Latest release: **v0.14.3**. Tool count: **25** (unchanged since v0.8). See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
 ---
 
