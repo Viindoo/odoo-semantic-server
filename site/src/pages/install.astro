@@ -75,7 +75,7 @@ const vsCodeDefaultHref = `vscode:mcp/install?${encodeURIComponent(JSON.stringif
       <p class="text-viindoo-on-dark-muted mb-6 text-sm leading-relaxed">
         Connect your AI coding tool to Odoo Semantic MCP to get real inheritance chains, field types,
         and view overrides &mdash; no more hallucinations.
-        <strong class="text-viindoo-on-dark">API key: contact your admin.</strong>
+        <strong class="text-viindoo-on-dark">No API key yet? <a href="/signup" class="text-viindoo-primary-bright hover:underline">Sign up free</a> or <a href="/login" class="text-viindoo-primary-bright hover:underline">sign in</a>.</strong>
       </p>
 
       <!-- API key input -->
@@ -148,9 +148,9 @@ const vsCodeDefaultHref = `vscode:mcp/install?${encodeURIComponent(JSON.stringif
 
           <!-- Optional skills add-on callout -->
           <div class="rounded-lg border border-viindoo-secondary/25 bg-viindoo-secondary/5 px-4 py-3.5 mt-1">
-            <div class="text-[0.8rem] font-bold text-viindoo-secondary mb-1.5">
-              Optional &mdash; Supercharge with the free skills plugin
-            </div>
+            <a href="/odoo-ai-agents" class="block text-[0.8rem] font-bold text-viindoo-secondary mb-1.5 hover:text-viindoo-primary transition-colors">
+              Optional &mdash; Supercharge with the free skills plugin &rarr;
+            </a>
             <div class="text-[0.75rem] text-viindoo-on-dark-muted mb-2 italic">
               Migrating from <code class="font-mono not-italic text-viindoo-on-dark">odoo-semantic-skills</code>?
               It has been renamed to <code class="font-mono not-italic text-viindoo-on-dark">odoo-ai-agents</code>.
@@ -165,6 +165,7 @@ const vsCodeDefaultHref = `vscode:mcp/install?${encodeURIComponent(JSON.stringif
               <button class="copy-btn" data-target="code-claude-plugin-skills">Copy</button>
               <pre class="code-block" id="code-claude-plugin-skills"><code>claude plugin install odoo-ai-agents@viindoo-plugins --scope user</code></pre>
             </div>
+            <a href="/odoo-ai-agents" class="inline-block mt-3 text-[0.78rem] font-semibold text-viindoo-primary-bright hover:underline">Learn more about odoo-ai-agents &rarr;</a>
           </div>
         </div>
 
