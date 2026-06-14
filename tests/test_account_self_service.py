@@ -138,6 +138,11 @@ class TestDeleteMfaStaleReturns403:
         monkeypatch.setattr(
             "src.web_ui.routes.account.current_user_id", lambda _req: 11
         )
+        # The route gates _check_mfa_freshness behind is_test_bypass_active(); disable
+        # the bypass so the real freshness check runs (otherwise the gate is skipped).
+        monkeypatch.setattr(
+            "src.web_ui.routes.account.is_test_bypass_active", lambda: False
+        )
         # _check_mfa_freshness reads request.session["mfa_verified_at"].
         # We use the real check function — the test app's session will have no
         # mfa_verified_at set, so the freshness check correctly fires 403.
@@ -256,6 +261,53 @@ class TestDeleteNormalUserSuccess:
         assert stored_hash is None, (
             "password_hash must be NULL after anonymize — login must not succeed"
         )
+
+    @pytest.mark.asyncio
+    async def test_delete_revokes_api_keys(self, web_app, pg_conn, monkeypatch):
+        """Business rule: deleting an account deactivates its API keys so MCP access
+        terminates with the account (verify_api_key_full gates on api_keys.active).
+        """
+        import httpx
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT id FROM plans WHERE slug = 'free'")
+            plan_id = cur.fetchone()[0]
+            cur.execute(
+                "DELETE FROM api_keys WHERE user_id = 10 AND name = '_revoke_test_key'"
+            )
+            cur.execute(
+                "INSERT INTO api_keys"
+                " (name, key_hash, key_prefix, plan_id, user_id, active)"
+                " VALUES ('_revoke_test_key', 'revoke_hash_unique', 'rev_', %s, 10, TRUE)",
+                (plan_id,),
+            )
+            pg_conn.commit()
+
+        monkeypatch.setattr(
+            "src.web_ui.routes.account.current_user_id", lambda _req: 10
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=web_app), base_url="http://test"
+        ) as client:
+            resp = await client.delete("/api/account/me")
+        assert resp.status_code == 200
+
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT active FROM api_keys"
+                " WHERE user_id = 10 AND name = '_revoke_test_key'"
+            )
+            row = cur.fetchone()
+        assert row is not None and row[0] is False, (
+            "API keys must be deactivated after account deletion (GDPR erasure)"
+        )
+
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM api_keys WHERE user_id = 10 AND name = '_revoke_test_key'"
+            )
+            pg_conn.commit()
 
 
 # ---------------------------------------------------------------------------

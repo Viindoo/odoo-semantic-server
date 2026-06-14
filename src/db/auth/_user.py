@@ -438,46 +438,65 @@ class _UserMixin:
             raise ValueError("expired")
         return row["user_id"]
 
-    def anonymize_user(self, user_id: int) -> None:
-        """Anonymize PII for a soft-deleted user in a single transaction.
+    def purge_user_account(self, user_id: int) -> None:
+        """GDPR erasure: deactivate + anonymize PII + revoke API keys in ONE transaction.
 
-        Clears password_hash (disables login), nulls email, resets mfa_enabled,
-        renames username to a stable tombstone, and removes the TOTP secret row.
+        Atomic: the last-admin guard, is_active=False, the PII tombstone, the TOTP
+        secret delete, and API-key deactivation all commit together or roll back
+        together. There is no window where the account is deactivated but PII or
+        live API keys remain. Session rows are cleared separately by the caller via
+        revoke_all_sessions() (a cache table, not erasure-critical).
 
-        Design mirrors set_user_admin: autocommit=False for atomicity with the
-        caller's set_user_active() call (both are committed together by the caller
-        that manages the transaction, OR each can be called in sequence since both
-        use separate pool checkouts).
-
-        Because this is called by the account-delete route AFTER set_user_active
-        (which already committed), this method runs its own atomic transaction.
+        Last-admin protection: if the user is the sole active admin, raises
+        LastAdminProtectedError BEFORE any write, so nothing is committed (mirrors
+        set_user_active). The target row is locked with SELECT ... FOR UPDATE.
 
         Tombstone values:
-          - username   → "deleted-user-{uid}" (stable, FK-safe)
-          - email      → NULL (UNIQUE constraint allows multiple NULLs in PG)
-          - password_hash → NULL (login disabled)
-          - mfa_enabled   → FALSE
-          - TOTP secret   → row deleted (ON DELETE CASCADE covers this already,
-                            but we want it cleared even if soft-delete is used)
+          - is_active     -> FALSE
+          - username      -> "deleted-user-{id}" (stable, FK-safe)
+          - email         -> NULL (UNIQUE allows multiple NULLs in PG)
+          - password_hash -> NULL (login disabled)
+          - mfa_enabled   -> FALSE
+          - TOTP secret   -> row deleted
+          - api_keys      -> active = FALSE (verify_api_key_full checks api_keys.active,
+                             so this is what terminates MCP access on erasure)
 
-        Idempotent: re-running on an already-anonymized row is a no-op (the
-        tombstone username is already set, email/hash already NULL).
+        Idempotent: re-running on an already-purged row is a no-op.
 
-        Args:
-            user_id: webui_users.id to anonymize.
+        Raises:
+            LastAdminProtectedError: the user is the last active admin.
         """
         tombstone_username = f"deleted-user-{user_id}"
         with self._pool.checkout() as conn:
             conn.autocommit = False
             try:
-                # Update webui_users: clear PII columns + set tombstone username.
-                # ON CONFLICT on username: if tombstone already set (idempotent),
-                # the UPDATE still runs (WHERE id=%s constrains to this user only).
+                # Last-admin guard BEFORE any write (lock the row, mirror set_user_active).
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT is_admin FROM webui_users WHERE id = %s FOR UPDATE",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                if row is not None and bool(row[0]):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT count(*) FROM webui_users "
+                            "WHERE is_admin = TRUE AND is_active = TRUE AND id != %s",
+                            (user_id,),
+                        )
+                        other_admin_count = cur.fetchone()[0]
+                    if other_admin_count == 0:
+                        raise LastAdminProtectedError(
+                            "Cannot deactivate the last active admin"
+                        )
+
+                # Deactivate + clear PII + tombstone username in one statement.
                 with conn.cursor() as cur:
                     cur.execute(
                         """
                         UPDATE webui_users
-                           SET password_hash = NULL,
+                           SET is_active     = FALSE,
+                               password_hash = NULL,
                                mfa_enabled   = FALSE,
                                email         = NULL,
                                username      = %s
@@ -487,11 +506,16 @@ class _UserMixin:
                     )
 
                 # Remove TOTP secret row (clears secret_encrypted + backup_codes_hash).
-                # ON DELETE CASCADE on totp_secrets.user_id would handle hard-delete,
-                # but with soft-delete we must clear it manually.
                 with conn.cursor() as cur:
                     cur.execute(
                         "DELETE FROM totp_secrets WHERE user_id = %s",
+                        (user_id,),
+                    )
+
+                # Revoke all API keys so MCP access terminates with the account.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE api_keys SET active = FALSE WHERE user_id = %s",
                         (user_id,),
                     )
 

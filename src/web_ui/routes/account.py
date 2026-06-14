@@ -31,6 +31,7 @@ from src.web_ui.auth import (
     ALL_TENANTS,
     _check_mfa_freshness,
     current_user_id,
+    is_test_bypass_active,
     resolve_tenant_scope_web,
 )
 
@@ -693,11 +694,12 @@ async def delete_my_account(request: Request):
 
     Flow:
       1. 401 if not authenticated.
-      2. Fresh-MFA gate ONLY when the user has mfa_enabled=True — users without
+      2. Fresh-MFA gate ONLY when the user has mfa_enabled=True - users without
          MFA must not be locked out; session auth alone is sufficient for them.
-      3. Atomic: set_user_active(uid, is_active=False) + anonymize_user(uid).
-         set_user_active raises LastAdminProtectedError if uid is the last active
-         admin — caught → 422.
+         Gated by is_test_bypass_active() per the _check_mfa_freshness contract.
+      3. Atomic erasure: purge_user_account(uid) deactivates + anonymizes PII +
+         revokes API keys in ONE transaction. Raises LastAdminProtectedError if
+         uid is the last active admin (nothing committed) - caught -> 422.
       4. Revoke all sessions (instant logout of all devices).
       5. audit_action writes one row to admin_audit_log.
 
@@ -729,7 +731,10 @@ async def delete_my_account(request: Request):
     if user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
-    if user.get("mfa_enabled"):
+    # Fresh-MFA gate only for MFA-enabled users; gate with is_test_bypass_active()
+    # per the _check_mfa_freshness contract (callers must guard so the test bypass
+    # stays transparent). Users without MFA authenticate via session alone.
+    if user.get("mfa_enabled") and not is_test_bypass_active():
         # Raises HTTP 403 if MFA not recently verified.
         _check_mfa_freshness(request)
 
@@ -738,16 +743,15 @@ async def delete_my_account(request: Request):
         from src.db.pg import auth_store
 
         store = auth_store()
-        # Step 1: deactivate (raises LastAdminProtectedError if last active admin).
-        store.set_user_active(uid, is_active=False)
-        # Step 2: anonymize PII (separate committed transaction, idempotent).
-        store.anonymize_user(uid)
-        # Step 3: revoke all active sessions (instant logout from all devices).
+        # Atomic erasure: deactivate + anonymize PII + revoke API keys in ONE
+        # transaction (raises LastAdminProtectedError if last active admin - nothing
+        # committed). Then revoke sessions (cache table, not erasure-critical).
+        store.purge_user_account(uid)
         store.revoke_all_sessions(uid)
 
     except LastAdminProtectedError as exc:
         _logger.warning(
-            "delete_my_account: blocked — last active admin uid=%d: %s", uid, exc
+            "delete_my_account: blocked - last active admin uid=%d: %s", uid, exc
         )
         return JSONResponse(
             _json_safe(
