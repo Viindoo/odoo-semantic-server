@@ -438,6 +438,70 @@ class _UserMixin:
             raise ValueError("expired")
         return row["user_id"]
 
+    def anonymize_user(self, user_id: int) -> None:
+        """Anonymize PII for a soft-deleted user in a single transaction.
+
+        Clears password_hash (disables login), nulls email, resets mfa_enabled,
+        renames username to a stable tombstone, and removes the TOTP secret row.
+
+        Design mirrors set_user_admin: autocommit=False for atomicity with the
+        caller's set_user_active() call (both are committed together by the caller
+        that manages the transaction, OR each can be called in sequence since both
+        use separate pool checkouts).
+
+        Because this is called by the account-delete route AFTER set_user_active
+        (which already committed), this method runs its own atomic transaction.
+
+        Tombstone values:
+          - username   → "deleted-user-{uid}" (stable, FK-safe)
+          - email      → NULL (UNIQUE constraint allows multiple NULLs in PG)
+          - password_hash → NULL (login disabled)
+          - mfa_enabled   → FALSE
+          - TOTP secret   → row deleted (ON DELETE CASCADE covers this already,
+                            but we want it cleared even if soft-delete is used)
+
+        Idempotent: re-running on an already-anonymized row is a no-op (the
+        tombstone username is already set, email/hash already NULL).
+
+        Args:
+            user_id: webui_users.id to anonymize.
+        """
+        tombstone_username = f"deleted-user-{user_id}"
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                # Update webui_users: clear PII columns + set tombstone username.
+                # ON CONFLICT on username: if tombstone already set (idempotent),
+                # the UPDATE still runs (WHERE id=%s constrains to this user only).
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE webui_users
+                           SET password_hash = NULL,
+                               mfa_enabled   = FALSE,
+                               email         = NULL,
+                               username      = %s
+                         WHERE id = %s
+                        """,
+                        (tombstone_username, user_id),
+                    )
+
+                # Remove TOTP secret row (clears secret_encrypted + backup_codes_hash).
+                # ON DELETE CASCADE on totp_secrets.user_id would handle hard-delete,
+                # but with soft-delete we must clear it manually.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM totp_secrets WHERE user_id = %s",
+                        (user_id,),
+                    )
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+
     def consume_password_reset_token(self, raw_token: str) -> int | None:
         """Verify + consume a password reset token.
 
