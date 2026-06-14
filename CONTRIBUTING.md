@@ -349,6 +349,18 @@ test: thêm test case cho circular dependency
 docs: cập nhật schema diagram
 ```
 
+### Release workflow (BẮT BUỘC — mọi release phải tag)
+
+Mọi release PHẢI được tag ngay sau khi merge (lịch sử có nhiều release untagged — không lặp lại). Quy trình:
+
+1. Bump version ở **`pyproject.toml`** `[project].version` VÀ **`site/src/lib/constants.ts`** `SITE_VERSION` (hai nơi phải khớp — `tests/test_tool_count_sync.py` enforce).
+2. Thêm entry mới lên đầu **`CHANGELOG.md`** với ngày phát hành.
+3. Chạy `make test-all` — phải xanh hết (gồm `test_tool_count_sync` kiểm version khớp).
+4. Commit riêng cho release: `release: cut vX.Y.Z (CHANGELOG stamp + version bump)`.
+5. Tag + push ngay: `git tag vX.Y.Z && git push --tags`.
+
+> Verify nhanh release đã tag: `git tag -l vX.Y.Z` phải trả về tag. CI/nightly không tự tag — đây là bước thủ công bắt buộc.
+
 ---
 
 ## Commands

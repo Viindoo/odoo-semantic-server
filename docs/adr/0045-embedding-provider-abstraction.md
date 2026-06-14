@@ -213,6 +213,7 @@ silently mixing incompatible vector spaces.
 
 ### Migration
 
-**m13_018** (`migrations/m13_018_embedding_model_dim.sql`) is **required** on deploy.
-Safe to run while the server is stopped; idempotent (`IF NOT EXISTS` + `WHERE IS NULL`
-backfill). Deploy order: after m13_017.
+The `embeddings.embedding_model` / `embedding_dim` provenance columns (originally shipped
+as `m13_018`) are now folded into the squashed baseline `migrations/0001_initial.sql`
+(commit `cc7687b`, 2026-06-14) - the standalone `m13_018_*.sql` file no longer exists.
+Apply via `python -m src.db.migrate`; existing pre-squash deployments already have it.
