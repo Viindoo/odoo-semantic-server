@@ -1,4 +1,4 @@
-# ADR-0004: Defined-in Ranking Heuristic cho resolve_* Tools
+# ADR-0013: Defined-in Ranking Heuristic cho resolve_* Tools
 
 **Date:** 2026-05-10  
 **Status:** Accepted — M5.5+

@@ -1883,22 +1883,22 @@ for full architecture + Phase 2 roadmap.
 
 ---
 
-## M10B Billing Migrations (m13_014 → m13_021)
+## Database migrations (squashed baseline)
 
-Apply in order after `python -m src.db.migrate` (which handles older migrations up through m13_013):
+All schema migrations are squashed into a single baseline `migrations/0001_initial.sql`
+(commit `cc7687b`, 2026-06-14). The legacy per-feature files (`m13_001` ... `m13_021`,
+including the entire M10B billing set) no longer exist on disk - their DDL is folded into
+the baseline (billing tables, `pricing_model`/`min_seats`, withdrawal consent, embedding
+provenance columns, public/Viindoo tenant isolation, the `__global__` sentinel, and the
+osm_reader grants).
 
-| File | Contents | When to run |
-|------|----------|-------------|
-| `migrations/m13_014_billing_p1.sql` | Full billing schema: `subscriptions`, `billing_webhook_events`, `plans` commercial cols, cancel_at_period_end, `plans.prices` JSONB, `webui_users.terms_accepted_at`, drop waitlist CHECK | After merging `feat/m10b-p1-billing` |
-| `migrations/m13_015_pricing_model.sql` | `plans.pricing_model TEXT CHECK IN ('flat','per_seat')` — seeds pro + team as `per_seat` | After merging PR #223 |
-| `migrations/m13_016_plan_min_seats.sql` | `plans.min_seats INTEGER` — display SSOT for per-seat minimum; seeds team.min_seats=3 | After merging PR #223 |
-| `migrations/m13_017_withdrawal_consent.sql` | `subscriptions.buyer_type TEXT` + `subscriptions.withdrawal_waiver_accepted_at TIMESTAMPTZ` — CRD checkout consent; run after m13_016 | After merging PR #224 (feat/launch-prep) |
-| `migrations/m13_018_embedding_model_dim.sql` | `embeddings.embedding_model TEXT` + `embeddings.embedding_dim INT` — provider provenance columns; backfill pre-existing rows to `('qwen3-embedding-q5km', 1024)`; partial index `idx_embeddings_model`; osm_reader grant | After merging PR #228 (wave/wi-f embedding infra) |
-| `migrations/m13_019_public_tenant_isolation.sql` | Public/Viindoo tenant split: re-scope `viindoo_*` profiles to the Viindoo tenant + remediate active NULL-tenant API keys (deactivate/re-scope) so a free key cannot read internal profiles | After merging the public-tenant-isolation wave |
-| `migrations/m13_020_grant_webui_users_osm_reader.sql` | Column-level `GRANT SELECT(id, is_admin) ON webui_users TO osm_reader` — converges the earlier full-table hotfix to least-privilege | After merging the osm_reader grant fix |
-| `migrations/m13_021_embeddings_global_sentinel.sql` | `embeddings.profile_name` set `NOT NULL` with `'__global__'` sentinel replacing NULL-as-global; RLS policy swapped to match the sentinel | After merging the global-sentinel wave |
+Apply the full schema in one step:
+```bash
+~/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate
+```
 
-**Re-run osm_reader grants** after each migration batch:
+Existing pre-squash deployments already have these migrations applied and need no action.
+After applying the baseline, (re-)grant the least-privilege read-only role:
 ```bash
 psql "$PG_DSN" -f ops/rls_create_osm_reader.sql
 ```
