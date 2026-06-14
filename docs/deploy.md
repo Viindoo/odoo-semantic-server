@@ -1024,8 +1024,8 @@ Xem `docs/deploy/nginx.conf.example` để biết config đầy đủ (pre-M8, M
 
 **M8 — sử dụng `docs/deploy/nginx-m8.conf` thay thế.** Template này route:
 - `/api/*` → FastAPI :8003 (JSON only)
-- `/admin/*` và `/` → Astro SSR :4321 (landing + admin UI)
-- `/mcp`, `/install/`, `/health`, `/ready` → MCP :8002 (unchanged)
+- `/admin/*`, `/install/`, và `/` → Astro SSR :4321 (landing + admin UI + install page)
+- `/mcp`, `/health`, `/ready` → MCP :8002 (unchanged)
 
 ```bash
 sudo cp /opt/odoo-semantic-mcp/docs/deploy/nginx-m8.conf \
