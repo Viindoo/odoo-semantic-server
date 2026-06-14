@@ -1,17 +1,15 @@
-# CLAUDE.md — Odoo Semantic MCP
+# CLAUDE.md - Odoo Semantic MCP
 
 ## Mandatory context
 
 @README.md
 
-The above file is REQUIRED reading.
+REQUIRED reading: project overview, system requirements, milestone status.
 
-Tổng quan dự án, onboard user, system requirements, trạng thái milestone
-
-## Dev Commands
+## Dev commands
 
 ```bash
-make install           # Tạo venv tại ~/.venv/odoo-semantic-mcp + cài deps
+make install           # venv tại ~/.venv/odoo-semantic-mcp + cài deps
 make test              # Unit tests (không cần Docker)
 make test-integration  # Integration tests (cần Docker + testcontainers)
 make test-all          # Cả hai
@@ -19,202 +17,75 @@ make lint              # ruff check src/ tests/
 make neo4j-up          # Start Neo4j thủ công (thay cho testcontainers)
 ```
 
-Venv nằm tại `~/.venv/odoo-semantic-mcp` — không bao giờ tạo `.venv/` trong repo.
+Venv ở `~/.venv/odoo-semantic-mcp` - không bao giờ tạo `.venv/` trong repo.
 
-## Hai Nguyên Tắc Cốt Lõi
+## Core principles
 
-**Boil the Lake:** Làm đúng từ đầu rẻ hơn làm lại. Schema phải version-aware và cross-repo ngay từ đầu — migration sau khi có data tốn gấp 10 lần.
+- **Boil the Lake:** làm đúng từ đầu rẻ hơn làm lại. Schema phải version-aware + cross-repo ngay từ đầu - migration sau khi có data đắt gấp 10.
+- **Ship Wow Product:** output MCP tool phải là cây có cấu trúc, AI client đọc được ngay (ADR-0023 tree grammar, English-only).
 
-**Ship Wow Product:** Output MCP tool phải có cấu trúc cây rõ ràng, AI client đọc được ngay không cần parse thêm.
+## Agent rules (bắt buộc)
 
-## Agent Rules — Bắt Buộc
+- **Read trước Edit/Write** - đọc file trong session hiện tại trước khi sửa; đừng tin trí nhớ session trước.
+- **Search trước khi tạo mới** - grep confirm chưa có implementation tương tự; duplicate = source-of-truth conflict.
+- **Confirm trước khi xóa** thứ ngoài scope task được giao; không "cleanup" ngoài phạm vi.
+- **Edit > Write** - chỉ Write khi tạo file mới hoàn toàn (Write overwrite không warning).
 
-**Read trước khi Edit/Write:** Phải dùng Read tool đọc file trong session hiện tại trước khi dùng Edit hoặc Write. Không dựa vào memory session trước — file có thể đã thay đổi.
+## Architecture invariants
 
-**Search trước khi tạo mới:** Trước khi thêm function/class/constant/section mới → grep codebase confirm chưa có implementation tương tự. Duplicate implementation = source of truth conflict.
+- **Pipeline một chiều:** `scanner → registry → resolver → parser → (writer_neo4j | embedder → writer_pgvector) → server`. Không cross-import ngang hàng (scanner không import parser; registry không import writer). Enforce bởi `tests/test_pipeline_import_discipline.py`.
+- **Neo4j C1 schema:** mỗi module một node Model riêng (không gộp theo tên); composite MERGE key cho Module/Model/Field/Method. `Model.is_definition` = ranking heuristic bậc 1, fallback `field_count DESC`. Same-name INHERITS = K×D edges extender→definition (writer W1 cần `tip.is_definition=true`), **không** K² mesh. → [`huong-dan-stack.md §Schema C1`](docs/huong-dan-stack.md#schema-c1), ADR-0013, ADR-0048.
+- **Tool surface:** 25 MCP tools + 7 resources. `tests/test_tool_count_sync.py` enforce; bump phải sync `pyproject.toml` + `site/src/lib/constants.ts` (SITE_VERSION/TOOL_COUNT/RESOURCE_COUNT).
+- **`is_admin` DB-sourced** qua `is_admin_session(request)` (`src/web_ui/auth.py`) - KHÔNG `request.session.get("is_admin")` (key đó không được set; đọc trả `False` âm thầm, ẩn data của admin). ADR-0011/0026.
+- **Multi-tenant fail-closed:** read-side luôn qua choke-point filter + RLS trên embeddings; KHÔNG có `tenant_id` trong Neo4j MERGE key. ADR-0034.
 
-**Confirm trước khi xóa:** Xóa file, function, hoặc test nằm ngoài scope task được giao → confirm với user trước. Không "cleanup" ngoài phạm vi.
+## Neo4j 5.x gotchas
 
-**Edit > Write:** Dùng Edit để sửa file có sẵn. Chỉ dùng Write khi tạo file mới hoàn toàn — Write overwrite toàn bộ không có warning.
+- `ORDER BY toFloat(v) DESC` cho version sort (NOT lexicographic); ORDER BY luôn có deterministic tiebreak (vd `..., mod.name ASC`).
+- `COUNT { ()-[:INHERITS]->(m) }` (5.x), không phải `size(...)` (4.x). `.single()` chỉ khi chắc 1 row; `.data()` cho 0-N.
+- **ORM read KHÔNG dùng VLP `*1..N`** (nổ path enumeration trên same-name mesh, bug #273) - dùng per-hop name-dedup flat `OPTIONAL MATCH` + `WITH collect(DISTINCT ...)`, không `CALL { WITH }` (5.26 deprecation). ADR-0048.
+- Timeout/concurrency env: `NEO4J_QUERY_TIMEOUT_SECONDS` (30; bound từng query qua `neo4j.Query(timeout=)`), server `db.transaction.timeout`=600s; `ORM_QUERY_MAX_CONCURRENCY`/`NONORM_READ_MAX_CONCURRENCY` (8, pool riêng) + `*_SLOT_ACQUIRE_TIMEOUT` (5s) - thread-held `threading.BoundedSemaphore` (cancel-safe), KHÔNG `asyncio.Semaphore`; `SESSION_IDLE_TIMEOUT` (3600s, bỏ qua khi `--transport stdio`).
+- **Full Cypher patterns:** [`huong-dan-stack.md §Cypher gotchas`](docs/huong-dan-stack.md#cypher-gotchas).
 
-## Pipeline — Không Cross-Import Ngang Hàng
+## Parsing & versions (v8 → v19)
 
-```
-scanner → registry → resolver → parser → (writer_neo4j | embedder → writer_pgvector) → server
-```
-
-`scanner` không import `parser`. `registry` không import `writer`. Mỗi file một trách nhiệm.
-
-## Neo4j — C1 Schema (Critical)
-
-Mỗi module tạo node Model riêng, không gộp theo tên model. Composite MERGE key bắt buộc cho Module/Model/Field/Method. `Model.is_definition` flag bậc 1 ranking heuristic, fallback `field_count DESC`. INHERITS edge `order` property preserves Pattern D mixin injection order (MRO future use, no read-consumer yet). **Same-name INHERITS topology: K×D edges extender→definition (NOT K² mesh)** — writer W1 requires `tip.is_definition=true`; post-pass fills cross-repo gaps. See ADR-0048.
-
-**Chi tiết schema, MERGE patterns, ranking heuristic:** [`docs/huong-dan-stack.md §2 Schema C1`](docs/huong-dan-stack.md#schema-c1) và [`docs/adr/0013-defined-in-ranking-heuristic.md`](docs/adr/0013-defined-in-ranking-heuristic.md).
-
-## Neo4j 5.x Gotchas
-
-Các gotchas quan trọng nhất:
-- `ORDER BY toFloat(v) DESC` cho version sort (NOT lexicographic).
-- `COUNT { ()-[:INHERITS]->(m) }` (Neo4j 5.x), không phải `size(...)` (4.x). Lưu ý: query ranking cũ dùng pattern này — ranking hiện tại (ADR-0013) KHÔNG dùng INHERITS edge count.
-- `.single()` chỉ khi chắc 1 row; `.data()` cho 0-N rows.
-- **ORDER BY phải có deterministic tiebreak** (vd `ORDER BY rank_key DESC, mod.name ASC`) — đặc biệt cho ranking heuristic, xem [`docs/adr/0013`](docs/adr/0013-defined-in-ranking-heuristic.md).
-- **VLP `*1..N` + ORDER BY trước LIMIT = full path enumeration** — trên K² same-name mesh có thể nổ thành 86M paths (bug #273). Dùng per-hop name-dedup (flat `OPTIONAL MATCH` + `WITH collect(DISTINCT ...)` mỗi hop, KHÔNG CALL subquery - cũng tránh Neo4j 5.26 `CALL { WITH }` deprecation) thay vì VLP cho ORM read. Xem ADR-0048.
-- **`NEO4J_QUERY_TIMEOUT_SECONDS`** (default 30): ORM read call-sites dùng `neo4j.Query(text, timeout=...)` để bound từng query. `db.transaction.timeout` trên server nên set 600s (không 60s — indexer có tx dài hơn).
-- **Concurrency env vars** (ADR-0048 / #276 / #282): `ORM_QUERY_MAX_CONCURRENCY` (default 8) + `ORM_SLOT_ACQUIRE_TIMEOUT` (default 5s fast-reject) bound 4 ORM-validation tools; `NONORM_READ_MAX_CONCURRENCY` (default 8) + `NONORM_SLOT_ACQUIRE_TIMEOUT` (default 5s) bound non-ORM heavy reads (vd `impact_analysis` fan-out, SEPARATE pool). Cả ba pool (embed/orm/nonorm) dùng `threading.BoundedSemaphore` held in-thread (cancel-safe), KHÔNG `asyncio.Semaphore`. **`SESSION_IDLE_TIMEOUT`** (default 3600s, ADR-0049): transport-layer idle TTL cho streamable-http sessions - reaps abandoned sessions; bỏ qua khi chạy `--transport stdio`.
-
-**Full Cypher patterns + numeric compare:** [`docs/huong-dan-stack.md §2 Cypher gotchas`](docs/huong-dan-stack.md#cypher-gotchas).
-
-## v8/v9 Enablement (M4.5 Phase 0)
-
-Project hỗ trợ Odoo v8 → v19+. Hai pattern bắt buộc:
-
-**1. ManifestFinder Protocol pluggable** (per [ADR-0002](docs/adr/0002-spec-schema-policy.md)):
-
-```python
-class ModernManifestFinder:  # rglob '__manifest__.py' (v11+)
-class LegacyManifestFinder:  # rglob '__openerp__.py' (v8-9)
-class DualManifestFinder:    # both (v10: 3 l10n modules still ship __openerp__.py)
-
-def get_manifest_finder(odoo_version: str) -> ManifestFinder:
-    major = int(odoo_version.split('.')[0])
-    if major <= 9:
-        return LegacyManifestFinder()
-    if major == 10:
-        return DualManifestFinder()  # dedupe preferring __manifest__.py
-    return ModernManifestFinder()
-```
-
-**2. Era-aware parser_python.py**: Era1 (v8-9) dùng text-regex extract (`_parse_era1_text()`) + `FIELD_TYPES_LEGACY` (`function`, `related`, `dummy`, `sparse`) cho `_columns` dict. Era2 (v10+): AST như hiện tại. Chi tiết: [`docs/huong-dan-stack.md §Era parsing`](docs/huong-dan-stack.md#era-parsing).
-
-**3. `_latest_version()` numeric compare** (per [ADR-0002](docs/adr/0002-spec-schema-policy.md)): KHÔNG hardcode "17.0". Trả `None` khi DB rỗng → caller hiển thị error rõ.
-
-## Version-aware paths cho `index-core`
-
-`parser_odoo_core.py` dùng `_resolve_core_paths()`: v8/v9 prefix `openerp/`; v19+ fallback sang `odoo/orm/`. Drop >20% CoreSymbol count vs prior version → nghi ngờ path refactor → update + regression test.
-
-**Chi tiết:** [`docs/adr/0005-core-coverage-version-paths.md`](docs/adr/0005-core-coverage-version-paths.md).
-
-## AST Parsing Gotcha
-
-Dùng `tree.body` (top-level statements) cho manifest parsing — KHÔNG `ast.walk` (dive vào nested dict, trả sub-dict sai). `_inherit` luôn normalize về list; thiếu `_name` + có `_inherit` → `name = inherit[0]`.
-
-**Full AST patterns:** [`docs/huong-dan-stack.md §AST parsing`](docs/huong-dan-stack.md#ast-parsing).
-
-## FastMCP
-
-`@mcp.tool()` wrap function thành `FunctionTool` — **không callable trực tiếp**. Test phải import `_resolve_model`, `_resolve_field`, `_resolve_method` (underscore prefix), không import tên tool.
+- **ManifestFinder** (`registry.get_manifest_finder`): Legacy `__openerp__.py` (v8-9) / Dual (v10) / Modern `__manifest__.py` (v11+). ADR-0002.
+- **Era-aware Python parser:** era1 text-regex (`parser_python_era1._parse_era1_text` + `FIELD_TYPES_LEGACY` cho `_columns`) cho v8-9; era2 AST (v10+). Version dispatch qua `VersionRegistry` (ADR-0032, dùng ở `parser_odoo_core`/`_cli`/`_xml`).
+- **index-core paths:** `parser_odoo_core._resolve_core_paths()` - `openerp/` (v8-9), fallback `odoo/orm/` (v19+). Drop >20% CoreSymbol vs version trước = nghi path refactor → fix + regression test. ADR-0005.
+- **AST:** dùng `tree.body` (NOT `ast.walk`) cho manifest; `_inherit` normalize về list; thiếu `_name` + có `_inherit` → `name = inherit[0]`. → [`huong-dan-stack.md §AST`](docs/huong-dan-stack.md#ast-parsing).
+- **`_latest_version()`** numeric compare - KHÔNG hardcode `"17.0"`; DB rỗng → `None`.
 
 ## Testing
 
 ```python
-# Mọi test integration cần Neo4j — thêm vào đầu file:
-pytestmark = pytest.mark.neo4j
-
-# Tất cả test data dùng version đặc biệt (không conflict với data thật):
-TEST_VERSION = "99.0"
-
-# Fixture clean_neo4j tự dọn trước/sau mỗi test — luôn dùng fixture này
+pytestmark = pytest.mark.neo4j      # mọi test cần Neo4j
+TEST_VERSION = "99.0"               # data test, tránh đụng data thật
+# fixture clean_neo4j tự dọn version 99.0 trước/sau mỗi test - luôn dùng
 ```
 
-Unit tests không cần Docker. Integration tests dùng testcontainers tự spin-up — không cần `docker compose up` thủ công.
+- Unit tests không cần Docker; integration dùng testcontainers tự spin-up.
+- **FastMCP:** `@mcp.tool()` wrap thành `FunctionTool` (không callable trực tiếp) - test import `_resolve_model`/`_resolve_field`/`_resolve_method` (underscore), không import tên tool.
+- **Không suppress warnings** upstream (testcontainers / authlib) - fix root cause, không `filterwarnings`/`ignore`. Xem CONTRIBUTING.md.
 
-## Upstream Warnings — Không Dùng suppress
+## Indexer ops (chi tiết ở ADR)
 
-Hai warnings từ testcontainers (`@wait_container_is_ready`) và một từ authlib (via fastmcp) là upstream issues. **Không dùng `filterwarnings`/`suppress`/`ignore`** — fix root cause hoặc chờ upstream fix. Đã documented trong `CONTRIBUTING.md`.
+- **Incremental:** so `git rev-parse HEAD` vs `repos.head_sha` (bằng→skip, force-push→full, else diff qua `incremental.compute_changed_module_paths()`); `--full` monthly dọn stale nodes. ADR-0007.
+- **Auto-reseed:** `_SeedMeta` sentinel lưu sha256 của `patterns.json` (skip re-embed khi unchanged; `--force` bypass). ADR-0007.
+- **Cross-profile parallel:** `--profile-workers N --max-workers M`, per-profile Postgres advisory lock. ADR-0006.
+- **SSH auto-clone:** `POST /profiles/{id}/clone-all` + `GET /repos/{id}/clone-status`; key qua `GIT_SSH_COMMAND` (NOT `-i`), `known_hosts` pre-pinned + `StrictHostKeyChecking=yes` (no TOFU), full clone, per-repo advisory lock, fetch+reset-hard refresh. ADR-0008 + ADR-0035.
 
-## Image Versions — Nguồn Sự Thật
+## Image versions (SSOT)
 
-`NEO4J_IMAGE` và `PG_IMAGE` trong `.env.example` là nguồn sự thật. Khi bump version: sửa **cả hai** `.env.example` VÀ `.github/workflows/nightly-smoke.yml` (CI hardcode vì Actions parse trước bất kỳ step nào). `tests/test_env_versions_sync.py` enforce sync tự động.
+`NEO4J_IMAGE`/`PG_IMAGE` trong `.env.example` là nguồn sự thật. Bump phải sửa **cả** `.env.example` VÀ `.github/workflows/nightly-smoke.yml` (CI hardcode). `tests/test_env_versions_sync.py` enforce. Harness policy: ADR-0006.
 
-**Môi trường harness policy:** [`docs/adr/0006-environment-harness.md`](docs/adr/0006-environment-harness.md).
-
-## Incremental Indexer (M6 Wave 2)
-
-So sánh `git rev-parse HEAD` với stored `repos.head_sha`: bằng nhau → skip; force-push → full reindex; otherwise → diff filter via `incremental.compute_changed_module_paths()`. `head_sha` chỉ update sau full success. Dùng `--full` monthly để cleanup stale Module nodes từ rename/move.
-
-**Chi tiết + caveats:** [`docs/adr/0007-incremental-indexer.md`](docs/adr/0007-incremental-indexer.md).
-
-## Auto-Reseed Pattern Catalogue (M6 Wave 2)
-
-`_SeedMeta` sentinel node lưu sha256 hash của `patterns.json` — skip re-embed khi unchanged. Wired vào `index_profile()` end. `--force` bypass sentinel. Failure log warning, KHÔNG fail indexer run. Xem [`docs/adr/0007`](docs/adr/0007-incremental-indexer.md).
-
-## Cross-Profile Parallel Indexing (M6 Wave 2)
-
-`--profile-workers 3 --max-workers 2` = 3 profiles parallel, mỗi profile 2 repo-workers nội bộ. Per-profile Postgres advisory lock đảm bảo safe; mỗi thread tự open pg_conn riêng. `progress=False` forced khi `profile_workers > 1`. Xem [`docs/adr/0006`](docs/adr/0006-environment-harness.md).
-
-## SSH Auto-Clone (M6 Wave 4)
-
-`POST /repos/{id}/clone` auto-clone SSH repos: key via `GIT_SSH_COMMAND` env (NOT `-i`), tempfile `mkstemp(0o600)` + `try/finally unlink`, project-local `known_hosts` pre-pinned for GitHub/GitLab/Bitbucket + `StrictHostKeyChecking=yes` (no TOFU — ADR-0035 D3 supersedes the old accept-new; self-hosted forges need manual pinning), full clone (no `--depth=1` — incremental needs history). Mutating git ops run under a per-repo Postgres advisory lock; re-clone of an existing checkout refreshes in place (fetch + reset --hard, ADR-0035 D2/D4). `clone_status`: manual/pending/cloned/error + UI poll 5s.
-
-**Policy chi tiết:** [`docs/adr/0008-ssh-auto-clone.md`](docs/adr/0008-ssh-auto-clone.md).
-
-## Auth — `is_admin` Source of Truth
-
-`is_admin` must always be DB-sourced via `is_admin_session(request)` helper in `src/web_ui/auth.py`.
-Never read `request.session.get("is_admin")` — the login flow does not write that key (intentional
-per ADR-0011, which prescribed DB-sourced admin checks but did not name the helper). Reading an
-absent key silently returns `False`, hiding all admin-visible data from legitimate admins. See
-ADR-0026 for full context and design decisions.
-
-## Tài Liệu Liên Quan
+## Related docs
 
 | File | Đọc khi nào |
 |------|-------------|
-| `TASKS.md` | Trước khi bắt đầu task mới — xem milestone nào đang active |
-| `docs/thiet-ke-kien-truc.md` | Cần hiểu schema Neo4j, pipeline, MCP tool spec |
-| `docs/huong-dan-stack.md` | Cần hiểu sâu stack: Neo4j patterns, AST gotchas, FastMCP tips |
-| `docs/adr/` | Architecture Decision Records — đọc trước khi đụng schema/policy |
-| `CONTRIBUTING.md` | Setup dev, chạy tests, workflow commit |
-
-**ADR đã có:**
-
-- `0001` schema evolution
-- `0002` spec schema policy (CoreSymbol/LintRule/CLI per-version)
-- `0003` pattern storage (PatternExample Neo4j + reuse embeddings)
-- `0004` auth-web-ui-ssh-policy
-- `0005` core coverage version paths
-- `0006` environment harness (M6 Wave 1)
-- `0007` incremental indexer (head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel)
-- `0008` SSH auto-clone (URL detection, key delivery via env, tempfile safety, project-local known_hosts, full clone)
-- `0009` pattern catalogue community contribution (115 curated patterns, test-enforced minimum ≥80)
-- `0010` embedding observability (call_count thread-safe; `embeddings_total`/`embeddings_by_chunk_type` now in `/ready` per ADR-0046 amendment; `null` in `/health` until first `/ready` hit)
-- `0011` Web UI session auth (bcrypt cost=12, 8h TTL, cookie SameSite=strict)
-- `0012` persona-skill-architecture (M7.5 — TRIGGER/PREFER/SKIP routing)
-- `0013` Defined-in ranking heuristic (M5.5 — is_definition flag, field_count fallback, deterministic tiebreak)
-- `0014` Astro unified UI (M8 — SSR pages + React islands, /admin/* gated by middleware → FastAPI /api/auth/verify)
-- `0015` FastAPI pure JSON API (M8 — Jinja2 removed, /api/* JSON only, Astro renders all HTML)
-- `0016` Profile hierarchy + Neo4j Option Y (parent_profile_id FK, ancestor profile array property, cycle-free + version-match validation)
-- `0017` OAuth via arctic + oslo (state + PKCE, Google/GitHub, account linking on verified email)
-- `0018` backup bundle contract (tar.gz: postgres.sql + neo4j.dump + fernet.enc + manifest.json)
-- `0019` restore upload security (OWASP 10-item checklist, tarfile filter='data', pre-restore safety backup)
-- `0020` FERNET key delivery + atomic rotation (central getter `src/crypto.py`; LoadCredential delivery + FERNET_KEY env fallback; totp_secrets co-rotation in same txn; env-var-name indirection --old-key-env/--new-key-env; fail-fast in prod via SystemExit(1); full rollback on any InvalidToken)
-- `0021` admin audit log (@audit_action decorator, audit_cli context manager, 18+ routes)
-- `0022` MFA TOTP (pyotp, Fernet-encrypted secrets, 10 HMAC backup codes, admin-required policy)
-- `0023` Tool output completeness (M9 W-OSM Wave 1 — tree grammar contract, English-only language policy, truncation+total disclosure via `_render_capped`, next-step hint mapping for 18 drill-down tools)
-- `0024` PATCH mutation policy (M9 follow-up — preserve head_sha on repo PATCH, reject name/version change on indexed profiles HTTP 409, ancestor+descendant version-match HTTP 422, TOCTOU UniqueViolation catch)
-- `0025` CSS/SCSS stylesheet indexing (M9 Coverage Fill — `:Stylesheet` node, `:IMPORTS` edges, pgvector chunks)
-- `0026` RBAC + key ownership (M9 follow-up — is_admin DB-sourced, deactivate authz hole, admin promote/demote, `/account` self-service)
-- `0027` system-user deployment layout (production migration: personal → dedicated system user, ProtectHome policy, TMPDIR/tmpfs gotcha, uv venv no-pip, Docker Compose basename)
-- `0028` discriminator consolidation (M11 — model_inspect/module_inspect/entity_lookup supersets, 10 flat tool deprecation shims, 1-major-release removal timeline; **Wave 2 WI-4 #260: profile_inspect added as 4th superset [tool count 24->25], method=summary|repos|modules, RBAC via ADR-0034 choke**)
-- `0029` implicit session context (M11 - sticky odoo_version+profile_name, 24h sliding TTL, 5-sentinel defense, 3-tier resolution order; **#251 amendment: pin keyed per live MCP session `(api_key_id, mcp_session_id)` not api-key-alone [concurrent same-key sessions no longer clobber], stored IN-MEMORY as source of truth [`api_key_session_state` table now vestigial - no read/write, no migration, not dropped], `MCP_SESSION_PIN_MAX` oldest-evict + 24h in-memory idle TTL, `_nosession` fallback for stdio/header-less; profile read path now WIRED - pinned profile injected at top of `_scope`/`_effective_allowed`, narrowing-only + re-validated at read time via the ADR-0034 tenant choke, fail-closed, no new authz column; pins reset on server restart; **#279 amendment: Option D (`context_id` per-call keying) evaluated and declined WONTFIX - version race resolved by `RequiredOdooVersion` hard-require; profile race is authz-safe (ADR-0034 tenant choke re-validates at read time); no concrete customer signal; MCP protocol lacks a per-call header mechanism; documentation-only, tool count stays 25**)
-- `0030` MCP Resources URI scheme (M11 — odoo:// URI grammar, 7 kinds + MIME mapping, in-memory LRU 1000 entries/300s TTL, top-100 popular-model discovery, Postgres cache deferred to M12)
-- `0031` python-dotenv auto-load at CLI entry points (override=False, idempotent, main()-only to avoid pytest interference)
-- `0032` parser version-dispatch registry (M11 — `VersionRegistry(min_major, max_major, handler)` replaces hard-coded era branches in parser_python/js/core/cli; supersedes prefix-selection part of ADR-0005)
-- `0033` odoo.tools symbol coverage (curated, version-aware)
-- `0034` multi-tenant pooled isolation + deploy-key credentials (M13 — shared-base + per-tenant overlay reusing ADR-0016 `profile[]`, NO tenant_id in Neo4j MERGE keys, mandatory fail-closed choke-point filter + Postgres RLS on embeddings, spec data stays global, per-tenant deploy-key; supersedes ADR-0016 D6 optional-filter + ADR-0029 profile-not-authz)
-- `0035` git access model (M13 — subprocess git CLI kept over GitPython/dulwich/pygit2; per-repo advisory lock for mutating ops, known_hosts pinning replaces accept-new, fetch+reset-hard refresh, evaluate partial clone; supersedes ADR-0008 accept-new posture + revisits full-clone)
-- `0036` license policy engine (M13 — config-driven SOFT block: `license_policy` map → serve/ingest_flagged/skip per license class; default OEEL-1=skip [Odoo S.A.'s own Enterprise license — Viindoo contractual compliance], copyleft+OPL-1+unknown=serve under submitter ToS; visible `license_notice` to AI+human, never silent; written-permission = config flip, no code change; complements ADR-0034 read-side isolation; **WI-8 #263 amendment: OPL-1 is NOT Odoo Enterprise — it is Odoo S.A.'s license for third-party proprietary apps; EE-confusion gate now edition-enum-first [edition='enterprise'=OEEL-1] so OPL-1 Viindoo modules no longer false-flag as EE**)
-- `0037` path portability (M13 — store file paths repo-relative (`addons/sale/...`) not server-absolute; `repos.local_path` is the only absolute anchor; relativize at writer boundary via transient `ModuleInfo.repo_root`, CoreSymbol/CLICommand relativize against source root in their parser; `_portable_path()` read-side safety-net at 8 render sites; css/scss/less chunks backfill `repo`/`repo_id`; `resources.py` stylesheet reconstructs absolute dynamically via `repo_id→local_path` → **server migration = local_path re-point, no reindex**; Stylesheet/LintViolation MERGE-key relative-keyed → post-reindex cleanup `ops/cleanup_absolute_path_nodes.cypher`)
-- `0038` tenant RBAC web-UI write-side (W1 UI plan — `tenant_members` M:N join, `resolve_tenant_scope_web` helper, explicit `tenant_id` in request body (Option A stateless), admin-bypass absolute, W0 gates preserved, GUC-delimiter CHECK on `profiles.name`, `password_hash` nullable fold #176, D8 delete-tenant blocked when resources remain; precondition for W2 customer self-service portal)
-- `0039` commercialization platform (M10B — control plane / data plane; `plans` table + `api_keys.plan_id` FK + `usage_counter`; plan-aware MCP middleware with RPM + monthly quota gating; Merchant-of-Record Polar.sh for international self-serve; extract-gradually posture; P0 schema shipped PR #200; P1-P3 Entitlement Activation API + Polar adapter + multi-IdP deferred; P1 billing single migration m13_014; **PR #223 reuses m13_015/m13_016 file numbers for new migrations: `plans.pricing_model` + `plans.min_seats` — deploy must run both**; **PR #224 reuses m13_017 for CRD withdrawal consent — deploy order m13_014→m13_015→m13_016→m13_017**)
-- `0040` conftest Priority-2 fallback guard (TD-2 — testcontainers Priority-1 → direct-bolt Priority-2 fallback was auth-failing × 8 against a live Neo4j and tripping `auth_max_failed_attempts`; guard skips Priority-2 unless explicitly opted in, protecting prod instances on dev machines)
-- `0041` unlimited plan + per-key quota/rpm overrides (M10B P0-ext — `'unlimited'` plan slug is the SSOT for unlimited access [D5]; `api_keys.rate_limit_override`/`quota_override` columns via m13_009; override 0 = zero-allowed NOT unlimited; admin web-UI for the 4 blocked use cases: grant-unlimited / upgrade-plan / per-key override / downgrade)
-- `0042` Admin Settings module (M10B P1.5 — runtime config UI without redeploy; `app_settings`+`app_settings_history` [m13_010], `ee_modules` [m13_011], `patterns` [m13_012]; 3-tier `get_setting()` resolver L1 LRU 60s → L2 Postgres → L3 catalogue default; tenant `quota.*` override; hot-reload ≤60s TTL-poll; audit+rollback per ADR-0021; MFA fresh-gate per ADR-0022; web-only, tool count stays 24; **PR #223 adds Support category: `support.helpdesk_url` [28th catalogue entry]; PR #225 adds Analytics category: `analytics.ga_measurement_id` [29th catalogue entry] + extends `GET /api/site-config` to 5 fields**)
-- `0043` MFA step-up freshness (fix: `mfa_verified_at` was never written → permanent 403 on all fresh-MFA gates; write contract: `totp_login` + `POST /api/auth/totp/step-up` both write session key + DB column; `get_mfa_freshness()` via `auth.mfa_freshness_seconds` app_setting [16th Tier-1 setting]; `StepUpMfaModal` frontend sentinel-detect + retry; supersedes implied step-up in ADR-0019/0022; tool count stays 24; **PR #223 adds 17th non-billing Tier-1 entry: `support.helpdesk_url`; PR #225 adds 18th non-billing Tier-1 entry: `analytics.ga_measurement_id` — `settings_registry.py` is the SSOT for current count**)
-- `0044` token-bounded embedding (fix #226 — char-based chunking does not bound tokens; `estimate_tokens`/`split_by_token_budget` helpers in `embedder.py` shared with chunking layer; token cap in `_sliding` + all `make_*_chunks` helpers; MCP query cap `_cap_query_text`; truncation choke-point `_truncate_to_ctx` in `_BaseHttpEmbedder`; Bug B length-guard in `_embed_one`; resilient skip-log `_embed_chunks_resilient`; observability ADR-0010 contract unchanged; env: EMBEDDER_NUM_CTX/TOKEN_BUDGET/CHARS_PER_TOKEN)
-- `0045` embedding provider abstraction (EmbedderClient structural Protocol with model/dim/num_ctx/chars_per_token attrs + embed/embed_async; `_BaseHttpEmbedder` shared machinery; `OpenAICompatEmbedder` for OpenAI/Voyage/TEI/vLLM/LiteLLM /v1/embeddings; `make_embedder()` factory via EMBEDDER_BACKEND env [default `ollama`]; `embedding_model`+`embedding_dim` columns in m13_018 — stamp every vector row + backfill pre-existing rows; fail-fast `EmbedderDimMismatch` guard in `embedding_guard.py`; **WARNING: switching embedding dimension requires full reindex**; tool count stays 24; migration m13_018 required)
-- `0046` MCP embed concurrency + anti-hang (fix #227 production wedge ~11h: FastMCP calls `sync def` on event loop — one blocking embed froze all requests; fix: async hot path `embed_async` via `asyncio.to_thread`, 30s query timeout separate from 1200s batch timeout, embed-slot cap + `EmbedOverloaded` fast-reject in 5s, uvicorn `limit_concurrency=EMBEDDER_MAX_CONCURRENCY*16` backpressure; `/health` = pure liveness no DB I/O [reads module-global cache]; `/ready` = new HTTP readiness probe cached 60s [NOT an MCP tool, tool count stays 24 at write time]; no hold-and-wait embed↔PG - embed completes before PG checkout; **#276/#279 amendment: the embed cap is now a thread-held `threading.BoundedSemaphore` (via `_LazyBoundedSemaphore`), NOT the original `asyncio.Semaphore` - the asyncio slot released on coroutine cancellation while the worker thread kept running; threading slot is tied to thread completion, cancel-safe; `EMBEDDER_SLOT_ACQUIRE_TIMEOUT` (default 5s) drives the fast-reject**)
-- `0047` literal-first style/example lookup + HNSW recall mitigation (fix #255: `find_style_override`/`find_examples(css/scss/less)` returned 0 for literal selectors — HNSW post-filter recall collapse: `INSTRUCT_NL_TO_CODE`-wrapped literal `.o_list_view` → out-of-distribution vector → 0/ef_search candidates survive `chunk_type` post-filter; fix: literal-first substring ILIKE before ANN via shared `_literal_style_lookup`, column routed by token shape [selector→`entity_name`, `$`/`@`var→`content`], merge+dedup `(chunk_type,module,file_path,entity_name,chunk_idx)` literal-on-top, deterministic floor `LITERAL_RANK_FLOOR+(n-i)*eps` tiebreak; new pure helper `src/mcp/style_literal.py` [`is_literal_token`/`literal_column`/`ilike_pattern`, at-rule-keyword flood guard, `ESCAPE '\'`]; general mitigation `_set_iterative_scan` = `SET LOCAL hnsw.iterative_scan='relaxed_order'` flag-gated by `HNSW_ITERATIVE_SCAN` [accepted: minor NL reorder]; literal path never embeds → survives embedder outage [both sync bodies + both async wrappers]; tenant choke ADR-0034 preserved; pg_trgm deferred; tool count stays 24, no migration)
-- `0048` same-name INHERITS topology K×D + ORM read bounds (fix #271/#273: writer emits K×D extender→definition edges (NOT K² mesh, W1 requires `tip.is_definition=true`, post-pass fills cross-repo gaps); ORM read replaces VLP with per-hop name-dedup flat `OPTIONAL MATCH` + `WITH collect(DISTINCT ...)`; 30s driver timeout + `ORM_QUERY_MAX_CONCURRENCY` thread-held `threading.BoundedSemaphore` (8 slots); `lint_check` SQL-injection false-green fixed by `code_pattern` regex data + pattern-first hybrid matcher V0.5; cleanup `ops/cleanup_same_name_inherits_mesh.cypher` (run off-peak post-deploy, backup ADR-0018 first); IaC amendment `NEO4J_db_transaction_timeout=600s` in docker-compose.yml; **#276/#278 amendment: thread-held BoundedSemaphore (cancel-safe, replaces asyncio.Semaphore), SEPARATE `NONORM_READ_MAX_CONCURRENCY` pool for non-ORM heavy reads, `impact_analysis` bounded via `@offload_bounded_nonorm` (G5); `_resolve_model` ranking query still bare `session.run()` - open follow-up**)
-- `0049` transport-layer session_idle_timeout via Option B http_app bypass (fix #279: abandoned streamable-http sessions leaked until restart; FastMCP 2.x does not forward `session_idle_timeout` to `StreamableHTTPSessionManager`; fix: `main()` bypasses `mcp.http_app()` and builds the Starlette app via module-level `_build_streamable_http_app()` helper (SSOT shared with smoke test), forwarding `SESSION_IDLE_TIMEOUT` (default 3600s) plus `json_response`/`stateless_http`/`debug` from `mcp._deprecated_settings` for parity; stateless mode → `None` idle; PIN TTL ADR-0029 24h unchanged + unrelated; no tool change, no migration; revert trigger: FastMCP forwards the kwarg natively)
-- `0050` read-side timeout hardening (@offload_neo4j pool-less pattern) (#287, 3-PR roll-up #289+PR-2+PR-3: a Neo4j per-query/tx-timeout could escape a read as a FastMCP protocol `isError`, violating the ADR-0023 raw-text contract; fix is two-layer — bound every bare `session.run` via `_single_bounded`/`_data_bounded` (wrap `neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)` + tx-timeout `ClientError`→`OrmQueryTimeout`, `label` = no-Cypher noun phrase) + catch at the boundary; **4 offload decorator variants**: `@offload` (no catch — non-Neo4j/embed work), `@offload_neo4j` (POOL-LESS catch — read-surface discriminator tools, each already 30s-bounded so no semaphore, promote-to-`@offload_bounded_nonorm` if profiled as a drain), `@offload_bounded`/`@offload_bounded_nonorm` (ADR-0048 pooled siblings); async EMBED tools (`suggest_pattern`/`find_examples`/`find_style_override`) + mutating `set_active_version` catch inline via shared `_nonorm_timeout_response(exc, tool)` helper (`except OrmQueryTimeout` handler preserved verbatim so the per-read structural guard `tests/test_resolve_timeout_guard.py` still sees a timeout-catching try); resource path anti-poison via `_reraise_timeout=True` (re-raise BEFORE the LRU put, ADR-0030 cache) + 7 handlers consolidated behind `_serve_resource_with_metric(..., metric_tool=, tenant_keyed=)` (lazy `_srv` import INSIDE catch); metric uniformity M1-M4 (`_resolve_field`/`_resolve_method`/`_list_fields`/`_list_methods` emit `_metric_nonorm_query_timeout("model_inspect")` on the tool path, AFTER `if _reraise_timeout: raise` so no double-count with the resource path); single counter `nonorm_query_timeout_total{tool}` exactly-once; tool count stays 25, resource 7, no migration; open follow-up `_resolve_model` ranking query still bare `session.run()` per ADR-0048)
+| `TASKS.md` | Trước task mới - milestone nào đang active |
+| `docs/thiet-ke-kien-truc.md` | Schema Neo4j, pipeline, MCP tool spec |
+| `docs/huong-dan-stack.md` | Sâu: Neo4j patterns, AST gotchas, FastMCP tips |
+| `docs/adr/` | Architecture Decision Records - đọc ADR liên quan trước khi đụng schema/policy/auth |
+| `docs/adr/INDEX.md` | Lookup nhanh 50 ADR (1 dòng/ADR + amendments) |
+| `docs/deploy.md`, `docs/deploy/go-live-checklist.md` | Deploy + go-live ops |
+| `CONTRIBUTING.md` | Setup dev, tests, commit + release workflow |

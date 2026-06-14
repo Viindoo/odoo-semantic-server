@@ -1,8 +1,8 @@
 # Odoo Semantic MCP (OSM)
 
-AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,400+ models and 184,000+ fields across Odoo v14-v18. No running Odoo database required.
+AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 10,000+ models and 100,000+ fields across Odoo v14-v19 (as of 2026-06). No running Odoo database required.
 
-**12,400+ models** | **184,000+ fields** | **v14-v18 (actively maintained)** | **25 MCP tools** | **7 resources** | **95% vs 43% accuracy on real tasks** | **Free: 30 queries/day**
+**10,000+ models** | **100,000+ fields** | **v14-v19 (actively maintained)** | **25 MCP tools** | **7 resources** | **95% vs 43% accuracy on real tasks** | **Free: 30 queries/day**
 
 ---
 
@@ -88,7 +88,7 @@ Measured on 40 real-world Odoo coding tasks: field name lookup, inheritance chai
 | AI without OSM | 43% | Hallucinated fields, wrong versions, missed module extensions |
 | AI with OSM | 95% | - |
 
-**Methodology:** Tested with Claude claude-sonnet-4-5 on [40 real-world Odoo coding tasks](https://github.com/Viindoo/odoo-semantic-server/blob/main/benchmarks/task-set-v1.md) across field lookups, inheritance chain traversal, view override detection, and ORM construction. Measurement date: 2026-05. A task is counted failed if the AI produces a field name, model name, or ORM call that does not exist in the target Odoo version. 2 tasks failed: both involved private module extensions not present in the public index. Baseline (43%) uses the same model with no MCP context on the same task set.
+**Methodology:** Tested with Claude claude-sonnet-4-5 on 40 real-world Odoo coding tasks across field lookups, inheritance chain traversal, view override detection, and ORM construction. Measurement date: 2026-05. A task is counted failed if the AI produces a field name, model name, or ORM call that does not exist in the target Odoo version. 2 tasks failed: both involved private module extensions not present in the public index. Baseline (43%) uses the same model with no MCP context on the same task set.
 
 The gap comes from OSM replacing model inference with graph lookup. Every field, method, and view XML ID is resolved against the indexed source, not predicted from training data.
 
@@ -255,16 +255,16 @@ Static analysis - no running Odoo needed.
 
 Bad domain (AI-generated, will fail at runtime):
 ```python
-[('order_line.product_id.lst_price', '>', 100), ('state', 'in', 'sale')]
+[('total_amount', '>', 100), ('partner_id.country', '=', 'VN')]
 ```
 
 `validate_domain` output:
-- Error: `state` field expects a list for `in` operator. Got string `'sale'`. Fix: `('state', 'in', ['sale', 'done'])`
-- Warning: `lst_price` is defined on `product.template`, not `product.product`. Access via `order_line.product_id.product_tmpl_id.lst_price` or use `order_line.price_unit` instead.
+- Error: field `total_amount` not found on `sale.order` (the field is `amount_total`).
+- Error: field `country` not found on `res.partner` — did you mean `country_id`?
 
 Fixed domain:
 ```python
-[('order_line.product_id.product_tmpl_id.lst_price', '>', 100), ('state', 'in', ['sale', 'done'])]
+[('amount_total', '>', 100), ('partner_id.country_id.code', '=', 'VN')]
 ```
 
 ### Profile introspection (1)
@@ -314,6 +314,7 @@ The following reference documents cover installation, tool parameters, and advan
 | [Client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/setup.md) | End-user client setup: Claude Code, Codex, Gemini, VS Code, and more |
 | [`docs/deploy.md`](docs/deploy.md) | Admin deploy guide: DB tier, App tier, Nginx/Caddy, systemd, TLS, backup |
 | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff: 10-item verify + MCP tool sign-off table + resource sign-off |
+| [`docs/deploy/go-live-checklist.md`](docs/deploy/go-live-checklist.md) | Go-live ops checklist: ordered operator actions (RLS cutover, backups, SMTP, rate-limit, signup) |
 | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook: backup frequency, restore order, step-by-step commands, RTO estimate |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Developer setup, running tests, Local E2E, workflow |
 | [`CHANGELOG.md`](CHANGELOG.md) | Full release notes |
@@ -338,11 +339,11 @@ Any tool that supports MCP natively: Claude Code, Cursor, Codex CLI, Gemini CLI,
 
 **How accurate is OSM compared to ungrounded AI?**
 
-On 40 real-world Odoo coding tasks tested with Claude claude-sonnet-4-5, AI grounded with OSM answered correctly 95% of the time. Without OSM, the same model answered correctly 43% of the time. The gap is largest on inheritance chain traversal and field version questions, where AI training data is sparse and hallucination rates are highest. See the [benchmark task set](https://github.com/Viindoo/odoo-semantic-server/blob/main/benchmarks/task-set-v1.md) for methodology.
+On 40 real-world Odoo coding tasks tested with Claude claude-sonnet-4-5, AI grounded with OSM answered correctly 95% of the time. Without OSM, the same model answered correctly 43% of the time. The gap is largest on inheritance chain traversal and field version questions, where AI training data is sparse and hallucination rates are highest. See the Accuracy Benchmark section above for methodology.
 
 **Which Odoo versions does OSM support?**
 
-v14-v18 are actively maintained. v8-v13 are available but receive no active index updates. v19 is indexed from the development branch and may contain stale data - not recommended for production use. All versions are queryable in a single API session. Use `set_active_version` to pin your session to one version.
+v14-v19 are actively maintained. v8-v13 are available but receive no active index updates. All 12 versions (v8-v19) are indexed and queryable in a single API session. Use `set_active_version` to pin your session to one version.
 
 **Is OSM open source?**
 
