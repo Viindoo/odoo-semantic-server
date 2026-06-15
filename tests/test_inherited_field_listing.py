@@ -1404,17 +1404,14 @@ def test_method_override_chain_maps_tx_timeout_to_ormquerytimeout(monkeypatch):
     TransactionTimedOut* status code, then assert the helper translates it to a
     user-facing OrmQueryTimeout (no Cypher leaked). No real Neo4j needed.
     """
-    from neo4j.exceptions import ClientError
-
     from src.mcp.orm import OrmQueryTimeout
     from src.mcp.server import _method_override_chain
+    from tests._timeout_harness import make_tx_timeout_error
 
     class _TimingOutSession:
         def run(self, *a, **k):
-            exc = ClientError("transaction timed out")
             # Driver-set per-query timeout status code (matches _is_tx_timeout).
-            exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-            raise exc
+            raise make_tx_timeout_error()
 
     with pytest.raises(OrmQueryTimeout) as ei:
         _method_override_chain(
@@ -1575,10 +1572,9 @@ def test_list_methods_override_rec_raw_clienterror_converted(monkeypatch):
     never escape as a raw ClientError. We let the list/count helpers succeed and
     force ONLY the override_rec `session.run(...)` to raise the driver timeout
     code, exercising the REAL _single_bounded conversion (not a stubbed boom)."""
-    from neo4j.exceptions import ClientError
-
     import src.mcp.listings as listings
     import src.mcp.server as srv
+    from tests._timeout_harness import make_tx_timeout_error
 
     # list/count helpers succeed (no inherited rows) so execution reaches the
     # override_rec query — which is the ONLY thing that times out here. These were
@@ -1599,11 +1595,9 @@ def test_list_methods_override_rec_raw_clienterror_converted(monkeypatch):
         def __exit__(self, *a):
             return False
         def run(self, *a, **k):
-            exc = ClientError("transaction timed out")
             # Driver-set per-query timeout status code (matches _is_tx_timeout),
             # the SAME code the detail-path T20 test uses.
-            exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-            raise exc
+            raise make_tx_timeout_error()
 
     class _NoopDriver:
         def session(self):

@@ -9,13 +9,20 @@ a machine-readable body so MCP clients (and reverse proxies) can retry.
 """
 import json
 
+import httpx
 import psycopg2
 import pytest
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route
-from starlette.testclient import TestClient
+
+
+def _client(app, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions),
+        base_url="http://testserver",
+    )
 
 
 def _build_app(verify_side_effect):
@@ -45,7 +52,7 @@ def _disable_rate_limit(monkeypatch):
     yield
 
 
-def test_returns_503_when_pool_not_initialized(monkeypatch):
+async def test_returns_503_when_pool_not_initialized(monkeypatch):
     """PoolNotInitializedError from get_pool() must surface as a 503 JSON."""
     from src.constants import PG_BG_RETRY_INTERVAL_SECONDS
     from src.db.exceptions import PoolNotInitializedError
@@ -59,9 +66,8 @@ def test_returns_503_when_pool_not_initialized(monkeypatch):
     monkeypatch.setattr(pg_mod, "auth_store", _raise_typed)
 
     app = _build_app(_raise_typed)
-    client = TestClient(app)
-
-    resp = client.get("/echo", headers={"X-API-Key": "raw-test-key"})
+    async with _client(app) as client:
+        resp = await client.get("/echo", headers={"X-API-Key": "raw-test-key"})
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "degraded"
@@ -76,7 +82,7 @@ def test_returns_503_when_pool_not_initialized(monkeypatch):
     _ = mw  # silence unused
 
 
-def test_unrelated_runtime_error_propagates_not_swallowed(monkeypatch):
+async def test_unrelated_runtime_error_propagates_not_swallowed(monkeypatch):
     """Issue #3 regression guard: a generic RuntimeError must NOT be coerced to
     503. Only PoolNotInitializedError (and psycopg2.OperationalError) qualify
     for the degraded-mode path. Anything else should surface as 500 so ops
@@ -89,9 +95,8 @@ def test_unrelated_runtime_error_propagates_not_swallowed(monkeypatch):
     monkeypatch.setattr(pg_mod, "auth_store", _raise_generic)
 
     app = _build_app(_raise_generic)
-    client = TestClient(app, raise_server_exceptions=False)
-
-    resp = client.get("/echo", headers={"X-API-Key": "raw-test-key"})
+    async with _client(app, raise_app_exceptions=False) as client:
+        resp = await client.get("/echo", headers={"X-API-Key": "raw-test-key"})
     # Starlette default for an uncaught exception is 500.
     assert resp.status_code == 500
     # Must NOT be the degraded body — that would be the bug Issue #3 fixed.
@@ -99,7 +104,7 @@ def test_unrelated_runtime_error_propagates_not_swallowed(monkeypatch):
     assert "degraded" not in body_text.lower()
 
 
-def test_returns_503_when_psycopg_operational_error(monkeypatch, caplog):
+async def test_returns_503_when_psycopg_operational_error(monkeypatch, caplog):
     """psycopg2.OperationalError from verify_api_key must also surface as 503.
 
     Body is sanitised (no `reason` field) — the original exception text
@@ -118,10 +123,9 @@ def test_returns_503_when_psycopg_operational_error(monkeypatch, caplog):
     monkeypatch.setattr(pg_mod, "auth_store", lambda: _FakeStore())
 
     app = _build_app(None)
-    client = TestClient(app)
-
-    with caplog.at_level("WARNING", logger="src.mcp.middleware"):
-        resp = client.get("/echo", headers={"X-API-Key": "raw-test-key"})
+    async with _client(app) as client:
+        with caplog.at_level("WARNING", logger="src.mcp.middleware"):
+            resp = await client.get("/echo", headers={"X-API-Key": "raw-test-key"})
 
     assert resp.status_code == 503
     body = resp.json()
@@ -137,7 +141,7 @@ def test_returns_503_when_psycopg_operational_error(monkeypatch, caplog):
     ), "exception detail must be logged server-side for diagnostics"
 
 
-def test_missing_header_still_returns_401(monkeypatch):
+async def test_missing_header_still_returns_401(monkeypatch):
     """Sanity guard — the degraded-mode handling must not steal the 401 path."""
     import src.db.pg as pg_mod
     # auth_store should never be called in this path.
@@ -146,12 +150,12 @@ def test_missing_header_still_returns_401(monkeypatch):
     ))
 
     app = _build_app(None)
-    client = TestClient(app)
-    resp = client.get("/echo")  # no X-API-Key
+    async with _client(app) as client:
+        resp = await client.get("/echo")  # no X-API-Key
     assert resp.status_code == 401
 
 
-def test_public_paths_bypass_db_check(monkeypatch):
+async def test_public_paths_bypass_db_check(monkeypatch):
     """`/health` is in _PUBLIC_PATHS — it must NOT trigger an auth_store call."""
 
     def _explode(*a, **kw):
@@ -169,8 +173,8 @@ def test_public_paths_bypass_db_check(monkeypatch):
         routes=[Route("/health", _health)],
         middleware=[Middleware(AuthMiddleware)],
     )
-    client = TestClient(app)
-    resp = client.get("/health")
+    async with _client(app) as client:
+        resp = await client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ok"
@@ -178,7 +182,7 @@ def test_public_paths_bypass_db_check(monkeypatch):
     assert "pg" not in body
 
 
-def test_503_body_keeps_no_exception_payload_even_for_long_errors(monkeypatch):
+async def test_503_body_keeps_no_exception_payload_even_for_long_errors(monkeypatch):
     """A pathological psycopg error message must NOT leak to the wire at all.
 
     Previously the body carried `reason: str(e)[:300]` — which still leaked
@@ -197,8 +201,8 @@ def test_503_body_keeps_no_exception_payload_even_for_long_errors(monkeypatch):
     monkeypatch.setattr(pg_mod, "auth_store", lambda: _ExplodingStore())
 
     app = _build_app(None)
-    client = TestClient(app)
-    resp = client.get("/echo", headers={"X-API-Key": "k"})
+    async with _client(app) as client:
+        resp = await client.get("/echo", headers={"X-API-Key": "k"})
     assert resp.status_code == 503
     payload = json.loads(resp.content)
     # No exception payload field — the leak is fixed.

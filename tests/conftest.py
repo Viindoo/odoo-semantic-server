@@ -246,12 +246,39 @@ def _ensure_current_event_loop():
     already valid (no leak, no interference with pytest-asyncio's own fixtures).
     """
     try:
-        asyncio.get_event_loop()
+        # get_running_loop() does NOT emit DeprecationWarning (unlike
+        # get_event_loop() on Python 3.12 when no running loop is set).
+        # It raises RuntimeError when no loop is running, which we catch
+        # to install a fresh loop — preserving the anti-poisoning intent.
+        asyncio.get_running_loop()
     except RuntimeError:
         # _set_called=True and _loop=None: install a fresh loop so the test
         # (and any helper that calls get_event_loop()) does not crash.
         asyncio.set_event_loop(asyncio.new_event_loop())
     yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_server_driver_at_session_end():
+    """Close the Neo4j driver singleton after all tests complete.
+
+    src.mcp.server._driver is a module-level singleton that is never closed
+    during test runs (there is no ASGI lifespan in tests).  When the process
+    exits, Python's GC calls Driver.__del__(), which emits
+    "Driver's destructor called while session still open" (neo4j >= 5.x).
+
+    This session-scoped autouse fixture runs teardown once — after the last
+    test — and calls driver.close() so the destructor is a no-op.
+    """
+    yield
+    import sys
+    srv = sys.modules.get("src.mcp.server")
+    if srv is not None and getattr(srv, "_driver", None) is not None:
+        try:
+            srv._driver.close()
+        except Exception:  # noqa: BLE001
+            pass
+        srv._driver = None
 
 
 def _playwright_chromium_available() -> bool:

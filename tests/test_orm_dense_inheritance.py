@@ -437,6 +437,7 @@ def test_query_timeout_surfaces_as_ormquerytimeout(orm_funcs, monkeypatch):
     from neo4j.exceptions import ClientError
 
     from src.mcp.orm import OrmQueryTimeout
+    from tests._timeout_harness import make_tx_timeout_error
 
     class _TimingOutSession:
         """A session whose .run() always times out (driver-config status code)."""
@@ -448,9 +449,7 @@ def test_query_timeout_surfaces_as_ormquerytimeout(orm_funcs, monkeypatch):
 
     # Force the exact status code the driver returns on a per-query timeout.
     def _run(self, *a, **k):
-        exc = ClientError("transaction timed out")
-        exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-        raise exc
+        raise make_tx_timeout_error()
 
     monkeypatch.setattr(_TimingOutSession, "run", _run, raising=False)
 

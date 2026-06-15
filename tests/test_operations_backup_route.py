@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 
 def _make_app(tmp_path: Path):
@@ -26,27 +26,35 @@ def _make_app(tmp_path: Path):
 
 
 @pytest.fixture()
-def backup_client(tmp_path, monkeypatch):
-    """TestClient with auth bypass and BACKUP_DIR pointing to tmp_path."""
+async def backup_client(tmp_path, monkeypatch):
+    """In-process httpx client (ASGITransport) with auth bypass + BACKUP_DIR=tmp_path.
+
+    Uses httpx.AsyncClient + ASGITransport instead of fastapi/starlette TestClient:
+    the latter emits a StarletteDeprecationWarning ("install httpx2") since
+    starlette 1.3 (#319). ASGITransport is async-only, so the tests are async.
+    """
     monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
     backup_dir = tmp_path / "backup"
     backup_dir.mkdir()
     monkeypatch.setenv("BACKUP_DIR", str(backup_dir))
 
     app = _make_app(tmp_path)
-    with TestClient(app, raise_server_exceptions=True) as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+        base_url="http://testserver",
+    ) as client:
         yield client, backup_dir
 
 
 class TestBackupCreatesJobReturnsStreamUrl:
-    def test_returns_job_id_and_stream_url(self, backup_client, monkeypatch):
+    async def test_returns_job_id_and_stream_url(self, backup_client, monkeypatch):
         client, backup_dir = backup_client
         output = str(backup_dir / "out.tar.gz")
 
         with patch(
             "src.web_ui.routes.operations._spawn_backup_subprocess"
         ) as mock_spawn:
-            resp = client.post(
+            resp = await client.post(
                 "/api/operations/backup",
                 json={"output": output},
             )
@@ -60,22 +68,22 @@ class TestBackupCreatesJobReturnsStreamUrl:
         assert data["stream_url"].endswith("/stream")
         mock_spawn.assert_called_once()
 
-    def test_auto_generates_output_when_blank(self, backup_client):
+    async def test_auto_generates_output_when_blank(self, backup_client):
         client, backup_dir = backup_client
 
         with patch("src.web_ui.routes.operations._spawn_backup_subprocess"):
-            resp = client.post("/api/operations/backup", json={})
+            resp = await client.post("/api/operations/backup", json={})
 
         assert resp.status_code == 200
         data = resp.json()
         assert data["output"].endswith(".tar.gz")
 
-    def test_rejects_output_outside_backup_dir(self, backup_client, tmp_path):
+    async def test_rejects_output_outside_backup_dir(self, backup_client, tmp_path):
         client, backup_dir = backup_client
         outside = tmp_path / "other" / "dump.tar.gz"
 
         with patch("src.web_ui.routes.operations._spawn_backup_subprocess"):
-            resp = client.post(
+            resp = await client.post(
                 "/api/operations/backup",
                 json={"output": str(outside)},
             )
@@ -83,43 +91,43 @@ class TestBackupCreatesJobReturnsStreamUrl:
         assert resp.status_code == 400
         assert "BACKUP_DIR" in resp.json().get("error", "")
 
-    def test_rejects_non_tar_gz_output(self, backup_client):
+    async def test_rejects_non_tar_gz_output(self, backup_client):
         client, backup_dir = backup_client
         bad = str(backup_dir / "dump.sql")
 
         with patch("src.web_ui.routes.operations._spawn_backup_subprocess"):
-            resp = client.post(
+            resp = await client.post(
                 "/api/operations/backup",
                 json={"output": bad},
             )
 
         assert resp.status_code == 400
 
-    def test_status_endpoint_returns_job_info(self, backup_client):
+    async def test_status_endpoint_returns_job_info(self, backup_client):
         client, backup_dir = backup_client
         output = str(backup_dir / "out.tar.gz")
 
         with patch("src.web_ui.routes.operations._spawn_backup_subprocess"):
-            resp = client.post(
+            resp = await client.post(
                 "/api/operations/backup",
                 json={"output": output},
             )
         job_id = resp.json()["job_id"]
 
-        status_resp = client.get(f"/api/operations/backup/{job_id}/status")
+        status_resp = await client.get(f"/api/operations/backup/{job_id}/status")
         assert status_resp.status_code == 200
         status_data = status_resp.json()
         assert status_data["job_id"] == job_id
         assert status_data["status"] in ("pending", "running", "done", "error")
 
-    def test_status_returns_404_for_unknown_job(self, backup_client):
+    async def test_status_returns_404_for_unknown_job(self, backup_client):
         client, _ = backup_client
-        resp = client.get("/api/operations/backup/nonexistent-job-id/status")
+        resp = await client.get("/api/operations/backup/nonexistent-job-id/status")
         assert resp.status_code == 404
 
 
 class TestBackupStreamEmitsDoneEvent:
-    def test_stream_emits_done_when_job_complete(self, backup_client, monkeypatch):
+    async def test_stream_emits_done_when_job_complete(self, backup_client, monkeypatch):
         """Simulate a completed job and verify SSE stream emits done event."""
 
         client, backup_dir = backup_client
@@ -140,7 +148,7 @@ class TestBackupStreamEmitsDoneEvent:
             }
 
         # Stream should immediately emit done event (no log file = no lines)
-        resp = client.get(f"/api/operations/backup/{job_id}/stream")
+        resp = await client.get(f"/api/operations/backup/{job_id}/stream")
         assert resp.status_code == 200
 
         # Parse SSE events
@@ -161,9 +169,9 @@ class TestBackupStreamEmitsDoneEvent:
         with ops_module._backup_jobs_lock:
             ops_module._backup_jobs.pop(job_id, None)
 
-    def test_stream_returns_404_data_for_unknown_job(self, backup_client):
+    async def test_stream_returns_404_data_for_unknown_job(self, backup_client):
         client, _ = backup_client
-        resp = client.get("/api/operations/backup/no-such-job/stream")
+        resp = await client.get("/api/operations/backup/no-such-job/stream")
         assert resp.status_code == 200
         # Should emit an error event
         found_error = False

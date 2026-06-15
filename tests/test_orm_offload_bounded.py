@@ -707,11 +707,9 @@ class _TxTimeoutSession:
         return False
 
     def run(self, *a, **k):
-        from neo4j.exceptions import ClientError
+        from tests._timeout_harness import make_tx_timeout_error
 
-        exc = ClientError("transaction timed out")
-        exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-        raise exc
+        raise make_tx_timeout_error()
 
 
 class _TxTimeoutDriver:

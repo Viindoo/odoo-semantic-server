@@ -216,7 +216,8 @@ class TestMissingVersion:
 
 class TestSchemaValidation:
     @pytest.fixture(scope="class")
-    def schema(self) -> dict:
+    @classmethod
+    def schema(cls) -> dict:
         assert _SCHEMA_FILE.is_file(), f"Missing schema: {_SCHEMA_FILE}"
         return json.loads(_SCHEMA_FILE.read_text(encoding="utf-8"))
 
