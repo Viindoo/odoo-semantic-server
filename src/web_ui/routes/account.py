@@ -27,7 +27,13 @@ from starlette.requests import Request
 from src.db.audit import audit_action
 from src.settings import get_setting
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import ALL_TENANTS, current_user_id, resolve_tenant_scope_web
+from src.web_ui.auth import (
+    ALL_TENANTS,
+    _check_mfa_freshness,
+    current_user_id,
+    is_test_bypass_active,
+    resolve_tenant_scope_web,
+)
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/account")
@@ -671,6 +677,206 @@ async def record_checkout_consent(request: Request):
                 "status": "consent_recorded",
                 "buyer_type": buyer_type,
                 "waiver_accepted": waiver_accepted,
+            }
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# GDPR self-service endpoints (ADR-0026 / #1233)
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/me")
+@audit_action("account.delete")
+async def delete_my_account(request: Request):
+    """GDPR right-to-erasure: soft-delete + anonymize the authenticated user's account.
+
+    Flow:
+      1. 401 if not authenticated.
+      2. Fresh-MFA gate ONLY when the user has mfa_enabled=True - users without
+         MFA must not be locked out; session auth alone is sufficient for them.
+         Gated by is_test_bypass_active() per the _check_mfa_freshness contract.
+      3. Atomic erasure: purge_user_account(uid) deactivates + anonymizes PII +
+         revokes API keys in ONE transaction. Raises LastAdminProtectedError if
+         uid is the last active admin (nothing committed) - caught -> 422.
+      4. Revoke all sessions (instant logout of all devices).
+      5. audit_action writes one row to admin_audit_log.
+
+    Returns:
+      200 {"status": "account_deleted"} on success.
+      401 if not authenticated.
+      403 if MFA-enabled user has stale/absent MFA verification.
+      422 if this is the last active admin (cannot delete).
+      500 for unexpected errors.
+    """
+    uid = current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # CR8: set audit_target BEFORE any side-effect so partial failures are logged
+    # with the correct user id in the audit log.
+    request.state.audit_target = str(uid)
+
+    # Conditional MFA freshness gate: only enforce when the user has MFA enabled.
+    # Users without MFA must NOT be locked out — they authenticate via session only.
+    try:
+        from src.db.pg import auth_store as _auth_store
+
+        user = _auth_store().get_user_by_id(uid)
+    except Exception as exc:
+        _logger.warning("delete_my_account: failed to fetch user uid=%d: %s", uid, exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    # Fresh-MFA gate only for MFA-enabled users; gate with is_test_bypass_active()
+    # per the _check_mfa_freshness contract (callers must guard so the test bypass
+    # stays transparent). Users without MFA authenticate via session alone.
+    if user.get("mfa_enabled") and not is_test_bypass_active():
+        # Raises HTTP 403 if MFA not recently verified.
+        _check_mfa_freshness(request)
+
+    try:
+        from src.db.auth._shared import LastAdminProtectedError
+        from src.db.pg import auth_store
+
+        store = auth_store()
+        # Atomic erasure: deactivate + anonymize PII + revoke API keys in ONE
+        # transaction (raises LastAdminProtectedError if last active admin - nothing
+        # committed). Then revoke sessions (cache table, not erasure-critical).
+        store.purge_user_account(uid)
+        store.revoke_all_sessions(uid)
+
+    except LastAdminProtectedError as exc:
+        _logger.warning(
+            "delete_my_account: blocked - last active admin uid=%d: %s", uid, exc
+        )
+        return JSONResponse(
+            _json_safe(
+                {
+                    "error": "last_admin_protected",
+                    "detail": (
+                        "Cannot delete the last active admin account. "
+                        "Promote another admin first."
+                    ),
+                }
+            ),
+            status_code=422,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.warning("delete_my_account: failed for uid=%d: %s", uid, exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    _logger.info("delete_my_account: uid=%d account deleted and anonymized", uid)
+    return JSONResponse(_json_safe({"status": "account_deleted"}))
+
+
+@router.get("/export")
+@audit_action("account.export")
+async def export_my_data(request: Request):
+    """GDPR subject access request: export the authenticated user's personal data.
+
+    No MFA gate (read-only operation). Returns a structured JSON dump of the
+    user's profile basics, API keys (secrets REDACTED — key_prefix + name +
+    plan_id + overrides + timestamps only, never key_hash or raw key), usage
+    counters per key, and tenant memberships.
+
+    Returns:
+      200 {
+        "profile": {id, username, email, created_at, is_active},
+        "api_keys": [{id, name, key_prefix, plan_id, active, created_at,
+                      last_used_at, expires_at, rate_limit_override,
+                      quota_override,
+                      "usage": [{period_yyyymm, call_count}, ...]}],
+        "tenant_memberships": [{tenant_id, name, role}]
+      }
+    401 if not authenticated.
+    500 for unexpected errors.
+    """
+    uid = current_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    request.state.audit_target = str(uid)
+
+    try:
+        from src.db.pg import auth_store, get_pool
+
+        store = auth_store()
+
+        # --- profile basics (no password_hash, no mfa secrets) ---
+        user = store.get_user_by_id(uid)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        profile = {
+            "id": user["id"],
+            "username": user["username"],
+            "email": user.get("email"),
+            "created_at": user.get("created_at"),
+            "is_active": user.get("is_active"),
+        }
+
+        # --- API keys (REDACTED: key_prefix + metadata only, never key_hash) ---
+        raw_keys = store.list_api_keys(user_id=uid)
+
+        # Fetch usage counters for all keys in one query.
+        key_ids = [k["id"] for k in raw_keys]
+        usage_by_key: dict[int, list[dict]] = {kid: [] for kid in key_ids}
+
+        if key_ids:
+            pool = get_pool()
+            with pool.checkout() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT api_key_id, period_yyyymm, call_count"
+                        "  FROM usage_counter"
+                        " WHERE api_key_id = ANY(%s)"
+                        " ORDER BY api_key_id, period_yyyymm DESC",
+                        (key_ids,),
+                    )
+                    for row in cur.fetchall():
+                        usage_by_key[row[0]].append(
+                            {"period_yyyymm": row[1], "call_count": row[2]}
+                        )
+
+        api_keys = [
+            {
+                # Redacted: only prefix + metadata, never key_hash or raw key.
+                "id": k["id"],
+                "name": k.get("name"),
+                "key_prefix": k.get("key_prefix"),
+                "plan_id": k.get("plan_id"),
+                "active": k.get("active"),
+                "created_at": str(k["created_at"]) if k.get("created_at") else None,
+                "last_used_at": str(k["last_used_at"]) if k.get("last_used_at") else None,
+                "expires_at": str(k["expires_at"]) if k.get("expires_at") else None,
+                "rate_limit_override": k.get("rate_limit_override"),
+                "quota_override": k.get("quota_override"),
+                "usage": usage_by_key.get(k["id"], []),
+            }
+            for k in raw_keys
+        ]
+
+        # --- tenant memberships ---
+        memberships = store.list_tenant_memberships_for_user(uid)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.warning("export_my_data: failed for uid=%d: %s", uid, exc)
+        return JSONResponse(_json_safe({"error": str(exc)}), status_code=500)
+
+    return JSONResponse(
+        _json_safe(
+            {
+                "profile": profile,
+                "api_keys": api_keys,
+                "tenant_memberships": memberships,
             }
         )
     )

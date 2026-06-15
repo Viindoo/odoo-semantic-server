@@ -1,4 +1,4 @@
-# 0040 — conftest.py Priority 2 fallback guard against prod Neo4j collision
+# ADR-0040: conftest.py Priority 2 fallback guard against prod Neo4j collision
 
 **Status:** Accepted (2026-05-28)
 **Related:** [ADR-0006](0006-environment-harness.md) (environment harness), [ADR-0009](0009-pattern-catalogue-community-contribution.md) (pattern catalogue — test-enforced minimum)

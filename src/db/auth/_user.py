@@ -438,6 +438,94 @@ class _UserMixin:
             raise ValueError("expired")
         return row["user_id"]
 
+    def purge_user_account(self, user_id: int) -> None:
+        """GDPR erasure: deactivate + anonymize PII + revoke API keys in ONE transaction.
+
+        Atomic: the last-admin guard, is_active=False, the PII tombstone, the TOTP
+        secret delete, and API-key deactivation all commit together or roll back
+        together. There is no window where the account is deactivated but PII or
+        live API keys remain. Session rows are cleared separately by the caller via
+        revoke_all_sessions() (a cache table, not erasure-critical).
+
+        Last-admin protection: if the user is the sole active admin, raises
+        LastAdminProtectedError BEFORE any write, so nothing is committed (mirrors
+        set_user_active). The target row is locked with SELECT ... FOR UPDATE.
+
+        Tombstone values:
+          - is_active     -> FALSE
+          - username      -> "deleted-user-{id}" (stable, FK-safe)
+          - email         -> NULL (UNIQUE allows multiple NULLs in PG)
+          - password_hash -> NULL (login disabled)
+          - mfa_enabled   -> FALSE
+          - TOTP secret   -> row deleted
+          - api_keys      -> active = FALSE (verify_api_key_full checks api_keys.active,
+                             so this is what terminates MCP access on erasure)
+
+        Idempotent: re-running on an already-purged row is a no-op.
+
+        Raises:
+            LastAdminProtectedError: the user is the last active admin.
+        """
+        tombstone_username = f"deleted-user-{user_id}"
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                # Last-admin guard BEFORE any write (lock the row, mirror set_user_active).
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT is_admin FROM webui_users WHERE id = %s FOR UPDATE",
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                if row is not None and bool(row[0]):
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT count(*) FROM webui_users "
+                            "WHERE is_admin = TRUE AND is_active = TRUE AND id != %s",
+                            (user_id,),
+                        )
+                        other_admin_count = cur.fetchone()[0]
+                    if other_admin_count == 0:
+                        raise LastAdminProtectedError(
+                            "Cannot deactivate the last active admin"
+                        )
+
+                # Deactivate + clear PII + tombstone username in one statement.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE webui_users
+                           SET is_active     = FALSE,
+                               password_hash = NULL,
+                               mfa_enabled   = FALSE,
+                               email         = NULL,
+                               username      = %s
+                         WHERE id = %s
+                        """,
+                        (tombstone_username, user_id),
+                    )
+
+                # Remove TOTP secret row (clears secret_encrypted + backup_codes_hash).
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM totp_secrets WHERE user_id = %s",
+                        (user_id,),
+                    )
+
+                # Revoke all API keys so MCP access terminates with the account.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE api_keys SET active = FALSE WHERE user_id = %s",
+                        (user_id,),
+                    )
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+
     def consume_password_reset_token(self, raw_token: str) -> int | None:
         """Verify + consume a password reset token.
 
