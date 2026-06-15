@@ -6,14 +6,16 @@ PYTEST  := $(VENV)/bin/pytest
 COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
-.PHONY: help install test test-unit test-integration test-browser test-http test-nightly \
+.PHONY: help install lock lock-check test test-unit test-integration test-browser test-http test-nightly \
         test-neo4j-backup test-all \
         neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell \
         recreate-db check-systemd-overrides
 
 help:
 	@echo "Targets:"
-	@echo "  install           Cài dependencies vào ~/.venv/odoo-semantic-mcp"
+	@echo "  install           Cài dependencies vào ~/.venv/odoo-semantic-mcp (uv sync từ uv.lock)"
+	@echo "  lock              Regen uv.lock sau khi đổi deps trong pyproject.toml"
+	@echo "  lock-check        Fail nếu uv.lock lệch pyproject.toml (mirror CI guard)"
 	@echo "  test              Chạy unit tests (không cần Docker)"
 	@echo "  test-integration  Chạy integration tests (cần Docker)"
 	@echo "  test-browser      Chạy browser E2E tests (cần Docker + PostgreSQL)"
@@ -29,8 +31,7 @@ help:
 	@echo "  check-systemd-overrides  Drift audit installed systemd units (issue #144)"
 
 install:
-	$(UV) venv $(VENV)
-	$(UV) pip install --python $(VENV)/bin/python -e ".[dev]"
+	UV_PROJECT_ENVIRONMENT=$(VENV) $(UV) sync --extra dev
 	@[ -f .env ] || (cp .env.example .env && \
 		echo "✓ .env created")
 	@[ -f odoo-semantic.conf ] || (cp odoo-semantic.conf.example odoo-semantic.conf && \
@@ -43,6 +44,17 @@ install:
 	@echo "  4. Xem README §Local E2E Quickstart để index repo + start MCP server."
 	@echo "  5. (optional) $(VENV)/bin/playwright install chromium    # cần cho 'make test-browser'"
 	@echo ""
+
+# --- Dependency locking (issue #319) ---
+# pyproject.toml = khoảng version cho phép (intent); uv.lock = exact lock (committed,
+# nguồn sự thật để cài). Đổi deps -> `make lock` -> commit cả hai. CI chạy
+# `uv sync --frozen` nên sẽ FAIL nếu lock lệch pyproject.
+
+lock:
+	$(UV) lock
+
+lock-check:
+	$(UV) lock --check
 
 # --- Tests ---
 

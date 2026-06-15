@@ -23,8 +23,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install ruff
-      - run: ruff check src/ tests/
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      # `--locked` fails if uv.lock drifted from pyproject.toml (issue #319 drift guard).
+      - run: uv sync --locked --extra dev
+      - run: uv lock --check
+      - run: uv run ruff check src/ tests/
       - run: bash scripts/lint_json_response.sh
       - run: bash scripts/lint_fetch_content_type.sh
 
@@ -47,12 +53,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
       - name: Validate patterns.json schema
-        run: |
-          pip install check-jsonschema
-          check-jsonschema --schemafile src/data/patterns.schema.json src/data/patterns.json
-      - run: pytest tests/ -v -m "not neo4j and not postgres and not browser" --tb=short
+        run: uv run check-jsonschema --schemafile src/data/patterns.schema.json src/data/patterns.json
+      - run: uv run pytest tests/ -v -m "not neo4j and not postgres and not browser" --tb=short
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -94,11 +102,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
 
       # `-rs` shows skip reasons in pytest summary — silent skips were how the
       # previous CI breakage went unnoticed.
-      - run: pytest tests/ -v -rs -m "(neo4j or postgres) and not smoke and not browser" --tb=short
+      - run: uv run pytest tests/ -v -rs -m "(neo4j or postgres) and not smoke and not browser" --tb=short
 
   smoke-tests:
     runs-on: ubuntu-latest
@@ -118,10 +130,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
 
       - run: >
-          pytest tests/test_smoke_index_core.py tests/test_smoke_pattern_wow.py
+          uv run pytest tests/test_smoke_index_core.py tests/test_smoke_pattern_wow.py
           tests/test_smoke_product_wow.py -v -rs -m smoke --tb=short
 
   browser-tests-admin:
@@ -152,8 +168,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: playwright install chromium --with-deps
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run playwright install chromium --with-deps
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -176,7 +196,7 @@ jobs:
         working-directory: site
 
       - name: Run admin browser tests
-        run: pytest tests/browser/admin/ -v -rs -m "browser and postgres" --tb=short
+        run: uv run pytest tests/browser/admin/ -v -rs -m "browser and postgres" --tb=short
 
   browser-tests-public:
     # Public browser tests — require only Astro preview (no Postgres, no FastAPI)
@@ -189,8 +209,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: playwright install chromium --with-deps
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      - run: uv run playwright install chromium --with-deps
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -217,4 +241,4 @@ jobs:
         working-directory: site
 
       - name: Run public browser tests
-        run: pytest tests/browser/public/ -v -rs -m browser --tb=short
+        run: uv run pytest tests/browser/public/ -v -rs -m browser --tb=short
