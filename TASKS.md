@@ -75,7 +75,7 @@
 - [x] `tests/`: 100% unit test coverage cho tất cả M3 components
 - [x] `docs/deploy.md`: thêm §9 Embedder Setup (Ollama + pgvector bootstrap + license note)
 - [x] **E2E manual**: Ollama chạy với qwen3-embedding-q5km → index Viindoo 17.0 → Claude Code call `find_examples` *(2026-05-14 — UNBLOCKED post-PR #84: actual root cause was wrong embedder port `:9999`, not Ollama SSL. After URL fix, client-side smoke via Claude Code MCP plugin PASS: `find_examples("sale order confirm", "17.0")` → 5 results, top score 0.84. 2-of-2 cross-check (Opus + Sonnet shadow) confirmed. Report: `docs/m7.5-mcp-verification.md`.)*
-- [ ] **Recall benchmark**: `pytest tests/test_find_examples_recall.py -m ollama` → VN≥0.75, EN≥0.80 *(2026-05-14 — BLOCKED bởi cùng Ollama SSL issue. Local benchmark cần `qwen3-embedding-q5km` model pull + Viindoo 17.0 re-index local; defer đến khi có local Ollama replica hoặc production fix.)*
+- [ ] **Recall benchmark**: `pytest tests/test_find_examples_recall.py -m ollama` → VN≥0.75, EN≥0.80 *(2026-06-14 — block-reason CORRECTED: cũ ghi "Ollama SSL" là STALE (root cause thật = sai embedder port `:9999`, đã fix PR #84). Benchmark code đã có (`tests/test_find_examples_recall.py`, 100 query 50 VN + 50 EN, fixture `live_connections` auto-skip nếu Ollama/Neo4j/PG unreachable). Blocker còn lại thuần logistic: cần local Ollama + pull `qwen3-embedding-q5km` + data indexed local — xem `CONTRIBUTING.md` §Ollama Setup.)*
 
 ## Milestone 4 — "Impact Wow"
 **Intent:** Full-stack impact analysis từ Python model đến JS component.  
@@ -367,7 +367,7 @@ Mục tiêu: thực thi THESIS của M6 — "Re-index chỉ mất vài giây. In
 
 **M8/M9 backlog from hotfix discoveries (2026-05-14):**
 
-- [~] **Profile + core index gap v9-v19 (OBS-1):** Profiles for v13/14/15/16/19 need to be created by the admin via the web UI or `python -m src.manager add-profile ...`; prod DBs missing them just need a re-run of `python -m src.db.migrate` for schema, then profile creation. **NOTE:** an earlier draft of this work introduced `migrations/0004_add_missing_version_profiles.sql` as belt-and-suspenders; it was removed because it violated the schema-only yoyo-migration contract (see `src/db/migrate.py` docstring and `src/db/seed_master_data.py` line 8-14) and broke 16 integration tests that assume `run_migrations()` leaves the profiles table empty. v10/11/12 profiles existed before OBS-1 (seeder was always complete). Remaining: run indexer per version + register local repo paths via webui if using `/home/user/git/odoo_<N>.0/` instead of auto-clone paths.
+- [x] **Profile + core index gap v9-v19 (OBS-1):** RESOLVED 2026-06-14 (live-verified) — `list_available_versions` returns all 12 versions v8.0-v19.0 indexed; `list_available_profiles` returns 24 public+standard profiles (`odoo_8`..`odoo_19` + `standard_viindoo_8`..`standard_viindoo_19`) all registered. Schema stays seed-empty by design (no `0004` migration — yoyo schema-only contract). Only the internal-edition v19 profile remains, tracked separately as OBS-3.
 - [x] **v18 source repo missing (OBS-1 deferred):** `odoo_18.0` not on disk as of 2026-05-15. Register via admin webui SSH auto-clone (ADR-0008) — clones automatically. Once cloned, run `index-repo --profile odoo_18`. (cloned + indexed — Group B B1 ops)
 - [x] **v8 parser limitation:** `index-core --version 8.0` writes 167 CoreSymbol but 0 CLIFlag/LintRule — era1 (openerp-server) CLI structure not handled. Extend `parser_cli.py` for era1. (fixed PR #160 WI-2 — v8/v9 CLICommand via openerp/ + static cli_flags)
 - [x] **Admin UI core-index status column [P3 UX]:** Admin `/repos` page only shows MODULE index status (`indexed/error/pending` from Postgres `repos.status`). Add column or badge for CORE index status per version (CoreSymbol count > 0). Prevents user confusion that "v17 indexed" implies core index complete. (duplicates done PR #159 WI-5 item — see line below)
@@ -577,7 +577,7 @@ Two bug patterns surfaced twice during M8 — encode as automated lint to preven
 - [x] **#12 OWLComp pre-v14 anachronism (239 stubs):** *(stale marker — authoritative status is `[x]` at the M10.5/pre-reindex section ~L753; parser guard shipped 2026-05-21 PR #159 WI-1; this line is kept for cross-ref only.)* Post-reindex shows 239 `__unresolved__` OWLComp at v8-v13 created by JSPatch era3 detection. Read-side `list_owl_components` MCP tool already has era guard (skip v<14) so user-facing output is correct — impact is only raw-graph pollution. Fix: symmetric v14 guard in `_extract_era3_patches` (parser_js) OR belt-and-suspenders at writer PATCHES placeholder site. Plus Cypher cleanup of current 239 anachronisms. Defer to M10.
 - [x] **#13 Neo4j online backup (2026-05-26, WI-D2):** Replaced offline `neo4j-admin dump` with Bolt-driver streaming export (`MATCH (n) RETURN …` → CREATE statements). Bundle now contains `neo4j.cypher` (text, truly online) instead of `neo4j.dump` (binary, offline). Backward compat: restore auto-detects `neo4j.cypher` vs legacy `neo4j.dump`. Zero new deps (uses existing `neo4j` Python package). Round-trip integration test passes (testcontainers). Neo4j restore failure is non-fatal (postgres.sql already restored). ADR-0018 updated. (`src/cli.py`, `docs/adr/0018-backup-contract.md`, `tests/test_cli_backup_bundle.py`, `tests/test_cli_restore_bundle.py`, `tests/test_neo4j_online_backup_roundtrip.py`)
 - [ ] **#14 Logrotate /var/log stanza 1 perms:** Pre-existing `/etc/logrotate.d/odoo-semantic` stanza 1 (`/var/log/odoo-semantic-reindex.log`) fails because `/var/log/` is world-writable. Fix: add `su root syslog` directive OR change log location. NOT introduced by WI-3 (stanza 2). Operational fix.
-- [ ] **#15 §6 tools 15-21 prod smoke:** 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) need end-to-end smoke against prod MCP endpoint via Claude Code or another MCP client. Deferred to next session per go-live decision. All 7 are code-complete + unit-tested.
+- [x] **#15 §6 tools 15-21 prod smoke:** OBSOLETE — 6/7 flat tools (`list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) were removed as shims in v0.6 (commit `215e2cb`, ADR-0028); only `describe_module` remains. Entity enumeration is now smoked via the superset tools `model_inspect` / `module_inspect` / `entity_lookup` — all verified on prod 2026-06-14 (describe_module → "8 defined models, 24 extended, 55 views" for `sale`; model_inspect sale.order → 337 fields/744 methods). See pre-launch-checklist.md §12 #15.
 
 ### Stream J — M9 RBAC + Key-Ownership Bug Fix (M9 follow-up, PR #<TBD>)
 
@@ -663,7 +663,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ### Out of scope — deferred due to upstream Viindoo branch gaps
 
-- [ ] **OBS-2 internal profile 18.0 branch coverage gap**
+- [x] **OBS-2 internal profile 18.0 branch coverage gap** *(RESOLVED 2026-06-14 — `viindoo_internal_18` now registered + indexed per live `list_available_profiles`)*
   - Source: B-phase ops 2026-05-18 — attempted to register an internal repo at `18.0` branch; git rejected with `fatal: Remote branch 18.0 not found in upstream origin`.
   - Acceptance: when upstream cuts `18.0` branch on the required internal repo, re-run the B4 registration step (insert repo row via `repo_store().add_repo(...)` then `python -m src.cloner --repo-id N` then `index-repo --profile <internal_profile_18> --full`).
   - Dependency: upstream branch cut (external).
@@ -709,7 +709,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
   - Acceptance: 5 forwarding unit tests in `tests/test_mcp_inspect_router.py`; `model_inspect` docstring trimmed under the 1500-char tool-description budget (ADR-0023); ADR-0028 Timeline records full filter parity. Bumps v0.7.1.
   - Cross-ref (cross-repo): routing matrix + Cursor/Gemini/OpenAI snippets document all 5 filters at [Viindoo/odoo-mcp-client#10](https://github.com/Viindoo/odoo-mcp-client/pull/10).
 
-- [ ] **§6 tools 15-21 prod smoke** — verify 7 M9 W-OSM Wave 1 tools (`describe_module`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches`) end-to-end against prod MCP endpoint via Claude Code or another MCP client. All 7 are code-complete + unit-tested. Cross-ref: pre-launch-checklist.md Known follow-ups #15.
+- [x] **§6 tools 15-21 prod smoke** — OBSOLETE: 6/7 flat tools removed in v0.6 (commit `215e2cb`, ADR-0028). Superset tools `model_inspect` / `module_inspect` / `entity_lookup` + `describe_module` verified on prod 2026-06-14. Cross-ref: pre-launch-checklist.md Known follow-ups #15.
 
 ### M10B — Commercialization Wow (Control Plane / Data Plane)
 
@@ -748,7 +748,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
   *(feat/m10b-p0-rbac-quota-ui W-8)*
 - [x] **P0-ext — Docs** — ADR-0041 + ADR-0039 P0-ext note + runbook §Plan changes + CHANGELOG +
   TASKS.md. *(feat/m10b-p0-rbac-quota-ui W-9)*
-- [ ] **P0-ext follow-up** — Extend `GET /api/api-keys` to expose `plan_id` + override columns
+- [x] **P0-ext follow-up** *(DONE 2026-06-02 commit `b9e1901` + test `TestListApiKeysExposesPlanAndOverrides`)* — Extend `GET /api/api-keys` to expose `plan_id` + override columns
   so the admin UI Plan dropdown pre-selects the current plan on page load (identified in W-5 of
   feat/m10b-p0-rbac-quota-ui; small backend extension + Astro `Key` type update).
 
@@ -797,7 +797,7 @@ Migration: **m13_017** (`subscriptions.buyer_type` + `withdrawal_waiver_accepted
 **P2 — Multi-IdP + regional segment**
 - [ ] **Viindoo OIDC provider** — add a 3rd IdP slot per the [ADR-0017](docs/adr/0017-oauth-arctic-oslo.md) amendment (extensible IdP registry; arctic `OAuth2Client` generic already available; reuse account-linking-by-verified-email at `src/web_ui/routes/oauth.py:252-352`).
 - [ ] **ERP sale.order webhook + VAS e-invoice** — regional/domestic activation adapter (thin webhook, not two-way sync); the ERP stays accounting system-of-record (ADR-0039 D4).
-- [ ] **Buyer ≠ user split** — `tenants` gains `owner_id` / `billing_email` / `seat_limit` (today `tenants` has none; `tenant_members` is membership-only). Needed for B2B billing contact vs seat holder.
+- [ ] **Buyer ≠ user split** — schema-ready: cột `owner_user_id` / `billing_email` / `seat_limit_override` ĐÃ tồn tại ở `migrations/0001_initial.sql:75-83` (hấp thụ từ M10B billing squash); `tenant_members` là membership-only. Còn thiếu: logic B2B billing-contact vs seat-holder, dunning tới `billing_email`, enforce `seat_limit_override`.
 
 **P3 — Later**
 - [ ] **Support / SLA by tier**, dunning / refund handling, cross-product bundle groundwork (`product_id` generic in the entitlement record is the precondition).
@@ -1004,8 +1004,8 @@ ADR-0028 §Timeline promises "one major release between deprecation banner and r
 - [x] **WI-A2 — Delete `tests/test_mcp_deprecation_shims.py`** (shim-banner equivalence tests no longer applicable). *(commit `d5fcdd2`)*
 - [x] **WI-A3 — Update tool count from 28 → 18 across docs + UI:** *(in-repo items done, commit `ea083a9`; client-repo items below stay open — tracked in Viindoo/odoo-mcp-client)*
   - [x] `README.md` (every "28 tools" / "28 MCP tools" reference → 18)
-  - [ ] [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) (28-tool matrix → 18-tool) — update in Viindoo/odoo-mcp-client repo
-  - [ ] [docs/personas/dev.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) ("28-tool arsenal" phrasing → 18-tool) — update in Viindoo/odoo-mcp-client repo
+  - [ ] [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/reference/mcp-tool-routing.md) (28-tool matrix → **25-tool**, current — 18 was the v0.6 transient; 7 tools added since) — update in Viindoo/odoo-mcp-client repo
+  - [ ] [docs/personas/dev.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/personas/dev.md) ("28-tool arsenal" phrasing → **25-tool**, current) — update in Viindoo/odoo-mcp-client repo
   - [x] [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) (`server.py + 28 tools` → `+ 18 tools`)
   - [ ] [client setup guide](https://github.com/Viindoo/odoo-mcp-client/blob/master/docs/setup.md) — remove "Tool Surface Change — v0.4 → v0.5" section (legacy no longer callable); keep "Session Context" + "MCP Resources" sections (still applicable). Update in Viindoo/odoo-mcp-client repo.
   - [ ] Cursor, Gemini, OpenAI adapter files in Viindoo/odoo-mcp-client — drop DEPRECATED legacy tool blocks.
