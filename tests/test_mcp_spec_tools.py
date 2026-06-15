@@ -321,7 +321,8 @@ class TestFindDeprecatedUsageProfileFilter:
     non-matching profile_name hides Method nodes from other profiles."""
 
     @pytest.fixture(scope="class")
-    def seeded_deprecated_profiles(self, neo4j_driver):
+    @classmethod
+    def seeded_deprecated_profiles(cls, neo4j_driver):
         """Seed two Method nodes with distinct profiles that use a deprecated symbol."""
         DEPR_VERSION = "92.0"
 

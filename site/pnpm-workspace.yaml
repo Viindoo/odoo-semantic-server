@@ -27,6 +27,11 @@ onlyBuiltDependencies:
 # Force yaml ≥ 2.8.3 to close CVE-2026-33532 (transitive via @astrojs/check
 # → @astrojs/language-server → volar-service-yaml → yaml-language-server@1.20.0
 # which pins yaml@2.7.1 — dev-tooling only, not in production runtime).
+# Force esbuild ≥ 0.28.1 to close GHSA-gv7w-rqvm-qjhr (HIGH) + related LOW
+# (transitive via astro → vite → esbuild). pnpm 10+ reads overrides from
+# pnpm-workspace.yaml, not package.json (package.json pnpm.overrides kept
+# for pnpm 9 backward compat).
 overrides:
   devalue: ^5.8.1
   yaml: '>=2.8.3'
+  esbuild: '>=0.28.1'

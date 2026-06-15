@@ -12,23 +12,32 @@ by nginx/Caddy (requires sudo — out of session scope). Verify after deploy:
     'Content-Security-Policy|Permissions-Policy|X-Frame-Options'
 """
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
-def client(monkeypatch):
-    """TestClient for the FastAPI app with minimal env config."""
+async def client(monkeypatch):
+    """In-process httpx client driving the FastAPI app via ASGITransport.
+
+    Uses httpx.AsyncClient + ASGITransport instead of fastapi/starlette TestClient:
+    the latter emits a StarletteDeprecationWarning ("install httpx2") since
+    starlette 1.3 (#319). ASGITransport is async-only, so the tests are async.
+    """
     # Patch session secret so app.create_app() doesn't require full DB config.
     monkeypatch.setenv("WEBUI_SESSION_SECRET", "test-secret-for-security-header-tests")
-    # Disable secure cookie so TestClient (plain HTTP) doesn't reject cookies.
+    # Disable secure cookie so the plain-HTTP client doesn't reject cookies.
     monkeypatch.setenv("WEBUI_SECURE_COOKIE", "0")
 
     from src.web_ui.app import create_app
 
     app = create_app()
-    # TestClient uses loopback by default — satisfies _LoopbackOnlyMiddleware.
-    return TestClient(app, raise_server_exceptions=False)
+    # ASGITransport defaults the client address to 127.0.0.1 — satisfies _LoopbackOnlyMiddleware.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        yield client
 
 
 class TestCORSMiddlewareNoOp:
@@ -39,14 +48,14 @@ class TestCORSMiddlewareNoOp:
     This confirms the "no cross-origin access" intent is enforced.
     """
 
-    def test_no_cors_allow_origin_on_simple_request(self, client):
+    async def test_no_cors_allow_origin_on_simple_request(self, client):
         """Simple GET should not expose Access-Control-Allow-Origin."""
-        resp = client.get("/api/auth/login", headers={"Origin": "https://evil.example.com"})
+        resp = await client.get("/api/auth/login", headers={"Origin": "https://evil.example.com"})
         assert "access-control-allow-origin" not in resp.headers
 
-    def test_no_cors_allow_origin_on_preflight(self, client):
+    async def test_no_cors_allow_origin_on_preflight(self, client):
         """OPTIONS preflight from foreign origin should get no ACAO header."""
-        resp = client.options(
+        resp = await client.options(
             "/api/auth/login",
             headers={
                 "Origin": "https://evil.example.com",
@@ -55,9 +64,9 @@ class TestCORSMiddlewareNoOp:
         )
         assert "access-control-allow-origin" not in resp.headers
 
-    def test_no_cors_allow_credentials(self, client):
+    async def test_no_cors_allow_credentials(self, client):
         """No Access-Control-Allow-Credentials should be set."""
-        resp = client.get("/api/auth/login", headers={"Origin": "https://evil.example.com"})
+        resp = await client.get("/api/auth/login", headers={"Origin": "https://evil.example.com"})
         assert "access-control-allow-credentials" not in resp.headers
 
 
@@ -68,50 +77,48 @@ class TestSecurityHeadersFastAPI:
     is appropriate because JSON responses never load resources.
     """
 
-    def test_csp_header_present(self, client):
+    async def test_csp_header_present(self, client):
         """Content-Security-Policy must be present on every FastAPI response."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         assert "content-security-policy" in resp.headers
 
-    def test_csp_default_src_none(self, client):
+    async def test_csp_default_src_none(self, client):
         """JSON API CSP must use default-src 'none' (strictest — no resource loading)."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         csp = resp.headers.get("content-security-policy", "")
         assert "default-src 'none'" in csp
 
-    def test_csp_frame_ancestors_none(self, client):
+    async def test_csp_frame_ancestors_none(self, client):
         """frame-ancestors 'none' prevents clickjacking at CSP level."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         csp = resp.headers.get("content-security-policy", "")
         assert "frame-ancestors 'none'" in csp
 
-    def test_permissions_policy_present(self, client):
+    async def test_permissions_policy_present(self, client):
         """Permissions-Policy must be present on every FastAPI response."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         assert "permissions-policy" in resp.headers
 
-    def test_permissions_policy_camera_disabled(self, client):
+    async def test_permissions_policy_camera_disabled(self, client):
         """camera=() must be present in Permissions-Policy."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         pp = resp.headers.get("permissions-policy", "")
         assert "camera=()" in pp
 
-    def test_permissions_policy_microphone_disabled(self, client):
+    async def test_permissions_policy_microphone_disabled(self, client):
         """microphone=() must be present in Permissions-Policy."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         pp = resp.headers.get("permissions-policy", "")
         assert "microphone=()" in pp
 
-    def test_permissions_policy_geolocation_disabled(self, client):
+    async def test_permissions_policy_geolocation_disabled(self, client):
         """geolocation=() must be present in Permissions-Policy."""
-        resp = client.get("/api/auth/login")
+        resp = await client.get("/api/auth/login")
         pp = resp.headers.get("permissions-policy", "")
         assert "geolocation=()" in pp
 
-    def test_security_headers_on_auth_endpoint(self, client):
+    async def test_security_headers_on_auth_endpoint(self, client):
         """Security headers apply to auth endpoints too (no exempt paths)."""
-        resp = client.post("/api/auth/login", json={"username": "x", "password": "y"})
+        resp = await client.post("/api/auth/login", json={"username": "x", "password": "y"})
         assert "content-security-policy" in resp.headers
         assert "permissions-policy" in resp.headers
-
-

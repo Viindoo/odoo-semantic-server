@@ -111,7 +111,6 @@
     function onChange(e) {
       if (e.matches) close();
     }
-    if (mq.addEventListener) mq.addEventListener('change', onChange);
-    else if (mq.addListener) mq.addListener(onChange);
+    mq.addEventListener('change', onChange);
   })();
 </script>

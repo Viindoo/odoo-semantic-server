@@ -78,7 +78,8 @@ class TestToRepoRelative:
 
 class TestPortablePath:
     @pytest.fixture(scope="class")
-    def pp(self):
+    @classmethod
+    def pp(cls):
         from src.mcp.server import _portable_path
         return _portable_path
 
@@ -215,7 +216,8 @@ class TestStylesheetChunkProvenance:
 
 class TestReconstructAbsPath:
     @pytest.fixture(scope="class")
-    def fn(self):
+    @classmethod
+    def fn(cls):
         from src.mcp.resources import _reconstruct_abs_path
         return _reconstruct_abs_path
 

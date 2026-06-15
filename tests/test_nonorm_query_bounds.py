@@ -30,6 +30,7 @@ from neo4j.exceptions import ClientError
 
 from src.constants import NEO4J_QUERY_TIMEOUT_SECONDS
 from src.mcp.orm import OrmQueryTimeout
+from tests._timeout_harness import make_tx_timeout_error
 
 
 def _reload_server_with(env: dict):
@@ -138,10 +139,11 @@ def test_bounded_read_converts_tx_timeout_to_ormquerytimeout():
 
     class _TimingOutSession:
         def run(self, query, **params):
-            exc = ClientError("timed out")
             # Match the prefix _is_tx_timeout keys on (driver- or server-set).
-            exc.code = "Neo.ClientError.Transaction.TransactionTimedOut"
-            raise exc
+            raise make_tx_timeout_error(
+                code="Neo.ClientError.Transaction.TransactionTimedOut",
+                message="timed out",
+            )
 
     with pytest.raises(OrmQueryTimeout) as ei:
         srv._data_bounded(_TimingOutSession(), "MATCH (n) RETURN n", "impact for X")
@@ -157,9 +159,10 @@ def test_bounded_read_propagates_non_timeout_clienterror():
 
     class _SyntaxErrorSession:
         def run(self, query, **params):
-            exc = ClientError("syntax")
-            exc.code = "Neo.ClientError.Statement.SyntaxError"
-            raise exc
+            raise make_tx_timeout_error(
+                code="Neo.ClientError.Statement.SyntaxError",
+                message="syntax",
+            )
 
     with pytest.raises(ClientError):
         srv._data_bounded(_SyntaxErrorSession(), "MATCH (n RETURN n", "lbl")

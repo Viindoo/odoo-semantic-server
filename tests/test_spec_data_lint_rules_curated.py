@@ -136,7 +136,8 @@ class TestRuleSchemaValid:
     """Every rule entry must conform to lint_rule.schema.json."""
 
     @pytest.fixture(scope="class")
-    def schema(self):
+    @classmethod
+    def schema(cls):
         return _load_schema()
 
     def _validate_rule(self, rule: dict, schema: dict, version: str, idx: int) -> None:

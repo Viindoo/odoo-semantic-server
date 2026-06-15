@@ -241,11 +241,9 @@ class _SecondRunTimeoutSession:
             result = MagicMock()
             result.data.return_value = []
             return result
-        from neo4j.exceptions import ClientError
+        from tests._timeout_harness import make_tx_timeout_error
 
-        exc = ClientError("transaction timed out")
-        exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-        raise exc
+        raise make_tx_timeout_error()
 
 
 class _SecondRunTimeoutDriver:

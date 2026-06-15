@@ -14,6 +14,19 @@ then translate it into ``OrmQueryTimeout``.
 
 from __future__ import annotations
 
+
+def make_tx_timeout_error(
+    code: str = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+    message: str = "transaction timed out",
+):
+    """Build a ClientError carrying the given Neo4j code WITHOUT the deprecated
+    `.code` setter (neo4j 5.x deprecated assigning .code post-construction).
+    Uses ClientError._basic_hydrate — see DRIVER-BUMP NOTE in src/mcp/orm.py."""
+    from neo4j.exceptions import ClientError
+
+    return ClientError._basic_hydrate(neo4j_code=code, message=message)
+
+
 # An explicit, sentinel-free version string. The timeout-surface tests pass this
 # as an EXPLICIT version so ``_resolve_version`` short-circuits at Tier-1 without
 # touching the (timing-out) session — the very first bounded query is then the
@@ -31,11 +44,7 @@ class _TxTimeoutSession:
         return False
 
     def run(self, *a, **k):
-        from neo4j.exceptions import ClientError
-
-        exc = ClientError("transaction timed out")
-        exc.code = "Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration"
-        raise exc
+        raise make_tx_timeout_error()
 
 
 class _TxTimeoutDriver:

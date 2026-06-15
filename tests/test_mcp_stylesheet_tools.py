@@ -232,6 +232,8 @@ def test_find_style_override_embedder_unavailable():
     literal token, so the embed call is the first I/O attempted and the test
     remains DB-free.
     """
+    from contextlib import contextmanager
+
     from src.mcp.server import _find_style_override
 
     _SECRET = "internal-detail-/srv/secret/path-leak-canary"
@@ -240,10 +242,26 @@ def test_find_style_override_embedder_unavailable():
         def embed(self, texts):  # noqa: ANN001
             raise RuntimeError(_SECRET)
 
+    class _FakeSession:
+        """Minimal stub — resolve_version_v2 Tier-1 returns '99.0' without querying."""
+
+    class _FakeDriver:
+        """Minimal stub that provides driver.session() as a context manager.
+
+        _find_style_override opens `with driver.session() as session:` to call
+        _resolve_version.  Since '99.0' is an explicit (non-sentinel) version,
+        Tier-1 of resolve_version_v2 returns immediately without executing any
+        Cypher — so the session stub never needs to implement .run().
+        """
+        @contextmanager
+        def session(self):
+            yield _FakeSession()
+
     # "form view styling" is an NL phrase (has spaces) — not a literal token.
     # The embedder is called first (before any DB lookup) and raises.
     result = _find_style_override(
         "form view styling", "99.0",
+        _driver=_FakeDriver(),
         _embedder=_RaisingEmbedder(),
     )
     # Should degrade, not raise

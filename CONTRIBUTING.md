@@ -427,27 +427,29 @@ Hai lớp khoá version để CI/deploy deterministic, không bị upstream drif
 
 **`make test` (unit tests):** 0 warnings.
 
-**`make test-integration` (CI):** CI uses GitHub Actions service container; `neo4j_driver` fixture skips testcontainers import entirely when `CI=true`. **5 known warnings total** — 3 upstream (cannot fix without upstream release) + 2 tracked in M9 backlog:
+PR #320 (issue #319) fixed the warnings that were our own code's fault — **do not let them regress**:
+`exc.code = ...` on Neo4j errors (use `tests/_timeout_harness.make_tx_timeout_error()`),
+`asyncio.get_event_loop()` in `conftest.py` (use `get_running_loop()`), class-scoped fixtures
+defined as instance methods (use `@classmethod`), and `starlette/fastapi.testclient` (use
+`httpx.AsyncClient` + `httpx.ASGITransport`, NOT `httpx2`).
 
-**Upstream (3) — do not suppress:**
+**`make test-integration` (CI):** CI uses GitHub Actions service container; `neo4j_driver` fixture skips testcontainers import entirely when `CI=true`. Remaining known warnings — all upstream / unavoidable, **do not suppress with `filterwarnings`**:
 
 1–2. `DeprecationWarning: The @wait_container_is_ready decorator is deprecated...` (fires twice)  
-   Source: `testcontainers/core/waiting_utils.py` + `testcontainers/neo4j/__init__.py` — class-definition time import, not per-test. Cannot be avoided without modifying upstream source or downgrading to testcontainers 3.x (full conftest.py API rewrite).  
-   Status: Upstream issue in testcontainers 4.x. Upgrade when fixed.
+   Source: `testcontainers/core/waiting_utils.py` + `testcontainers/neo4j/__init__.py` — class-definition time import, not per-test. Cannot be avoided without modifying upstream source or downgrading to testcontainers 3.x (full conftest.py API rewrite). Only fires under local Docker (testcontainers), not in CI (`CI=true` skips it). Upgrade when testcontainers 4.x fixes it.
 
-3. (Removed — `AuthlibDeprecationWarning` fixed by pinning `authlib>=1.6.5,<1.7.0`.)
+3. `neo4j._sync.driver:547 DeprecationWarning: Relying on Driver's destructor to close...`  
+   The module-level `_driver` singleton in `src/mcp/server.py` is closed on lifespan shutdown and by a session-scoped conftest finalizer (`_close_server_driver_at_session_end`), but Python's cyclic GC can still finalize a leftover driver reference AFTER the test session ends. Reduced, not fully eliminable from test teardown without forcing GC. Production path (lifespan close) is correct.
 
-**M9 backlog (2) — root cause known, fix deferred:**
+**Frontend (`astro check`) — intentional, not suppressed:**
 
-4. `neo4j._sync.driver:547 DeprecationWarning: The 'Driver' class has been deprecated...`  
-   Surfaces in `test_git_utils` + `test_indexer_main`. Root cause: Neo4j driver destructor fires without explicit `driver.close()` call in those test fixtures. Fix: close session explicitly in teardown. Backlog item: TASKS.md M9 Stream B.
+`document.execCommand('copy')` is marked deprecated in TypeScript 5.x type definitions
+(`site/src/pages/account/api-keys.astro`, `site/src/pages/admin/api-keys.astro`). It is the
+deliberate clipboard fallback for non-secure contexts (e.g. `http://localhost` in Firefox, where
+`navigator.clipboard.writeText` is unavailable). Not suppressed via `@ts-expect-error`; this is a
+type-check note, not a runtime issue.
 
-5. `httpx._client: 'per-request cookies' will be deprecated...`  
-   Surfaces in `test_web_ui_auth.py`. Root cause: test helper passes `cookies=` kwarg to httpx request directly instead of via a `Client` instance. Fix: refactor helper to use `httpx.Client(cookies=...)`. Backlog item: TASKS.md M9 Stream B.
-
-**`make test-integration` (local dev with Docker):** Same 5 warnings as CI.
-
-**Action:** Do NOT suppress with `filterwarnings`. Fix root cause when the M9 stream is scheduled.
+**Action:** Do NOT suppress with `filterwarnings`. Fix root cause, or document here with the reason (as above) when it is genuinely upstream/intentional.
 
 ---
 

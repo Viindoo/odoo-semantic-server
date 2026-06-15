@@ -3530,6 +3530,18 @@ def main() -> None:
                 except _asyncio.CancelledError:
                     pass
 
+            # Close the Neo4j driver singleton so the GC destructor does not
+            # emit "Driver's destructor called while session still open" warnings
+            # (neo4j/_sync/driver.py:547).  _driver is module-level; reset to
+            # None so a subsequent startup re-initializes cleanly.
+            global _driver
+            if _driver is not None:
+                try:
+                    _driver.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                _driver = None
+
     _app.router.lifespan_context = _lifespan_with_pg
     # --------------------------------------------------------------------------
 

@@ -14,7 +14,6 @@ These tests verify the core correctness contract of the refactored health module
 All tests are pure-unit (no DB containers required) — heavy IO is mocked out.
 """
 
-import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -471,18 +470,29 @@ class TestLivenessCheckTimeouts:
     @pytest.mark.asyncio
     async def test_check_neo4j_returns_error_on_timeout(self):
         """_check_neo4j returns error string (not raises) when the check times out."""
+        import threading
+
+        import src.mcp.server as server_mod
         from src.mcp import health as health_mod
 
-        # Simulate a driver whose verify_connectivity hangs longer than timeout
-        async def _slow_thread(*_args, **_kwargs):
-            await asyncio.sleep(999)
+        # _wake is set by the test's finally block so the thread exits promptly
+        # rather than blocking pytest's shutdown for 999 s.
+        _wake = threading.Event()
+
+        class _HangingDriver:
+            def verify_connectivity(self):
+                # Block until the test wakes us (via _wake.set()) or 30s safety guard.
+                _wake.wait(timeout=30)
 
         with (
-            patch("asyncio.to_thread", _slow_thread),
-            # Shrink timeout to near-zero for the test
+            patch.object(server_mod, "_get_driver", return_value=_HangingDriver()),
+            # Shrink timeout to near-zero so wait_for fires immediately.
             patch.object(health_mod, "_LIVENESS_CHECK_TIMEOUT_S", 0.001),
         ):
-            result = await health_mod._check_neo4j()
+            try:
+                result = await health_mod._check_neo4j()
+            finally:
+                _wake.set()  # release the thread unconditionally
 
         assert result.startswith("error:timeout"), (
             f"Expected 'error:timeout...' but got {result!r}"
