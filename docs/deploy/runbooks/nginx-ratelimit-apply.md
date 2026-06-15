@@ -1,6 +1,6 @@
 # nginx Rate-Limit Apply Runbook
 
-> Apply 4 defence-in-depth nginx edge rate-limit zones on top of the existing
+> Apply 3 defence-in-depth nginx edge rate-limit zones on top of the existing
 > application-layer limits. Reduces CPU during bot/crawler floods before requests
 > ever reach Python. ADR-0011, ADR-0039.
 
@@ -17,8 +17,10 @@ reaches `:8002` or `:8003`.
 
 **Three threat classes this addresses:**
 
-1. **Unauthed floods** — `/install/` and `/api/waitlist` have no API-key
-   requirement; a scraper can hammer them without ever authenticating.
+1. **Unauthed floods** — `/api/waitlist` has no API-key requirement; a scraper
+   can hammer it without ever authenticating. (`/install/` is now a static Astro
+   page served via the catch-all `location /` per `docs/deploy/nginx-m8.conf`,
+   not a backend endpoint, so it carries no dedicated edge limit.)
 2. **Slow Loris / slow-body attacks** — `limit_req` combined with existing
    `proxy_read_timeout` values throttles the connection-opening rate per IP.
 3. **Authenticated-but-broken clients** — clients that forgot connection pooling
@@ -34,7 +36,6 @@ reaches `:8002` or `:8003`.
 | `mcp_edge` | 600r/m (10/s) | 20 nodelay | `/mcp` | 10m |
 | `api_edge` | 300r/m (5/s) | 30 nodelay | `/api/` | 10m |
 | `waitlist_edge` | 10r/m (~1/6s) | 5 nodelay | `/api/waitlist` | 5m |
-| `install_edge` | 20r/m (~1/3s) | 10 nodelay | `/install/` | 5m |
 
 All zones key on `$binary_remote_addr` (4 B IPv4 / 16 B IPv6 — minimal SLAB
 footprint). `nodelay` on all zones: excess requests over burst are immediately
@@ -110,7 +111,6 @@ Add these lines immediately after the opening comment block, before the first
 limit_req_zone $binary_remote_addr zone=mcp_edge:10m      rate=600r/m;
 limit_req_zone $binary_remote_addr zone=api_edge:10m      rate=300r/m;
 limit_req_zone $binary_remote_addr zone=waitlist_edge:5m  rate=10r/m;
-limit_req_zone $binary_remote_addr zone=install_edge:5m   rate=20r/m;
 limit_req_status 429;
 ```
 
@@ -118,7 +118,7 @@ limit_req_status 429;
 file is included inside `http{}` via `sites-enabled/` (verified by default
 nginx.conf). Placing these lines before the first `server{}` block in this file
 is valid. If your nginx.conf includes `sites-available` at a different scope,
-move these 5 lines to `/etc/nginx/conf.d/osm-ratelimit-zones.conf` instead.
+move these 4 lines to `/etc/nginx/conf.d/osm-ratelimit-zones.conf` instead.
 
 Then add `limit_req` directives inside each location block:
 
@@ -139,7 +139,6 @@ Then add `limit_req` directives inside each location block:
   ```
 - Inside `location /api/`:  add `limit_req zone=api_edge burst=30 nodelay;`
 - Inside `location /mcp`:   add `limit_req zone=mcp_edge burst=20 nodelay;`
-- Inside `location /install/`: add `limit_req zone=install_edge burst=10 nodelay;`
 
 ### Step 4 — Validate nginx config
 
@@ -244,7 +243,7 @@ SLAB size.
 
 ## Rollback
 
-Remove all four zone declarations and all `limit_req` directives via the backup:
+Remove all three zone declarations and all `limit_req` directives via the backup:
 
 ```bash
 sudo cp /etc/nginx/sites-available/odoo-semantic-mcp.bak-${TS} \
@@ -264,7 +263,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ## References
 
-- **`ops/nginx-ratelimit.conf.patch`** — unified-diff patch with the 4 zones (created by W1C-2)
+- **`ops/nginx-ratelimit.conf.patch`** — unified-diff patch with the 3 zones (created by W1C-2)
 - **`src/web_ui/rate_limit.py`** — in-app per-IP rate-limit (PR #204, `/api/waitlist`)
 - **`docs/adr/0011-web-ui-session-auth.md`** — session auth policy including rate-limit posture
 - **`docs/adr/0039-commercialization-platform.md`** — plan-aware RPM quota at `/mcp` (PR #200)
