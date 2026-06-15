@@ -1,9 +1,14 @@
 # ops/nginx-ratelimit.conf.patch — unified-diff patch adding edge-layer rate-limit zones
 # to /etc/nginx/sites-available/odoo-semantic-mcp. Apply per the runbook at
 # docs/deploy/runbooks/nginx-ratelimit-apply.md (full procedure, rollback, verification).
+#
+# Adds 3 zones: mcp_edge (/mcp), api_edge (/api/), waitlist_edge (/api/waitlist).
+# NOTE: /install/ is served by Astro :4321 via the catch-all `location /` per
+# docs/deploy/nginx-m8.conf and intentionally has NO dedicated edge rate-limit
+# (it is a static onboarding page, treated like /signup and /pricing).
 --- /etc/nginx/sites-available/odoo-semantic-mcp	2026-05-14 00:00:00.000000000 +0700
 +++ /etc/nginx/sites-available/odoo-semantic-mcp	2026-05-28 00:00:00.000000000 +0700
-@@ -1,6 +1,17 @@
+@@ -1,6 +1,18 @@
  # /etc/nginx/sites-available/odoo-semantic-mcp — M8 (v0.3.0)
  # 3-tier routing: Astro :4321 (UI), FastAPI :8003 (JSON API), MCP :8002 (protocol).
  # Generated 2026-05-14 — merged from docs/deploy/nginx-m8.conf + current ACME/OAuth blocks.
@@ -15,17 +20,16 @@
 +limit_req_zone $binary_remote_addr zone=mcp_edge:10m      rate=600r/m;
 +limit_req_zone $binary_remote_addr zone=api_edge:10m      rate=300r/m;
 +limit_req_zone $binary_remote_addr zone=waitlist_edge:5m  rate=10r/m;
-+limit_req_zone $binary_remote_addr zone=install_edge:5m   rate=20r/m;
 +limit_req_status 429;
 +
 +# NOTE: limit_req_zone directives must live at http{} scope in nginx.conf or in a conf.d snippet.
-+# If this sites-available file is included inside http{}, place the 5 lines above before the first server{} block (already done here). If this file is included at a scope that does not allow limit_req_zone, move those 5 lines to /etc/nginx/conf.d/osm-ratelimit-zones.conf instead.
-
++# If this sites-available file is included inside http{}, place the 4 lines above before the first server{} block (already done here). If this file is included at a scope that does not allow limit_req_zone, move those 4 lines to /etc/nginx/conf.d/osm-ratelimit-zones.conf instead.
+ 
  server {
      listen 80;
-@@ -60,7 +71,14 @@
+@@ -60,7 +70,21 @@
      client_max_body_size 10M;
-
+ 
      # ---- FastAPI JSON API (:8003) ----
 +    # Tighter sub-zone for the unauthed waitlist endpoint — evaluated first (more specific prefix).
 +    location /api/waitlist {
@@ -45,20 +49,11 @@
          proxy_pass         http://127.0.0.1:8003;
          proxy_http_version 1.1;
          proxy_set_header   Host              $host;
-@@ -72,6 +90,7 @@
+@@ -72,6 +89,7 @@
      }
-
+ 
      # ---- MCP protocol with SSE streaming ----
      location /mcp {
 +        limit_req zone=mcp_edge burst=20 nodelay;
          proxy_pass         http://127.0.0.1:8002;
-         proxy_http_version 1.1;
          proxy_set_header   Host              $host;
-@@ -85,6 +104,7 @@
-
-     # ---- Install onboarding (FastMCP :8002) ----
-     location /install/ {
-+        limit_req zone=install_edge burst=10 nodelay;
-         proxy_pass         http://127.0.0.1:8002/install/;
-         proxy_set_header   Host              $host;
-         proxy_set_header   X-Forwarded-Proto $scheme;
