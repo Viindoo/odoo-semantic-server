@@ -41,7 +41,6 @@ def _build_mcp_app():
     """Return the MCP ASGI app (Starlette) with AuthMiddleware + feedback sub-app.
 
     Mirrors the __main__ block in src/mcp/server.py but skips uvicorn.run().
-    The /install static mount is omitted (directory absent in test env).
     """
     from fastapi import FastAPI
     from starlette.middleware import Middleware

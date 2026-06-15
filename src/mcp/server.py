@@ -3108,8 +3108,8 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
 
     Returns ``(app, session_manager)``. The caller (``main()``) is responsible
     for the steps that are NOT part of the Option B core: wrapping the router
-    lifespan with ``_lifespan_with_pg``, mounting ``/install`` + the feedback
-    sub-app, and running uvicorn.
+    lifespan with ``_lifespan_with_pg``, mounting the feedback sub-app, and
+    running uvicorn.
 
     FastMCP's ``mcp.http_app()`` / ``create_streamable_http_app()`` do NOT forward
     ``session_idle_timeout`` to ``StreamableHTTPSessionManager`` (still
@@ -3406,15 +3406,12 @@ def main() -> None:
     # The core construction lives in the module-level _build_streamable_http_app()
     # helper (single source of truth — tests/test_session_idle_timeout.py calls
     # the SAME helper so the two can never drift). main() owns the wrapping:
-    # lifespan compose with _lifespan_with_pg, /install + feedback mounts, uvicorn.
+    # lifespan compose with _lifespan_with_pg, feedback mount, uvicorn.
     # ADR-0049 records the 3 triggers to revert to the http_app() kwarg once
     # upstream forwards session_idle_timeout. SESSION_IDLE_TIMEOUT (default 3600s
     # = 1h, value-guarded) reaps abandoned streamable-http sessions (#279).
-    from pathlib import Path as _Path
-
     import uvicorn as _uvicorn
     from starlette.middleware import Middleware as _Middleware
-    from starlette.staticfiles import StaticFiles as _StaticFiles
 
     from src.mcp.middleware import AuthMiddleware
 
@@ -3544,14 +3541,6 @@ def main() -> None:
 
     _app.router.lifespan_context = _lifespan_with_pg
     # --------------------------------------------------------------------------
-
-    _install_dir = _Path(__file__).parent / "static" / "install"
-    if _install_dir.is_dir():
-        _app.mount(
-            "/install",
-            _StaticFiles(directory=str(_install_dir), html=True),
-            name="install",
-        )
 
     # Mount feedback API on MCP port so remote users can submit thumbs-up/down.
     # feedback.router exposes POST /api/feedback and GET /api/feedback/{pattern_id}.

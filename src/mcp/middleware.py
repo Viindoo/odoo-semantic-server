@@ -377,7 +377,6 @@ _BG_TASKS: set[asyncio.Task] = set()
 
 # Paths that bypass auth entirely
 _PUBLIC_PATHS = frozenset({"/health", "/ready", "/metrics"})
-_PUBLIC_PATH_PREFIXES = frozenset({"/install"})
 
 
 def _cache_get(raw_key: str) -> tuple[bool, int | None]:
@@ -537,10 +536,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """Verify X-API-Key header on every request except public paths."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # Public paths bypass auth (exact match or prefix match)
-        if request.url.path in _PUBLIC_PATHS or any(
-            request.url.path.startswith(prefix) for prefix in _PUBLIC_PATH_PREFIXES
-        ):
+        # Public paths bypass auth (exact match)
+        if request.url.path in _PUBLIC_PATHS:
             return await call_next(request)
 
         raw_key = request.headers.get("X-API-Key")
@@ -625,8 +622,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Degraded mode: pool not initialised (lifespan retry still
                 # running) OR a transient DB outage. Return 503 with a
                 # static body — see _degraded_response docstring re CWE-209.
-                # Public paths (/health, /install) already bypassed this
-                # branch above.
+                # Public paths (/health, /ready, /metrics) already bypassed
+                # this branch above.
                 #
                 # Narrowed to PoolNotInitializedError (not bare RuntimeError)
                 # so unrelated runtime errors from auth_store / framework
