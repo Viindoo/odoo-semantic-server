@@ -64,7 +64,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      # Put the uv-managed venv on PATH so the many bare `python`/`pytest` steps
+      # below resolve to the locked interpreter without an `uv run` prefix each.
+      - run: echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Bootstrap PostgreSQL schema
         run: python -m src.db.migrate
@@ -517,7 +524,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      # Put the uv-managed venv on PATH so the many bare `python`/`pytest` steps
+      # below resolve to the locked interpreter without an `uv run` prefix each.
+      - run: echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Bootstrap PostgreSQL schema
         run: python -m src.db.migrate
@@ -648,7 +662,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked --extra dev
+      # Put the uv-managed venv on PATH so the many bare `python`/`pytest` steps
+      # below resolve to the locked interpreter without an `uv run` prefix each.
+      - run: echo "${GITHUB_WORKSPACE}/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Bootstrap PostgreSQL schema
         run: python -m src.db.migrate

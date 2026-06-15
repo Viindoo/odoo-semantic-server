@@ -13,5 +13,6 @@ odoo-semantic.conf
 site/node_modules/
 site/dist/
 site/.astro/
-uv.lock
+# uv.lock IS committed (issue #319): it is the exact dependency lock CI installs
+# from via `uv sync --locked`. Do NOT ignore it.
 site/node_modules

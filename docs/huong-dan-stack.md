@@ -50,12 +50,11 @@ Indexer cần đọc `~/git/*` trực tiếp từ host filesystem. Container ho�
 
 ```bash
 make install   # Tạo venv tại ~/.venv/odoo-semantic-mcp/ + cài dependencies
-# Hoặc thủ công:
-# uv venv ~/.venv/odoo-semantic-mcp
-# uv pip install --python ~/.venv/odoo-semantic-mcp/bin/python -e ".[dev]"
+# Hoặc thủ công (cài đúng version trong uv.lock):
+# UV_PROJECT_ENVIRONMENT=~/.venv/odoo-semantic-mcp uv sync --extra dev
 ```
 
-`pip install -e .` cài dạng "editable install" — thay đổi code trong `src/` có hiệu lực ngay, không cần cài lại.
+`uv sync` cài project dạng "editable install" — thay đổi code trong `src/` có hiệu lực ngay, không cần cài lại. Version do `uv.lock` khoá cứng (xem CONTRIBUTING.md §Dependency locking).
 
 ### Hai loại process
 
