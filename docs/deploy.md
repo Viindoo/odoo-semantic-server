@@ -1012,11 +1012,9 @@ server {
         proxy_send_timeout 3600s;
     }
 
-    location /install/ {
-        proxy_pass http://127.0.0.1:8002/install/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-    }
+    # /install/ is served by Astro :4321 via the catch-all `location /` (M8);
+    # it is NOT proxied to MCP :8002. See docs/deploy/nginx-m8.conf for the
+    # full route map.
 }
 ```
 

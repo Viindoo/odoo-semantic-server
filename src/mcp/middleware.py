@@ -622,8 +622,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Degraded mode: pool not initialised (lifespan retry still
                 # running) OR a transient DB outage. Return 503 with a
                 # static body — see _degraded_response docstring re CWE-209.
-                # Public paths (/health, /install) already bypassed this
-                # branch above.
+                # Public paths (/health, /ready, /metrics) already bypassed
+                # this branch above.
                 #
                 # Narrowed to PoolNotInitializedError (not bare RuntimeError)
                 # so unrelated runtime errors from auth_store / framework

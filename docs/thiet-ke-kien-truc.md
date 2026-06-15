@@ -88,8 +88,8 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Nginx (3 services)                                           │  │
 │  │  /api/*                       → FastAPI :8003 (JSON API)      │  │
-│  │  /mcp /install/ /health       → MCP     :8002                 │  │
-│  │  /ready /metrics              → MCP     :8002                 │  │
+│  │  /mcp /health /ready          → MCP     :8002                 │  │
+│  │  /metrics                     → MCP     :8002                 │  │
 │  │      (FastMCP, 25 tools + 7 Resources; /metrics IP-restricted)│  │
 │  │  /                            → Astro   :4321 (SSR catch-all, │  │
 │  │                                  routes /admin/* internally)  │  │
