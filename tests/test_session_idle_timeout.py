@@ -28,7 +28,11 @@ break — that is the intended early-warning signal to revert to the upstream
 Pure construction-level — no Docker, no Neo4j, no Postgres, no running server.
 """
 
+import contextlib
 import os
+import unittest.mock as mock
+
+import pytest
 
 import src.mcp.server as srv
 
@@ -193,4 +197,67 @@ def test_session_lifespan_installed_on_router():
     assert app.router.lifespan_context is not None, (
         "the session-manager lifespan must be installed so _lifespan_with_pg "
         "can wrap it"
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_transports_terminated_on_shutdown():
+    """Active streamable-HTTP transports MUST be terminate()'d during shutdown.
+
+    Business rule: when the MCP server shuts down (SIGTERM / lifespan exit),
+    any active SSE/streaming transport must have terminate() awaited before
+    session_manager.run()'s task-group is cancelled.  Without this, Uvicorn
+    logs "ASGI callable returned without completing response" and anyio streams
+    are left uncleaned.  Parity with fastmcp 3.4.2
+    create_streamable_http_app() (PrefectHQ/fastmcp#3025).
+
+    Observable assertion: terminate() is awaited exactly once per active
+    transport present in session_manager._server_instances at lifespan exit.
+    """
+    _app, session_manager = _build_app(3600.0)
+
+    terminate_call_count = 0
+
+    class _FakeTransport:
+        async def terminate(self):
+            nonlocal terminate_call_count
+            terminate_call_count += 1
+
+    # Inject a fake transport simulating an active connection
+    session_manager._server_instances = {"fake-session-id": _FakeTransport()}
+
+    # Obtain the lifespan context installed on the app router and run through it.
+    # The _mcp_session_lifespan is a closure that drives session_manager.run();
+    # we stub session_manager.run() and mcp._lifespan_manager() to avoid real
+    # I/O so the test stays pure-unit (no network, no Docker, no DB).
+    @contextlib.asynccontextmanager
+    async def _noop_cm():
+        yield
+
+    # Patch both async CMs that wrap the yield in _mcp_session_lifespan
+    with (
+        mock.patch.object(
+            _app.state.fastmcp_server,
+            "_lifespan_manager",
+            return_value=_noop_cm(),
+        ),
+        mock.patch.object(
+            session_manager,
+            "run",
+            return_value=_noop_cm(),
+        ),
+    ):
+        lifespan = _app.router.lifespan_context
+
+        async with lifespan(_app):
+            # lifespan body — yield point; transport is "active" here
+            pass
+        # after __aexit__: finally block must have fired
+
+    assert terminate_call_count == 1, (
+        "terminate() must be awaited exactly once for each active transport "
+        "present in session_manager._server_instances at shutdown; "
+        f"got {terminate_call_count} calls (expected 1). "
+        "This guards against 'ASGI callable returned without completing "
+        "response' on SIGTERM (#327)."
     )

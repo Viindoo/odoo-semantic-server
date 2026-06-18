@@ -3186,7 +3186,25 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
         # _lifespan_with_pg). Starts/stops the session manager — mirrors the
         # lifespan FastMCP's create_streamable_http_app() would have built.
         async with _mcp._lifespan_manager(), session_manager.run():
-            yield
+            try:
+                yield
+            finally:
+                # Gracefully terminate active streamable-HTTP transports before
+                # session_manager.run()'s finally cancels the task group. Without this,
+                # active SSE/streaming responses abort mid-flight and Uvicorn logs
+                # "ASGI callable returned without completing response". Parity with
+                # fastmcp 3.4.2 create_streamable_http_app (PrefectHQ/fastmcp#3025).
+                # terminate() is idempotent (mcp SDK), so double-terminate is a no-op.
+                for transport in list(
+                    getattr(session_manager, "_server_instances", {}).values()
+                ):
+                    try:
+                        await transport.terminate()
+                    except Exception:
+                        logger.debug(
+                            "Error terminating streamable-HTTP transport on shutdown",
+                            exc_info=True,
+                        )
 
     app = _create_base_app(
         routes=[
