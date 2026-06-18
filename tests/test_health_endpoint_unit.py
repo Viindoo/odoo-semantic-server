@@ -80,67 +80,55 @@ class TestHealthEndpoint:
         assert body["mcp_tools"] > 0
 
     @pytest.mark.asyncio
-    async def test_mcp_tools_handles_missing_get_tools(self, monkeypatch):
-        """When get_tools raises, fallback to _tool_manager._tools gracefully."""
+    async def test_mcp_tools_returns_minus_one_on_introspection_failure(self, monkeypatch):
+        """When list_tools() raises, /health still serves -1 (never crashes/503).
+
+        fastmcp v3 introspects the tool surface via the single public async
+        ``list_tools()`` (the v2 ``get_tools()`` + ``_tool_manager`` fallback both
+        gone). The liveness contract is unchanged: a broken introspection must
+        degrade to -1 with HTTP 200, never raise out of /health (#324).
+        """
         from src.mcp.server import mcp
 
-        # Override get_tools to raise — exercises the except branch in
-        # _get_mcp_tool_count which then falls back to mcp._tool_manager._tools.
-        # (delattr on a class-bound method fails with AttributeError, so we
-        # shadow it with a raising callable instead.)
-        async def broken_get_tools():
-            raise RuntimeError("simulated get_tools failure")
+        async def broken_list_tools():
+            raise RuntimeError("simulated list_tools failure")
 
-        monkeypatch.setattr(mcp, "get_tools", broken_get_tools, raising=False)
+        monkeypatch.setattr(mcp, "list_tools", broken_list_tools, raising=False)
 
         async with _mcp_http_client() as client:
             resp = await client.get("/health")
         body = resp.json()
-        # Fallback should produce a positive count from _tool_manager._tools.
-        assert isinstance(body["mcp_tools"], int)
-        assert body["mcp_tools"] > 0, (
-            f"Expected fallback to return positive count, got {body['mcp_tools']}"
+        # Introspection failure degrades to -1, liveness stays 200.
+        assert body["mcp_tools"] == -1, (
+            f"Expected -1 on list_tools failure, got {body['mcp_tools']}"
         )
-
-    @pytest.mark.asyncio
-    async def test_mcp_tools_returns_minus_one_on_complete_failure(self, monkeypatch):
-        """When all introspection methods fail, return -1 without raising."""
-
-        from src.mcp import server as server_mod
-
-        # Mock both get_tools and _tool_manager to fail
-        def mock_broken_mcp():
-            class BrokenMCP:
-                async def get_tools(self):
-                    raise RuntimeError("get_tools broken")
-
-            return BrokenMCP()
-
-        monkeypatch.setattr(server_mod, "mcp", mock_broken_mcp())
-
-        async with _mcp_http_client() as client:
-            resp = await client.get("/health")
-        body = resp.json()
-        # Should return -1 (introspection failed) and HTTP 200 (liveness never 503)
-        assert body["mcp_tools"] == -1
         assert resp.status_code == 200  # /health is pure liveness — always 200
 
 
 @pytest.mark.asyncio
-async def test_get_tools_failure_falls_through_to_private_api(monkeypatch):
-    """When mcp.get_tools() raises, _tool_manager._tools fallback is used."""
+async def test_tool_count_reads_list_tools(monkeypatch):
+    """_get_mcp_tool_count returns the real list_tools() length (the v3 surface)."""
+    from src.mcp import health as health_mod
+    from src.mcp.server import mcp
+
+    # The public v3 accessor is the single source the helper reads.
+    real_count = len(await mcp.list_tools())
+    assert real_count > 0, "sanity: the server must own at least one tool"
+
+    count = await health_mod._get_mcp_tool_count()
+    assert count == real_count
+
+
+@pytest.mark.asyncio
+async def test_tool_count_returns_minus_one_when_list_tools_raises(monkeypatch):
+    """When list_tools() raises, _get_mcp_tool_count degrades to -1 (no raise)."""
     from src.mcp import health as health_mod
     from src.mcp.server import mcp
 
     async def boom():
         raise RuntimeError("FastMCP API unstable")
 
-    # Patch get_tools to raise; keep private _tool_manager intact
-    monkeypatch.setattr(mcp, "get_tools", boom, raising=False)
-
-    # Sanity: private API must exist for this test to be meaningful
-    assert hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools")
-    private_count = len(mcp._tool_manager._tools)
+    monkeypatch.setattr(mcp, "list_tools", boom, raising=False)
 
     count = await health_mod._get_mcp_tool_count()
-    assert count == private_count  # fallback executed, returned private count
+    assert count == -1  # graceful sentinel, helper never propagates the error

@@ -920,7 +920,7 @@ def test_t5_async_wrapper_literal_survives_embed_failure_style_override(
         # This test covers the SYNC body R4 path (embed failure with literal_rows
         # already populated -> serve literal-only). The ASYNC wrapper's conditional
         # pre-embed guard (the actual B2 bug location) is covered separately by the
-        # asyncio.run(.fn(...)) tests below (test_async_wrapper_*).
+        # asyncio.run((...)) tests below (test_async_wrapper_*).
         result = srv_mod._find_style_override(
             ".o_list_view",
             TEST_VERSION,
@@ -1052,8 +1052,8 @@ def test_t7_docstring_no_fabricated_score(clean_neo4j):
 
 # ===========================================================================
 # Async-wrapper coverage for the B2 conditional pre-embed (issue #255 review
-# MAJOR-2). These drive the FastMCP tool coroutine directly via `.fn` (repo
-# precedent: tests/test_mcp_anti_freeze.py) with `_get_embedder` forced to raise.
+# MAJOR-2). These call the tool functions directly (FastMCP v3: @mcp.tool
+# returns the original function unchanged) with `_get_embedder` forced to raise.
 # They are pure-unit (no DB/Neo4j): the blocking sync body is stubbed so we only
 # assert the wrapper's routing decision — literal tokens must NOT short-circuit
 # on the embed failure; NL queries MUST. A regression that re-introduces an
@@ -1062,7 +1062,7 @@ def test_t7_docstring_no_fabricated_score(clean_neo4j):
 
 
 async def test_async_wrapper_find_style_override_literal_skips_embed(monkeypatch):
-    """find_style_override.fn: literal token reaches the body even when embed fails.
+    """find_style_override: literal token reaches the body even when embed fails.
 
     Red-before-green for B2: if the wrapper pre-embedded unconditionally, the
     raising _get_embedder would return an early error and never reach the stub.
@@ -1083,7 +1083,7 @@ async def test_async_wrapper_find_style_override_literal_skips_embed(monkeypatch
 
     monkeypatch.setattr(srv, "_find_style_override", _stub)
 
-    out = await srv.find_style_override.fn(".o_list_view", "17.0")
+    out = await srv.find_style_override(".o_list_view", "17.0")
 
     assert captured.get("reached") is True, (
         "literal token must reach the sync body despite embedder outage (B2)"
@@ -1093,7 +1093,7 @@ async def test_async_wrapper_find_style_override_literal_skips_embed(monkeypatch
 
 
 async def test_async_wrapper_find_style_override_nl_short_circuits(monkeypatch):
-    """find_style_override.fn: NL query DOES short-circuit on embed failure.
+    """find_style_override: NL query DOES short-circuit on embed failure.
 
     Negative control proving the skip is literal-only, not a blanket bypass.
     """
@@ -1112,14 +1112,14 @@ async def test_async_wrapper_find_style_override_nl_short_circuits(monkeypatch):
 
     monkeypatch.setattr(srv, "_find_style_override", _stub)
 
-    out = await srv.find_style_override.fn("primary button color variable", "17.0")
+    out = await srv.find_style_override("primary button color variable", "17.0")
 
     assert reached["v"] is False, "NL query must short-circuit before the body"
     assert "embedder unavailable" in out
 
 
 async def test_async_wrapper_find_examples_literal_style_skips_embed(monkeypatch):
-    """find_examples.fn: literal style query reaches the body even when embed fails.
+    """find_examples: literal style query reaches the body even when embed fails.
 
     Red-before-green for the B2 BLOCKER (the original bug location).
     """
@@ -1139,7 +1139,7 @@ async def test_async_wrapper_find_examples_literal_style_skips_embed(monkeypatch
 
     monkeypatch.setattr(srv, "_find_examples", _stub)
 
-    out = await srv.find_examples.fn(
+    out = await srv.find_examples(
         ".o_list_view", "17.0", chunk_types=["css", "scss", "less"]
     )
 
@@ -1151,7 +1151,7 @@ async def test_async_wrapper_find_examples_literal_style_skips_embed(monkeypatch
 
 
 async def test_async_wrapper_find_examples_nl_embedder_down_uses_lexical(monkeypatch):
-    """find_examples.fn: NL query + embedder down -> lexical fallback (WI-9 / #264).
+    """find_examples: NL query + embedder down -> lexical fallback (WI-9 / #264).
 
     Contract updated by WI-9: an NL query with style chunk_types no longer
     short-circuits to hard-fail when the embedder is down.  Instead the async
@@ -1185,7 +1185,7 @@ async def test_async_wrapper_find_examples_nl_embedder_down_uses_lexical(monkeyp
 
     monkeypatch.setattr(srv, "_find_examples", _stub)
 
-    out = await srv.find_examples.fn(
+    out = await srv.find_examples(
         "primary button color", "17.0", chunk_types=["css", "scss", "less"]
     )
 
@@ -1204,10 +1204,10 @@ async def test_async_wrapper_find_examples_nl_embedder_down_uses_lexical(monkeyp
 async def test_async_wrapper_literal_e2e_db(clean_neo4j, pg_conn):
     """DB-backed async-wrapper e2e (PR #257 review #2).
 
-    The unit tests above stub the sync body (routing only). This drives the
-    FastMCP coroutine `.fn` through the real async -> asyncio.to_thread -> sync
-    body -> DB seam for BOTH tools and asserts literal rows come back, closing
-    the integration gap the reviewer flagged.
+    The unit tests above stub the sync body (routing only). This calls the tool
+    functions directly (FastMCP v3: directly callable) through the real async ->
+    asyncio.to_thread -> sync body -> DB seam for BOTH tools and asserts literal
+    rows come back, closing the integration gap the reviewer flagged.
     """
     from contextlib import contextmanager
     from unittest import mock
@@ -1257,8 +1257,8 @@ async def test_async_wrapper_literal_e2e_db(clean_neo4j, pg_conn):
     try:
         with mock.patch("src.mcp.server._checkout_pg", _yield_pg), \
              mock.patch("src.mcp.server._get_embedder", lambda: FakeEmbedder(dim=1024)):
-            out_so = await srv.find_style_override.fn(".o_list_view", TEST_VERSION)
-            out_fe = await srv.find_examples.fn(
+            out_so = await srv.find_style_override(".o_list_view", TEST_VERSION)
+            out_fe = await srv.find_examples(
                 ".o_list_view", TEST_VERSION, chunk_types=["css", "scss", "less"]
             )
     finally:
@@ -1268,11 +1268,11 @@ async def test_async_wrapper_literal_e2e_db(clean_neo4j, pg_conn):
         pg_conn.commit()
 
     assert "Found 0" not in out_so and "match: literal" in out_so, (
-        f"find_style_override.fn literal e2e failed: {out_so[:300]}"
+        f"find_style_override literal e2e failed: {out_so[:300]}"
     )
     assert "list.scss" in out_so
     assert "Found 0" not in out_fe and "match: literal" in out_fe, (
-        f"find_examples.fn literal e2e failed: {out_fe[:300]}"
+        f"find_examples literal e2e failed: {out_fe[:300]}"
     )
 
 

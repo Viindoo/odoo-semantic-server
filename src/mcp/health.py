@@ -204,29 +204,21 @@ async def _get_mcp_tool_count() -> int:
         int: Positive count of tools, or -1 if introspection failed.
 
     Approach:
-        1. Try public API mcp.get_tools() (async, FastMCP 2.3+).
-        2. Fallback to private _tool_manager._tools if public API unavailable or raises.
-        3. Return -1 and log warning if both methods fail.
+        1. Use the public async API mcp.list_tools() (FastMCP v3 — returns a list).
+        2. Return -1 and log a warning if introspection raises.
+
+    fastmcp v3 removed both the dict-returning get_tools() accessor and the
+    private _tool_manager._tools attribute used by the 2.x fallback; list_tools()
+    is the supported public surface (#324).
     """
     from src.mcp.server import mcp
 
-    # Try public API first (FastMCP 2.3+)
-    if hasattr(mcp, "get_tools") and callable(mcp.get_tools):
-        try:
-            tools_dict = await mcp.get_tools()
-            if isinstance(tools_dict, dict):
-                return len(tools_dict)
-        except Exception as e:
-            logger.warning(f"get_tools() call failed: {e}; falling back to private API")
-
-    # Fallback: private API (FastMCP internals)
     try:
-        if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
-            return len(mcp._tool_manager._tools)
+        tools = await mcp.list_tools()
+        return len(tools)
     except Exception as e:
-        logger.warning(f"Private API introspection failed: {e}")
+        logger.warning(f"list_tools() introspection failed: {e}")
 
-    logger.warning("No tool introspection method available (get_tools or _tool_manager)")
     return -1
 
 

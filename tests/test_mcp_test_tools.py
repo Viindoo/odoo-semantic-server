@@ -17,9 +17,12 @@ All tests use TEST_VERSION='99.0' + clean_neo4j fixture (see conftest.py).
 Tests that need pgvector use @pytest.mark.postgres + clean_pg_embeddings.
 Tests that only need Neo4j use @pytest.mark.neo4j.
 
-Import the underscore impls (_find_test_examples etc.), NOT the FastMCP-wrapped
-public tools (those are FunctionTool, not directly callable from tests).
+Import the underscore impls (_find_test_examples etc.) when testing internal
+logic. FastMCP v3 public names (server.find_test_examples etc.) are directly
+callable, but the underscore impls are more stable for unit isolation.
 """
+
+import asyncio
 
 import pytest
 
@@ -383,8 +386,8 @@ def test_tool_count_sync_passes_at_31():
     """
     from src.mcp.server import mcp
 
-    real_tools = len(mcp._tool_manager._tools)
-    real_resources = len(mcp._resource_manager._templates)
+    real_tools = len(asyncio.run(mcp.list_tools()))
+    real_resources = len(asyncio.run(mcp.list_resource_templates()))
 
     assert real_tools == 31, (
         f"Expected 31 tools after WI-4, got {real_tools}. "

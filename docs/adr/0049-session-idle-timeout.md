@@ -136,3 +136,26 @@ bypass) when ANY of the following holds:
    `create_base_app` is renamed or removed, do NOT chase the new private name —
    re-evaluate against whatever public kwarg/forwarding the new FastMCP version
    offers, and prefer the public path.
+
+## Addendum (2026-06-18, #324) — bumped to FastMCP v3, bypass continues
+
+We bumped `fastmcp>=2.3,<3.0` -> `>=3.2,<4.0` (resolved 3.4.2) to close 3
+Dependabot alerts. Revert trigger #2 (bump to v3) fired — but its precondition
+(*v3 forwards the kwarg*) did NOT hold: on fastmcp 3.4.2 `http_app()` /
+`create_streamable_http_app()` still carry no `session_idle_timeout` parameter,
+so **Option B (manual factory) continues** unchanged in shape.
+
+Two v3 API changes touched the factory body (NOT the architecture):
+
+1. **`mcp._deprecated_settings` was removed.** v3's `http_app()` reads
+   `json_response` / `stateless_http` / `debug` from the module-level
+   `fastmcp.settings` singleton (which also parses `FASTMCP_JSON_RESPONSE` /
+   `FASTMCP_STATELESS_HTTP`). `_build_streamable_http_app()` now reads from
+   `fastmcp.settings` to preserve FIX 2 / FIX C behaviour byte-for-byte.
+2. **All load-bearing internals survived** — `_mcp_server`, `_lifespan_manager`,
+   `_get_additional_http_routes`, `StreamableHTTPASGIApp`, `create_base_app`, and
+   `StreamableHTTPSessionManager(session_idle_timeout=...)` are all still present
+   and accept the same kwargs (verified by spike + the canary test).
+
+Revert trigger #2 stays armed: when a future fastmcp `http_app()` *does* forward
+`session_idle_timeout`, delete this factory and wire the public kwarg.

@@ -41,13 +41,19 @@ def _build_app(idle_timeout: float, *, stateless: bool = False):
     asserts below verify the invariants against the live FastMCP/MCP-SDK without
     a hand-mirrored copy that could silently drift.
 
-    ``stateless`` is forced on ``mcp._deprecated_settings.stateless_http`` for the
+    ``stateless`` is forced on ``fastmcp.settings.stateless_http`` for the
     duration of the build (restored after) so CI running with
     ``FASTMCP_STATELESS_HTTP=true`` set in the environment cannot flip a
     session-mode test into a false pass/fail — the idle-timeout invariants below
     only hold in session mode (stateless passes ``None``, asserted separately).
+
+    fastmcp v3 removed ``mcp._deprecated_settings``; ``stateless_http`` now lives
+    on the module-level ``fastmcp.settings`` singleton, which is exactly the
+    source ``_build_streamable_http_app`` reads (#324).
     """
-    settings = srv.mcp._deprecated_settings
+    import fastmcp
+
+    settings = fastmcp.settings
     saved = settings.stateless_http
     settings.stateless_http = stateless
     try:

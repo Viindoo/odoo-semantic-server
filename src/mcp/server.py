@@ -361,7 +361,18 @@ check_module_exists, validate_domain, validate_depends, validate_relation,
 resolve_orm_chain. If you need live records, this is the wrong server.
 """
 
-mcp = FastMCP("odoo-semantic", instructions=INSTRUCTIONS)
+# on_duplicate="replace": the tool-wrapper modules at the end of this file are
+# deliberately re-imported (sys.modules.pop + re-import) so their @mcp.tool
+# decorators re-run against the CURRENT `mcp` after any reload — that is how the
+# full tool surface survives importlib.reload / sys.modules.pop in ~15 tests
+# (see the "Tool wrapper modules" block + ADR/#H3). When the entry point is a
+# tool module itself, that module's body also executes a second time, so each
+# tool registers twice on the same `mcp`. fastmcp v2 replaced silently;
+# v3's default (on_duplicate=None, resolves to "warn") logs "Component already exists" on every
+# re-register. "replace" restores the v2 silent-override semantics this
+# re-import architecture relies on — same final tool count, no log noise. It is
+# NOT a log suppression: it declares the duplicate policy the design requires.
+mcp = FastMCP("odoo-semantic", instructions=INSTRUCTIONS, on_duplicate="replace")
 # Register 7 MCP resources (odoo:// URIs) — Pattern 8, Wave F.
 register_resources(mcp)
 # Register FastMCP-layer usage logging middleware so that on_call_tool has
@@ -3111,18 +3122,26 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
     lifespan with ``_lifespan_with_pg``, mounting the feedback sub-app, and
     running uvicorn.
 
-    FastMCP's ``mcp.http_app()`` / ``create_streamable_http_app()`` do NOT forward
-    ``session_idle_timeout`` to ``StreamableHTTPSessionManager`` (still
-    ``DON'T MERGE`` upstream while we pin fastmcp<3.0), so we reproduce that
-    factory here and add the one kwarg. The MCP SDK's manager DOES accept it.
+    FastMCP's ``mcp.http_app()`` / ``create_streamable_http_app()`` still do NOT
+    forward ``session_idle_timeout`` to ``StreamableHTTPSessionManager`` (verified
+    on fastmcp 3.4.2 — its ``http_app()`` signature carries no such kwarg), so we
+    reproduce that factory here and add the one kwarg. The MCP SDK's manager DOES
+    accept it.
 
     FRAGILE — depends on FastMCP private internals (``mcp._mcp_server``,
-    ``mcp._lifespan_manager()``, ``mcp._get_additional_http_routes()``,
-    ``mcp._deprecated_settings``) plus the public-but-undocumented
-    ``StreamableHTTPASGIApp`` / ``create_base_app``. The smoke test guards drift.
+    ``mcp._lifespan_manager()``, ``mcp._get_additional_http_routes()``) plus the
+    public-but-undocumented ``StreamableHTTPASGIApp`` / ``create_base_app``. The
+    smoke test guards drift.
+
+    fastmcp v3 removed ``mcp._deprecated_settings``; its ``http_app()`` now reads
+    ``json_response`` / ``stateless_http`` / ``debug`` from the module-level
+    ``fastmcp.settings`` singleton (which is also where ``FASTMCP_JSON_RESPONSE`` /
+    ``FASTMCP_STATELESS_HTTP`` env vars are parsed in), so we read from the same
+    source to preserve FIX 2 / FIX C behaviour exactly. See ADR-0049 addendum.
     """
     from contextlib import asynccontextmanager as _asynccontextmanager
 
+    import fastmcp as _fastmcp
     from fastmcp.server.http import (
         StreamableHTTPASGIApp as _StreamableHTTPASGIApp,
     )
@@ -3139,13 +3158,14 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
     # FIX 2: forward json_response / stateless from FastMCP's settings so an
     # operator who sets FASTMCP_JSON_RESPONSE / FASTMCP_STATELESS_HTTP gets the
     # same behaviour http_app() would have given them (both default False, so
-    # prod is unaffected). Read from the same source FastMCP.http_app() reads.
-    _settings = _mcp._deprecated_settings
-    _json_response = bool(_settings.json_response)
-    _stateless = bool(_settings.stateless_http)
+    # prod is unaffected). v3's http_app() reads these from the module-level
+    # fastmcp.settings singleton (which parses those env vars), so read the same.
+    _settings = _fastmcp.settings
+    _json_response = bool(getattr(_settings, "json_response", False))
+    _stateless = bool(getattr(_settings, "stateless_http", False))
     # FIX C: forward debug the same way FastMCP.http_app() does
-    # (debug=self._deprecated_settings.debug). getattr fallback keeps us safe if
-    # a future fastmcp drops the attr — create_base_app(debug=) is a public kwarg.
+    # (debug=fastmcp.settings.debug). getattr fallback keeps us safe if a future
+    # fastmcp drops the attr — create_base_app(debug=) is a public kwarg.
     _debug = bool(getattr(_settings, "debug", False))
     # The SDK rejects session_idle_timeout in stateless mode (no sessions to
     # reap). Pass None there so an operator opting into stateless mode does not

@@ -397,10 +397,11 @@ def test_set_active_version_sanity_read_timeout_returns_clean_string_and_counts_
     monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
 
     before = _metric_value("set_active_version")
-    # @offload wraps the sync body in an async def; .fn is that async wrapper, so
-    # drive it through a fresh event loop. The sanity read times out → the new
-    # except OrmQueryTimeout returns exc.user_message (a clean str).
-    result = _run(session_tools.set_active_version.fn("17.0"))
+    # @offload wraps the sync body in an async def (FastMCP v3: the tool name is
+    # directly callable as that coroutine); drive it through a fresh event loop.
+    # The sanity read times out → the new except OrmQueryTimeout returns
+    # exc.user_message (a clean str).
+    result = _run(session_tools.set_active_version("17.0"))
     after = _metric_value("set_active_version")
 
     # @offload returns the sync body's value; on the OrmQueryTimeout branch that
@@ -603,8 +604,8 @@ def test_lookup_core_api_version_resolution_tier3_timeout_caught_by_decorator(
     path FOR REAL through a decorated wrapper. Here version='auto' + no pin drives
     Tier-3 _latest_version() on the timing-out driver, INSIDE the sync body the
     decorator wraps; the wrapper must surface a clean string, not an escape.
-    Driven through ``.fn`` (the @offload_neo4j async wrapper) so the body-level
-    catch is the one under test.
+    Called directly (FastMCP v3: the tool name is the @offload_neo4j coroutine)
+    so the body-level catch is the one under test.
     """
     import src.mcp.server as srv
 
@@ -614,7 +615,7 @@ def test_lookup_core_api_version_resolution_tier3_timeout_caught_by_decorator(
     monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
 
     before = _metric_value("lookup_core_api")
-    result = _run(srv.lookup_core_api.fn(name="safe_eval", odoo_version="auto"))
+    result = _run(srv.lookup_core_api(name="safe_eval", odoo_version="auto"))
     after = _metric_value("lookup_core_api")
 
     text = result if isinstance(result, str) else result.content[0].text

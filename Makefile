@@ -48,7 +48,7 @@ install:
 # --- Dependency locking (issue #319) ---
 # pyproject.toml = khoảng version cho phép (intent); uv.lock = exact lock (committed,
 # nguồn sự thật để cài). Đổi deps -> `make lock` -> commit cả hai. CI chạy
-# `uv sync --frozen` nên sẽ FAIL nếu lock lệch pyproject.
+# `uv sync --locked` (+ `uv lock --check`) nên sẽ FAIL nếu lock lệch pyproject.
 
 lock:
 	$(UV) lock

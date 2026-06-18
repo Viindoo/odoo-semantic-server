@@ -37,7 +37,7 @@ def _call_set_active_version(*, persisted: bool, has_api_key: bool) -> str:
     with patch.object(srv, "_get_driver", return_value=MagicMock()), \
          patch("src.mcp.session.set_active_version_db", return_value=persisted), \
          patch.object(srv, "_http_request_has_api_key", return_value=has_api_key):
-        result = asyncio.run(srv.set_active_version.fn(odoo_version="17.0"))
+        result = asyncio.run(srv.set_active_version(odoo_version="17.0"))
     return result.content[0].text
 
 
@@ -46,7 +46,7 @@ def _call_set_active_profile(*, persisted: bool, has_api_key: bool) -> str:
     # profile_name=None skips the existence/authz checks → straight to persist.
     with patch("src.mcp.session.set_active_profile_db", return_value=persisted), \
          patch.object(srv, "_http_request_has_api_key", return_value=has_api_key):
-        result = asyncio.run(srv.set_active_profile.fn(profile_name=None))
+        result = asyncio.run(srv.set_active_profile(profile_name=None))
     return result.content[0].text
 
 

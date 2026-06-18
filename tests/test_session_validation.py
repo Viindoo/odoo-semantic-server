@@ -141,7 +141,7 @@ class TestSetActiveVersionValidation:
         import importlib
         server = importlib.import_module("src.mcp.server")
 
-        result = asyncio.run(server.set_active_version.fn(SV_NOT_INDEXED))
+        result = asyncio.run(server.set_active_version(SV_NOT_INDEXED))
         text = _extract_text(result)
 
         assert text.startswith("Error:"), (
@@ -173,7 +173,7 @@ class TestSetActiveVersionValidation:
                 v=NUMERIC_V,
             )
         try:
-            result = asyncio.run(server.set_active_version.fn(SV_NOT_INDEXED))
+            result = asyncio.run(server.set_active_version(SV_NOT_INDEXED))
             text = _extract_text(result)
         finally:
             with driver.session() as s:
@@ -201,7 +201,7 @@ class TestSetActiveVersionValidation:
         server = importlib.import_module("src.mcp.server")
 
         with patch("src.mcp.session.set_active_version_db") as mock_write:
-            result = asyncio.run(server.set_active_version.fn(SV_NOT_INDEXED))
+            result = asyncio.run(server.set_active_version(SV_NOT_INDEXED))
             text = _extract_text(result)
 
         assert text.startswith("Error:"), (
@@ -223,7 +223,7 @@ class TestSetActiveVersionValidation:
         server = importlib.import_module("src.mcp.server")
 
         with patch("src.mcp.session.set_active_version_db"):
-            result = asyncio.run(server.set_active_version.fn(SV_VERSION))
+            result = asyncio.run(server.set_active_version(SV_VERSION))
             text = _extract_text(result)
 
         assert not text.startswith("Error:"), (
@@ -259,7 +259,7 @@ class TestSetActiveProfileValidation:
 
         checkout = _make_empty_pg_checkout()
         with patch("src.mcp.server._checkout_pg", checkout):
-            result = asyncio.run(server.set_active_profile.fn("does_not_exist_sv"))
+            result = asyncio.run(server.set_active_profile("does_not_exist_sv"))
             text = _extract_text(result)
 
         assert text.startswith("Error:"), (
@@ -303,7 +303,7 @@ class TestSetActiveProfileValidation:
         # passes and the existence-branch listing is exercised.
         with patch("src.mcp.server._checkout_pg", _checkout_with_two_profiles), \
              patch("src.mcp.server._get_allowed_profiles", return_value=["odoo_17"]):
-            result = asyncio.run(server.set_active_profile.fn("odoo_17"))
+            result = asyncio.run(server.set_active_profile("odoo_17"))
             text = _extract_text(result)
 
         assert "standard_viindoo_17" not in text, (
@@ -320,7 +320,7 @@ class TestSetActiveProfileValidation:
 
         checkout = _make_empty_pg_checkout()
         with patch("src.mcp.server._checkout_pg", checkout):
-            result = asyncio.run(server.set_active_profile.fn("does_not_exist_sv"))
+            result = asyncio.run(server.set_active_profile("does_not_exist_sv"))
             text = _extract_text(result)
 
         assert "list_available_profiles" in text, (
@@ -348,7 +348,7 @@ class TestSetActiveProfileClear:
 
         # Patch set_active_profile_db to avoid real PG write.
         with patch("src.mcp.session.set_active_profile_db") as mock_db:
-            result = asyncio.run(server.set_active_profile.fn(None))
+            result = asyncio.run(server.set_active_profile(None))
             text = _extract_text(result)
 
         assert not text.startswith("Error:"), (

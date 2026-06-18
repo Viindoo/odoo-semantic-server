@@ -48,7 +48,10 @@ def _metric_value(tool: str) -> float:
 
 
 def _read(mcp, uri: str) -> str:
-    contents = asyncio.run(mcp._resource_manager.read_resource(uri))
+    contents = asyncio.run(mcp.read_resource(uri))
+    # fastmcp v3 read_resource returns a ResourceResult whose .contents holds the
+    # list of ResourceContent; the pre-v3 manager returned that list directly.
+    contents = contents.contents if hasattr(contents, "contents") else contents
     first = contents[0] if isinstance(contents, list | tuple) else contents
     return first.content if hasattr(first, "content") else str(first)
 

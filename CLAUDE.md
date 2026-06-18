@@ -64,7 +64,7 @@ TEST_VERSION = "99.0"               # data test, tránh đụng data thật
 ```
 
 - Unit tests không cần Docker; integration dùng testcontainers tự spin-up.
-- **FastMCP:** `@mcp.tool()` wrap thành `FunctionTool` (không callable trực tiếp) - test import `_resolve_model`/`_resolve_field`/`_resolve_method` (underscore), không import tên tool.
+- **FastMCP v3 (#324):** decorator default = function-mode → `@mcp.tool` trả HÀM GỐC (callable). Ưu tiên test import `_resolve_model`/`_resolve_field`/`_resolve_method` (underscore impl, ổn định). Gọi tool body: `server.X(...)` (KHÔNG `.fn` — `.fn` chỉ có trên `FunctionTool`). Lấy `FunctionTool` (cho `.output_schema`/`.parameters`/`.description`): `await mcp.get_tool("X")`. Đếm surface: `await mcp.list_tools()` / `list_resource_templates()`. v3 gỡ `_tool_manager`/`_resource_manager`/`_deprecated_settings` (đọc `json_response`/`stateless_http`/`debug` từ `fastmcp.settings`).
 - **Không suppress warnings** upstream (testcontainers / authlib) - fix root cause, không `filterwarnings`/`ignore`. Xem CONTRIBUTING.md.
 
 ## Indexer ops (chi tiết ở ADR)

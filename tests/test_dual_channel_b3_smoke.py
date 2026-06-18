@@ -141,9 +141,9 @@ def _assert_text_channel(result) -> str:
 # (a) describe_module — text-only (no structured_content), found + not-found.
 # (b) model_inspect / entity_lookup — text-only channel (by design, v0.6+).
 #
-# NOTE: @mcp.tool() wraps functions into FunctionTool objects (not directly
-# callable per CLAUDE.md §FastMCP). We call .fn to reach the underlying
-# Python function which returns the ToolResult we want to assert on.
+# NOTE: FastMCP v3 — @mcp.tool() returns the original function unchanged, so
+# module-level names (server.model_inspect, server.entity_lookup, ...) are
+# directly callable. No .fn indirection needed.
 # ---------------------------------------------------------------------------
 
 
@@ -152,7 +152,7 @@ def test_model_inspect_summary_text_channel(b3_db):
     import importlib
     server = importlib.import_module("src.mcp.server")
 
-    result = asyncio.run(server.model_inspect.fn(
+    result = asyncio.run(server.model_inspect(
         model="b3.order", method="summary", odoo_version=TEST_VERSION
     ))
     text = _assert_text_channel(result)
@@ -167,7 +167,7 @@ def test_entity_lookup_view_text_channel(b3_db):
     server = importlib.import_module("src.mcp.server")
 
     # entity_lookup is async (#227 — offloads blocking body off the event loop).
-    result = asyncio.run(server.entity_lookup.fn(
+    result = asyncio.run(server.entity_lookup(
         kind="view", xmlid="b3_sale.view_order_form", odoo_version=TEST_VERSION
     ))
     text = _assert_text_channel(result)
@@ -184,7 +184,7 @@ def test_describe_module_text_only_channel(b3_db):
     """
     from src.mcp.server import describe_module
 
-    result = asyncio.run(describe_module.fn("b3_sale", TEST_VERSION))
+    result = asyncio.run(describe_module("b3_sale", TEST_VERSION))
     text = _assert_text_channel(result)
     # Confirm the module name appears in the text channel.
     assert "b3_sale" in text
@@ -205,7 +205,7 @@ def test_describe_module_not_found_returns_clean_text(b3_db):
     """
     from src.mcp.server import describe_module
 
-    result = asyncio.run(describe_module.fn("nonexistent_module_xyz_b3", TEST_VERSION))
+    result = asyncio.run(describe_module("nonexistent_module_xyz_b3", TEST_VERSION))
     text = _assert_text_channel(result)
     assert "nonexistent_module_xyz_b3" in text, (
         f"Not-found text should contain the module name. Got: {text!r}"

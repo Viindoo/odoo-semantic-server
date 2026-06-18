@@ -438,7 +438,7 @@ def test_model_inspect_async_handler_returns_clean_string(monkeypatch):
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
 
     result = _run(
-        srv.model_inspect.fn(
+        srv.model_inspect(
             model="dense.model", method="views", odoo_version=TIMEOUT_TEST_VERSION,
         )
     )
@@ -453,7 +453,7 @@ def test_describe_module_async_handler_returns_clean_string(monkeypatch):
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
 
     result = _run(
-        srv.describe_module.fn(name="sale", odoo_version=TIMEOUT_TEST_VERSION)
+        srv.describe_module(name="sale", odoo_version=TIMEOUT_TEST_VERSION)
     )
     assert_clean_timeout_string(_tool_text(result))
 
@@ -466,7 +466,7 @@ def test_module_inspect_async_handler_returns_clean_string(monkeypatch):
     monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
 
     result = _run(
-        srv.module_inspect.fn(
+        srv.module_inspect(
             name="web", method="owl", odoo_version=TIMEOUT_TEST_VERSION,
         )
     )
@@ -482,7 +482,7 @@ def test_entity_lookup_view_async_handler_returns_clean_string(monkeypatch):
 
     before = _metric_value("entity_lookup")
     result = _run(
-        srv.entity_lookup.fn(
+        srv.entity_lookup(
             kind="view", xmlid="some.view_id", odoo_version=TIMEOUT_TEST_VERSION,
         )
     )

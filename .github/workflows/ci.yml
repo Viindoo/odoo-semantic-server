@@ -242,3 +242,31 @@ jobs:
 
       - name: Run public browser tests
         run: uv run pytest tests/browser/public/ -v -rs -m browser --tb=short
+
+  site-tests:
+    # Site unit tests (vitest) — tools/resources SSOT drift-guard
+    # (site/src/lib/__tests__/tools-data.test.ts). Fast (<1 min), no browser, no DB.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: site/pnpm-lock.yaml
+
+      - name: Install Astro dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: site
+
+      - name: Run site unit tests (vitest)
+        run: pnpm test
+        working-directory: site

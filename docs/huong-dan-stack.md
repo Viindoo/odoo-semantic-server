@@ -410,7 +410,7 @@ account.move (Odoo 17.0)
 
 ### Test Tools Mà Không Cần MCP Client
 
-`@mcp.tool()` trong FastMCP 2.x wraps function thành `FunctionTool` object — **không callable trực tiếp**. Business logic nằm trong hàm `_resolve_*` prefix; test import hàm đó:
+Business logic nằm trong hàm `_resolve_*` prefix; ưu tiên test import hàm đó (ổn định, không phụ thuộc decorator-mode của FastMCP):
 
 ```python
 # Đúng — import hàm business logic, không phải MCP wrapper:
@@ -421,18 +421,21 @@ def test_resolve_model(seeded_neo4j):
     assert "account.move" in result
 ```
 
-`resolve_model` (không có `_`) là `FunctionTool` — chỉ dùng được qua MCP protocol, không callable trong Python.
+**FastMCP v3 decorator-mode (#324):** mặc định v3 ở *function-mode* — `@mcp.tool` trả về **chính hàm gốc** (callable trực tiếp), KHÔNG còn là `FunctionTool` không-callable như v2. Vì vậy:
+- Gọi tool body trong test: `asyncio.run(server.model_inspect(...))` (KHÔNG `.fn(...)` — `.fn` chỉ tồn tại trên `FunctionTool`, không trên module-level name).
+- Lấy đối tượng `FunctionTool` (cho `.description` / `.parameters` / `.output_schema`): `asyncio.run(mcp.get_tool("model_inspect"))`. Đáng chú ý: `server.model_inspect` chính LÀ `get_tool("model_inspect").fn` (cùng object, cùng `@offload_neo4j` wrapper).
+- Đếm/liệt kê surface: `await mcp.list_tools()` / `await mcp.list_resource_templates()` (coroutine trả list). v3 đã gỡ `_tool_manager` / `_resource_manager` / `_deprecated_settings`.
 
 ### Khởi Động Server
 
 ```python
 if __name__ == "__main__":
-    # fastmcp >= 2.3: streamable-http transport
+    # fastmcp >= 3.2: streamable-http transport
     # Verify params: python -c "import fastmcp; help(fastmcp.FastMCP.run)"
     mcp.run(transport="streamable-http", host="0.0.0.0", port=8002, path="/mcp")
 ```
 
-**Pin version:** `fastmcp>=2.3,<3.0` — API thay đổi giữa 2.x và 3.x.
+**Pin version:** `fastmcp>=3.2,<4.0` — API thay đổi giữa các major; v3 gỡ `_tool_manager`/`_resource_manager`/`_deprecated_settings` và chuyển decorator sang function-mode (#324).
 
 ---
 
@@ -692,7 +695,7 @@ Web UI `POST /repos/{id}/clone` auto-clone SSH repos với FERNET-decrypted key.
 | `.single()` cho Field/Method query | Exception khi field định nghĩa ở nhiều module | Dùng `.data()` |
 | `wget` trong Neo4j healthcheck | Image neo4j:5.26.25 không có wget | Dùng `cypher-shell` |
 | `$VAR` trong YAML CMD-SHELL | Docker expand trước khi truyền shell | Dùng `$$VAR` |
-| Pin fastmcp version | API thay đổi giữa 2.x và 3.x | `fastmcp>=2.3,<3.0` |
+| Pin fastmcp version | API thay đổi giữa các major (v3 gỡ `_tool_manager`/`_deprecated_settings`, decorator function-mode) | `fastmcp>=3.2,<4.0` |
 | Tên folder cho Odoo version | Chỉ là quy ước viindoo-clone.sh | Dùng `git symbolic-ref --short HEAD` |
 | Upgrade authlib lên 1.7.0+ | 1.7.0 thêm `AuthlibDeprecationWarning` ở import time | Pin `authlib>=1.6.5,<1.7.0` |
 | tree-sitter-css parse fail | CSS/SCSS file không compile — fallback regex bỏ qua? | M9: tree-sitter-css ≥0.21 + regex fallback (xem `parser_css.py`), silent-skip nếu không install |
