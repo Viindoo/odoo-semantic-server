@@ -11,6 +11,7 @@ export const prerender = true;
 import BaseLayout from '../layouts/BaseLayout.astro';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
+import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
 
 const howToJsonLd = JSON.stringify({
   '@context': 'https://schema.org',
@@ -129,7 +130,7 @@ const vsCodeDefaultHref = `vscode:mcp/install?${encodeURIComponent(JSON.stringif
             <pre class="code-block" id="code-claude-plugin-step1"><code>claude plugin marketplace add Viindoo/claude-plugins --scope user</code></pre>
           </div>
 
-          <div class="step-label">Step 2 &mdash; Install the MCP plugin (25 tools + 7 resources)</div>
+          <div class="step-label">Step 2 &mdash; Install the MCP plugin ({TOOL_COUNT} tools + {RESOURCE_COUNT} resources)</div>
           <div class="code-wrap">
             <button class="copy-btn" data-target="code-claude-plugin-step2">Copy</button>
             <pre class="code-block" id="code-claude-plugin-step2"><code>claude plugin install odoo-semantic-mcp@viindoo-plugins --scope user</code></pre>

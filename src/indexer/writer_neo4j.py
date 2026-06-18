@@ -21,6 +21,8 @@ from .models import (
     ParseResult,
     PatternExample,
     StylesheetInfo,
+    TestHelperInfo,  # WI-1
+    TestParseResult,  # WI-1
     ViewParseResult,
 )
 
@@ -120,6 +122,28 @@ class Neo4jWriter:
                 " ON (n.file_path, n.line, n.rule, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:LintViolation)"
                 " ON (n.view_xmlid, n.odoo_version)",
+                # WI-1: test surface index layer (§2.7)
+                # CRITICAL-1 + Defect H: MERGE key now includes repo (5-part).
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestClass)"
+                " ON (n.name, n.module, n.file_path, n.repo, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestClass)"
+                " ON (n.name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestClass)"
+                " ON (n.module, n.repo, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestMethod)"
+                " ON (n.name, n.test_class, n.module, n.file_path, n.repo, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestMethod)"
+                " ON (n.test_class, n.module, n.repo, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestMethod)"
+                " ON (n.module, n.repo, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestHelper)"
+                " ON (n.name, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:TestHelper)"
+                " ON (n.name, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:JsTestSuite)"
+                " ON (n.file_path, n.module, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:JsTestSuite)"
+                " ON (n.module, n.odoo_version, n.framework)",
             ]:
                 session.run(stmt)
 
@@ -855,6 +879,431 @@ class Neo4jWriter:
             )
         return deleted
 
+    # --- WI-1: test surface index layer ----------------------------------------
+
+    def write_test_results(
+        self,
+        results: list[TestParseResult],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist TestClass + TestMethod nodes from one or more TestParseResult objects.
+
+        Also writes TestHelper nodes for framework bases (module='@framework')
+        that appear in result.test_helpers. Framework helpers do NOT get a
+        DEFINED_IN edge (MED-3).
+
+        profiles: the owning profile name array (ADR-0034 union-only). Empty list
+        used when caller doesn't supply (backward-compat for unit tests).
+        """
+        _profiles = profiles if profiles is not None else []
+        with self.driver.session() as session:
+            for result in results:
+                session.execute_write(_write_test_classes_batch, result, _profiles)
+                if result.test_helpers:
+                    session.execute_write(_write_test_helpers_batch, result.test_helpers, _profiles)
+
+    def write_js_test_results(
+        self,
+        suites: list,
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist JsTestSuite nodes from a list of JsTestSuiteInfo objects (WI-3).
+
+        Each suite produces one JsTestSuite node (file-grained, §4.4).
+        NO COVERS_MODEL edge is emitted (MED-1 contract: mock_models are test-doubles).
+
+        profiles: the owning profile name array (ADR-0034 union-only).
+        """
+        _profiles = profiles if profiles is not None else []
+        if not suites:
+            return
+        with self.driver.session() as session:
+            session.execute_write(_write_js_test_batch, suites, _profiles)
+
+    def write_framework_test_helpers(
+        self,
+        helpers: list[TestHelperInfo],
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist TestHelper nodes for framework bases (TransactionCase, HttpCase, etc.).
+
+        Called from the core indexing path (parser_odoo_core seeding, §4.5).
+        Framework helpers use module='@framework' (MED-3) and get NO DEFINED_IN edge.
+        """
+        _profiles = profiles if profiles is not None else []
+        if not helpers:
+            return
+        with self.driver.session() as session:
+            session.execute_write(_write_test_helpers_batch, helpers, _profiles)
+
+    def reconcile_test_inherits(self, odoo_version: str) -> int:
+        """MERGE missing INHERITS_TEST edges for all TestClass nodes at odoo_version.
+
+        Post-pass (like reconcile_same_name_inherits): runs VERSION-WIDE after all
+        repos for the version have been written. Resolves base class names to
+        TestHelper OR TestClass nodes, creating directed INHERITS_TEST edges.
+
+        Resolution priority: TestHelper first (framework bases), then TestClass.
+        Multi-base fan-out is correct (one TestClass can inherit N bases -> N edges).
+        Uses flat OPTIONAL MATCH, no VLP (ADR-0048).
+
+        Idempotent (MERGE). Safe in both incremental and full-reindex runs.
+        Returns count of edges created.
+        """
+        try:
+            with self.driver.session() as session:
+                row = session.run(
+                    """
+                    // For each TestClass, unwind its ordered base list and resolve
+                    // each base to a TestHelper or TestClass at the same version.
+                    // INHERITS_TEST fan-out is OK (K x D, not K^2).
+                    MATCH (tc:TestClass {odoo_version: $version})
+                    UNWIND tc.base_classes_ordered AS base_name
+                    // Resolve to TestHelper first (framework + addon helpers)
+                    OPTIONAL MATCH (h:TestHelper {name: base_name, odoo_version: $version})
+                    // If no TestHelper, resolve to a same-version TestClass
+                    OPTIONAL MATCH (bc:TestClass {name: base_name, odoo_version: $version})
+                    WHERE h IS NULL
+                    WITH tc, base_name,
+                         CASE WHEN h IS NOT NULL THEN h ELSE bc END AS target
+                    WHERE target IS NOT NULL
+                      AND NOT (tc)-[:INHERITS_TEST]->(target)
+                    MERGE (tc)-[:INHERITS_TEST]->(target)
+                    RETURN count(*) AS created
+                    """,
+                    version=odoo_version,
+                ).single()
+                created = row["created"] if row is not None else 0
+                if created > 0:
+                    _logger.info(
+                        "INHERITS_TEST reconciliation: created %d edge(s) for version %s",
+                        created, odoo_version,
+                    )
+                else:
+                    _logger.debug(
+                        "INHERITS_TEST reconciliation: no gaps found for version %s",
+                        odoo_version,
+                    )
+                return created
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "INHERITS_TEST reconciliation failed for version %s: %s — "
+                "indexer run continues; next run will retry",
+                odoo_version, exc,
+            )
+            return 0
+
+    def reconcile_test_coverage(self, odoo_version: str) -> int:
+        """MERGE COVERS_MODEL/COVERS_FIELD/COVERS_METHOD edges from TestMethod refs.
+
+        Post-pass (VERSION-WIDE, idempotent MERGE). Resolves model_refs/field_refs
+        to is_definition=true nodes only (ADR-0013, ADR-0048 K x D rule).
+        Gracefully skips unknown refs (no dangling edges, design §2.3).
+
+        COVERS_* edges carry a `via` property ('setup'|'assert'|'body') from
+        TestMethod.via, enabling tools to rank assert-coverage above setup-coverage.
+
+        Returns total count of edges created.
+        """
+        total = 0
+        try:
+            with self.driver.session() as session:
+                # COVERS_MODEL: from model_refs -> is_definition Model node
+                row_m = session.run(
+                    """
+                    MATCH (tm:TestMethod {odoo_version: $version})
+                    UNWIND tm.model_refs AS mref
+                    OPTIONAL MATCH (md:Model {name: mref, odoo_version: $version})
+                    WHERE md.is_definition = true
+                    WITH tm, md WHERE md IS NOT NULL
+                      AND NOT (tm)-[:COVERS_MODEL]->(md)
+                    MERGE (tm)-[r:COVERS_MODEL]->(md)
+                    ON CREATE SET r.via = coalesce(tm.via, 'body')
+                    RETURN count(r) AS created
+                    """,
+                    version=odoo_version,
+                ).single()
+                total += row_m["created"] if row_m is not None else 0
+
+                # COVERS_FIELD: from field_refs (attr names) -> Field nodes on definition model
+                # field_refs are simple attr names; we need the model to scope the lookup.
+                # We join via COVERS_MODEL to get the model context, then match Field by name.
+                row_f = session.run(
+                    """
+                    MATCH (tm:TestMethod {odoo_version: $version})-[:COVERS_MODEL]->(md:Model)
+                    WHERE md.is_definition = true
+                    UNWIND tm.field_refs AS fname
+                    OPTIONAL MATCH (fd:Field {name: fname, model: md.name, odoo_version: $version})
+                    WITH tm, fd WHERE fd IS NOT NULL
+                      AND NOT (tm)-[:COVERS_FIELD]->(fd)
+                    MERGE (tm)-[r:COVERS_FIELD]->(fd)
+                    ON CREATE SET r.via = coalesce(tm.via, 'body')
+                    RETURN count(r) AS created
+                    """,
+                    version=odoo_version,
+                ).single()
+                total += row_f["created"] if row_f is not None else 0
+
+                # COVERS_METHOD: from method_refs (method name strings) -> Method nodes on
+                # the is_definition model. Mirrors COVERS_FIELD: join via COVERS_MODEL to get
+                # the model context (method_refs are plain names, no model prefix), then match
+                # Method by (name, model) on the is_definition node only (ADR-0048 K×D rule).
+                # Graceful-skip when method_refs is empty or method name is not indexed.
+                row_m2 = session.run(
+                    """
+                    MATCH (tm:TestMethod {odoo_version: $version})-[:COVERS_MODEL]->(md:Model)
+                    WHERE md.is_definition = true
+                    UNWIND tm.method_refs AS mname
+                    OPTIONAL MATCH (meth:Method {name: mname, model: md.name,
+                                                 odoo_version: $version})
+                    WITH tm, meth WHERE meth IS NOT NULL
+                      AND NOT (tm)-[:COVERS_METHOD]->(meth)
+                    MERGE (tm)-[r:COVERS_METHOD]->(meth)
+                    ON CREATE SET r.via = coalesce(tm.via, 'body')
+                    RETURN count(r) AS created
+                    """,
+                    version=odoo_version,
+                ).single()
+                total += row_m2["created"] if row_m2 is not None else 0
+
+                if total > 0:
+                    _logger.info(
+                        "COVERS_* reconciliation: created %d edge(s) for version %s",
+                        total, odoo_version,
+                    )
+                else:
+                    _logger.debug(
+                        "COVERS_* reconciliation: no new edges for version %s",
+                        odoo_version,
+                    )
+                return total
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "COVERS_* reconciliation failed for version %s: %s — "
+                "indexer run continues; next run will retry",
+                odoo_version, exc,
+            )
+            return 0
+
+    def finalize_is_helper(self, odoo_version: str) -> int:
+        """Promote TestClass nodes to TestHelper when: subclassed AND defines_no_test_methods.
+
+        Post-pass (MISSED-1): is_helper is provisional at parse time (parser only
+        sets defines_no_test_methods). This pass finalizes it after INHERITS_TEST
+        edges exist, counting actual inbound edges from other TestClass nodes.
+
+        Also creates a TestHelper projection node for each promoted class so that
+        test_base_classes queries can find them consistently (the TestClass node
+        still exists; the TestHelper node is the canonical query target).
+
+        Idempotent (SET + MERGE). Returns count of TestClass nodes promoted.
+        """
+        try:
+            with self.driver.session() as session:
+                # Step 1: mark TestClass.is_helper=true where subclassed and no test methods
+                row = session.run(
+                    """
+                    MATCH (tc:TestClass {odoo_version: $version, defines_no_test_methods: true})
+                    WHERE COUNT { ()-[:INHERITS_TEST]->(tc) } > 0
+                    SET tc.is_helper = true
+                    RETURN count(tc) AS promoted
+                    """,
+                    version=odoo_version,
+                ).single()
+                promoted = row["promoted"] if row is not None else 0
+
+                if promoted > 0:
+                    # Step 2: ensure a TestHelper projection node exists for each promoted class
+                    session.run(
+                        """
+                        MATCH (tc:TestClass {odoo_version: $version, is_helper: true})
+                        MERGE (th:TestHelper {
+                            name: tc.name, module: tc.module, odoo_version: $version
+                        })
+                        ON CREATE SET th.origin = 'addon',
+                                      th.test_type = tc.test_type,
+                                      th.commit_allowed = tc.commit_allowed,
+                                      th.file_path = tc.file_path,
+                                      th.line = tc.line,
+                                      th.profile = coalesce(tc.profile, [])
+                        ON MATCH SET th.origin = 'addon',
+                                     th.test_type = tc.test_type,
+                                     th.profile = [
+                                         x IN coalesce(th.profile, [])
+                                         WHERE NOT x IN coalesce(tc.profile, [])
+                                     ] + coalesce(tc.profile, [])
+                        """,
+                        version=odoo_version,
+                    )
+                    _logger.info(
+                        "finalize_is_helper: promoted %d TestClass nodes to is_helper=true "
+                        "and created TestHelper projections for version %s",
+                        promoted, odoo_version,
+                    )
+                else:
+                    _logger.debug(
+                        "finalize_is_helper: no promotions needed for version %s",
+                        odoo_version,
+                    )
+                return promoted
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "finalize_is_helper failed for version %s: %s — "
+                "indexer run continues; next run will retry",
+                odoo_version, exc,
+            )
+            return 0
+
+    def gc_stale_test_nodes(
+        self,
+        odoo_version: str,
+        live_module_names: list[str],
+        live_file_paths: list[str] | None = None,
+        repo: str | None = None,
+        live_modules_for_file_gc: list[str] | None = None,
+    ) -> int:
+        """Delete stale TestClass/TestMethod/COVERS_* nodes (MISSED-2, Defect H fix).
+
+        Two prune granularities (M6):
+        1. MODULE-level: remove TestClass/TestMethod whose ``module`` is no longer
+           in ``live_module_names`` for this repo (a whole module renamed/removed).
+           Scoped by ``repo`` (Defect H): without repo-scoping a per-repo GC call
+           would delete nodes belonging to another repo at the same version whose
+           module names are not in this repo's live set.
+        2. FILE-level: when ``live_file_paths`` is supplied, remove TestClass/TestMethod
+           whose ``module`` IS in ``live_modules_for_file_gc`` but whose ``file_path``
+           is NOT live (i.e. a test file was deleted INSIDE a still-present module).
+           ``live_modules_for_file_gc`` MUST be only the modules actually re-parsed this
+           run (the changed-module subset on incremental) — NOT all live modules from
+           the registry (Defect I fix). Scoping to re-parsed modules only ensures that
+           unchanged modules whose test files were not re-emitted are never pruned.
+
+        Both prune queries are repo-scoped when ``repo`` is supplied (Defect H).
+        DETACH DELETE also drops the INHERITS_TEST / COVERS_* / BELONGS_TO_TEST edges.
+        Returns total count of deleted nodes.
+
+        Args:
+            odoo_version:              Odoo version label.
+            live_module_names:         Full set of live module names for this repo+version
+                                       (from the full pre-incremental registry scan).
+                                       Used for MODULE-level prune.
+            live_file_paths:           Repo-relative test file paths emitted this run.
+                                       None skips file-level prune.
+            repo:                      Repo dir basename (e.g. 'odoo_17.0'). Scopes
+                                       BOTH prune queries so cross-repo deletion cannot
+                                       happen (Defect H). None disables repo-scoping
+                                       (backwards compat for tests that pre-date repo).
+            live_modules_for_file_gc:  Subset of modules whose test files were actually
+                                       re-parsed this run (Defect I fix). The file-level
+                                       prune restricts to ONLY these modules so unchanged
+                                       modules are never candidates. Defaults to
+                                       live_module_names when None (safe for --full
+                                       reindex where ALL modules are re-parsed).
+        """
+        try:
+            with self.driver.session() as session:
+                if not live_module_names:
+                    return 0
+
+                # Repo-scope predicate (Defect H): added to BOTH prune queries.
+                # When repo is None (backwards compat) no repo filter is applied.
+                repo_filter = "AND tm.repo = $repo" if repo is not None else ""
+                repo_filter_tc = "AND tc.repo = $repo" if repo is not None else ""
+                extra_params: dict = {"repo": repo} if repo is not None else {}
+
+                # Defect I: file-level prune must scope to the re-parsed modules only,
+                # not ALL live modules. On --full, all modules are re-parsed so both
+                # sets are equal. On incremental, live_modules_for_file_gc is the
+                # changed-module subset; unchanged modules are excluded from file-prune.
+                _file_gc_modules = (
+                    live_modules_for_file_gc
+                    if live_modules_for_file_gc is not None
+                    else live_module_names
+                )
+
+                # 1. MODULE-level prune (whole module gone from this repo).
+                row_tm = session.run(
+                    f"""
+                    MATCH (tm:TestMethod {{odoo_version: $version}})
+                    WHERE NOT tm.module IN $live_modules
+                    {repo_filter}
+                    DETACH DELETE tm
+                    RETURN count(tm) AS deleted
+                    """,
+                    version=odoo_version,
+                    live_modules=live_module_names,
+                    **extra_params,
+                ).single()
+                deleted_tm = row_tm["deleted"] if row_tm is not None else 0
+
+                row_tc = session.run(
+                    f"""
+                    MATCH (tc:TestClass {{odoo_version: $version}})
+                    WHERE NOT tc.module IN $live_modules
+                    {repo_filter_tc}
+                    DETACH DELETE tc
+                    RETURN count(tc) AS deleted
+                    """,
+                    version=odoo_version,
+                    live_modules=live_module_names,
+                    **extra_params,
+                ).single()
+                deleted_tc = row_tc["deleted"] if row_tc is not None else 0
+
+                deleted_tm_file = 0
+                deleted_tc_file = 0
+                # 2. FILE-level prune (file deleted inside a re-parsed module).
+                # Scoped to _file_gc_modules (re-parsed subset) not all live modules
+                # so unchanged modules are never touched (Defect I fix).
+                if live_file_paths is not None:
+                    row_tmf = session.run(
+                        f"""
+                        MATCH (tm:TestMethod {{odoo_version: $version}})
+                        WHERE tm.module IN $file_gc_modules
+                          AND NOT tm.file_path IN $live_files
+                        {repo_filter}
+                        DETACH DELETE tm
+                        RETURN count(tm) AS deleted
+                        """,
+                        version=odoo_version,
+                        file_gc_modules=_file_gc_modules,
+                        live_files=live_file_paths,
+                        **extra_params,
+                    ).single()
+                    deleted_tm_file = row_tmf["deleted"] if row_tmf is not None else 0
+
+                    row_tcf = session.run(
+                        f"""
+                        MATCH (tc:TestClass {{odoo_version: $version}})
+                        WHERE tc.module IN $file_gc_modules
+                          AND NOT tc.file_path IN $live_files
+                        {repo_filter_tc}
+                        DETACH DELETE tc
+                        RETURN count(tc) AS deleted
+                        """,
+                        version=odoo_version,
+                        file_gc_modules=_file_gc_modules,
+                        live_files=live_file_paths,
+                        **extra_params,
+                    ).single()
+                    deleted_tc_file = row_tcf["deleted"] if row_tcf is not None else 0
+
+                total = deleted_tm + deleted_tc + deleted_tm_file + deleted_tc_file
+                if total > 0:
+                    _logger.info(
+                        "Test node GC: deleted %d TestMethod + %d TestClass (module-gone), "
+                        "%d TestMethod + %d TestClass (file-gone) for version %s",
+                        deleted_tm, deleted_tc, deleted_tm_file, deleted_tc_file,
+                        odoo_version,
+                    )
+                return total
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "Test node GC failed for version %s: %s — skipping",
+                odoo_version, exc,
+            )
+            return 0
+
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,
     ) -> None:
@@ -890,8 +1339,8 @@ class Neo4jWriter:
 # (Phase 7.5 codemod). The child modules import _profile_union_set lazily
 # (function-local) so each is independently cold-importable without a cycle.
 # ---------------------------------------------------------------------------
-from .writer_neo4j_orm import _write_parse_result  # noqa: E402
-from .writer_neo4j_spec import (  # noqa: E402
+from .writer_neo4j_orm import _write_parse_result  # noqa: E402,I001
+from .writer_neo4j_spec import (  # noqa: E402,I001
     _write_cli_commands_batch,
     _write_cli_flag_replacements,
     _write_cli_flags_batch,
@@ -901,8 +1350,221 @@ from .writer_neo4j_spec import (  # noqa: E402
     _write_pattern_examples_batch,
     _write_replaced_by_edges,
 )
-from .writer_neo4j_ui import (  # noqa: E402
+from .writer_neo4j_ui import (  # noqa: E402,I001
     _write_js_graph_result,
     _write_stylesheets_batch,
     _write_view_parse_result,
 )
+
+
+# ---------------------------------------------------------------------------
+# WI-1: test surface write helpers (module-level, called via execute_write)
+# ---------------------------------------------------------------------------
+
+def _write_test_classes_batch(tx, result: "TestParseResult", profiles: list[str]) -> None:
+    """Write TestClass + TestMethod nodes from one TestParseResult (one module).
+
+    MERGE key for TestClass: (name, module, file_path, repo, odoo_version) - CRITICAL-1.
+    MERGE key for TestMethod: (name, test_class, module, file_path, repo, odoo_version).
+    `repo` is included in the MERGE key (Defect H fix): two repos at the same version can
+    both define a class with the same (name, module, file_path) — e.g. odoo/sale and
+    enterprise/sale both having tests/common.py::TestSaleCommon. Without repo in the key
+    the second write would silently overwrite the first (cross-repo collision).
+    profile[] is union-only (ADR-0034, mirrors _profile_union_set pattern).
+    DEFINED_IN edge is created to the owning Module node (addon nodes only; skip
+    when module='@framework' - framework helpers go through _write_test_helpers_batch).
+    """
+    union_expr = _profile_union_set("tc")
+    union_expr_m = _profile_union_set("tm")
+    repo = result.module.repo  # repo dir basename, same value carried on Module nodes
+
+    for tc in result.test_classes:
+        # MERGE TestClass node (CRITICAL-1 + Defect H: 5-part key including repo)
+        tx.run(
+            f"""
+            MERGE (tc:TestClass {{
+                name: $name,
+                module: $module,
+                file_path: $file_path,
+                repo: $repo,
+                odoo_version: $ver
+            }})
+            SET tc.test_type = $test_type,
+                tc.base_classes_ordered = $base_classes_ordered,
+                tc.tagged = $tagged,
+                tc.commit_allowed = $commit_allowed,
+                tc.defines_no_test_methods = $defines_no_test_methods,
+                tc.is_helper = $is_helper,
+                tc.docstring = $docstring,
+                tc.line = $line,
+                tc.profile = {union_expr}
+            WITH tc
+            MATCH (m:Module {{name: $module, odoo_version: $ver}})
+            MERGE (tc)-[:DEFINED_IN]->(m)
+            """,
+            name=tc.name,
+            module=tc.module,
+            file_path=tc.file_path,
+            repo=repo,
+            ver=tc.odoo_version,
+            test_type=tc.test_type,
+            base_classes_ordered=tc.base_classes_ordered,
+            tagged=tc.tagged,
+            commit_allowed=tc.commit_allowed,
+            defines_no_test_methods=tc.defines_no_test_methods,
+            is_helper=tc.is_helper,
+            docstring=tc.docstring,
+            line=tc.line,
+            profiles=profiles,
+        )
+
+        # MERGE TestMethod nodes for this class
+        for meth in tc.methods:
+            tx.run(
+                f"""
+                MATCH (tc:TestClass {{
+                    name: $test_class,
+                    module: $module,
+                    file_path: $file_path,
+                    repo: $repo,
+                    odoo_version: $ver
+                }})
+                MERGE (tm:TestMethod {{
+                    name: $name,
+                    test_class: $test_class,
+                    module: $module,
+                    file_path: $file_path,
+                    repo: $repo,
+                    odoo_version: $ver
+                }})
+                SET tm.tagged = $tagged,
+                    tm.docstring = $docstring,
+                    tm.field_refs = $field_refs,
+                    tm.model_refs = $model_refs,
+                    tm.method_refs = $method_refs,
+                    tm.asserts_count = $asserts_count,
+                    tm.via = $via,
+                    tm.line = $line,
+                    tm.profile = {union_expr_m}
+                MERGE (tm)-[:BELONGS_TO_TEST]->(tc)
+                """,
+                name=meth.name,
+                test_class=tc.name,
+                module=tc.module,
+                file_path=tc.file_path,
+                repo=repo,
+                ver=tc.odoo_version,
+                tagged=meth.tagged,
+                docstring=meth.docstring,
+                field_refs=meth.field_refs,
+                model_refs=meth.model_refs,
+                method_refs=meth.method_refs,
+                asserts_count=meth.asserts_count,
+                via=meth.via,
+                line=meth.line,
+                profiles=profiles,
+            )
+
+
+def _write_test_helpers_batch(
+    tx, helpers: "list[TestHelperInfo]", profiles: list[str],
+) -> None:
+    """Write TestHelper nodes. Framework helpers (module='@framework') get no DEFINED_IN edge.
+
+    MERGE key: (name, module, odoo_version).
+    profile[] is union-only (ADR-0034).
+    """
+    union_expr = _profile_union_set("th")
+    for h in helpers:
+        if h.module == "@framework":
+            # Framework helper: no DEFINED_IN edge (MED-3)
+            tx.run(
+                f"""
+                MERGE (th:TestHelper {{name: $name, module: $module, odoo_version: $ver}})
+                SET th.origin = $origin,
+                    th.test_type = $test_type,
+                    th.setup_summary = $setup_summary,
+                    th.commit_allowed = $commit_allowed,
+                    th.file_path = $file_path,
+                    th.line = $line,
+                    th.profile = {union_expr}
+                """,
+                name=h.name, module=h.module, ver=h.odoo_version,
+                origin=h.origin, test_type=h.test_type,
+                setup_summary=h.setup_summary, commit_allowed=h.commit_allowed,
+                file_path=h.file_path, line=h.line, profiles=profiles,
+            )
+        else:
+            # Addon helper: create DEFINED_IN edge if Module exists
+            tx.run(
+                f"""
+                MERGE (th:TestHelper {{name: $name, module: $module, odoo_version: $ver}})
+                SET th.origin = $origin,
+                    th.test_type = $test_type,
+                    th.setup_summary = $setup_summary,
+                    th.commit_allowed = $commit_allowed,
+                    th.file_path = $file_path,
+                    th.line = $line,
+                    th.profile = {union_expr}
+                WITH th
+                MATCH (m:Module {{name: $module, odoo_version: $ver}})
+                MERGE (th)-[:DEFINED_IN]->(m)
+                """,
+                name=h.name, module=h.module, ver=h.odoo_version,
+                origin=h.origin, test_type=h.test_type,
+                setup_summary=h.setup_summary, commit_allowed=h.commit_allowed,
+                file_path=h.file_path, line=h.line, profiles=profiles,
+            )
+
+
+# ---------------------------------------------------------------------------
+# WI-3: JsTestSuite write helper (module-level, called via execute_write)
+# ---------------------------------------------------------------------------
+
+def _write_js_test_batch(
+    tx,
+    suites: "list",
+    profiles: list[str],
+) -> None:
+    """Write JsTestSuite nodes for a list of JS test files.
+
+    MERGE key: (file_path, module, odoo_version) - file-grained (one node per file).
+    profile[] is union-only (ADR-0034, mirrors _profile_union_set pattern).
+    DEFINED_IN edge is created to the owning Module node.
+
+    MED-1 contract: NO COVERS_MODEL edge is emitted here (mock_models are test-doubles,
+    not real Odoo models). The writer MUST NOT add COVERS_MODEL edges from JsTestSuite.
+    """
+    union_expr = _profile_union_set("js")
+    for suite in suites:
+        tx.run(
+            f"""
+            MERGE (js:JsTestSuite {{
+                file_path: $file_path,
+                module: $module,
+                odoo_version: $ver
+            }})
+            SET js.framework = $framework,
+                js.describe_blocks = $describe_blocks,
+                js.test_names = $test_names,
+                js.tags = $tags,
+                js.mounts = $mounts,
+                js.mock_models = $mock_models,
+                js.line = $line,
+                js.profile = {union_expr}
+            WITH js
+            MATCH (m:Module {{name: $module, odoo_version: $ver}})
+            MERGE (js)-[:DEFINED_IN]->(m)
+            """,
+            file_path=suite.file_path,
+            module=suite.module,
+            ver=suite.odoo_version,
+            framework=suite.framework,
+            describe_blocks=suite.describe_blocks,
+            test_names=suite.test_names,
+            tags=suite.tags,
+            mounts=suite.mounts,
+            mock_models=suite.mock_models,
+            line=suite.line,
+            profiles=profiles,
+        )

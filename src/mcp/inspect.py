@@ -16,7 +16,7 @@ _MODEL_METHODS = frozenset({
     "summary", "fields", "methods", "views", "field", "method", "extenders",
 })
 _MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qweb", "js",
-                              "dependencies"})
+                              "dependencies", "tests"})
 _ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern"})
 _PROFILE_METHODS = frozenset({"summary", "repos", "modules"})
 
@@ -313,8 +313,97 @@ def _module_inspect(
         # B2: transitive DEPENDS_ON closure + load order (ADR-0028 consolidation).
         return srv._module_dep_closure(name, odoo_version, profile_name)
 
+    if method == "tests":
+        # WI-4: list TestClass nodes defined in this module + flag integration modules.
+        return _list_test_classes_for_module(name, odoo_version, profile_name, api_key_id)
+
     # Unreachable — guard for exhaustiveness
     return _invalid_method_error("module_inspect", method, _MODULE_METHODS)  # pragma: no cover
+
+
+def _list_test_classes_for_module(
+    module: str,
+    odoo_version: str,
+    profile_name: str | None,
+    api_key_id: str,
+) -> str:
+    """List TestClass nodes defined in a module (WI-4 module_inspect method='tests').
+
+    Flags ``is_test_integration_module=True`` for addon-level ``test_*`` modules
+    (those whose primary purpose is testing, not shipping production code).
+    """
+    from src.mcp import server as srv
+    from src.mcp.hints import format_next_step
+    from src.mcp.orm import OrmQueryTimeout
+
+    # Detect if this is an integration test module (name starts with test_)
+    is_test_integration = module.startswith("test_")
+
+    # Open a single session covering both _resolve_version and the query — mirrors
+    # the pattern at _profile_summary (~L620) and _profile_modules (~L808).
+    # This ensures the session is always closed (no leaked pool connection).
+    with srv._get_driver().session() as session:
+        v = srv._resolve_version(odoo_version, session)
+        # OrmQueryTimeout is intentionally NOT caught here — it propagates to the
+        # @offload_neo4j-decorated module_inspect handler, which records the
+        # nonorm_query_timeout_total metric and returns the clean degraded string.
+        # Only genuine driver/unexpected errors fall back to rows=[] (graceful
+        # degradation so a one-off DB hiccup doesn't abort the whole tool output).
+        try:
+            rows = srv._data_bounded(
+                session,
+                f"""
+                MATCH (tc:TestClass {{module: $module, odoo_version: $v}})
+                WHERE {srv._scope_pred("tc")}
+                RETURN
+                    tc.name          AS name,
+                    tc.file_path     AS file_path,
+                    tc.test_type     AS test_type,
+                    tc.is_helper     AS is_helper,
+                    tc.commit_allowed AS commit_allowed,
+                    size([x IN tc.profile WHERE x = x]) AS profile_count
+                ORDER BY tc.file_path ASC, tc.name ASC
+                LIMIT 200
+                """,
+                f"module_inspect tests ({module})",
+                module=module,
+                v=v,
+                **srv._scope(profile_name),
+            )
+        except OrmQueryTimeout:
+            raise
+        except Exception:
+            rows = []
+
+    header = f"module_inspect(name='{module}', method='tests', odoo_version='{v}')"
+    lines = [header]
+
+    if is_test_integration:
+        lines.append("├─ is_test_integration_module: True (module name starts with test_)")
+
+    if not rows:
+        lines.append(f"├─ No test classes indexed for [{module}] at Odoo {v}.")
+    else:
+        lines.append(f"├─ Test classes: {len(rows)}")
+        for i, r in enumerate(rows[:10]):
+            conn = "└─" if i == len(rows) - 1 else "├─"
+            cls_name = r.get("name") or "?"
+            fp = r.get("file_path") or ""
+            tt = r.get("test_type") or "?"
+            helper_tag = " [helper]" if r.get("is_helper") else ""
+            lines.append(f"│  {conn} {cls_name}{helper_tag}  [{tt}]  {fp}")
+
+        if len(rows) > 10:
+            lines.append(f"│  ... +{len(rows) - 10} more test classes")
+
+    next_line = format_next_step([
+        f"test_class_inspect(name='<ClassName>', odoo_version='{v}')"
+        " to inspect one class",
+        f"test_coverage_audit(module='{module}', odoo_version='{v}')"
+        " for coverage gaps",
+    ])
+    lines.append(next_line)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -3045,7 +3045,7 @@ async def health_check(request: Request):
 # Readiness endpoint (WI-D) — cached DB-count readiness probe. Distinct from
 # /health liveness: /ready reports whether the index is populated and both DBs
 # are reachable, reading from the shared TTL cache so it never scans on the hot
-# path. Registered as an HTTP custom route (NOT an MCP tool — tool count is 25 after WI-4).
+# path. Registered as an HTTP custom route (NOT an MCP tool — tool count is 31 after WI-4).
 @mcp.custom_route("/ready", methods=["GET"])
 async def ready_check(request: Request):
     from src.mcp.health import ready_handler
@@ -3208,9 +3208,27 @@ for _tool_mod in (
     "src.mcp.tools.spec",            # Phase 4
     "src.mcp.tools.discovery",       # Phase 5
     "src.mcp.tools.guidance",        # A2 (split out of discovery)
+    "src.mcp.tools.test_tools",      # WI-4 test-surface tools (25->31)
 ):
     sys.modules.pop(_tool_mod, None)
-del _tool_mod
+    # H3 fix: popping the submodule from sys.modules is NOT enough — the parent
+    # package object (`src.mcp.tools`) RETAINS the submodule as an ATTRIBUTE, so a
+    # later `from src.mcp.tools import <mod>` binds that STALE attribute WITHOUT a
+    # fresh import (no @mcp.tool re-run -> tools registered on the dead `mcp`). This
+    # silently dropped the 6 WI-4 test tools (31->25) whenever a sibling test did
+    # `importlib.reload(src.mcp.server)` (e.g. test_nonorm_query_bounds), making
+    # test_tool_count_sync / test_entrypoint_tool_surface flaky under full
+    # collection. Deleting the package attribute forces the from-import below to do
+    # a real re-import against the current `mcp`. (The older modules masked the bug
+    # because earlier server.py imports happen to re-import them transitively.)
+    _pkg_name, _, _sub = _tool_mod.rpartition(".")
+    _pkg = sys.modules.get(_pkg_name)
+    if _pkg is not None and hasattr(_pkg, _sub):
+        try:
+            delattr(_pkg, _sub)
+        except AttributeError:
+            pass
+del _tool_mod, _pkg_name, _sub, _pkg
 
 from src.mcp.tools import discovery as _discovery_tools  # noqa: E402,F401
 from src.mcp.tools import guidance as _guidance_tools  # noqa: E402,F401
@@ -3219,6 +3237,7 @@ from src.mcp.tools import orm_tools as _orm_tools  # noqa: E402,F401
 from src.mcp.tools import session_tools as _session_tools  # noqa: E402,F401
 from src.mcp.tools import spec as _spec_tools  # noqa: E402,F401
 from src.mcp.tools import stylesheet as _stylesheet_tools  # noqa: E402,F401
+from src.mcp.tools import test_tools as _test_tools  # noqa: E402,F401 — WI-4 test-surface
 
 # Phase 5 / A2 re-exports: the two public discovery tools, plus the impl symbols
 # that tests import via src.mcp.server (directly, e.g. test_mcp_find_examples.py
@@ -3378,12 +3397,12 @@ def main() -> None:
     ``if __name__ == "__main__"`` block on purpose: running this file directly
     (``python -m src.mcp.server``) makes it ``__main__``, and the tool wrapper
     modules then re-import it under its real name ``src.mcp.server`` — creating a
-    SECOND FastMCP ``mcp`` instance that carries all 25 ``@mcp.tool`` registrations
+    SECOND FastMCP ``mcp`` instance that carries all 31 ``@mcp.tool`` registrations
     while ``__main__.mcp`` stays empty. The served app would then be built from the
     0-tool ``__main__`` instance (MCP ``tools/list`` returns 0). Keeping startup in
     ``main()`` and serving via ``python -m src.mcp`` (see ``src/mcp/__main__.py``)
     loads this module exactly once under its real name, so the served ``mcp`` is the
-    one that owns the 25 tools.
+    one that owns the 31 tools.
 
     Uses the module-global ``mcp`` — the instance the ``@mcp.tool`` decorators in
     ``src/mcp/tools/*`` registered against when this module was imported.
@@ -3598,10 +3617,10 @@ def main() -> None:
 if __name__ == "__main__":
     # Backward-compat: running `python -m src.mcp.server` makes THIS file
     # __main__, so the tool wrapper modules re-import src.mcp.server under its
-    # real name and register the 25 @mcp.tool decorators onto a SECOND FastMCP
+    # real name and register the 31 @mcp.tool decorators onto a SECOND FastMCP
     # instance, leaving __main__.mcp empty. Delegating to the real module's
     # main() serves the instance that actually owns the tools (the import below
-    # binds main from src.mcp.server #2, whose module-global mcp has 25 tools).
+    # binds main from src.mcp.server #2, whose module-global mcp has 31 tools).
     # The clean entrypoint `python -m src.mcp` (src/mcp/__main__.py) avoids the
     # double-instance entirely; this guard only keeps the old command working.
     from src.mcp.server import main as _main

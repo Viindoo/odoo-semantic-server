@@ -616,3 +616,16 @@ Reopen this issue if any of the following occur:
 - Amendment (#274) above — `RequiredOdooVersion` hard-require that closed the version race.
 - `odoo-mcp-client` `skills/_shared/concurrency-guard.md` — client-side SSOT for the
   explicit-per-call rule (version); profile-explicit rule is a tracked follow-up.
+
+---
+
+## Amendment (ADR-0051, 2026-06-18) — 6 additional RequiredOdooVersion tools (19 -> 26)
+
+ADR-0051 (test-surface index) added 6 new MCP tools, all carrying `RequiredOdooVersion`:
+`find_test_examples`, `tests_covering`, `test_class_inspect`, `test_base_classes`,
+`test_coverage_audit`, `js_test_inspect`.
+
+Total tools with `RequiredOdooVersion` is now **26 of 31**. The 5 exempt tools
+(`list_available_versions`, `list_available_profiles`, `set_active_version`,
+`set_active_profile`, `api_version_diff`) are unchanged. The concurrency-guard rule
+(explicit-per-call) extends unchanged to all 26 version-requiring tools.

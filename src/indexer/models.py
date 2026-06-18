@@ -2,6 +2,7 @@
 # src/indexer/models.py
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import ClassVar
 
 
 def to_repo_relative(abs_path: str | None, repo_root: Path | str | None) -> str | None:
@@ -451,3 +452,139 @@ class LintViolationInfo:
     odoo_version: str
     severity: str = "error"
     view_type: str = ""
+
+
+# --- Test surface index layer (WI-1) -----------------------------------------
+
+
+@dataclass
+class TestMethodInfo:
+    """A single test_* method (or setUp/setUpClass) extracted from a test class.
+
+    Composite MERGE key: (name, test_class, module, file_path, odoo_version) -
+    CRITICAL-1: file_path in key because same test class name may appear in
+    multiple files within the same module (e.g. sale.tests.common + sale.tests.test_common).
+
+    `via` on each field_ref tracks whether the ref came from 'setup', 'assert', or 'body'.
+    `asserts_count` is the number of self.assert*/assertEqual/assertIn/assertFalse etc. calls.
+    """
+    # pytest must NOT collect this dataclass as a test class (M5: its name starts
+    # with 'Test' + it has an __init__, triggering PytestCollectionWarning). The
+    # idiomatic opt-out is __test__ = False, fixing the warning at source (CLAUDE.md
+    # forbids filterwarnings suppression). ClassVar so it is not a dataclass field.
+    __test__: ClassVar[bool] = False
+
+    name: str
+    test_class: str               # owning class name (for MERGE key)
+    module: str
+    file_path: str                # repo-relative (ADR-0037)
+    odoo_version: str
+    tagged: list[str] = field(default_factory=list)
+    docstring: str | None = None
+    field_refs: list[str] = field(default_factory=list)
+    model_refs: list[str] = field(default_factory=list)
+    method_refs: list[str] = field(default_factory=list)
+    asserts_count: int = 0
+    via: str = "body"            # 'setup' | 'assert' | 'body' — for COVERS_* edge property
+    line: int | None = None
+    source_code: str | None = None
+
+
+@dataclass
+class TestClassInfo:
+    """A Python class inside a test file, regardless of base class.
+
+    EVERY ClassDef in a test file emits a node (HIGH-1): non-Case mixins
+    (MailCase, MockEmail, TestSaleCommonBase) get nodes + INHERITS_TEST edges too.
+
+    Composite MERGE key: (name, module, file_path, odoo_version) - CRITICAL-1.
+    `file_path` is in the key because two files in the same module may define
+    a class with the same name (proven: sale v17 has two TestSaleCommon).
+
+    `base_classes_ordered` preserves Python MRO declaration order (HIGH-1).
+    `TEST_BASE_CLASSES` classifies test_type; it never gates emission.
+    `defines_no_test_methods` is provisional; `is_helper` is finalized in the
+    reconcile pass after cross-file base resolution is complete (MISSED-1).
+    """
+    __test__: ClassVar[bool] = False  # M5: pytest must not collect this dataclass
+
+    name: str
+    module: str
+    file_path: str                # repo-relative (ADR-0037), part of MERGE key
+    odoo_version: str
+    # test_type ∈ 'transaction'|'savepoint'|'single_transaction'|'http'|'form'|'unittest'|'unknown'
+    test_type: str = "unknown"
+    base_classes_ordered: list[str] = field(default_factory=list)  # MRO order (HIGH-1)
+    tagged: list[str] = field(default_factory=list)  # raw incl '-tag' entries (MISSED)
+    commit_allowed: bool = False  # True only for @standalone (PP3)
+    defines_no_test_methods: bool = False  # provisional; is_helper finalized in reconcile
+    is_helper: bool = False
+    docstring: str | None = None
+    line: int | None = None
+    methods: list[TestMethodInfo] = field(default_factory=list)
+
+
+@dataclass
+class TestHelperInfo:
+    """A known reusable base class for tests.
+
+    Covers two origins:
+    - 'framework': built-in Odoo test bases (TransactionCase, HttpCase, etc.)
+      seeded from odoo/tests/common.py by parser_odoo_core. These get NO
+      DEFINED_IN edge and use module='@framework' (MED-3: avoids confusion with
+      the '__unresolved__' GC placeholder).
+    - 'addon': a TestClass promoted to TestHelper after reconcile (is_helper=True
+      on the TestClass + defines no test_* methods but is subclassed).
+
+    Composite MERGE key: (name, module, odoo_version).
+    """
+    __test__: ClassVar[bool] = False  # M5: pytest must not collect this dataclass
+
+    name: str
+    module: str                  # '@framework' for framework bases (MED-3)
+    odoo_version: str
+    origin: str = "addon"        # 'addon' | 'framework'
+    test_type: str = "unknown"
+    setup_summary: list[str] = field(default_factory=list)  # model names created in setUpClass
+    commit_allowed: bool = False
+    file_path: str | None = None
+    line: int | None = None
+
+
+@dataclass
+class JsTestSuiteInfo:
+    """A JavaScript test file (Hoot/QUnit/tour) — file-grained (not per-test).
+
+    `mock_models` captures defineModels()/_name assignments from hand-rolled
+    test-double models (MED-1: these are NOT real Odoo models; no COVERS_MODEL
+    edge is emitted for them). `mounts` captures resModel from mountView() calls.
+
+    Composite MERGE key: (file_path, module, odoo_version).
+    JS parsing is WI-3; this dataclass is present here so TestParseResult can
+    carry a js_suites list that WI-3 populates. WI-1 leaves extraction unimplemented.
+    """
+    file_path: str               # repo-relative (ADR-0037), part of MERGE key
+    module: str
+    odoo_version: str
+    framework: str = "unknown"  # 'hoot' | 'qunit' | 'tour' | 'unknown'
+    describe_blocks: list[str] = field(default_factory=list)
+    test_names: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    mounts: list[str] = field(default_factory=list)
+    mock_models: list[str] = field(default_factory=list)
+    line: int | None = None
+
+
+@dataclass
+class TestParseResult:
+    """Output of parser_test.parse_module() for a single addon module.
+
+    Carries all extracted test classes + helpers. JS suites are an empty-able
+    list here; WI-3 populates them after its parser runs.
+    """
+    __test__: ClassVar[bool] = False  # M5: pytest must not collect this dataclass
+
+    module: "ModuleInfo"         # forward ref OK — same file
+    test_classes: list[TestClassInfo] = field(default_factory=list)
+    test_helpers: list[TestHelperInfo] = field(default_factory=list)
+    js_suites: list[JsTestSuiteInfo] = field(default_factory=list)

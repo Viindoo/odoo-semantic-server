@@ -25,6 +25,14 @@ _repo_root = str(Path(__file__).resolve().parent.parent)
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
+# C4: never COLLECT the parser fixture tree as live test modules. The files under
+# tests/fixtures/test_src/**/ are REAL Odoo test sources used as parser INPUT
+# (loaded by path in tests/test_parser_test.py via FIXTURE_DIR); they `from odoo...
+# import` and would fail collection with ModuleNotFoundError, interrupting the whole
+# unit suite (collection precedes marker deselection). collect_ignore_glob is the
+# canonical pytest opt-out (relative to this conftest's dir).
+collect_ignore_glob = ["fixtures/*"]
+
 # Test-only bcrypt work factor. Production uses cost=12 (ADR-0011); the ~45
 # password-hashing tests don't need that strength, and a cost-12 hash is ~0.4s
 # each. Lower to 4 here so auth/MFA tests run fast. setdefault preserves an

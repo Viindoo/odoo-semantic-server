@@ -35,7 +35,7 @@ Venv ở `~/.venv/odoo-semantic-mcp` - không bao giờ tạo `.venv/` trong rep
 
 - **Pipeline một chiều:** `scanner → registry → resolver → parser → (writer_neo4j | embedder → writer_pgvector) → server`. Không cross-import ngang hàng (scanner không import parser; registry không import writer). Enforce bởi `tests/test_pipeline_import_discipline.py`.
 - **Neo4j C1 schema:** mỗi module một node Model riêng (không gộp theo tên); composite MERGE key cho Module/Model/Field/Method. `Model.is_definition` = ranking heuristic bậc 1, fallback `field_count DESC`. Same-name INHERITS = K×D edges extender→definition (writer W1 cần `tip.is_definition=true`), **không** K² mesh. → [`huong-dan-stack.md §Schema C1`](docs/huong-dan-stack.md#schema-c1), ADR-0013, ADR-0048.
-- **Tool surface:** 25 MCP tools + 7 resources. `tests/test_tool_count_sync.py` enforce; bump phải sync `pyproject.toml` + `site/src/lib/constants.ts` (SITE_VERSION/TOOL_COUNT/RESOURCE_COUNT).
+- **Tool surface:** 31 MCP tools + 9 resources. `tests/test_tool_count_sync.py` enforce; bump phải sync `pyproject.toml` + `site/src/lib/constants.ts` (SITE_VERSION/TOOL_COUNT/RESOURCE_COUNT).
 - **`is_admin` DB-sourced** qua `is_admin_session(request)` (`src/web_ui/auth.py`) - KHÔNG `request.session.get("is_admin")` (key đó không được set; đọc trả `False` âm thầm, ẩn data của admin). ADR-0011/0026.
 - **Multi-tenant fail-closed:** read-side luôn qua choke-point filter + RLS trên embeddings; KHÔNG có `tenant_id` trong Neo4j MERGE key. ADR-0034.
 

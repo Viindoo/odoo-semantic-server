@@ -1709,5 +1709,87 @@
     "gotchas": ["Odoo sets $variable-prefix to '' so Bootstrap --bs-* runtime custom properties are absent; var(--bs-primary) resolves to empty", "Use the un-prefixed tokens Odoo emits: --primary, --o-color-*, --gray-*", "A self-referential custom property (--x: var(--x, ...)) is a cycle that resolves to empty and flattens the theme"],
     "odoo_version_min": "16.0",
     "language": "js"
+  },
+  {
+    "pattern_id": "test-transaction-savepoint-v16plus",
+    "intent_keywords": ["test", "TransactionCase", "savepoint", "isolation", "rollback", "v16+"],
+    "file_ref": "addons/sale/tests/test_sale_order.py:17",
+    "snippet_text": "from odoo.addons.sale.tests.common import SaleCommon\n\nclass TestSaleOrder(SaleCommon):\n    def test_computes_auto_fill(self):\n        \"\"\"Tests protect behavior, not compute internals.\"\"\"\n        free_product = self.env['product.product'].create({\n            'name': 'Free product',\n            'list_price': 0.0,\n        })\n        order = self.env['sale.order'].create({\n            'partner_id': self.partner.id,\n        })\n        # Assert observable behavior (amount_total), NOT the compute method\n        self.assertEqual(order.amount_total, 0.0)",
+    "gotchas": ["NEVER cr.commit() in a test; isolation is via savepoint rollback — cr.commit() on a TransactionCase raises AssertionError", "assert BEHAVIOR + observable result (order.amount_total), NEVER the compute method internals (test_type='transaction' for v16+)", "SaleCommon setUpClass creates shared fixtures (partner, product, currency); tests inherit them via savepoint, not via re-create"],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-savepointcase-v8-v15",
+    "intent_keywords": ["test", "SavepointCase", "v8", "v15", "legacy", "rollback"],
+    "file_ref": "addons/account/tests/test_account_account.py:13",
+    "snippet_text": "from odoo.addons.account.tests.common import AccountTestInvoicingCommon\n\nclass TestAccountAccount(AccountTestInvoicingCommon):\n    def test_changing_account_company(self):\n        \"\"\"SavepointCase v8-v15 pattern: same savepoint isolation, different base.\"\"\"\n        move = self.env['account.move'].create({\n            'move_type': 'entry',\n            'date': '2019-01-01',\n        })\n        with self.assertRaises(UserError), self.cr.savepoint():\n            # Each test method gets a fresh savepoint; rollback on exit\n            self.company_data['default_account_revenue'].company_id = False",
+    "gotchas": ["v8-v15 uses SavepointCase base (not TransactionCase); v16+ merged both into TransactionCase", "cr.commit() forbidden in v8-v15 too; use cr.savepoint() context manager for nested rollback", "with self.cr.savepoint(): guards against transaction commit leaks in assertion blocks"],
+    "odoo_version_min": "8.0",
+    "odoo_version_max": "15.0",
+    "language": "python",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-computed-field",
+    "intent_keywords": ["test", "computed field", "@api.depends", "assert behavior", "not compute method"],
+    "file_ref": "addons/sale/tests/test_sale_order.py:23",
+    "snippet_text": "class TestSaleOrder(SaleCommon):\n    def test_amount_total_computes_from_lines(self):\n        \"\"\"Test the computed FIELD behavior, not the compute() method.\"\"\"\n        order = self.env['sale.order'].create({\n            'partner_id': self.partner.id,\n            'order_line': [\n                Command.create({\n                    'product_id': self.product.id,\n                    'product_qty': 2,\n                    'price_unit': 100,\n                }),\n            ],\n        })\n        # Assert the field value (observable behavior)\n        self.assertEqual(order.amount_total, 200.0)\n        # NOT: self.product._compute_amount_total()  <-- wrong, tests internals not behavior",
+    "gotchas": ["NEVER call the @api.depends compute method directly in tests; assert the FIELD VALUE instead", "Computed fields auto-recompute on access; asserting order.amount_total triggers the compute silently", "A test that re-implements the compute method's logic then compares to it proves nothing (tautology)"],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-access-rights",
+    "intent_keywords": ["test", "access rights", "AccessError", "with_user", "ir.model.access"],
+    "file_ref": "addons/project_todo/tests/test_access_rights.py:1",
+    "snippet_text": "from odoo.exceptions import AccessError\n\nclass TestTodoAccessRights(TransactionCase):\n    def test_demo_user_cannot_edit_admin_todo(self):\n        \"\"\"Test permission boundary via with_user().\"\"\"\n        admin_todo = self.env['project.todo'].create({\n            'name': 'Admin secret task',\n        })\n        with self.assertRaises(AccessError):\n            admin_todo.with_user(self.env.ref('base.user_demo')).write({\n                'name': 'Hacked by demo user',\n            })\n        # Confirm admin CAN write\n        admin_todo.write({'name': 'Updated by admin'})  # should pass",
+    "gotchas": ["with_user(user_record) switches the security context; ir.model.access + ir.rule are re-checked", "AccessError is raised at the RPC boundary (create/write/unlink/read) on the with_user() recordset", "Always test BOTH the deny case (with assertRaises) AND the allow case to prove the rule is specific"],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-multicompany-constraint",
+    "intent_keywords": ["test", "multicompany", "company_id", "with_company", "company_constraint"],
+    "file_ref": "addons/sale/tests/test_sale_order.py:75",
+    "snippet_text": "class TestSaleOrder(SaleCommon):\n    def test_multicompany_order_isolation(self):\n        \"\"\"Test company_id constraints via with_company().\"\"\"\n        company2 = self.env['res.company'].create({'name': 'Company 2'})\n        # Create order in company 1\n        order_c1 = self.env['sale.order'].create({\n            'partner_id': self.partner.id,\n            'company_id': self.env.company.id,\n        })\n        # Try to assign company 2 (should fail if constrained)\n        with self.assertRaises(ValidationError):\n            order_c1.company_id = company2\n        # Verify we can create order in company 2 separately\n        order_c2 = self.env['sale.order'].with_company(company2).create({\n            'partner_id': self.partner.id,\n        })\n        self.assertEqual(order_c2.company_id, company2)",
+    "gotchas": ["with_company(company_record) sets env.company context for the ORM call, not a field value", "Test BOTH the constraint violation AND a valid create in the alternate company to prove isolation", "Multi-company recordsets (search across companies) may bypass single-company constraints — use company_id filter explicitly"],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-httpcase-tour-qunit-v17",
+    "intent_keywords": ["test", "HttpCase", "tour", "QUnit", "browser_js", "v17"],
+    "file_ref": "addons/web/tests/test_click_everywhere.py:29",
+    "snippet_text": "import odoo.tests\n\nclass TestMenusAdmin(odoo.tests.HttpCase):\n    def test_01_click_everywhere_as_admin(self):\n        \"\"\"QUnit v17 tour test: browser-side JS validation.\"\"\"\n        menus = self.env['ir.ui.menu'].load_menus(False)\n        for app_id in menus['root']['children']:\n            with self.subTest(app=menus[app_id]['name']):\n                # Start Odoo in the browser, inject JS test\n                self.browser_js(\n                    \"/odoo\",\n                    # JavaScript code to run in browser\n                    \"odoo.loader.modules.get('@web/webclient/clickbot/clickbot_loader').startClickEverywhere('%s');\" % menus[app_id]['xmlid'],\n                    # Success assertion\n                    \"odoo.isReady === true\",\n                    login=\"admin\",\n                    timeout=1200,\n                    success_signal=\"clickbot test succeeded\"\n                )",
+    "gotchas": ["HttpCase extends TransactionCase; savepoint+rollback applies, cr.commit() FORBIDDEN", "browser_js(url, code, success_signal, ...) waits for success_signal to appear in the browser console", "QUnit tests (v17) use QUnit.test('title', ...); Hoot (v18+) uses describe/test/expect — patterns differ per version"],
+    "odoo_version_min": "16.0",
+    "odoo_version_max": "17.0",
+    "language": "python",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-httpcase-tour-hoot-v18",
+    "intent_keywords": ["test", "HttpCase", "tour", "Hoot", "describe", "test", "v18"],
+    "file_ref": "addons/web/tests/test_click_everywhere.py:49",
+    "snippet_text": "// Hoot v18+ test in static/tests/*.test.js file (loaded by HttpCase.start_tour)\nimport { describe, test, expect } from '@odoo/hoot';\nimport { click, fill, press } from '@odoo/hoot-dom';\n\ndescribe('Order confirmation flow', () => {\n    test('can confirm sale order and see invoice', async () => {\n        // Hoot provides async/await, dom utilities\n        await click('.o_sale_order button[name=action_confirm]');\n        expect('.o_invoice_tab').toHaveClass('active');\n    });\n});",
+    "gotchas": ["Hoot v18+ replaces QUnit with async/await + jest-style expect; test() not QUnit.test()", "describe/test blocks must be top-level in the file (no nested describe inside another describe)", "Hoot imports come from '@odoo/hoot' and '@odoo/hoot-dom' (typed); QUnit used querySelector+jQuery selectors"],
+    "odoo_version_min": "18.0",
+    "language": "js",
+    "category": "test"
+  },
+  {
+    "pattern_id": "test-form-onchange",
+    "intent_keywords": ["test", "Form", "onchange", "simulation", "server-side", "change"],
+    "file_ref": "addons/sale/tests/test_sale_order.py:56",
+    "snippet_text": "from odoo.tests import Form\n\nclass TestSaleOrder(SaleCommon):\n    def test_form_onchange_partner_updates_address(self):\n        \"\"\"Test server-side onchange via Form() simulation.\"\"\"\n        partner = self.env['res.partner'].create({\n            'name': 'ACME Corp',\n            'state_id': self.state.id,\n        })\n        # Form() simulates the form interface server-side\n        with Form(self.env['sale.order']) as so_form:\n            so_form.partner_id = partner\n            # onchange callbacks trigger on field assignment\n            so_form.save()  # commits the form\n        # Assert the computed/onchanged fields updated\n        self.assertEqual(so_form.record.partner_shipping_id, partner)",
+    "gotchas": ["Form(env['model']) does NOT create a record yet; it simulates the form editor", "Field assignment (so_form.partner_id = ...) triggers onchange callbacks in sequence (as in the UI)", "Explicit so_form.save() writes the record and returns the saved recordset; __exit__ also saves if pending"],
+    "odoo_version_min": "16.0",
+    "language": "python",
+    "category": "test"
   }
 ]

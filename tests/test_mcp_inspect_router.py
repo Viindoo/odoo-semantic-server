@@ -366,3 +366,151 @@ def test_model_inspect_missing_method_name_arg():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _list_test_classes_for_module — session-leak fix (Defect C) +
+# OrmQueryTimeout propagation fix (Defect K)
+#
+# These are pure unit tests: Neo4j access is monkeypatched entirely so they
+# run in the no-Docker fast lane.  Red-before-green: both tests failed
+# against the original code (session.__enter__() leak + bare except swallow).
+# ---------------------------------------------------------------------------
+
+
+def _make_data_bounded_timeout():
+    """Return a _data_bounded stub that always raises OrmQueryTimeout."""
+    from src.mcp.orm import OrmQueryTimeout
+
+    def _bounded_timeout(*a, **k):
+        raise OrmQueryTimeout(
+            "module_inspect tests timed out — narrow the query and retry."
+        )
+
+    return _bounded_timeout
+
+
+class TestListTestClassesSessionAndTimeout:
+    """Defect C + Defect K: session management and OrmQueryTimeout propagation."""
+
+    def test_orm_query_timeout_propagates_not_swallowed(self, monkeypatch):
+        """Defect K fix: OrmQueryTimeout from _data_bounded MUST propagate out.
+
+        Business rule: a tx-timeout on the TestClass query must reach the
+        @offload_neo4j handler so it emits nonorm_query_timeout_total and
+        returns the clean degraded body — NOT the misleading
+        'No test classes indexed' empty-result message.
+
+        Red-before-green: before the fix, the bare ``except Exception`` at
+        line ~365 swallowed OrmQueryTimeout and set rows=[], producing the
+        wrong 'No test classes indexed' string instead of propagating.
+        """
+        import src.mcp.server as srv
+        from src.mcp.orm import OrmQueryTimeout
+        from tests._timeout_harness import TIMEOUT_TEST_VERSION, _TxTimeoutDriver
+
+        # Patch driver so session().run() raises tx-timeout ClientError, which
+        # _data_bounded converts to OrmQueryTimeout.
+        monkeypatch.setattr(srv, "_get_driver", lambda: _TxTimeoutDriver())
+        # Short-circuit _resolve_version at Tier-1 (explicit version string)
+        # so it returns without touching the timing-out session.
+        monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+
+        from src.mcp.inspect import _list_test_classes_for_module
+
+        with pytest.raises(OrmQueryTimeout) as exc_info:
+            _list_test_classes_for_module(
+                "sale", TIMEOUT_TEST_VERSION, None, "test_api_key"
+            )
+
+        # The raised exception must carry a clean user message (no Cypher/internals).
+        from tests._timeout_harness import assert_clean_timeout_string
+        assert_clean_timeout_string(exc_info.value.user_message)
+
+    def test_empty_result_still_yields_no_test_classes_message(self, monkeypatch):
+        """Defect K fix: genuine empty results still produce friendly message.
+
+        Distinguish 'timeout' from 'no data': when the query succeeds but
+        returns zero rows the friendly 'No test classes indexed' message
+        must still appear (not an error string).
+        """
+        import src.mcp.server as srv
+        from tests._timeout_harness import TIMEOUT_TEST_VERSION
+
+        # Session context manager that does nothing on run (returns empty).
+        class _EmptySession:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def run(self, *a, **k):
+                return []
+
+        class _EmptyDriver:
+            def session(self, *a, **k):
+                return _EmptySession()
+
+        monkeypatch.setattr(srv, "_get_driver", lambda: _EmptyDriver())
+        monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+        # _data_bounded with an empty session returns []
+        monkeypatch.setattr(srv, "_data_bounded", lambda *a, **k: [])
+        monkeypatch.setattr(srv, "_scope", lambda p: {})
+        monkeypatch.setattr(srv, "_scope_pred", lambda alias: "true")
+
+        from src.mcp.inspect import _list_test_classes_for_module
+
+        result = _list_test_classes_for_module(
+            "sale", TIMEOUT_TEST_VERSION, None, "test_api_key"
+        )
+
+        assert "No test classes indexed" in result
+        assert "timed out" not in result.lower()
+        assert "Next:" in result
+
+    def test_single_session_used_for_resolve_and_query(self, monkeypatch):
+        """Defect C fix: _list_test_classes_for_module opens exactly ONE session.
+
+        Before the fix, a leaked session was opened via
+        ``driver.session().__enter__()`` for _resolve_version and a second
+        session via ``with driver.session() as session:`` for the query.
+        After the fix, both share the same ``with`` block — only one
+        ``driver.session()`` call is made.
+        """
+        import src.mcp.server as srv
+        from tests._timeout_harness import TIMEOUT_TEST_VERSION
+
+        session_open_count = []
+
+        class _CountingSession:
+            def __enter__(self):
+                session_open_count.append(1)
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def run(self, *a, **k):
+                return []
+
+        class _CountingDriver:
+            def session(self, *a, **k):
+                return _CountingSession()
+
+        monkeypatch.setattr(srv, "_get_driver", lambda: _CountingDriver())
+        monkeypatch.setattr(srv, "_resolve_version", lambda v, s: TIMEOUT_TEST_VERSION)
+        monkeypatch.setattr(srv, "_data_bounded", lambda *a, **k: [])
+        monkeypatch.setattr(srv, "_scope", lambda p: {})
+        monkeypatch.setattr(srv, "_scope_pred", lambda alias: "true")
+
+        from src.mcp.inspect import _list_test_classes_for_module
+
+        _list_test_classes_for_module(
+            "sale", TIMEOUT_TEST_VERSION, None, "test_api_key"
+        )
+
+        assert len(session_open_count) == 1, (
+            f"Expected exactly 1 session opened, got {len(session_open_count)}. "
+            "The pre-fix code opened 2 sessions (one leaked via __enter__(), "
+            "one via 'with' block). After the fix both share a single 'with' block."
+        )
+

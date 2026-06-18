@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** SSOT for the 25 MCP tools and 7 MCP resources.
+/** SSOT for the 31 MCP tools and 9 MCP resources.
  *
  *  Extracted from site/src/pages/index.astro (formerly inline arrays at lines
  *  14-39 and 251-280). Both index.astro (#tools section) and the /tools page
  *  import from here — one source, zero drift.
  *
- *  Note: count constants (TOOL_COUNT=25, RESOURCE_COUNT=7) live in
+ *  Note: count constants (TOOL_COUNT=31, RESOURCE_COUNT=9) live in
  *  site/src/lib/constants.ts (SSOT, enforced by tests/test_tool_count_sync.py).
  *  This module exports the *content* (name/desc/group), not the count. */
 
@@ -16,7 +16,8 @@ export type ToolGroup =
   | 'superset'
   | 'session'
   | 'stylesheet'
-  | 'orm';
+  | 'orm'
+  | 'testing';
 
 export interface Tool {
   /** Zero-padded two-digit ordinal, e.g. '01'. */
@@ -41,6 +42,7 @@ export const TOOL_GROUP_COLORS: Record<ToolGroup, string> = {
   session:    'bg-viindoo-info',
   stylesheet: 'bg-viindoo-secondary',
   orm:        'bg-viindoo-secondary-bright',
+  testing:    'bg-viindoo-warning',
 };
 
 /** Human-readable group labels with tool counts (for the legend). */
@@ -52,9 +54,10 @@ export const TOOL_GROUP_LABELS: Record<ToolGroup, string> = {
   session:    'Session (4)',
   stylesheet: 'Stylesheet (2)',
   orm:        'ORM (4)',
+  testing:    'Testing (6)',
 };
 
-/** 25 MCP tools — original 24 lifted from index.astro, +profile_inspect (ADR-0028 WI-4). */
+/** 31 MCP tools — original 24 lifted from index.astro, +profile_inspect (ADR-0028 WI-4), +6 testing tools (test-surface-index feature). */
 export const TOOLS: Tool[] = [
   { num: '01', name: 'find_examples',         desc: 'Pull real-world usage from indexed repos.',                                                               group: 'resolve' },
   { num: '02', name: 'impact_analysis',        desc: 'Measure blast radius of a field change.',                                                                group: 'resolve' },
@@ -81,9 +84,15 @@ export const TOOLS: Tool[] = [
   { num: '23', name: 'validate_depends',       desc: 'Validate @api.depends paths before runtime; flags depends-on-id.',                                       group: 'orm' },
   { num: '24', name: 'validate_relation',      desc: "Confirm a relational field's comodel matches the expected model.",                                       group: 'orm' },
   { num: '25', name: 'profile_inspect',        desc: 'Profile composition — ancestor chain, child profiles, repos, and module list for a profile.',           group: 'superset' },
+  { num: '26', name: 'find_test_examples',     desc: 'Find real test examples for a model, field, or pattern — returns test + JS chunks.',                    group: 'testing' },
+  { num: '27', name: 'tests_covering',         desc: 'Which tests cover a given model, field, or method in the indexed graph.',                               group: 'testing' },
+  { num: '28', name: 'test_class_inspect',     desc: 'Inspect a test class: base-class chain, setUp, what it covers, subclassed-by.',                        group: 'testing' },
+  { num: '29', name: 'test_base_classes',      desc: 'Which test base class to use (TransactionCase vs HttpCase vs ...) and the cursor/commit contract per version.', group: 'testing' },
+  { num: '30', name: 'test_coverage_audit',    desc: 'Fields and methods in a module with no static test coverage.',                                          group: 'testing' },
+  { num: '31', name: 'js_test_inspect',        desc: 'Frontend JS test suites (Hoot / QUnit / tour) defined in a module.',                                   group: 'testing' },
 ];
 
-/** 7 MCP resources — verbatim from README.md "MCP Resources" table + src/mcp/resources.py. */
+/** 9 MCP resources — verbatim from README.md "MCP Resources" table + src/mcp/resources.py. */
 export const RESOURCES: Resource[] = [
   { uri: 'odoo://{v}/model/{name}',                    desc: 'Snapshot of a model — fields, methods, inheritance, defining module.' },
   { uri: 'odoo://{v}/field/{model}/{field}',           desc: 'Field record — type, defaults, compute, related, overrides.' },
@@ -92,4 +101,6 @@ export const RESOURCES: Resource[] = [
   { uri: 'odoo://{v}/module/{name}',                   desc: 'Module manifest, depends, defined+extended models, view counts.' },
   { uri: 'odoo://{v}/pattern/{pattern_id}',            desc: 'Curated pattern snippet + gotchas for common Odoo coding patterns.' },
   { uri: 'odoo://{v}/stylesheet/{module}/{file_path}', desc: 'Raw CSS/SCSS source for stylesheet override analysis and branding.' },
+  { uri: 'odoo://{v}/test/{module}/{class_name}',      desc: 'Full test class tree — base chain, setUp, covered models, subclasses.' },
+  { uri: 'odoo://{v}/testcoverage/{model}',            desc: 'Static reference coverage for a model: which fields/methods have test hits.' },
 ];

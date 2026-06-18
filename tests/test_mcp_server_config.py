@@ -54,6 +54,11 @@ def test_get_driver_reads_neo4j_uri_from_config(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(server_mod, "_driver", None)
+    # Isolate config-reading from the Neo4j 5.x version check: the mocked driver
+    # returns a bare object() with no .session(), and the check would otherwise
+    # run whenever CI != "true" (env-dependent flake). Mirror the sibling test
+    # test_get_driver_env_overrides_config. monkeypatch restores it on teardown.
+    monkeypatch.setattr(server_mod, "_version_checked", True)
 
     server_mod._get_driver()
 

@@ -52,6 +52,13 @@ _TOOL_NAMES = [
     "validate_relation",
     # WI-4 profile introspection discriminator (ADR-0028/0029) — 25th tool.
     "profile_inspect",
+    # WI-4 test-surface tools (6 new tools, tools 26-31).
+    "find_test_examples",
+    "tests_covering",
+    "test_class_inspect",
+    "test_base_classes",
+    "test_coverage_audit",
+    "js_test_inspect",
 ]
 
 # Odoo-content query tools that MUST contain ≥1 Vietnamese diacritic in their
@@ -86,6 +93,13 @@ _VI_TRIGGER_TOOL_NAMES = [
     "validate_relation",
     # WI-4 profile introspection query tool — TRIGGER keeps EN+VI for router accuracy.
     "profile_inspect",
+    # WI-4 test-surface tools — user-facing Odoo query tools; TRIGGER keeps EN+VI.
+    "find_test_examples",
+    "tests_covering",
+    "test_class_inspect",
+    "test_base_classes",
+    "test_coverage_audit",
+    "js_test_inspect",
 ]
 
 _REQUIRED_BLOCKS = ("TRIGGER when:", "PREFER over:", "SKIP when:")
@@ -118,6 +132,13 @@ _VERSION_REQUIRED_TOOL_NAMES = [
     # tool boundary, so it must honour the same version-required + no-stale-auto
     # docstring convention as every other version-bearing tool (N7).
     "profile_inspect",
+    # WI-4 test-surface tools: all 6 use RequiredOdooVersion at the tool boundary.
+    "find_test_examples",
+    "tests_covering",
+    "test_class_inspect",
+    "test_base_classes",
+    "test_coverage_audit",
+    "js_test_inspect",
 ]
 
 # Bootstrap/session + two-version tools that must NOT require ``odoo_version``

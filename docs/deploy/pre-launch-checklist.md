@@ -84,11 +84,11 @@ Admin phải ký tên vào mọi mục bên dưới (ghi `[x]` + ngày + ghi ch�
 
 ---
 
-## 6. MCP Tool Sign-Off (All 25 Tools)
+## 6. MCP Tool Sign-Off (All 31 Tools)
 
 **Mỗi tool phải trả về kết quả có cấu trúc — không được empty hoặc error.**
 
-> **Tool count history:** 14 (M1–M5) → 21 (+ M9 W-OSM Wave 1) → 28 (+ M10.5/M11 Wave D+E) → **18 (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline)** → **20 (v0.7 — +2 stylesheet tools per M10A)** → **24 (v0.8 — +4 ORM-validation tools per M10.5 Phase 2)** → **25 (v0.9 — +1 `profile_inspect` per ADR-0028 Wave 2 WI-4)**. See [ADR-0023](../adr/0023-tool-output-completeness.md) + [ADR-0028](../adr/0028-discriminator-consolidation.md) + [ADR-0029](../adr/0029-implicit-session-context.md).
+> **Tool count history:** 14 (M1–M5) → 21 (+ M9 W-OSM Wave 1) → 28 (+ M10.5/M11 Wave D+E) → **18 (v0.6 — 10 deprecated flat tools removed per ADR-0028 timeline)** → **20 (v0.7 — +2 stylesheet tools per M10A)** → **24 (v0.8 — +4 ORM-validation tools per M10.5 Phase 2)** → **25 (v0.9 — +1 `profile_inspect` per ADR-0028 Wave 2 WI-4)** → **31 (v0.15.0 — +6 test-surface tools per ADR-0051)**. See [ADR-0023](../adr/0023-tool-output-completeness.md) + [ADR-0028](../adr/0028-discriminator-consolidation.md) + [ADR-0029](../adr/0029-implicit-session-context.md) + [ADR-0051](../adr/0051-test-surface-index.md).
 >
 > **v0.6 note:** `resolve_model`, `resolve_field`, `resolve_method`, `resolve_view`, `list_fields`, `list_methods`, `list_views`, `list_owl_components`, `list_qweb_templates`, `list_js_patches` (10 flat tools) were removed. Verify via the 3 superset tools (`model_inspect` / `module_inspect` / `entity_lookup`) and the 4 ORM-validation tools (`resolve_orm_chain` / `validate_domain` / `validate_depends` / `validate_relation`) instead.
 
@@ -121,8 +121,14 @@ Chạy từ Claude Code với key `osm_xxxx...` đã cấu hình:
 | 23 | `validate_depends` | `validate_depends("sale.order", "_compute_amount_total", "17.0")` | Validates each `@api.depends` path; flags depends-on-`id`; era1 note for v8/v9 | `[x]` 2026-06-11 — Verified post ADR-0048 deploy: `@api.depends` path validation correct (`_compute_amounts` all deps valid; missing-method handled gracefully). |
 | 24 | `validate_relation` | `validate_relation("sale.order", "partner_id", "res.partner", "17.0")` | Asserts field is relational with comodel matching `res.partner`; reports actual comodel on mismatch | `[x]` 2026-06-11 — Verified post ADR-0048 deploy: match (`partner_id`→`res.partner`) and mismatch cases both return correctly with no hang. |
 | 25 | `profile_inspect` | `profile_inspect(name="<PROFILE>", method="summary", odoo_version="17.0")` | Profile-level discriminator: summary (ancestor chain + children + repos + module_count) \| repos \| modules | `[ ]` (ADR-0028 Wave 2 WI-4 #260; pending prod deploy) |
+| 26 | `find_test_examples` | `find_test_examples("compute tax based on partner country", "17.0")` | Semantic test-code search returning TestClass/TestMethod chunks with file path + score | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
+| 27 | `tests_covering` | `tests_covering(kind="model", name="sale.order", odoo_version="17.0")` | COVERS_MODEL/FIELD/METHOD edge traversal grouped by via type (assert/setup/body) | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
+| 28 | `test_class_inspect` | `test_class_inspect(name="TestSaleOrder", module="sale", odoo_version="17.0")` | Full class tree: inheritance chain, setUp methods, test methods, subclasses | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
+| 29 | `test_base_classes` | `test_base_classes(odoo_version="17.0")` | Framework base-class menu + cr.commit() FORBIDDEN contract (PP3) | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
+| 30 | `test_coverage_audit` | `test_coverage_audit(module="sale", odoo_version="17.0")` | Fields/methods with zero COVERS_* coverage + % coverage stats + static-mention caveat | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
+| 31 | `js_test_inspect` | `js_test_inspect(module="web", odoo_version="17.0")` | Hoot/QUnit/tour map per module: file path, framework, test titles, tags, mock_models | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
 
-**Sign-off summary (current as of PR #159, 2026-05-21):** 9/10 M1-M5 core tools PASS + tool #3 pending re-verify after full reindex (WI-2 name_get fix) + 1 PARTIAL (#8 suggest_pattern operational gap, #4 api_version_diff v16 gap). Tools #11-14 (superset discriminator, M11 Wave D), #15-18 (session tools, M11 Wave E), #19-20 (stylesheet, M10A v0.7) all pending prod deploy + smoke. Tools #21-24 (ORM validation, M10.5 Phase 2 v0.8) verified 2026-06-11 — see table rows above. **For admin:** use `model_inspect`/`module_inspect`/`entity_lookup` (tools 12-14) to verify entity enumeration — the 10 flat tools (`resolve_model`, `list_fields`, etc.) were removed in v0.6 per ADR-0028.
+**Sign-off summary (current as of PR #159, 2026-05-21):** 9/10 M1-M5 core tools PASS + tool #3 pending re-verify after full reindex (WI-2 name_get fix) + 1 PARTIAL (#8 suggest_pattern operational gap, #4 api_version_diff v16 gap). Tools #11-14 (superset discriminator, M11 Wave D), #15-18 (session tools, M11 Wave E), #19-20 (stylesheet, M10A v0.7) all pending prod deploy + smoke. Tools #21-24 (ORM validation, M10.5 Phase 2 v0.8) verified 2026-06-11 — see table rows above. Tools #26-31 (test surface, ADR-0051 v0.15.0) pending prod smoke. **For admin:** use `model_inspect`/`module_inspect`/`entity_lookup` (tools 12-14) to verify entity enumeration — the 10 flat tools (`resolve_model`, `list_fields`, etc.) were removed in v0.6 per ADR-0028.
 
 > *Tools 7-11 need `index-core` run. Tool 8 needs `seed_patterns`. Tool 1 needs Ollama + re-index without `--no-embed`. Tools 21-24 need `index-repo --all --full` to populate `mth.depends` + `f.comodel_name`.*
 
@@ -150,11 +156,11 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 
 ---
 
-## 6.5. MCP Resources Sign-Off (M11 Wave F — 7 URI kinds)
+## 6.5. MCP Resources Sign-Off (M11 Wave F + ADR-0051 — 9 URI kinds)
 
 **Mỗi `odoo://` URI kind phải resolve và trả về nội dung đúng cấu trúc.**
 
-> **Resource surface:** 7 URI templates, all served from MCP Resources layer (ADR-0030). Bodies are cached (LRU 1000 entries / 300s TTL). Version sentinel `auto` resolves per-API-key session state (ADR-0029). Verify using an MCP client that supports `resources/read` (Claude Code via `/odoo-semantic-mcp:read-resource`, or direct MCP JSON-RPC).
+> **Resource surface:** 9 URI templates, all served from MCP Resources layer (ADR-0030; +2 test resources ADR-0051). Bodies are cached (LRU 1000 entries / 300s TTL). Version sentinel `auto` resolves per-API-key session state (ADR-0029). Verify using an MCP client that supports `resources/read` (Claude Code via `/odoo-semantic-mcp:read-resource`, or direct MCP JSON-RPC).
 
 | # | URI Kind | Example URI | Expected body | Sign-off |
 |---|----------|------------|---------------|----------|
@@ -165,6 +171,8 @@ Verify cross-vendor adapter files are accessible and persona skills are document
 | R5 | `module` | `odoo://17.0/module/sale` | Markdown tree: `sale (Odoo 17.0)` + Manifest + Defines/Extends models + Views + JS patches + Next: hint | `[ ]` (M11 Wave F) |
 | R6 | `pattern` | `odoo://17.0/pattern/<pattern_id>` | Markdown body: Language + File + Keywords + Snippet + Gotchas | `[ ]` (M11 Wave F) |
 | R7 | `stylesheet` | `odoo://17.0/stylesheet/web/static/src/scss/primary_variables.scss` | Raw SCSS source (MIME: `text/x-scss`) | `[ ]` (M11 Wave F) |
+| R8 | `test` | `odoo://17.0/test/sale/TestSaleOrder` | Markdown tree: test class header + inheritance chain + setUp methods + test methods list | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
+| R9 | `testcoverage` | `odoo://17.0/testcoverage/sale.order` | Markdown tree: coverage audit — which fields/methods have COVERS_* edges, % coverage, static-mention caveat | `[ ]` (ADR-0051 WI-4; pending prod smoke) |
 
 **Resource sign-off notes:** Version sentinel `odoo://auto/model/sale.order` must resolve to the API key's active version (not the first-caller's cached body — tenant-leakage bug fixed in F-FINAL). Cache eviction: clear with `python -m src.mcp.resources clear` or process restart.
 
@@ -288,7 +296,7 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 | Logrotate (§4) | admin | 2026-05-17 | Stanza 2 (WI-3 ship) OK; stanza 1 pre-existing followup #14 |
 | Backup & Recovery (§5) | admin | 2026-05-17 | Postgres backup verified (2.55GB bundle); Neo4j dump fails (followup #13); restore + offsite still pending |
 | MCP Tool Sign-Off tools 1-10 (§6) | admin | 2026-05-14 | All 10 M1-M5 core tools verified; tool 11 (describe_module) deferred to next session (followup #15); tools 12-18 (M11 Wave D+E) pending prod deploy; tools 19-20 (resolve_stylesheet, find_style_override — M10A v0.7.0) pending prod deploy |
-| MCP Resources Sign-Off (§6.5) | _pending_ | _N/A_ | 7 odoo:// URI kinds (M11 Wave F); pending prod deploy of this PR |
+| MCP Resources Sign-Off (§6.5) | _pending_ | _N/A_ | 9 odoo:// URI kinds (M11 Wave F + ADR-0051); R8/R9 test resources pending prod smoke |
 | Install Page (§7) | admin | 2026-05-14 | Install page + plugin marketplace verified |
 | Systemd Services (§8) | admin | 2026-05-17 | 3 services enabled + healthy; crash sim PR #119 verified auto-restart 5s |
 | Indexer Cron (§9) | _pending_ | _N/A_ | Cron not installed; defer to admin maintenance window (optional — backup timer covers nightly task) |
@@ -297,7 +305,7 @@ Admin điền vào bảng sau trước khi phân phát API key cho team:
 
 **Go-live status 2026-05-17 (PR #119 deploy):** 9 of 11 sections `[x]` + 2 partial (§5 backup non-prod restore optional, §9 indexer cron optional). **Deploy ready** for go-live (admin-invite signup model) per signoff table above.
 
-**25-tool sign-off (v0.9, as of PR #159 2026-05-21):** 9/10 M1-M5 core tools PASS (tool #3 `lookup_core_api` pending re-verify after full reindex for name_get status fix). Tools #11-25 pending prod deploy + smoke: #11 `describe_module` (M9 W-OSM Wave 1), #12-14 superset discriminator (M11 Wave D), #15-18 session tools (M11 Wave E), #19-20 stylesheet tools (M10A v0.7), #21-24 ORM-validation tools (M10.5 Phase 2 v0.8), #25 `profile_inspect` (ADR-0028 Wave 2 WI-4 #260). All code-complete + unit-tested.
+**31-tool sign-off (v0.15.0, as of 2026-06-18):** 9/10 M1-M5 core tools PASS (tool #3 `lookup_core_api` pending re-verify after full reindex for name_get status fix). Tools #11-25 pending prod deploy + smoke: #11 `describe_module` (M9 W-OSM Wave 1), #12-14 superset discriminator (M11 Wave D), #15-18 session tools (M11 Wave E), #19-20 stylesheet tools (M10A v0.7), #21-24 ORM-validation tools (M10.5 Phase 2 v0.8), #25 `profile_inspect` (ADR-0028 Wave 2 WI-4 #260). All code-complete + unit-tested. Tools #26-31 (test surface, ADR-0051, v0.15.0): `find_test_examples`, `tests_covering`, `test_class_inspect`, `test_base_classes`, `test_coverage_audit`, `js_test_inspect` — code-complete + unit-tested, pending prod smoke.
 
 ---
 

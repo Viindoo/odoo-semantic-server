@@ -53,7 +53,8 @@ def _read(mcp, uri: str) -> str:
     return first.content if hasattr(first, "content") else str(first)
 
 
-# The 6 non-model resources, each parametrized with:
+# The 8 non-model resources (6 original + 2 new WI-4 test resources), each
+# parametrized with:
 #   uri, the resources.py symbol to monkeypatch so the resolver times out,
 #   the metric tool-name the handler must record under (design §3.1).
 _RESOURCE_CASES = [
@@ -80,6 +81,19 @@ _RESOURCE_CASES = [
     pytest.param(
         "odoo://17.0/stylesheet/web/static/src/scss/foo.scss",
         "_render_stylesheet", "resolve_stylesheet", id="stylesheet",
+    ),
+    # WI-4 DEFECT J: _render_test_class and _render_testcoverage must pass
+    # _reraise_timeout=True so a transient OrmQueryTimeout propagates BEFORE
+    # the LRU put (no-poison contract), matching all 6 existing resource renderers.
+    # Red-before-fix: without _reraise_timeout=True the timeout body IS cached
+    # and the second read (after recovery) returns the stale error, not the real body.
+    pytest.param(
+        "odoo://17.0/test/sale/TestSaleOrder",
+        "_render_test_class", "test_class_inspect", id="test_class",
+    ),
+    pytest.param(
+        "odoo://17.0/testcoverage/sale.order",
+        "_render_testcoverage", "tests_covering", id="testcoverage",
     ),
 ]
 

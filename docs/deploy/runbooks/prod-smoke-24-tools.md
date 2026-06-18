@@ -1,12 +1,12 @@
-# Production Smoke Runbook — 15 MCP Tools + 7 Resources
+# Production Smoke Runbook — 21 MCP Tools + 9 Resources
 
-> **Note:** The `24` in this file's name is legacy — the total MCP tool count is now **25** (25th = `profile_inspect`, ADR-0028 Wave 2 WI-4 #260). The filename is retained intentionally to preserve existing links; this runbook covers tools #11-25.
+> **Note:** The `24` in this file's name is legacy — the total MCP tool count is now **31** (25th = `profile_inspect`, ADR-0028 Wave 2 WI-4 #260; 26th-31st = test-surface tools, ADR-0051 v0.15.0). The filename is retained intentionally to preserve existing links; this runbook covers tools #11-31.
 
-> **Operator-facing walkthrough for post-go-live smoke-test of 15 MCP tools (#11-25) and 7 Resources (R1-R7) that were code-complete + unit-tested but never smoke-tested end-to-end against the live production MCP endpoint. Estimated ~90-100 min/session.**
+> **Operator-facing walkthrough for post-go-live smoke-test of 21 MCP tools (#11-31) and 9 Resources (R1-R9) that were code-complete + unit-tested but never smoke-tested end-to-end against the live production MCP endpoint. Estimated ~120-140 min/session.**
 >
-> Covers: `describe_module`, 3 superset discriminators (`model_inspect`/`module_inspect`/`entity_lookup`), 4 session tools (`set_active_version`/`set_active_profile`/`list_available_versions`/`list_available_profiles`), 2 stylesheet tools (`resolve_stylesheet`/`find_style_override`), 4 ORM-validation tools (`resolve_orm_chain`/`validate_domain`/`validate_depends`/`validate_relation`), 1 profile discriminator (`profile_inspect`), and 7 URI resources (`odoo://...`).
+> Covers: `describe_module`, 3 superset discriminators (`model_inspect`/`module_inspect`/`entity_lookup`), 4 session tools (`set_active_version`/`set_active_profile`/`list_available_versions`/`list_available_profiles`), 2 stylesheet tools (`resolve_stylesheet`/`find_style_override`), 4 ORM-validation tools (`resolve_orm_chain`/`validate_domain`/`validate_depends`/`validate_relation`), 1 profile discriminator (`profile_inspect`), 6 test-surface tools (`find_test_examples`/`tests_covering`/`test_class_inspect`/`test_base_classes`/`test_coverage_audit`/`js_test_inspect`), and 9 URI resources (`odoo://...`).
 >
-> **References:** ADR-0023 (Tool Output Completeness), ADR-0028 (Superset Discriminator Consolidation), ADR-0029 (Implicit Session Context), ADR-0030 (MCP Resources URI Scheme).
+> **References:** ADR-0023 (Tool Output Completeness), ADR-0028 (Superset Discriminator Consolidation), ADR-0029 (Implicit Session Context), ADR-0030 (MCP Resources URI Scheme), ADR-0051 (Test Surface Index).
 
 ---
 
@@ -661,6 +661,12 @@ Operator fills in this table during the smoke session and attaches to session re
 | 23 | `validate_depends` | Tool | [ ] PASS / [ ] FAIL | | |
 | 24 | `validate_relation` | Tool | [ ] PASS / [ ] FAIL | | |
 | 25 | `profile_inspect` | Tool | [ ] PASS / [ ] FAIL | | |
+| 26 | `find_test_examples` | Tool | [ ] PASS / [ ] FAIL | | |
+| 27 | `tests_covering` | Tool | [ ] PASS / [ ] FAIL | | |
+| 28 | `test_class_inspect` | Tool | [ ] PASS / [ ] FAIL | | |
+| 29 | `test_base_classes` | Tool | [ ] PASS / [ ] FAIL | | |
+| 30 | `test_coverage_audit` | Tool | [ ] PASS / [ ] FAIL | | |
+| 31 | `js_test_inspect` | Tool | [ ] PASS / [ ] FAIL | | |
 | R1 | `odoo://.../model/<name>` | Resource | [ ] PASS / [ ] FAIL | | |
 | R2 | `odoo://.../field/<m>/<f>` | Resource | [ ] PASS / [ ] FAIL | | |
 | R3 | `odoo://.../method/<m>/<n>` | Resource | [ ] PASS / [ ] FAIL | | |
@@ -668,6 +674,8 @@ Operator fills in this table during the smoke session and attaches to session re
 | R5 | `odoo://.../module/<name>` | Resource | [ ] PASS / [ ] FAIL | | |
 | R6 | `odoo://.../pattern/<pid>` | Resource | [ ] PASS / [ ] FAIL | | |
 | R7 | `odoo://.../stylesheet/...` | Resource | [ ] PASS / [ ] FAIL | | |
+| R8 | `odoo://.../test/<mod>/<cls>` | Resource | [ ] PASS / [ ] FAIL | | |
+| R9 | `odoo://.../testcoverage/<model>` | Resource | [ ] PASS / [ ] FAIL | | |
 | **Re-smoke #3** | `lookup_core_api` (post-reindex) | Tool | [ ] PASS / [ ] PARTIAL | | |
 | **Re-smoke #8** | `suggest_pattern` (post-reindex) | Tool | [ ] PASS / [ ] PARTIAL | | |
 
@@ -694,6 +702,13 @@ Operator fills in this table during the smoke session and attaches to session re
 16. **Resources R1–R7** — after tools confirm data exists
 17. **Re-smoke #3** — `lookup_core_api("name_get", "17.0")` — post-reindex verification
 18. **Re-smoke #8** — `suggest_pattern("computed field")` — post-seed-patterns verification
+19. **Tool #29** — `test_base_classes("17.0")` — verify cr.commit() FORBIDDEN rule present (PP3 contract)
+20. **Tool #30** — `test_coverage_audit("sale", "17.0")` — coverage stats present (requires test indexer run)
+21. **Tool #27** — `tests_covering(kind="model", name="sale.order", "17.0")` — COVERS_* edges populated
+22. **Tool #28** — `test_class_inspect("TestSaleOrder", "sale", "17.0")` — class tree returned
+23. **Tool #26** — `find_test_examples("compute tax based on partner country", "17.0")` — semantic test search (requires embedder)
+24. **Tool #31** — `js_test_inspect("web", "17.0")` — JS test map returned (requires JS test indexer run)
+25. **Resources R8–R9** — after test tools confirm data exists
 
 ---
 
@@ -736,7 +751,7 @@ After completing the smoke session, document findings:
 
 ## Sign-off Summary
 
-**Total smoke items:** 25 tools + 7 resources = 32
+**Total smoke items:** 31 tools + 9 resources = 40
 **PASS:** <count>
 **FAIL:** <count>
 **PARTIAL:** <count>

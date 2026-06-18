@@ -71,6 +71,8 @@ GLOBAL_PROFILE: str = "__global__"
 VALID_CHUNK_TYPES: frozenset[str] = frozenset({
     "method", "field", "view", "qweb", "js_era1", "js_era2", "js_era3",
     "css", "scss", "less",
+    # WI-1: test surface chunk types (test_class + test_method by WI-1; js_test by WI-3)
+    "test_class", "test_method", "js_test",
 })
 
 # ---------------------------------------------------------------------------

@@ -188,16 +188,16 @@ def module_inspect(
     summary then views then OWL components — reducing round trips vs
     multiple separate module_inspect or describe_module calls.
     Also: "khám phá nội dung module X", "module X chứa những gì"
-    PREFER over: chaining describe_module + multiple module_inspect calls
-    when the discriminator method= captures the exact sub-view needed.
+    PREFER over: chaining describe_module + multiple module_inspect calls.
     SKIP when: you need only a summary — use describe_module directly.
 
     Args:
         name: Technical module name, e.g. 'sale', 'website_sale'.
-        method: One of summary | views | owl | qweb | js | dependencies.
+        method: One of summary | views | owl | qweb | js | dependencies | tests.
             'fields' and 'methods' return a guidance stub (model required).
-            'dependencies' returns the transitive DEPENDS_ON closure with repo
-            info and topological load order (B2, ADR-0028 consolidation).
+            'dependencies' returns transitive DEPENDS_ON closure with repo info
+            and topological load order (B2, ADR-0028 consolidation).
+            'tests' returns TestClass nodes in the module (ADR-0051).
         profile_name: Optional profile filter (inheritance-resolved via
             ancestor chain). Default None = all profiles.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).

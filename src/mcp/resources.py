@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """MCP Resources — stable ``odoo://`` URIs for Odoo entities (Pattern 8).
 
-This module registers 7 ``@mcp.resource`` template handlers on a FastMCP
+This module registers 9 ``@mcp.resource`` template handlers on a FastMCP
 instance.  Each URI maps deterministically to one Odoo entity (model, field,
-method, view, module, pattern, or stylesheet) so AI clients can bookmark,
-share, and re-fetch entities without re-running discovery tools.
+method, view, module, pattern, stylesheet, test class, or testcoverage) so AI
+clients can bookmark, share, and re-fetch entities without re-running discovery
+tools.
 
 URI scheme — ``odoo://{version}/{kind}/{path}``:
 
@@ -15,6 +16,8 @@ URI scheme — ``odoo://{version}/{kind}/{path}``:
   * ``odoo://{version}/view/{xmlid}``                — markdown (resolve_view tree)
   * ``odoo://{version}/pattern/{pattern_id}``        — markdown (suggest_pattern body)
   * ``odoo://{version}/stylesheet/{module}/{file_path*}`` — CSS/SCSS raw text
+  * ``odoo://{version}/test/{module}/{class_name}``  — markdown (test_class_inspect tree)
+  * ``odoo://{version}/testcoverage/{model}``        — markdown (tests_covering tree)
 
 The ``{version}`` segment accepts any of the 6 sentinel strings (``auto``,
 ``default``, ``latest``, ``version``, ``any``, ``""``) — these collapse to the
@@ -578,7 +581,7 @@ def _render_stylesheet(
 
 
 # ---------------------------------------------------------------------------
-# Public — register all 7 resources on a FastMCP instance
+# Public — register all 9 resources on a FastMCP instance
 # ---------------------------------------------------------------------------
 
 
@@ -648,7 +651,7 @@ async def _serve_resource_with_metric(
 ) -> str:
     """:func:`_serve_resource` + the ADR-0023/ADR-0050 resource-path timeout backstop.
 
-    The 7 ``odoo://`` resource handlers are otherwise byte-identical: offload the
+    The 9 ``odoo://`` resource handlers are otherwise byte-identical: offload the
     blocking resolve+cache+compute, and on a transient per-query timeout emit the
     non-ORM timeout metric exactly once and return the clean degraded body
     UNCACHED. The underlying renderers pass ``_reraise_timeout=True`` so the
@@ -678,8 +681,36 @@ async def _serve_resource_with_metric(
         return exc.user_message
 
 
+def _render_test_class(version: str, module: str, class_name: str) -> tuple[str, str]:
+    """Render ``odoo://{version}/test/{module}/{class_name}`` body (WI-4).
+
+    ``_reraise_timeout=True``: a transient OrmQueryTimeout propagates out of
+    ``get_or_compute`` BEFORE the cache put — never cached (no-poison, same as
+    the model/field/method renderers).  The test-class resource handler records
+    the metric once via ``_serve_resource_with_metric`` (no double-count).
+    """
+    from src.mcp.tools.test_tools import _test_class_inspect
+    v = _resolved_version_for(version)
+    text = _test_class_inspect(class_name, v, module=module, _driver=None, _reraise_timeout=True)
+    return text, MIME_MARKDOWN
+
+
+def _render_testcoverage(version: str, model: str) -> tuple[str, str]:
+    """Render ``odoo://{version}/testcoverage/{model}`` body (WI-4).
+
+    ``_reraise_timeout=True``: a transient OrmQueryTimeout propagates out of
+    ``get_or_compute`` BEFORE the cache put — never cached (no-poison, same as
+    the model/field/method renderers).  The testcoverage resource handler records
+    the metric once via ``_serve_resource_with_metric`` (no double-count).
+    """
+    from src.mcp.tools.test_tools import _tests_covering
+    v = _resolved_version_for(version)
+    text = _tests_covering(model, v, _driver=None, _reraise_timeout=True)
+    return text, MIME_MARKDOWN
+
+
 def register_resources(mcp_instance) -> None:
-    """Attach 7 ``@mcp.resource`` template handlers to *mcp_instance*.
+    """Attach 9 ``@mcp.resource`` template handlers to *mcp_instance* (WI-4: 7→9).
 
     Idempotency: calling this twice on the same FastMCP instance is a
     no-op for the second call — FastMCP raises on duplicate URIs, so we
@@ -852,4 +883,38 @@ def register_resources(mcp_instance) -> None:
             cache, version, "stylesheet", f"{module}/{file_path}",
             lambda resolved: _render_stylesheet(resolved, module, file_path),
             metric_tool="resolve_stylesheet",
+        )
+
+    # ---- test class (WI-4) -----------------------------------------------
+    @mcp_instance.resource(
+        "odoo://{version}/test/{module}/{class_name}",
+        mime_type=MIME_MARKDOWN,
+        description=(
+            "Markdown tree describing a test class or helper: base chain, "
+            "setUp fixtures, methods, and subclassed-by list."
+        ),
+    )
+    async def _test_class_resource(version: str, module: str, class_name: str) -> str:
+        # Tenant-scoped: test classes carry profile[] (ADR-0034).
+        return await _serve_resource_with_metric(
+            cache, version, "test", f"{module}/{class_name}",
+            lambda resolved: _render_test_class(resolved, module, class_name),
+            metric_tool="test_class_inspect",
+        )
+
+    # ---- testcoverage (WI-4) ---------------------------------------------
+    @mcp_instance.resource(
+        "odoo://{version}/testcoverage/{model}",
+        mime_type=MIME_MARKDOWN,
+        description=(
+            "Markdown tree listing tests that reference a model "
+            "(COVERS_* static reference edges, not runtime coverage)."
+        ),
+    )
+    async def _testcoverage_resource(version: str, model: str) -> str:
+        # Tenant-scoped: TestMethod nodes carry profile[].
+        return await _serve_resource_with_metric(
+            cache, version, "testcoverage", model,
+            lambda resolved: _render_testcoverage(resolved, model),
+            metric_tool="tests_covering",
         )
