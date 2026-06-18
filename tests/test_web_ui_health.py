@@ -7,6 +7,8 @@ accessible WITHOUT authentication. Required for uptime monitoring.
 
 import pytest
 
+pytestmark = pytest.mark.http
+
 
 @pytest.fixture
 def web_app():

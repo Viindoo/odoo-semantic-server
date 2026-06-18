@@ -21,6 +21,8 @@ from unittest import mock
 import httpx
 import pytest
 
+pytestmark = pytest.mark.http
+
 os.environ.setdefault("WEBUI_SESSION_SECRET", "test-secret-key-for-oauth-tests-32bytes!!")
 os.environ.setdefault("WEBUI_SECURE_COOKIE", "0")  # allow plain HTTP in tests
 

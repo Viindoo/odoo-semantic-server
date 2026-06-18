@@ -8,6 +8,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+pytestmark = pytest.mark.http
+
 
 def _make_app(tmp_path: Path):
     """Build a minimal FastAPI app with operations router and auth bypass.

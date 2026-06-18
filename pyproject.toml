@@ -61,7 +61,6 @@ markers = [
     "flaky: test có thể flake do timing/contention (CI advisory)",
     "astro: tests driving the Astro SSR/preview server (Node.js 22+ required)",
     "http: FastAPI httpx in-process API tests (no browser, no live server)",
-    "nightly: heavy E2E + concurrency tests, excluded from the standard run",
     "unauthenticated: browser test opts out of the auto-login fixture (no session)",
 ]
 

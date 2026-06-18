@@ -26,6 +26,8 @@ from asgi_lifespan import LifespanManager
 
 from src.mcp.server import mcp
 
+pytestmark = pytest.mark.http
+
 
 @contextlib.asynccontextmanager
 async def _mcp_http_client():
