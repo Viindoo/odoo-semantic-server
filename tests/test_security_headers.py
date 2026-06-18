@@ -15,6 +15,8 @@ by nginx/Caddy (requires sudo — out of session scope). Verify after deploy:
 import httpx
 import pytest
 
+pytestmark = pytest.mark.http
+
 
 @pytest.fixture()
 async def client(monkeypatch):

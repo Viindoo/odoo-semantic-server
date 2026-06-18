@@ -6,7 +6,7 @@ PYTEST  := $(VENV)/bin/pytest
 COMPOSE := docker compose
 UV      := $(shell which uv 2>/dev/null || echo "uv")
 
-.PHONY: help install lock lock-check test test-unit test-integration test-browser test-http test-nightly \
+.PHONY: help install lock lock-check test test-unit test-integration test-browser test-http \
         test-neo4j-backup test-all \
         neo4j-up neo4j-down neo4j-logs lint lint-py lint-shell \
         recreate-db check-systemd-overrides
@@ -20,7 +20,6 @@ help:
 	@echo "  test-integration  Chạy integration tests (cần Docker)"
 	@echo "  test-browser      Chạy browser E2E tests (cần Docker + PostgreSQL)"
 	@echo "  test-http         Chạy FastAPI httpx in-process tests (-m http)"
-	@echo "  test-nightly      Chạy heavy E2E + concurrency tests (-m nightly)"
 	@echo "  test-neo4j-backup Chạy whole-graph backup/restore roundtrip riêng (-m neo4j_backup)"
 	@echo "  test-all          Chạy toàn bộ tests (gồm cả neo4j-backup, chạy LAST)"
 	@echo "  neo4j-up          Start Neo4j container"
@@ -85,10 +84,6 @@ test-browser:
 # httpx in-process FastAPI tests — no browser, no live server.
 test-http:
 	$(PYTEST) tests/ -v -m "http" --tb=short -rs
-
-# Heavy E2E + concurrency tests — NOT part of the default `test` target.
-test-nightly:
-	$(PYTEST) tests/ -v -m "nightly" --tb=short -rs
 
 # Whole-graph backup/restore roundtrip — DETACH DELETE the entire graph.
 # Run ISOLATED (own pytest invocation) so the wipe cannot clobber other

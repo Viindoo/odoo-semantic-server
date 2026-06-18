@@ -28,6 +28,8 @@ from unittest.mock import MagicMock, patch
 import pyotp
 import pytest
 
+pytestmark = pytest.mark.http
+
 # ---------------------------------------------------------------------------
 # Module-level env setup (mirrors test_totp.py pattern)
 # ---------------------------------------------------------------------------

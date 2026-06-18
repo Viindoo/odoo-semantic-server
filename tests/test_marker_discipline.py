@@ -4,7 +4,7 @@
 INTENT (business rule this protects): the test suite is tiered by markers so a
 unit test never gets dragged into the slow integration/browser tier and a typo'd
 marker never silently disables `--strict-markers`. This guard fails RED if:
-  - the new tiering markers ({astro, http, nightly}) are removed/renamed, or
+  - the live tiering markers ({astro, http}) are removed/renamed, or
   - the marker registry collapses to empty, or
   - `--strict-markers` is dropped from addopts (the anti-typo enforcement).
 
@@ -42,9 +42,9 @@ def test_registry_is_non_empty():
     assert _registered_marker_names(), "pyproject marker registry must not be empty"
 
 
-@pytest.mark.parametrize("marker", ["astro", "http", "nightly"])
+@pytest.mark.parametrize("marker", ["astro", "http"])
 def test_tiering_markers_are_registered(marker):
-    """The Wave-2 tiering markers must stay declared — removing one breaks the tier."""
+    """The live tiering markers must stay declared — removing one breaks the tier."""
     registered = _registered_marker_names()
     assert marker in registered, (
         f"marker '{marker}' missing from pyproject [tool.pytest.ini_options].markers — "

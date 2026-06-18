@@ -17,6 +17,8 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+pytestmark = pytest.mark.http
+
 
 def _client(app, raise_app_exceptions: bool = True) -> httpx.AsyncClient:
     return httpx.AsyncClient(

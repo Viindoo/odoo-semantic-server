@@ -23,6 +23,8 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+pytestmark = pytest.mark.http
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

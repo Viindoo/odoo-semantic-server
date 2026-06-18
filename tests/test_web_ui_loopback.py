@@ -2,6 +2,8 @@
 """Tests for Web UI loopback-only middleware (I6)."""
 import pytest
 
+pytestmark = pytest.mark.http
+
 
 @pytest.fixture
 def web_app():

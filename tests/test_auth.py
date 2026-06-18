@@ -16,6 +16,8 @@ from src.mcp.middleware import (
     _cache_set,
 )
 
+pytestmark = pytest.mark.http
+
 
 class TestGenerateApiKey:
     def test_returns_tuple_of_strings(self):
