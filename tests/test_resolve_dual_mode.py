@@ -112,7 +112,7 @@ def test_model_inspect_summary_matches_resolve_model_impl(dual_db):
     server = importlib.import_module("src.mcp.server")
 
     direct = server._resolve_model("c3.order", TEST_VERSION)
-    via_superset = asyncio.run(server.model_inspect.fn(
+    via_superset = asyncio.run(server.model_inspect(
         model="c3.order", method="summary", odoo_version=TEST_VERSION
     ))
 
@@ -139,7 +139,7 @@ def test_model_inspect_field_matches_resolve_field_impl(dual_db):
     server = importlib.import_module("src.mcp.server")
 
     direct = server._resolve_field("c3.order", "amount_total", TEST_VERSION)
-    via_superset = asyncio.run(server.model_inspect.fn(
+    via_superset = asyncio.run(server.model_inspect(
         model="c3.order",
         method="field",
         odoo_version=TEST_VERSION,
@@ -168,9 +168,9 @@ def test_model_inspect_field_matches_resolve_field_impl(dual_db):
 
 
 def test_model_inspect_signature():
-    """model_inspect.fn has model, method, odoo_version, field, method_name params."""
+    """model_inspect has model, method, odoo_version, field, method_name params."""
     server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.model_inspect.fn)
+    sig = inspect.signature(server.model_inspect)
     params = set(sig.parameters.keys())
     assert "model" in params, f"Expected 'model' param, got: {params}"
     assert "method" in params, f"Expected 'method' param, got: {params}"
@@ -180,9 +180,9 @@ def test_model_inspect_signature():
 
 
 def test_module_inspect_signature():
-    """module_inspect.fn has name, method, odoo_version params."""
+    """module_inspect has name, method, odoo_version params."""
     server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.module_inspect.fn)
+    sig = inspect.signature(server.module_inspect)
     params = set(sig.parameters.keys())
     assert "name" in params, f"Expected 'name' param, got: {params}"
     assert "method" in params, f"Expected 'method' param, got: {params}"
@@ -190,9 +190,9 @@ def test_module_inspect_signature():
 
 
 def test_entity_lookup_signature():
-    """entity_lookup.fn has kind, odoo_version, model, field, method_name, xmlid, name params."""
+    """entity_lookup has kind, odoo_version, model, field, method_name, xmlid, name params."""
     server = importlib.import_module("src.mcp.server")
-    sig = inspect.signature(server.entity_lookup.fn)
+    sig = inspect.signature(server.entity_lookup)
     params = set(sig.parameters.keys())
     assert "kind" in params, f"Expected 'kind' param, got: {params}"
     assert "odoo_version" in params, f"Expected 'odoo_version' param, got: {params}"

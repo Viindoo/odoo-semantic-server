@@ -2969,7 +2969,7 @@ def test_model_inspect_routes_to_resolve_model(seeded_neo4j):
     _resolve_model for the same model + version (AC-D3-5)."""
     srv = _import_server_module()
     direct = srv._resolve_model("account.move", TEST_VERSION)
-    result = asyncio.run(srv.model_inspect.fn(
+    result = asyncio.run(srv.model_inspect(
         model="account.move",
         method="summary",
         odoo_version=TEST_VERSION,
@@ -2992,7 +2992,7 @@ def test_model_inspect_routes_to_resolve_model(seeded_neo4j):
 def test_model_inspect_invalid_method(seeded_neo4j):
     """model_inspect with an unknown method returns an Error: string."""
     srv = _import_server_module()
-    result = asyncio.run(srv.model_inspect.fn(
+    result = asyncio.run(srv.model_inspect(
         model="account.move",
         method="nonexistent",
         odoo_version=TEST_VERSION,
@@ -3010,7 +3010,7 @@ def test_entity_lookup_routes_to_resolve_model(seeded_neo4j):
     direct = srv._resolve_model("account.move", TEST_VERSION)
     # entity_lookup is async (#227 — offloads the blocking body off the event
     # loop); drive it via asyncio.run to exercise the real tool contract.
-    result = asyncio.run(srv.entity_lookup.fn(
+    result = asyncio.run(srv.entity_lookup(
         kind="model",
         model="account.move",
         odoo_version=TEST_VERSION,
@@ -3032,7 +3032,7 @@ def test_entity_lookup_invalid_kind(seeded_neo4j):
     srv = _import_server_module()
     # WI-4: odoo_version is now hard-required on entity_lookup; pass it
     # explicitly (the bogus-kind error path is what we are exercising).
-    result = asyncio.run(srv.entity_lookup.fn(kind="bogus", odoo_version=TEST_VERSION))
+    result = asyncio.run(srv.entity_lookup(kind="bogus", odoo_version=TEST_VERSION))
     text = result.content[0].text
     assert text.startswith("Error:"), f"Expected Error:, got: {text[:80]!r}"
     assert "bogus" in text
@@ -3047,7 +3047,7 @@ def test_set_active_version_sentinel_rejected(seeded_neo4j):
     """set_active_version with a sentinel string returns an Error: message (AC-E3-5)."""
     srv = _import_server_module()
     for sentinel in ("auto", "default", "latest", "version", "any", ""):
-        result = asyncio.run(srv.set_active_version.fn(odoo_version=sentinel))
+        result = asyncio.run(srv.set_active_version(odoo_version=sentinel))
         text = result.content[0].text
         assert "Error" in text or "sentinel" in text.lower(), (
             f"Expected sentinel rejection for {sentinel!r}, got: {text[:120]!r}"
@@ -3068,7 +3068,7 @@ def test_set_active_version_persists_then_resolve_model_uses_it(seeded_neo4j):
 
     # --- Phase 1: set_active_version via wrapper --------------------------------
     with patch("src.mcp.session.set_active_version_db") as mock_set:
-        result = asyncio.run(srv.set_active_version.fn(odoo_version=TEST_VERSION))
+        result = asyncio.run(srv.set_active_version(odoo_version=TEST_VERSION))
         text = result.content[0].text
         assert TEST_VERSION in text, (
             f"set_active_version confirmation should contain the version. Got: {text!r}"
@@ -3130,7 +3130,7 @@ def test_set_active_profile_returns_confirmation(seeded_neo4j):
         patch("src.mcp.server._checkout_pg", checkout),
         patch("src.mcp.session.set_active_profile_db") as mock_set,
     ):
-        result = asyncio.run(srv.set_active_profile.fn(profile_name="my-erp-prod"))
+        result = asyncio.run(srv.set_active_profile(profile_name="my-erp-prod"))
         text = result.content[0].text
         assert "my-erp-prod" in text, f"Expected profile name in confirmation: {text!r}"
         # #251: 3rd positional mcp_session_id (no HTTP request → '_nosession').
@@ -3146,7 +3146,7 @@ def test_set_active_profile_clear(seeded_neo4j):
     srv = _import_server_module()
 
     with patch("src.mcp.session.set_active_profile_db") as mock_set:
-        result = asyncio.run(srv.set_active_profile.fn(profile_name=None))
+        result = asyncio.run(srv.set_active_profile(profile_name=None))
         text = result.content[0].text
         assert "cleared" in text.lower(), f"Expected 'cleared' in response: {text!r}"
         # #251: 3rd positional mcp_session_id (no HTTP request → '_nosession').
@@ -3158,7 +3158,7 @@ def test_set_active_profile_clear(seeded_neo4j):
 def test_list_available_versions_returns_tree(seeded_neo4j):
     """list_available_versions returns a tree of indexed versions (AC-E3-1)."""
     srv = _import_server_module()
-    result = asyncio.run(srv.list_available_versions.fn())
+    result = asyncio.run(srv.list_available_versions())
     text = result.content[0].text
     # seeded_neo4j uses TEST_VERSION = "99.0" — it must appear in the list
     assert TEST_VERSION in text, (
@@ -3173,12 +3173,13 @@ def test_mcp_resources_registered(seeded_neo4j):
 
     Asserts the public, behaviour-level contract — the exact set of registered
     resource-template URIs an MCP client can list — via FastMCP's supported
-    ``get_resource_templates()`` API.  We deliberately do NOT poke the internal
-    ``_resource_manager._templates`` attribute: the business invariant is which
-    URI templates the server exposes, not how FastMCP stores them.
+    ``list_resource_templates()`` API (fastmcp v3; the v2 ``get_resource_templates()``
+    dict accessor and the private ``_resource_manager._templates`` attribute were
+    removed).  The business invariant is which URI templates the server exposes,
+    not how FastMCP stores them.
     """
     srv = _import_server_module()
-    templates = asyncio.run(srv.mcp.get_resource_templates())
+    templates = asyncio.run(srv.mcp.list_resource_templates())
     expected_uris = {
         "odoo://{version}/model/{name}",
         "odoo://{version}/field/{model}/{field}",
@@ -3190,7 +3191,7 @@ def test_mcp_resources_registered(seeded_neo4j):
         "odoo://{version}/test/{module}/{class_name}",
         "odoo://{version}/testcoverage/{model}",
     }
-    registered_uris = set(templates.keys())
+    registered_uris = {t.uri_template for t in templates}
     assert registered_uris == expected_uris, (
         "Registered resource URI templates do not match the documented set.\n"
         f"  missing: {expected_uris - registered_uris}\n"

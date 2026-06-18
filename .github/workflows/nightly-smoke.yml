@@ -78,6 +78,20 @@ jobs:
         env:
           PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
 
+      - name: "Neo4j backstop runtime test — db.transaction.timeout=600s (ADR-0048 D7 / #276)"
+        # Opts into the integration path of test_compose_neo4j_backstop.py.
+        # The service container above is started with NEO4J_db_transaction_timeout=600s;
+        # NEO4J_COMPOSE_BACKSTOP_TEST=1 un-skips the SHOW SETTINGS assertion that verifies
+        # the env-name -> Neo4j config mapping works at runtime (static YAML parsing alone
+        # cannot cover this). This is the only place in CI where this test runs live.
+        run: pytest tests/test_compose_neo4j_backstop.py -v -rs
+        env:
+          CI: "true"
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: password
+          NEO4J_COMPOSE_BACKSTOP_TEST: "1"
+
       - name: Clone Odoo 17 (shallow, depth=1)
         run: |
           git clone --depth=1 -b 17.0 https://github.com/odoo/odoo /tmp/odoo_17.0

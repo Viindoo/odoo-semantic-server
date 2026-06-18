@@ -44,15 +44,16 @@ def test_all_resource_handlers_are_coroutine_functions(resources_mod):
     just the model one.
     """
     mcp = _register(resources_mod)
-    templates = mcp._resource_manager._templates
+    templates = asyncio.run(mcp.list_resource_templates())
     assert templates, "no resource templates registered"
-    for uri, template in templates.items():
+    for template in templates:
+        uri = template.uri_template
         assert asyncio.iscoroutinefunction(template.fn), (
             f"resource handler for {uri!r} must be async def (offload off loop); "
             f"got sync {template.fn!r}"
         )
     # Sanity: all 7 odoo:// kinds present.
-    kinds = {uri.split("/")[3] for uri in templates}
+    kinds = {t.uri_template.split("/")[3] for t in templates}
     assert {"model", "field", "method", "module", "view", "pattern", "stylesheet"} <= kinds
 
 
@@ -91,7 +92,7 @@ def test_slow_render_does_not_block_concurrent_loop_task(resources_mod, monkeypa
 
         ticker = asyncio.create_task(_ticker())
         read = asyncio.create_task(
-            mcp._resource_manager.read_resource("odoo://17.0/model/sale.order")
+            mcp.read_resource("odoo://17.0/model/sale.order")
         )
         # Wait until the worker thread is inside the blocking render, then let
         # the ticker run a few iterations to prove the loop is alive.
@@ -145,7 +146,7 @@ def test_model_resource_timeout_records_metric_once(resources_mod, monkeypatch):
     mcp = _register(resources_mod)
     before = _label_value()
     contents = asyncio.run(
-        mcp._resource_manager.read_resource("odoo://17.0/model/sale.order")
+        mcp.read_resource("odoo://17.0/model/sale.order")
     )
     after = _label_value()
 
@@ -153,6 +154,9 @@ def test_model_resource_timeout_records_metric_once(resources_mod, monkeypatch):
         f"resource-path timeout must increment the counter once; "
         f"before={before} after={after}"
     )
+    # fastmcp v3 read_resource returns a ResourceResult whose .contents holds the
+    # list of ResourceContent; the pre-v3 manager returned that list directly.
+    contents = contents.contents if hasattr(contents, "contents") else contents
     first = contents[0] if isinstance(contents, list | tuple) else contents
     text = first.content if hasattr(first, "content") else str(first)
     assert "timed out" in text.lower(), f"expected clean timeout body; got {text!r}"

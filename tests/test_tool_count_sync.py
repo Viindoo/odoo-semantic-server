@@ -9,10 +9,12 @@ is bumped but SITE_VERSION in constants.ts is forgotten.
 
 No Docker required: importing src.mcp.server registers all @mcp.tool()
 decorators and @mcp.resource() templates at module-import time (before any
-DB connection is needed). The private _tool_manager/_resource_manager APIs
-are used here — they are the same paths exercised by test_health_endpoint.py
-and the /health introspection fallback (src/mcp/health.py).
+DB connection is needed). Counts are read via the fastmcp v3 public async
+accessors list_tools() / list_resource_templates() — the same surface the
+/health introspection uses (src/mcp/health.py). (v3 removed the private
+_tool_manager/_resource_manager managers the 2.x version of this test read.)
 """
+import asyncio
 import re
 from pathlib import Path
 
@@ -60,9 +62,9 @@ def test_tool_count_matches_mcp_surface():
     """
     from src.mcp.server import mcp  # noqa: PLC0415
 
-    # _tool_manager._tools is the same private path used by the /health fallback
-    # (src/mcp/health.py _get_mcp_tool_count). No DB call at import time.
-    real_count = len(mcp._tool_manager._tools)
+    # list_tools() is the fastmcp v3 public surface the /health introspection
+    # uses (src/mcp/health.py _get_mcp_tool_count). No DB call at import time.
+    real_count = len(asyncio.run(mcp.list_tools()))
 
     declared = _parse_ts_constant("TOOL_COUNT")
     assert declared == real_count, (
@@ -76,13 +78,14 @@ def test_resource_count_matches_mcp_surface():
 
     Business rule: every resource template added to or removed from
     src/mcp/resources.py must be reflected in the site marketing constant.
-    The docstring in register_resources() explicitly documents the count as 7
-    and notes side-effect on ``mcp._resource_manager._templates``.
+    register_resources() registers the templates via @mcp.resource(); they are
+    enumerated by the v3 public accessor list_resource_templates().
     """
     from src.mcp.server import mcp  # noqa: PLC0415
 
-    # _resource_manager._templates is documented in resources.py register_resources().
-    real_count = len(mcp._resource_manager._templates)
+    # list_resource_templates() is the fastmcp v3 public surface (the private
+    # _resource_manager._templates was removed in v3).
+    real_count = len(asyncio.run(mcp.list_resource_templates()))
 
     declared = _parse_ts_constant("RESOURCE_COUNT")
     assert declared == real_count, (

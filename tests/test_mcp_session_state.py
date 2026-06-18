@@ -180,7 +180,7 @@ class TestSentinelRejection:
 
         assert normalize_version_arg("default") is None, "Sentinel 'default' → None"
 
-        tool_result = asyncio.run(_srv.set_active_version.fn("default"))
+        tool_result = asyncio.run(_srv.set_active_version("default"))
 
         assert isinstance(tool_result, ToolResult)
         text = tool_result.content[0].text
@@ -358,7 +358,7 @@ class TestListAvailableVersions:
 
         from src.mcp import server as _srv
 
-        result = asyncio.run(_srv.list_available_versions.fn())
+        result = asyncio.run(_srv.list_available_versions())
         assert isinstance(result, ToolResult)
         text = result.content[0].text
         assert text.strip() != ""
@@ -373,7 +373,7 @@ class TestListAvailableVersions:
 
         from src.mcp import server as _srv
 
-        result = asyncio.run(_srv.list_available_versions.fn())
+        result = asyncio.run(_srv.list_available_versions())
         assert isinstance(result, ToolResult)
 
 
@@ -399,7 +399,7 @@ class TestListAvailableProfiles:
             yield session_db
 
         with patch("src.mcp.server._checkout_pg", _checkout):
-            result = asyncio.run(_srv.list_available_profiles.fn())
+            result = asyncio.run(_srv.list_available_profiles())
 
         assert isinstance(result, ToolResult)
         text = result.content[0].text
@@ -430,7 +430,7 @@ class TestListAvailableProfiles:
 
         try:
             with patch("src.mcp.server._checkout_pg", _checkout):
-                result = asyncio.run(_srv.list_available_profiles.fn())
+                result = asyncio.run(_srv.list_available_profiles())
         finally:
             with session_db.cursor() as cur:
                 cur.execute("DELETE FROM profiles WHERE name = %s", (_profile_name,))
@@ -588,7 +588,7 @@ class TestListAvailableVersionsSeeded:
 
         from src.mcp import server as _srv
 
-        result = asyncio.run(_srv.list_available_versions.fn())
+        result = asyncio.run(_srv.list_available_versions())
         assert isinstance(result, ToolResult)
         text = result.content[0].text
 

@@ -13,7 +13,7 @@ Covers WI-C4 scenarios (v0.6 notation — list_fields/resolve_field shims remove
       start_index=50.
   (8) Gapless pagination: paginate through 247-field fixture → collect all names → no
       gaps, no duplicates.
-  (9) Wrapper-to-wrapper: model_inspect.fn(method='fields') → minter-resolve → _resolve_field
+  (9) Wrapper-to-wrapper: model_inspect(method='fields') → minter-resolve → _resolve_field
       — verifies api_key_id namespace consistency (HIGH-1 fix from Opus review).
   (10) RefError.recovery_hint must NOT mention list_models (non-existent tool) — AC-CFIX-5.
   (11) AC-DFIX-3: model_inspect(method='fields') → minter-resolve → _resolve_field
@@ -459,7 +459,7 @@ def test_scenario8_gapless_pagination(c4_db, server):
 
 
 def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
-    """model_inspect.fn(method='fields') → minter-resolve → _resolve_field impl.
+    """model_inspect(method='fields') → minter-resolve → _resolve_field impl.
 
     AC-CFIX-4: This test reproduces HIGH-1 from the Opus review (wrapper-to-
     wrapper namespace consistency) in v0.6 terms.  It calls the public
@@ -475,7 +475,7 @@ def test_scenario9_wrapper_to_wrapper_e2e(c4_db, server):
     from src.mcp.refs import _GLOBAL_MINTER
 
     # Call model_inspect superset — _get_api_key_id() returns 'default' in tests.
-    list_result = asyncio.run(server.model_inspect.fn(
+    list_result = asyncio.run(server.model_inspect(
         model=_MODEL_SMALL,
         method="fields",
         odoo_version=C4_VERSION,
@@ -571,7 +571,7 @@ def test_scenario11_superset_drilldown_e2e(c4_db, server):
 
     # Step A: call model_inspect superset with method='fields'.
     # _get_api_key_id() returns 'default' in unit-test context (no middleware).
-    inspect_result = asyncio.run(server.model_inspect.fn(
+    inspect_result = asyncio.run(server.model_inspect(
         model=_MODEL_SMALL,
         method="fields",
         odoo_version=C4_VERSION,

@@ -150,7 +150,7 @@ def test_positive_text_channel_byte_identical_to_impl(b4_db):
     server = importlib.import_module("src.mcp.server")
 
     inner_text = server._resolve_model("b4.order", TEST_VERSION)
-    result = asyncio.run(server.model_inspect.fn(
+    result = asyncio.run(server.model_inspect(
         model="b4.order", method="summary", odoo_version=TEST_VERSION
     ))
 
@@ -211,7 +211,9 @@ def test_describe_module_output_schema_is_none():
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    tool = server.describe_module
+    # fastmcp v3 default decorator-mode: the module-level name is the raw fn, so the
+    # FunctionTool (which owns output_schema) is fetched via the public get_tool (#324).
+    tool = asyncio.run(server.mcp.get_tool("describe_module"))
     assert tool.output_schema is None, (
         "describe_module must not declare output_schema= (WI-5). "
         f"Got: {tool.output_schema!r}"
@@ -227,7 +229,7 @@ def test_describe_module_structured_content_is_none_on_found(b4_db):
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    result = asyncio.run(server.describe_module.fn("b4_sale", TEST_VERSION))
+    result = asyncio.run(server.describe_module("b4_sale", TEST_VERSION))
 
     assert result.content is not None and len(result.content) == 1
     text = result.content[0].text
@@ -251,7 +253,7 @@ def test_describe_module_not_found_returns_clean_text(b4_db):
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    result = asyncio.run(server.describe_module.fn("nonexistent_module_xyz_b4", TEST_VERSION))
+    result = asyncio.run(server.describe_module("nonexistent_module_xyz_b4", TEST_VERSION))
 
     assert result.content is not None and len(result.content) == 1
     text = result.content[0].text
@@ -280,7 +282,9 @@ def test_str_tool_no_fastmcp_wrap_result_shim():
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    tool = server.check_module_exists
+    # fastmcp v3 default decorator-mode: the module-level name is the raw fn, so the
+    # FunctionTool (which owns output_schema) is fetched via the public get_tool (#324).
+    tool = asyncio.run(server.mcp.get_tool("check_module_exists"))
     # With output_schema=None in READONLY_TOOL_KWARGS, FastMCP should not
     # auto-derive the wrap shim.
     schema = tool.output_schema
@@ -309,7 +313,7 @@ def test_describe_module_text_footer_present(b4_db):
     import importlib
 
     server = importlib.import_module("src.mcp.server")
-    result = asyncio.run(server.describe_module.fn("b4_sale", TEST_VERSION))
+    result = asyncio.run(server.describe_module("b4_sale", TEST_VERSION))
 
     text = result.content[0].text
     lines = text.split("\n")

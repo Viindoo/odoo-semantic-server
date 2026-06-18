@@ -17,6 +17,7 @@ Test (f) is DB-free.
 
 DB versions: TEST_VERSION = "99.0" (shared conftest) + PG seed via conftest pg_conn.
 """
+import asyncio
 import sys
 
 import pytest
@@ -221,7 +222,7 @@ def test_tool_name_set_matches_expected():
     breaks this guard.
     """
     from src.mcp.server import mcp
-    real_names = frozenset(mcp._tool_manager._tools.keys())
+    real_names = frozenset(t.name for t in asyncio.run(mcp.list_tools()))
     missing = _EXPECTED_TOOL_NAMES - real_names
     extra = real_names - _EXPECTED_TOOL_NAMES
     assert not missing and not extra, (

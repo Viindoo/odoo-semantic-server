@@ -38,6 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 # port is needed — tools/list is a pure in-memory registry read). It prints one
 # line ``SERVED_TOOLS=<n>`` that the parent parses.
 _PROBE = r"""
+import asyncio
 import runpy
 import sys
 
@@ -64,7 +65,7 @@ if app is None:
     sys.exit(0)
 
 served = app.state.fastmcp_server
-print("SERVED_TOOLS=%d" % len(served._tool_manager._tools))
+print("SERVED_TOOLS=%d" % len(asyncio.run(served.list_tools())))
 """
 
 
@@ -113,9 +114,11 @@ def _expected_tool_count() -> int:
     enforced separately by test_tool_count_sync.py; here we only assert the
     SERVED surface equals the FULL surface (and is non-empty — the bug was 0).
     """
+    import asyncio
+
     from src.mcp.server import mcp
 
-    return len(mcp._tool_manager._tools)
+    return len(asyncio.run(mcp.list_tools()))
 
 
 def test_clean_entrypoint_serves_full_tool_surface():

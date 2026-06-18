@@ -266,7 +266,7 @@ def test_hot_path_tools_are_coroutine_functions():
         "find_style_override",
         "entity_lookup",
     ):
-        fn = srv.mcp._tool_manager._tools[name].fn
+        fn = asyncio.run(srv.mcp.get_tool(name)).fn
         assert inspect.iscoroutinefunction(fn), (
             f"{name} must be an async def tool (#227)"
         )
@@ -295,7 +295,7 @@ async def test_find_examples_tool_embeds_offloop_and_passes_vector(monkeypatch):
 
     monkeypatch.setattr(srv, "_find_examples", _fake_impl)
 
-    out = await srv.find_examples.fn(query="confirm sale order", odoo_version="17.0")
+    out = await srv.find_examples(query="confirm sale order", odoo_version="17.0")
     assert "find_examples" in out
     # Exactly one embed, via the SYNC path the #276 G7 worker thread uses.
     assert embedder.sync_calls == 1, "tool must embed the query exactly once"
@@ -324,15 +324,15 @@ _HANDWRITTEN_ASYNC_TOOLS = {
 def test_all_sync_db_tools_are_offloaded_coroutines():
     """Every registered tool runs as a coroutine — none blocks the event loop.
 
-    Business rule (#227 root cause): FastMCP 2.14.x runs a sync `def` tool body
-    directly on the event-loop thread, so any Neo4j/PG I/O freezes /health. The
+    Business rule (#227 root cause): FastMCP (v2 and v3 alike) runs a sync `def`
+    tool body directly on the event-loop thread, so any Neo4j/PG I/O freezes /health. The
     fix makes EVERY tool an awaitable — the 4 hot-path tools async by hand and
     the remaining 20 DB tools via the @offload decorator. If a future tool is
     added as a plain sync `def`, this guard goes red.
     """
-    tools = srv.mcp._tool_manager._tools
+    tools = asyncio.run(srv.mcp.list_tools())
     blocking = [
-        name for name, t in tools.items()
+        t.name for t in tools
         if not inspect.iscoroutinefunction(t.fn)
     ]
     assert not blocking, (
@@ -347,7 +347,7 @@ def test_offloaded_tool_preserves_signature_for_schema():
     Regression guard: a generic *a/**k wrapper without wraps would either crash
     FastMCP ("**kwargs not supported") or erase every parameter from the schema.
     """
-    mi = srv.mcp._tool_manager._tools["model_inspect"]
+    mi = asyncio.run(srv.mcp.get_tool("model_inspect"))
     props = mi.parameters.get("properties", {})
     # model_inspect exposes a real, named parameter set — not an empty/opaque one.
     assert "model" in props, "offload erased the tool's input schema"
@@ -447,7 +447,7 @@ async def test_query_embed_uses_backend_instruction_no_qwen_prefix(monkeypatch):
         lambda *a, **k: "find_examples: stub\nFound 0 results\n",
     )
 
-    await srv.find_examples.fn(query="confirm sale order", odoo_version="17.0")
+    await srv.find_examples(query="confirm sale order", odoo_version="17.0")
 
     assert embedder.embedded_texts, "query was never embedded"
     sent = embedder.embedded_texts[0]
@@ -480,7 +480,7 @@ async def test_query_embed_keeps_qwen_prefix_when_backend_requires_it(monkeypatc
         lambda *a, **k: "find_examples: stub\nFound 0 results\n",
     )
 
-    await srv.find_examples.fn(query="confirm sale order", odoo_version="17.0")
+    await srv.find_examples(query="confirm sale order", odoo_version="17.0")
 
     sent = embedder.embedded_texts[0]
     assert sent.startswith(INSTRUCT_NL_TO_CODE), (
@@ -509,7 +509,7 @@ async def test_suggest_pattern_embedder_failure_does_not_leak_exception(monkeypa
 
     monkeypatch.setattr(srv, "_get_embedder", _raise)
 
-    out = await srv.suggest_pattern.fn(intent="compute total", odoo_version="17.0")
+    out = await srv.suggest_pattern(intent="compute total", odoo_version="17.0")
 
     assert "embedder unavailable" in out  # still agent-actionable
     assert _LEAK_CANARY not in out
@@ -524,7 +524,7 @@ async def test_find_style_override_embedder_failure_does_not_leak_exception(monk
     monkeypatch.setattr(srv, "_get_embedder", _raise)
 
     # NL phrase (has spaces) → not a literal token → embedder is the first I/O.
-    out = await srv.find_style_override.fn("primary button color variable", "17.0")
+    out = await srv.find_style_override("primary button color variable", "17.0")
 
     assert "embedder unavailable" in out  # still agent-actionable
     assert _LEAK_CANARY not in out

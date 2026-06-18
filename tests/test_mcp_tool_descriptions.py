@@ -9,8 +9,10 @@ Verify that every MCP tool description (docstring exposed via FastMCP):
    internal plumbing utilities, not user-facing Odoo query tools.
 
 FastMCP wraps @mcp.tool() functions into FunctionTool objects that expose
-.description (= the full docstring text). We access them via mcp._tool_manager.
+.description (= the full docstring text). We access them via the fastmcp v3
+public accessor mcp.get_tool(name) (the private _tool_manager was removed).
 """
+import asyncio
 import re
 
 import pytest
@@ -156,24 +158,53 @@ _VERSION_NOT_REQUIRED_TOOL_NAMES = [
 _VI_DIACRITIC_RE = re.compile(r"[À-ỹ]")
 
 
-def _get_tool_description(name: str) -> str:
-    """Return the FunctionTool.description for a registered mcp tool."""
-    tool = mcp._tool_manager._tools.get(name)
+def _resolve_tool(name: str):
+    """Return the registered FunctionTool for *name* via the v3 public accessor.
+
+    ``mcp.get_tool(name)`` returns ``None`` for an unknown tool; we surface the
+    full registered set in the assertion message to mirror the old behaviour.
+    """
+    tool = asyncio.run(mcp.get_tool(name))
     assert tool is not None, (
-        f"Tool '{name}' not found in mcp._tool_manager._tools. "
-        f"Available tools: {list(mcp._tool_manager._tools.keys())}"
+        f"Tool '{name}' not registered on mcp. "
+        f"Available tools: {[t.name for t in asyncio.run(mcp.list_tools())]}"
     )
-    return tool.description or ""
+    return tool
+
+
+def _get_tool_description(name: str) -> str:
+    """Return the FunctionTool summary description (the docstring summary block).
+
+    In fastmcp v3 ``FunctionTool.description`` is ONLY the summary block (the
+    text before ``Args:``); per-parameter docs move into the JSON input-schema.
+    TRIGGER/PREFER/SKIP blocks, the Vietnamese triggers, and the length budget
+    all live in this summary, so summary-scoped tests read it directly.
+    """
+    return _resolve_tool(name).description or ""
+
+
+def _get_tool_agent_doc(name: str) -> str:
+    """Return the FULL agent-facing doc surface: summary + every param description.
+
+    fastmcp v2 put the whole docstring (summary + ``Args:`` param docs) on
+    ``FunctionTool.description``; v3 splits per-parameter docs into the schema
+    (``parameters.properties.<p>.description``). An MCP client reads BOTH, so a
+    test asserting "an agent can read X about this tool" must look at the union,
+    not the v3 summary alone (#324).
+    """
+    tool = _resolve_tool(name)
+    parts = [tool.description or ""]
+    props = (tool.parameters or {}).get("properties", {})
+    for prop in props.values():
+        pdesc = prop.get("description")
+        if pdesc:
+            parts.append(pdesc)
+    return "\n".join(parts)
 
 
 def _get_tool_input_schema(name: str) -> dict:
     """Return the FunctionTool JSON inputSchema for a registered mcp tool."""
-    tool = mcp._tool_manager._tools.get(name)
-    assert tool is not None, (
-        f"Tool '{name}' not found in mcp._tool_manager._tools. "
-        f"Available tools: {list(mcp._tool_manager._tools.keys())}"
-    )
-    return tool.parameters or {}
+    return _resolve_tool(name).parameters or {}
 
 
 @pytest.mark.parametrize("tool_name", _TOOL_NAMES)
@@ -358,36 +389,41 @@ def test_model_inspect_limit_docstring_discloses_cap():
     which previously caused agents to pass limit=200 and receive only 50 rows
     with no explanation.
     """
-    desc = _get_tool_description("model_inspect")
-    # Must disclose the cap boundary values explicitly.
+    desc = _get_tool_agent_doc("model_inspect")
+    # Must disclose the cap boundary values explicitly (fastmcp v3 surfaces these
+    # in the `limit` param schema description, read by the agent alongside the summary).
     assert "50" in desc, (
-        "model_inspect docstring must disclose the cap=50 for fields (ADR-0023 §3). "
-        f"Current desc: {desc!r}"
+        "model_inspect docs must disclose the cap=50 for fields (ADR-0023 §3). "
+        f"Current agent doc: {desc!r}"
     )
     assert "20" in desc, (
-        "model_inspect docstring must disclose the cap=20 for methods/views (ADR-0023 §3). "
-        f"Current desc: {desc!r}"
+        "model_inspect docs must disclose the cap=20 for methods/views (ADR-0023 §3). "
+        f"Current agent doc: {desc!r}"
     )
     # Must mention start_index as the pagination mechanism.
     assert "start_index" in desc, (
-        "model_inspect docstring must name start_index as the pagination cursor. "
-        f"Current desc: {desc!r}"
+        "model_inspect docs must name start_index as the pagination cursor. "
+        f"Current agent doc: {desc!r}"
     )
-    # The docstring MUST carry a `limit:` arg section (model_inspect is paged) —
-    # asserting its presence keeps the next check non-vacuous (N4: the old
-    # `... if 'limit: ' in desc else True` silently passed if the section was
-    # ever renamed/dropped).
-    assert "limit: " in desc, (
-        "model_inspect docstring must document the limit: parameter so the cap "
-        "(50/20) is disclosed at the argument site (ADR-0023 §3)."
+    # The `limit` parameter MUST carry a schema description (model_inspect is paged)
+    # — asserting its presence keeps the next check non-vacuous (the cap must be
+    # disclosed at the argument site, ADR-0023 §3).
+    limit_desc = (
+        (_resolve_tool("model_inspect").parameters or {})
+        .get("properties", {})
+        .get("limit", {})
+        .get("description", "")
     )
-    # Within that limit: section, must NOT suggest raising limit= to get more rows
+    assert limit_desc, (
+        "model_inspect must document the limit parameter (schema description) so "
+        "the cap (50/20) is disclosed at the argument site (ADR-0023 §3)."
+    )
+    # The limit description must NOT suggest raising limit= to get more rows
     # (start_index is the continuation mechanism per ADR-0023 §5.5 amendment).
-    limit_section = desc.split("limit: ", 1)[1]
-    assert "limit=" not in limit_section, (
+    assert "limit=" not in limit_desc, (
         "model_inspect limit description must not suggest raising limit= as "
         "a continuation mechanism (use start_index instead per ADR-0023 §5.5 amendment). "
-        f"limit: section was:\n{limit_section!r}"
+        f"limit description was:\n{limit_desc!r}"
     )
 
 
@@ -447,7 +483,7 @@ def test_set_active_version_docstring_distinguishes_pin_vs_reuse():
     rejected AS THE VERSION TO PIN (not globally), while 'auto' IS accepted on
     subsequent tool calls to reuse the pin (ADR-0029).
     """
-    desc = _get_tool_description("set_active_version")
+    desc = _get_tool_agent_doc("set_active_version")
     # Must still say sentinels are rejected (correct for the tool itself).
     assert "rejected" in desc, (
         "set_active_version docstring should mention sentinels are rejected "
@@ -482,7 +518,7 @@ def test_profile_name_docstring_mentions_inheritance_resolved(tool_name):
     description must understand that a child profile also includes parent
     profile content (ADR-0016 profile inheritance).
     """
-    desc = _get_tool_description(tool_name)
+    desc = _get_tool_agent_doc(tool_name)
     assert "inheritance" in desc.lower() or "ancestor" in desc.lower(), (
         f"'{tool_name}' profile_name description must mention 'inheritance' or "
         "'ancestor' to convey that profile filtering is inheritance-resolved "

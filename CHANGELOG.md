@@ -9,6 +9,11 @@ All notable changes to Odoo Semantic MCP are documented here.
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
 > **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
 
+## [Unreleased] — fastmcp v3 + CI vitest drift-guard
+
+- **fastmcp v2 -> v3 migration (#324):** upgraded fastmcp dependency to v3; closes 3 Dependabot security alerts. v3 decorator returns the original function unchanged (no `.fn` indirection on module-level names), removing the `_tool_manager`/`_resource_manager`/`_deprecated_settings` private attributes. `on_duplicate="replace"` explicit (v3 default resolves to "warn" via `on_duplicate or "warn"`). Tool surface unchanged: 31 tools, 9 resources.
+- **CI site-tests vitest drift-guard (#325):** added `vitest-drift-guard` CI job that runs `pnpm test` in `site/` on every push; catches constants.ts/tools-data.ts drift between server surface and site copy without a full build.
+
 ## [0.15.0] — 2026-06-18 — Test surface indexing: 6 new MCP tools + 2 resources
 
 - **Test-surface index (WI-1..5 complete):** indexes automated-test metadata across Odoo v8-v19 as a Neo4j graph layer parallel to the C1 production model schema. Four new node labels (`TestClass`, `TestMethod`, `TestHelper`, `JsTestSuite`) with MERGE keys: TestClass = (name, module, file_path, repo, odoo_version) [5-part, repo added by Defect-H fix for cross-repo dedup; file-scoped, not module-scoped; two TestSaleCommon in sale v17 are distinct nodes]; TestMethod = (name, test_class, module, file_path, odoo_version); TestHelper = (name, module, odoo_version) with framework sentinel module='@framework' for odoo/tests base classes; JsTestSuite = (file_path, module, odoo_version) [file-grained, no JS->Model coverage edges due to hand-rolled mock models in Hoot v18+]. Six edge types: INHERITS_TEST (MRO-ordered), BELONGS_TO_TEST, COVERS_MODEL/COVERS_FIELD/COVERS_METHOD (via in {setup,assert,body}, targets is_definition nodes per ADR-0048), TESTS_TOUR. Three new pgvector chunk_types (TEXT column, zero migration): test_class, test_method, js_test.

@@ -160,7 +160,7 @@ def _read(mcp, uri: str) -> str:
     try:
         asyncio.set_event_loop(new_loop)
         contents = new_loop.run_until_complete(
-            mcp._resource_manager.read_resource(uri),
+            mcp.read_resource(uri),
         )
     finally:
         new_loop.close()
@@ -175,6 +175,9 @@ def _read(mcp, uri: str) -> str:
 
     # FastMCP returns an iterable of ReadResourceContents with .content set;
     # for str-returning handlers this becomes a single text body.
+    # fastmcp v3 read_resource returns a ResourceResult whose .contents holds the
+    # list of ResourceContent; the pre-v3 manager returned that list directly.
+    contents = contents.contents if hasattr(contents, "contents") else contents
     if isinstance(contents, list | tuple):
         first = contents[0]
         return first.content if hasattr(first, "content") else str(first)

@@ -625,7 +625,7 @@ async def _serve_resource(
 ) -> str:
     """Async wrapper: offload the blocking resolve+cache+compute off the event loop.
 
-    FastMCP 2.x calls sync resource handlers directly on the event loop thread,
+    FastMCP calls a sync resource handler directly on the event loop thread,
     so a cache-miss on a dense model would block the loop for up to the per-query
     Neo4j timeout (ADR-0046 anti-pattern that caused wedge #227). Offloading via
     ``asyncio.to_thread`` keeps the loop free for other requests. Cache hits still
@@ -725,8 +725,9 @@ def register_resources(mcp_instance) -> None:
         mcp_instance: A live ``fastmcp.FastMCP`` instance.
 
     Returns:
-        None.  Side effect: handlers appear in
-        ``mcp_instance._resource_manager._templates``.
+        None.  Side effect: handlers are registered on ``mcp_instance`` and
+        appear in ``await mcp_instance.list_resource_templates()`` (fastmcp v3
+        public API; the private ``_resource_manager._templates`` was removed).
     """
     cache = get_cache()
 
