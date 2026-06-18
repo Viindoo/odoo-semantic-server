@@ -3169,7 +3169,7 @@ def test_list_available_versions_returns_tree(seeded_neo4j):
 
 
 def test_mcp_resources_registered(seeded_neo4j):
-    """The 7 documented odoo:// resource URI templates are registered (WI-F3, ADR-0030).
+    """The 9 documented odoo:// resource URI templates are registered (WI-F3, ADR-0030).
 
     Asserts the public, behaviour-level contract — the exact set of registered
     resource-template URIs an MCP client can list — via FastMCP's supported
@@ -3187,6 +3187,8 @@ def test_mcp_resources_registered(seeded_neo4j):
         "odoo://{version}/view/{xmlid}",
         "odoo://{version}/pattern/{pattern_id}",
         "odoo://{version}/stylesheet/{module}/{file_path*}",
+        "odoo://{version}/test/{module}/{class_name}",
+        "odoo://{version}/testcoverage/{model}",
     }
     registered_uris = set(templates.keys())
     assert registered_uris == expected_uris, (

@@ -507,3 +507,21 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
                 name_allowlist=allow,
             ))
     return out
+
+
+def seed_framework_test_helpers(odoo_version: str) -> list:
+    """Return TestHelperInfo nodes for Odoo framework test base classes.
+
+    These are seeded from a known static set rather than parsed, because
+    odoo/tests/common.py may not always be in the indexing path and the framework
+    base classes are stable across minor versions.
+
+    Uses module='@framework' (MED-3) so these nodes are clearly distinct from
+    addon-sourced helpers and from the '__unresolved__' GC placeholder.
+    Framework helpers do NOT get a DEFINED_IN edge to any Module node.
+
+    Returns a list of TestHelperInfo (from models.py). The writer writes them
+    as TestHelper nodes with no DEFINED_IN edge.
+    """
+    from .parser_test import seed_framework_helpers  # noqa: PLC0415
+    return seed_framework_helpers(odoo_version)

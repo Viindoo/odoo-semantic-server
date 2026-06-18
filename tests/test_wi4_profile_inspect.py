@@ -9,7 +9,7 @@ Acceptance criteria:
   (d) Non-owned/empty-allowed profile denied under tenant choke (0 rows).
       This test MUST FAIL if the _scope/_effective_allowed choke is removed.
   (e) Invalid method returns Error: message (unit-only, no DB needed).
-  (f) tool count test: importing server gives 25 tools (constants.ts must match).
+  (f) tool name-set test: importing server exposes exactly the expected 31 MCP tools.
 
 Tests (a)-(d) require Neo4j + Postgres.
 Test (e) is DB-free.
@@ -167,22 +167,69 @@ def test_invalid_method_returns_error():
 
 
 # ---------------------------------------------------------------------------
-# (f) Tool count = 25 (no DB)
+# (f) Tool name-set inventory (no DB)
 # ---------------------------------------------------------------------------
 
+# Canonical tool name-set for the test-surface-index milestone:
+# 25 baseline tools + 6 added by WI-4 (find_test_examples, tests_covering,
+# test_class_inspect, test_base_classes, test_coverage_audit, js_test_inspect).
+# This is a NAME INVENTORY — complementary to the count guard in
+# test_tool_count_sync.py (which reads constants.ts). A tool renamed or replaced
+# with a synonym breaks this guard but not the count, so the two tests cover
+# different drift modes.
+_EXPECTED_TOOL_NAMES = frozenset({
+    "api_version_diff",
+    "check_module_exists",
+    "cli_help",
+    "describe_module",
+    "entity_lookup",
+    "find_deprecated_usage",
+    "find_examples",
+    "find_override_point",
+    "find_style_override",
+    "find_test_examples",
+    "impact_analysis",
+    "js_test_inspect",
+    "lint_check",
+    "list_available_profiles",
+    "list_available_versions",
+    "lookup_core_api",
+    "model_inspect",
+    "module_inspect",
+    "profile_inspect",
+    "resolve_orm_chain",
+    "resolve_stylesheet",
+    "set_active_profile",
+    "set_active_version",
+    "suggest_pattern",
+    "test_base_classes",
+    "test_class_inspect",
+    "test_coverage_audit",
+    "tests_covering",
+    "validate_depends",
+    "validate_domain",
+    "validate_relation",
+})
 
-def test_tool_count_is_25():
-    """Tool count must be 25 after WI-4 adds profile_inspect.
 
-    Business rule: TOOL_COUNT in constants.ts must equal the real MCP surface.
-    This is the same check as test_tool_count_sync.py but explicitly asserts 25
-    so that a future regression (e.g. accidental removal) is caught here too.
+def test_tool_name_set_matches_expected():
+    """Registered MCP tool names must exactly match the expected inventory.
+
+    Catches renames, accidental removals, and unannounced additions that a
+    plain count check (test_tool_count_sync.py) cannot detect: e.g. replacing
+    'find_test_examples' with 'search_test_examples' keeps the count at 31 but
+    breaks this guard.
     """
     from src.mcp.server import mcp
-    real_count = len(mcp._tool_manager._tools)
-    assert real_count == 25, (
-        f"Expected 25 tools after WI-4, got {real_count}. "
-        "Update TOOL_COUNT in site/src/lib/constants.ts if you add/remove a tool."
+    real_names = frozenset(mcp._tool_manager._tools.keys())
+    missing = _EXPECTED_TOOL_NAMES - real_names
+    extra = real_names - _EXPECTED_TOOL_NAMES
+    assert not missing and not extra, (
+        f"MCP tool name-set mismatch.\n"
+        f"  Missing (expected but absent): {sorted(missing)}\n"
+        f"  Extra   (present but unexpected): {sorted(extra)}\n"
+        "Update _EXPECTED_TOOL_NAMES in this file AND TOOL_COUNT in "
+        "site/src/lib/constants.ts when adding/removing/renaming tools."
     )
 
 

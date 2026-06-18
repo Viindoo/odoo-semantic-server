@@ -23,9 +23,12 @@ class TestNeo4jVersionCheck:
         )
         monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
         monkeypatch.delenv("CI", raising=False)
-        config_mod._conf = None
-        server_mod._driver = None
-        server_mod._version_checked = False
+        # Use monkeypatch.setattr so teardown restores these globals automatically,
+        # preventing server_mod._driver (set to a MagicMock by _get_driver()) from
+        # leaking into later tests that call the real _get_driver().
+        monkeypatch.setattr(config_mod, "_conf", None)
+        monkeypatch.setattr(server_mod, "_driver", None)
+        monkeypatch.setattr(server_mod, "_version_checked", False)
 
         # Mock GraphDatabase.driver and session to return Neo4j 4.4.0
         mock_session = MagicMock()
@@ -61,9 +64,9 @@ class TestNeo4jVersionCheck:
         )
         monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
         monkeypatch.delenv("CI", raising=False)
-        config_mod._conf = None
-        server_mod._driver = None
-        server_mod._version_checked = False
+        monkeypatch.setattr(config_mod, "_conf", None)
+        monkeypatch.setattr(server_mod, "_driver", None)
+        monkeypatch.setattr(server_mod, "_version_checked", False)
 
         # Mock GraphDatabase.driver and session to return Neo4j 5.26.25
         mock_session = MagicMock()
@@ -96,9 +99,9 @@ class TestNeo4jVersionCheck:
         )
         monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
         monkeypatch.delenv("CI", raising=False)
-        config_mod._conf = None
-        server_mod._driver = None
-        server_mod._version_checked = False
+        monkeypatch.setattr(config_mod, "_conf", None)
+        monkeypatch.setattr(server_mod, "_driver", None)
+        monkeypatch.setattr(server_mod, "_version_checked", False)
 
         # Mock GraphDatabase.driver and session to return None (no row)
         mock_session = MagicMock()
@@ -130,9 +133,9 @@ class TestNeo4jVersionCheck:
         )
         monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
         monkeypatch.setenv("CI", "true")
-        config_mod._conf = None
-        server_mod._driver = None
-        server_mod._version_checked = False
+        monkeypatch.setattr(config_mod, "_conf", None)
+        monkeypatch.setattr(server_mod, "_driver", None)
+        monkeypatch.setattr(server_mod, "_version_checked", False)
 
         # Mock driver that would fail if version check runs
         mock_driver = MagicMock()
@@ -159,9 +162,9 @@ class TestNeo4jVersionCheck:
         )
         monkeypatch.setenv("ODOO_SEMANTIC_CONF", str(cfg))
         monkeypatch.delenv("CI", raising=False)
-        config_mod._conf = None
-        server_mod._driver = None
-        server_mod._version_checked = False
+        monkeypatch.setattr(config_mod, "_conf", None)
+        monkeypatch.setattr(server_mod, "_driver", None)
+        monkeypatch.setattr(server_mod, "_version_checked", False)
 
         call_count = [0]
 

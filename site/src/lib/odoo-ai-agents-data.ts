@@ -390,7 +390,7 @@ export const faqs: FaqEntry[] = [
   {
     question: 'What is the Odoo AI Agent Team plugin?',
     answer:
-      'Odoo AI Agent Team is a Claude Code plugin that provides 41 pre-built AI skills, 7 autonomous specialist agents, and 9 slash commands. Every agent is grounded on the Odoo Semantic MCP knowledge graph, which indexes 12,400+ models and 184,000+ fields across Odoo 8 to the latest version. Unlike ungrounded AI, agents verify field names and inheritance chains against the indexed source before suggesting code.',
+      'Odoo AI Agent Team is a Claude Code plugin that provides 41 pre-built AI skills, 7 autonomous specialist agents, and 9 slash commands. Every agent is grounded on the Odoo Semantic MCP knowledge graph, which indexes 12,400+ models and 184,000+ fields across Odoo 8 to the latest version — including test classes, methods, and JS test suites. Unlike ungrounded AI, agents verify field names and inheritance chains against the indexed source before suggesting code.',
   },
   {
     question: 'Which Odoo versions does the plugin support?',
@@ -415,7 +415,7 @@ export const faqs: FaqEntry[] = [
   {
     question: 'What AI tools does Odoo AI Agent Team work with?',
     answer:
-      'Odoo AI Agent Team is optimized for Claude Code. The underlying OSM knowledge graph (Odoo Semantic MCP) works with any MCP-compatible tool including Cursor, Codex CLI, Gemini CLI, VS Code 1.99+, Windsurf, JetBrains AI Assistant, and Continue.dev. The 41 skills and 7 agents are Claude Code-specific; other tools access the 25 MCP tools directly.',
+      'Odoo AI Agent Team is optimized for Claude Code. The underlying OSM knowledge graph (Odoo Semantic MCP) works with any MCP-compatible tool including Cursor, Codex CLI, Gemini CLI, VS Code 1.99+, Windsurf, JetBrains AI Assistant, and Continue.dev. The 41 skills and 7 agents are Claude Code-specific; other tools access the 31 MCP tools directly.',
   },
   {
     question: 'How accurate is Odoo AI Agent Team compared to ungrounded AI?',

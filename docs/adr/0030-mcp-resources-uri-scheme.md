@@ -252,3 +252,16 @@ Deferred because:
 - `docs/adr/0025-css-scss-indexing.md` — `:Stylesheet` node composite key `(file_path, module, odoo_version)` used by the `stylesheet` resource kind.
 - `docs/adr/0026-rbac-key-ownership.md` — `is_admin` DB-sourced pattern; resource auth check reuses the same `_check_api_key` helper.
 - `docs/adr/0029-implicit-session-context.md` — `resolve_version_v2` three-tier resolution order applied when `version="auto"` appears in a resource URI.
+
+---
+
+## Amendment — ADR-0051 (2026-06-18): +2 test-surface resource kinds (7 -> 9)
+
+ADR-0051 adds two new `odoo://` URI kinds to the resource surface defined in this ADR:
+
+- `odoo://{version}/test/{module}/{class_name}` — test class definition, inheritance chain, and methods (text/markdown). Backed by TestClass/TestMethod/INHERITS_TEST nodes from the C1 test-surface index.
+- `odoo://{version}/testcoverage/{model}` — test coverage audit for a model: which fields/methods have COVERS_* edges and which have zero coverage (text/markdown).
+
+Both handlers follow the same LRU 1000/300s TTL/per-tenant-keyed contract defined in this ADR. No changes to existing URI kinds or cache policy. Resource count: 7 -> 9. Enforced by `test_tool_count_sync.py` (RESOURCE_COUNT=9) and `tests/test_mcp_resources.py` (URI set guard).
+
+References: ADR-0051, `src/mcp/resources.py` (register_resources docstring), `site/src/lib/constants.ts` RESOURCE_COUNT=9.

@@ -20,10 +20,11 @@
 
 ## Tools & Resources
 
-- 25 MCP tools + 7 resources (https://odoo-semantic.viindoo.com/tools)
+- 31 MCP tools + 9 resources (https://odoo-semantic.viindoo.com/tools)
 - Covers Odoo 8 to the latest version (recent releases actively maintained)
 - Categories: model/field/method resolution, version lifecycle, quality/lint,
-  superset discriminators, session state, CSS/SCSS stylesheet, ORM validation
+  superset discriminators, session state, CSS/SCSS stylesheet, ORM validation,
+  automated-test surface (test classes, coverage, JS test suites)
 
 ## Pricing & Install
 

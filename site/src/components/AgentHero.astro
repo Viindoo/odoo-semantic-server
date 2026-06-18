@@ -25,6 +25,7 @@
 // odoo-ai-agents-data.ts -> plugins-data.ts SSOT) - this component hardcodes no
 // capability counts.
 import { PLUGIN_REPO_URL } from '../lib/plugins-data';
+import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
 
 export interface Props {
   /** Skill count (SSOT: plugins-data.ts). */
@@ -108,7 +109,7 @@ const mobileSteps = [
       class="animate-cv-rise mt-16 mb-0 w-full"
       style="animation-delay:.46s;"
       role="img"
-      aria-label="Software delivery pipeline run by the agent team, left to right: 1. intake, 2. fit-gap analysis, 3. solution design, 4. a human-approval decision gate that on reject loops back to solution design, 5. planning, 6. a plan-approval decision gate that on refuse loops back to planning, 7. code, 8. a code-review decision gate that on requested changes loops back to code, 9. pull request, and 10. merge on human confirmation. Every step is grounded on the OSM knowledge graph: 12,400 plus models and 184,000 plus fields across Odoo 8 to the latest version, exposed through 25 MCP tools, so each step is verified against source truth rather than guessed."
+      aria-label={`Software delivery pipeline run by the agent team, left to right: 1. intake, 2. fit-gap analysis, 3. solution design, 4. a human-approval decision gate that on reject loops back to solution design, 5. planning, 6. a plan-approval decision gate that on refuse loops back to planning, 7. code, 8. a code-review decision gate that on requested changes loops back to code, 9. pull request, and 10. merge on human confirmation. Every step is grounded on the OSM knowledge graph: 12,400 plus models and 184,000 plus fields across Odoo 8 to the latest version, exposed through ${TOOL_COUNT} MCP tools, so each step is verified against source truth rather than guessed.`}
     >
       <!-- caption strip -->
       <figcaption class="flex flex-wrap items-center gap-x-3 gap-y-2 font-mono text-[11px] mb-5">
@@ -279,7 +280,7 @@ const mobileSteps = [
             <rect width="1136" height="64" rx="14" fill="url(#bp-bedrock)" stroke="#00B365" stroke-width="1.6" stroke-opacity="0.55" />
             <ellipse cx="568" cy="32" rx="360" ry="46" fill="url(#bp-core-glow)" />
             <text x="24" y="27" font-family="JetBrains Mono, monospace" font-size="12.5" font-weight="700" fill="#E6F2F4">OSM &middot; knowledge graph</text>
-            <text x="24" y="47" font-family="JetBrains Mono, monospace" font-size="10" fill="#7E9BA6">12.4k models &middot; 184k fields &middot; v8 to latest &middot; 25 MCP tools &middot; every step grounded in source truth</text>
+            <text x="24" y="47" font-family="JetBrains Mono, monospace" font-size="10" fill="#7E9BA6">12.4k models &middot; 184k fields &middot; v8 to latest &middot; {TOOL_COUNT} MCP tools &middot; every step grounded in source truth</text>
             <g transform="translate(1010,18)">
               <rect width="104" height="28" rx="7" fill="rgba(0,179,101,0.16)" stroke="#00B365" stroke-width="1" stroke-opacity="0.6" />
               <circle cx="16" cy="14" r="3.5" fill="#00B365" class="animate-cv-pulse" style="transform-origin:16px 14px;" />
@@ -336,7 +337,7 @@ const mobileSteps = [
             <p class="font-mono text-[12px] font-bold text-viindoo-on-dark">OSM &middot; knowledge graph</p>
           </div>
           <p class="mt-1.5 font-mono text-[10px] text-viindoo-on-dark-dim leading-relaxed">
-            12.4k models &middot; 184k fields &middot; v8 to latest &middot; 25 MCP tools &mdash; every step grounded in source truth
+            12.4k models &middot; 184k fields &middot; v8 to latest &middot; {TOOL_COUNT} MCP tools &mdash; every step grounded in source truth
           </p>
         </div>
       </div>
@@ -369,7 +370,7 @@ const mobileSteps = [
       <!-- A5: contextual internal links in the hero -->
       <p class="animate-cv-rise mt-4 text-[13px] text-viindoo-on-dark-dim" style="animation-delay:.32s;">
         See the
-        <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">25 MCP tools and 7 resources</a>
+        <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">{TOOL_COUNT} MCP tools and {RESOURCE_COUNT} resources</a>
         it runs, or the
         <a href="/benchmark" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">40-task accuracy benchmark</a>.
       </p>

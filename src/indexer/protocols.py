@@ -66,6 +66,46 @@ class IndexWriterProtocol(Protocol):
     def write_view_results(self, results: list[ViewParseResult]) -> None: ...
     def write_js_graph_results(self, results: list[JSGraphResult]) -> None: ...
 
+    # --- Test-surface writers (WI-1/WI-3) ------------------------------------
+    def write_test_results(
+        self, results: list, profiles: list[str] | None = None,
+    ) -> None:
+        """Persist TestClass/TestMethod (+addon TestHelper) nodes."""
+        ...
+
+    def write_js_test_results(
+        self, suites: list, profiles: list[str] | None = None,
+    ) -> None:
+        """Persist JsTestSuite nodes (no COVERS_MODEL edge; MED-1)."""
+        ...
+
+    def write_framework_test_helpers(
+        self, helpers: list, profiles: list[str] | None = None,
+    ) -> None:
+        """Persist framework TestHelper nodes (module='@framework', no DEFINED_IN)."""
+        ...
+
+    def reconcile_test_inherits(self, odoo_version: str) -> int:
+        """MERGE INHERITS_TEST edges (version-wide post-pass, idempotent)."""
+        ...
+
+    def reconcile_test_coverage(self, odoo_version: str) -> int:
+        """MERGE COVERS_MODEL/FIELD/METHOD edges to is_definition nodes."""
+        ...
+
+    def finalize_is_helper(self, odoo_version: str) -> int:
+        """Promote subclassed no-test-method TestClass nodes to is_helper."""
+        ...
+
+    def gc_stale_test_nodes(
+        self,
+        odoo_version: str,
+        live_module_names: list[str],
+        live_file_paths: list[str] | None = None,
+    ) -> int:
+        """Delete stale TestClass/TestMethod nodes on --full cleanup (MISSED-2/M6)."""
+        ...
+
     # --- Spec layer writers --------------------------------------------------
     def write_core_symbols(self, symbols: list[CoreSymbolInfo]) -> None: ...
     def write_lint_rules(self, rules: list[LintRuleInfo]) -> None: ...

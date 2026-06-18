@@ -30,6 +30,7 @@ import SiteFooter from '../components/SiteFooter.astro';
 import AgentHero from '../components/AgentHero.astro';
 import AgentPersonaCards from '../components/AgentPersonaCards.astro';
 import { PLUGIN_REPO_URL } from '../lib/plugins-data';
+import { TOOL_COUNT, RESOURCE_COUNT } from '../lib/constants';
 import {
   agents,
   skillGroups,
@@ -245,7 +246,7 @@ const featuredCommands = commands.slice(0, 3);
           Odoo AI Agent Team provides seven specialist agents: an architect (Opus-tier, design-gate), five engineering
           agents (Sonnet-tier), and two UI agents with live browser tools. Each agent queries the indexed knowledge
           graph on every run &mdash; not its training memory. They cross-link through
-          <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">25 MCP tools</a>.
+          <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">{TOOL_COUNT} MCP tools</a>.
         </p>
       </div>
 
@@ -413,7 +414,7 @@ const featuredCommands = commands.slice(0, 3);
         <div class="cv-reveal" style="transition-delay:.1s;">
           <p class="text-viindoo-on-dark-muted leading-relaxed">
             One install pulls the companion connector automatically. Agents read
-            <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">25 MCP tools and 7 resources</a>
+            <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">{TOOL_COUNT} MCP tools and {RESOURCE_COUNT} resources</a>
             over a single namespace, against an index of 12,400+ models and 184,000+ fields &mdash; cross-repo,
             cross-version, inheritance already resolved, covering Odoo 8 to the latest version.
           </p>
@@ -448,7 +449,7 @@ const featuredCommands = commands.slice(0, 3);
           Odoo AI Agent Team is not a replacement for your IDE language server or local context tools. It is the
           orchestration layer that fires the right indexed query at the right moment. Here is how it relates to the
           tools developers already use &mdash; see the
-          <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">25 MCP tools and 7 resources</a> it runs.
+          <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">{TOOL_COUNT} MCP tools and {RESOURCE_COUNT} resources</a> it runs.
         </p>
       </div>
 
@@ -469,7 +470,7 @@ const featuredCommands = commands.slice(0, 3);
             </tr>
             <tr class="border-b border-white/[0.06]">
               <td class="p-5 font-mono text-viindoo-on-dark">Odoo Semantic MCP</td>
-              <td class="p-5 text-viindoo-on-dark-muted">The knowledge graph &mdash; 25 tools, 7 resources</td>
+              <td class="p-5 text-viindoo-on-dark-muted">The knowledge graph &mdash; {TOOL_COUNT} tools, {RESOURCE_COUNT} resources</td>
               <td class="p-5 text-viindoo-on-dark-muted">Auto-installed as a dependency</td>
             </tr>
             <tr class="border-b border-white/[0.06]">

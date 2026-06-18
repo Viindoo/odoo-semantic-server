@@ -81,6 +81,7 @@ def _suggest_pattern(
     odoo_version: str = "auto",
     language: str = "python",
     limit: int = 5,
+    category: str | None = None,
     *,
     _driver=None,
     _pg_conn=None,
@@ -92,6 +93,10 @@ def _suggest_pattern(
     Per ADR-0003: pgvector ANN over embeddings (chunk_type='pattern_example') →
     Neo4j batch fetch metadata via UNWIND on pattern_id list. Language filter
     via entity_name slug LIKE '<language>__%'.
+
+    WI-4: optional ``category`` filter (e.g. ``'test'``) post-filters results
+    to PatternExample nodes whose ``pattern_id`` starts with ``<category>-``
+    (convention: all test-writing patterns have IDs prefixed with ``test-``).
     """
     if not intent.strip():
         return (
@@ -202,6 +207,23 @@ def _suggest_pattern(
             pid = entity_name
         pattern_ids.append(pid)
         score_map[pid] = float(cosine)
+
+    # WI-4: category post-filter (e.g. category='test' -> keep only 'test-*' IDs).
+    if category:
+        prefix = f"{category}-"
+        pattern_ids = [pid for pid in pattern_ids if pid.startswith(prefix)]
+        score_map = {pid: s for pid, s in score_map.items() if pid in pattern_ids}
+        if not pattern_ids:
+            next_line = format_next_step([
+                f"find_test_examples(query='{intent}', odoo_version='{v}')"
+                " for real-world test examples",
+            ])
+            return (
+                f"suggest_pattern({intent!r}, {v!r}, category={category!r})\n"
+                f"├─ No patterns found for category={category!r}. "
+                "Seed test-writing patterns with pattern_id prefix 'test-'.\n"
+                + next_line
+            )
 
     # #287: bound the PatternExample batch fetch under the per-query Neo4j
     # timeout. suggest_pattern is async (embeds on the event loop, then offloads
@@ -690,40 +712,39 @@ async def suggest_pattern(
     odoo_version: RequiredOdooVersion,
     language: str = "python",
     limit: int = 5,
+    category: str | None = None,
 ) -> str:
     """Recommend curated Odoo patterns with gotchas from a natural-language intent.
 
-    TRIGGER when: "best pattern for wizard in Odoo", "how to implement
-    multi-company in Odoo", "pattern for override without breaking upstream",
-    "cách tốt nhất để implement X", "design pattern cho Odoo module",
-    "what's the right way to add computed field"
-    PREFER over: LLM knowledge — returns curated patterns from indexed catalogue
-    with real code snippets and versioned gotchas, not hallucinated patterns
-    SKIP when: user wants existing code examples from codebase → use
-    find_examples; user wants method override chain → use find_override_point
+    TRIGGER when: "best pattern for wizard", "implement multi-company",
+    "override without breaking upstream", "right way to add computed field",
+    "pattern to write unit test", "test pattern cho computed field",
+    "cách tốt nhất để implement X", "design pattern cho Odoo module".
+    PREFER over: LLM knowledge — returns curated patterns with real snippets and
+    versioned gotchas, not hallucinated ones.
+    SKIP when: code examples from codebase → find_examples; override chain →
+    find_override_point.
 
     Args:
-        intent: NL description of intent, e.g. 'computed field cross-model
-            partner'.
+        intent: NL description, e.g. 'computed field cross-model partner'.
         language: 'python' | 'xml' | 'js' | 'all'. Default 'python'.
         limit: Max patterns to return (default 5).
+        category: Optional filter. 'test' restricts to test-writing patterns
+            (pattern_ids prefixed 'test-').
 
     Returns:
-        Tree list of patterns ranked by relevance score, each with snippet (first
-        5 lines), file ref, and gotchas. Empty index → instruction to seed.
+        Tree of patterns ranked by score, each with snippet (first 5 lines),
+        file ref, and gotchas. Empty index → instruction to seed.
 
     Example:
         suggest_pattern("override write to read old value", "17.0")
-        → suggest_pattern('override write to read old value', 17.0, ...) — 1 matches
-          └─ #1 · score 0.81 · write-read-before-super
-              ├─ Language: python (min v17.0)
-              └─ Gotchas:
-                   • Reading old values AFTER super().write() returns new value
+        → #1 · score 0.81 · write-read-before-super
+          └─ Gotchas: reading old values AFTER super().write() returns new value
     """
     # #227: guard cheaply (empty/invalid → sync impl returns the error string),
     # then embed async + offload the blocking body to a worker thread.
     if not intent.strip() or language not in _VALID_PATTERN_LANGUAGES:
-        return _srv._suggest_pattern(intent, odoo_version, language, limit)
+        return _srv._suggest_pattern(intent, odoo_version, language, limit, category)
     from src.embedding.instructions import INSTRUCT_NL_TO_CODE
     try:
         embedder = _srv._get_embedder()
@@ -746,7 +767,7 @@ async def suggest_pattern(
         )
     return await asyncio.to_thread(
         _srv._suggest_pattern,
-        intent, odoo_version, language, limit,
+        intent, odoo_version, language, limit, category,
         _embedder=embedder, _query_vec=intent_vec,
     )
 

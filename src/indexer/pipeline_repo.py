@@ -36,10 +36,12 @@ from src.indexer import incremental as _incremental
 from src.indexer import (
     parser_css,
     parser_js,
+    parser_js_test,
     parser_less,
     parser_python,
     parser_qweb,
     parser_scss,
+    parser_test,
     parser_xml,
 )
 from src.indexer.models import StylesheetInfo, ViewParseResult
@@ -232,6 +234,13 @@ def _index_repo(
         for mods in registry.values()
         for info in mods.values()
     }
+    # Live module NAMES per version (registry keys) — used by gc_stale_test_nodes,
+    # whose stale predicate is `tm.module IN $live_modules` (module names, not paths,
+    # since TestClass/TestMethod nodes carry module NAME not relative path). Computed
+    # from the FULL scan (pre-incremental) so a --full GC sees every live module.
+    live_module_names_by_version: dict[str, list[str]] = {
+        ver: list(mods.keys()) for ver, mods in registry.items()
+    }
     # Repo dir name (m.repo in Neo4j) — derived the same way registry.py does it.
     repo_root_name: str = Path(local_path).name
 
@@ -291,6 +300,10 @@ def _index_repo(
     py_results = []
     view_results: list[ViewParseResult] = []
     js_graph_results = []
+    # WI-1: test surface parse results (one per module)
+    test_results = []
+    # WI-3: JS test suites (JsTestSuiteInfo, collected per module)
+    js_test_suites = []
     # CSS/SCSS (WI-A1, ADR-0025)
     all_stylesheet_infos: list[StylesheetInfo] = []
 
@@ -302,6 +315,7 @@ def _index_repo(
     total_owl_comps = 0
     total_stylesheets = 0
     total_embed_calls = 0
+    total_js_test_suites = 0
 
     # Pre-flight: check whether embedding is possible (once, not per module).
     embed_enabled = pg_conn is not None and embedder is not None
@@ -332,6 +346,15 @@ def _index_repo(
             # Python models
             py_result = parser_python.parse_module(info)
             py_results.append(py_result)
+
+            # WI-1: test surface extraction (era-gated internally by parse_module)
+            test_result = parser_test.parse_module(info)
+            test_results.append(test_result)
+
+            # WI-3: JS frontend test extraction (Hoot/QUnit/tour from static/tests/)
+            js_suites = parser_js_test.parse_module_js_tests(info)
+            js_test_suites.extend(js_suites)
+            total_js_test_suites += len(js_suites)
 
             # XML views (ir.ui.view records) — rng_root enables version-exact
             # RelaxNG validation; None when no Odoo source RNG dir is available.
@@ -384,6 +407,19 @@ def _index_repo(
                 chunks.extend(make_css_chunks(css_chunks_mod, info))
                 chunks.extend(make_scss_chunks(scss_chunks_mod, info))
                 chunks.extend(make_less_chunks(less_chunks_mod, info))
+                # WI-1/WI-3 (C2): append test + JS-test chunks so find_test_examples
+                # (AC5) has test_method/test_class/js_test chunks to retrieve. Without
+                # these the test-chunk makers exist but are never called -> the tool
+                # returns nothing. test_result / js_suites are in scope from this loop.
+                from src.indexer.writer_pgvector import (  # noqa: PLC0415
+                    make_js_test_chunks,
+                    make_test_chunks,
+                )
+                chunks.extend(make_test_chunks(mod_name, version, test_result))
+                chunks.extend(make_js_test_chunks(
+                    js_suites, mod_name, version,
+                    repo=info.repo, repo_id=info.repo_id,
+                ))
                 # F4: pgvector stamps the SAME single owning profile as Neo4j
                 # (owning_profile == _profiles_arr[0]), not the run profile_name
                 # directly — single source of truth, no split-brain.
@@ -404,6 +440,15 @@ def _index_repo(
     # _owning_profiles() for the full rationale + the F-2/F-6 non-empty guard.
     writer.write_results(py_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
+    # WI-1: write test surface nodes (TestClass/TestMethod) alongside model nodes.
+    # test_results collected per-module inside the main loop (see below) then written here.
+    # Era-gated dispatch is handled by parser_test.parse_module internally.
+    if test_results:
+        writer.write_test_results(test_results, profiles=_profiles_arr)
+    # WI-3: write JsTestSuite nodes for frontend test files (Hoot/QUnit/tour).
+    # js_test_suites accumulated per-module in the loop above.
+    if js_test_suites:
+        writer.write_js_test_results(js_test_suites, profiles=_profiles_arr)
     # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist.
     # ADR-0037: pass repo_root so file_path (a MERGE-key component) is stored
     # repo-relative — keeps it consistent with Stylesheet + the cleanup cypher.
@@ -451,6 +496,44 @@ def _index_repo(
         # maximises the chance that newly indexed parents already resolved some
         # of the pending placeholders so they will be absent from the graph.
         writer.gc_unresolved_placeholders(odoo_version)
+
+        # Test-node GC (WI-1, MISSED-2): remove TestClass/TestMethod nodes whose
+        # owning module no longer exists on disk (module-level) OR whose test FILE
+        # was deleted inside a still-present module (file-level, M6). Risk-gated
+        # identically to module GC above (only with >=1 live module) so a silent
+        # empty scan never wipes the test surface. Same odoo_version scope.
+        if len(live_paths) >= 1:
+            # Live test FILE paths the parser actually emitted this run, grouped by
+            # version (only from the changed-module subset on incremental runs).
+            # A TestClass whose file_path is absent here (but module IS live and
+            # was re-parsed) had its file deleted -> file-level prune removes orphan.
+            live_test_files_by_version: dict[str, set[str]] = {}
+            # Defect I fix: live_modules_for_file_gc = ONLY modules actually re-parsed
+            # this run (test_results is the changed-module subset on incremental).
+            # Using the full live_module_names would mark unchanged modules' test files
+            # as absent (they were never re-emitted) and delete valid nodes.
+            live_modules_for_file_gc_by_ver: dict[str, set[str]] = {}
+            for _tr in test_results:
+                _ver = _tr.module.odoo_version
+                _bucket = live_test_files_by_version.setdefault(_ver, set())
+                live_modules_for_file_gc_by_ver.setdefault(_ver, set()).add(
+                    _tr.module.name
+                )
+                for _tc in _tr.test_classes:
+                    if _tc.file_path:
+                        _bucket.add(_tc.file_path)
+            for _ver, _live_names in live_module_names_by_version.items():
+                writer.gc_stale_test_nodes(
+                    _ver, _live_names,
+                    live_file_paths=sorted(live_test_files_by_version.get(_ver, set())),
+                    # Defect H fix: scope both prune queries to this repo so
+                    # another repo's same-named modules are never touched.
+                    repo=repo_root_name,
+                    # Defect I fix: file-level prune restricted to re-parsed modules.
+                    live_modules_for_file_gc=sorted(
+                        live_modules_for_file_gc_by_ver.get(_ver, set())
+                    ),
+                )
     # === End Module GC ===
 
     # NOTE: reconcile_same_name_inherits was moved from here to index_profile

@@ -2,7 +2,7 @@
 
 AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 10,000+ models and 100,000+ fields across Odoo v14-v19 (as of 2026-06). No running Odoo database required.
 
-**10,000+ models** | **100,000+ fields** | **v14-v19 (actively maintained)** | **25 MCP tools** | **7 resources** | **95% vs 43% accuracy on real tasks** | **Free: 30 queries/day**
+**10,000+ models** | **100,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free: 30 queries/day**
 
 ---
 
@@ -15,7 +15,7 @@ When AI coding tools (Claude Code, Codex, Gemini) work with Odoo, they routinely
 - Cannot trace the XPath override chain of a view across multiple modules
 - Change a field like `amount_total` with no knowledge of what breaks downstream
 
-OSM fixes this by indexing the full Odoo codebase (cross-repo, cross-version) into a graph database and vector store, then exposing 25 query tools over MCP so any AI client can ground its answers against real source truth.
+OSM fixes this by indexing the full Odoo codebase (cross-repo, cross-version) into a graph database and vector store, then exposing 31 query tools over MCP so any AI client can ground its answers against real source truth.
 
 ---
 
@@ -196,9 +196,9 @@ OSM is not a replacement for IDE language servers or local code analysis tools. 
 
 ---
 
-## MCP Tools (25)
+## MCP Tools (31)
 
-OSM exposes 25 tools grouped by function. All tools are read-only against the knowledge index. Full routing matrix with trigger conditions and persona mapping: [mcp-tool-routing.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/reference/mcp-tool-routing.md).
+OSM exposes 31 tools grouped by function. All tools are read-only against the knowledge index. Full routing matrix with trigger conditions and persona mapping: [mcp-tool-routing.md](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/reference/mcp-tool-routing.md).
 
 ### Core tools (10)
 
@@ -273,9 +273,20 @@ Fixed domain:
 |------|----------------|
 | `profile_inspect` | Which repos and modules make up this indexing profile? |
 
+### Test surface tools (6)
+
+| Tool | What it answers |
+|------|----------------|
+| `find_test_examples` | Where is this test pattern used in the codebase? |
+| `tests_covering` | Which tests cover a model, field, or method? |
+| `test_class_inspect` | Full inheritance chain, setUp methods, and subclasses of a test class? |
+| `test_base_classes` | Framework base-class menu and cursor/transaction contract? |
+| `test_coverage_audit` | Which fields/methods have zero test coverage in a module? |
+| `js_test_inspect` | Frontend JS test suites (Hoot/QUnit/tour) in a module? |
+
 ---
 
-## MCP Resources (7)
+## MCP Resources (9)
 
 Resources are URI templates for bookmark-stable entity reads via the `odoo://` URI scheme. The `{version}` segment accepts `auto`, `default`, or `latest` to resolve against the API key's active version. Resource bodies are cached (LRU 1000 entries, 300s TTL, per resolved version).
 
@@ -288,6 +299,14 @@ Resources are URI templates for bookmark-stable entity reads via the `odoo://` U
 | `odoo://{version}/module/{name}` | Module overview (same as `describe_module`) | text/markdown |
 | `odoo://{version}/pattern/{pattern_id}` | Curated pattern snippet with gotchas | text/markdown |
 | `odoo://{version}/stylesheet/{module}/{file_path*}` | Raw CSS/SCSS source | text/css / text/x-scss |
+| `odoo://{version}/test/{module}/{class_name}` | Test class definition, inheritance, and methods | text/markdown |
+| `odoo://{version}/testcoverage/{model}` | Test coverage audit for a model | text/markdown |
+
+---
+
+## Test Surface Indexing
+
+OSM now indexes the entire automated-test surface across Odoo v8-v19: test classes, test methods, test helpers, and frontend JS test suites (Hoot, QUnit, web tours). This includes class inheritance chains, static field/method coverage, and framework base-class semantics. Agents can now ground test decisions against real test patterns, discover what tests exist, and understand cursor/transaction contracts — eliminating the need to reinvent test approaches or misuse `cr.commit()` in an isolation context. Test metadata is indexed as Neo4j nodes (TestClass/TestMethod/TestHelper/JsTestSuite) with coverage edges (COVERS_MODEL/COVERS_FIELD/COVERS_METHOD) linked to the production model graph. All 6 test tools + 2 test resources are zero-migration additions.
 
 ---
 
@@ -319,7 +338,7 @@ The following reference documents cover installation, tool parameters, and advan
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | Developer setup, running tests, Local E2E, workflow |
 | [`CHANGELOG.md`](CHANGELOG.md) | Full release notes |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
-| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/reference/mcp-tool-routing.md) | Full routing matrix: 25 tools, trigger conditions, persona mapping |
+| [MCP tool routing matrix](https://github.com/Viindoo/odoo-mcp-client/blob/master/plugins/odoo-ai-agents/docs/reference/mcp-tool-routing.md) | Full routing matrix: 31 tools, trigger conditions, persona mapping |
 
 ---
 
@@ -327,7 +346,7 @@ The following reference documents cover installation, tool parameters, and advan
 
 **What is the difference between OSM and an Odoo language server like odoo-ls?**
 
-An Odoo language server is built for IDE features: hover, go-to-definition, autocomplete. It works on a single local checkout. OSM is built for AI query tools: it indexes 12 Odoo versions in one graph, exposes 25 query tools over MCP, and answers questions like "what breaks if I change this field" across all module extensions in the graph. Both can be active simultaneously - odoo-ls checks syntax in your IDE while OSM answers semantic questions that require the full cross-version index.
+An Odoo language server is built for IDE features: hover, go-to-definition, autocomplete. It works on a single local checkout. OSM is built for AI query tools: it indexes 12 Odoo versions in one graph, exposes 31 query tools over MCP, and answers questions like "what breaks if I change this field" across all module extensions in the graph. Both can be active simultaneously - odoo-ls checks syntax in your IDE while OSM answers semantic questions that require the full cross-version index.
 
 **Does OSM require a running Odoo instance?**
 
@@ -353,7 +372,7 @@ The MCP client library (`odoo-mcp-client`, the package you install locally) is M
 
 ## Status
 
-Latest release: **v0.14.2**. Tool count: **25** (unchanged since v0.8). See [CHANGELOG.md](CHANGELOG.md) for full release notes.
+Latest release: **v0.15.0**. Tool count: **31** (test surface index adds 6 tools + 2 resources). See [CHANGELOG.md](CHANGELOG.md) for full release notes.
 
 ---
 

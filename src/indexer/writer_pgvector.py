@@ -13,10 +13,12 @@ from .embedder import EmbedderClient, estimate_tokens, split_by_token_budget
 from .models import (
     CSSChunk,
     JSChunk,
+    JsTestSuiteInfo,
     ModuleInfo,
     ParseResult,
     PatternExample,
     SCSSChunk,
+    TestParseResult,
     ViewParseResult,
 )
 
@@ -427,6 +429,145 @@ def make_less_chunks(
             repo_id=repo_id,
         )
         chunks.extend(_token_split_chunk(_proto, c.content, c.chunk_idx))
+    return chunks
+
+
+def make_test_chunks(
+    module: str,
+    version: str,
+    test_result: TestParseResult,
+) -> list[EmbeddingChunk]:
+    """Convert TestParseResult into EmbeddingChunks for the pgvector store.
+
+    Uses an asymmetric intent-header text shape (design §3.2) so NL queries like
+    "how is amount_total tested" match against the header, not just raw method code:
+
+        [test] sale.order.amount_total via TestSaleOrder.test_amount_total (17.0, transaction)
+        @tagged('post_install','-at_install')
+        def test_amount_total_computed(self): ...
+
+    chunk_type:
+    - 'test_method' for individual test methods (test_* prefix)
+    - 'test_class' for whole class headers (setUpClass + docstring)
+    """
+    chunks: list[EmbeddingChunk] = []
+    mod = test_result.module
+    repo = mod.repo
+    repo_id = mod.repo_id
+
+    for tc in test_result.test_classes:
+        fp = tc.file_path  # already repo-relative from parser
+
+        # test_class chunk: header + base_classes + docstring
+        base_str = ", ".join(tc.base_classes_ordered) if tc.base_classes_ordered else "object"
+        class_header_lines = [
+            f"[test class] {tc.name}({base_str}) in {module} ({version}, {tc.test_type})",
+        ]
+        if tc.tagged:
+            class_header_lines.append(f"@tagged({', '.join(repr(t) for t in tc.tagged)})")
+        if tc.docstring:
+            class_header_lines.append(tc.docstring)
+        class_content = "\n".join(class_header_lines)
+        chunks.extend(_sliding(
+            class_content,
+            f"{tc.name}.__class__",
+            "test_class",
+            module, version, fp, None,
+            line_start=tc.line,
+            repo=repo, repo_id=repo_id,
+        ))
+
+        # test_method chunks: one per test_* method
+        for meth in tc.methods:
+            if not meth.name.startswith("test"):
+                continue
+            # Build intent header from model_refs[0] and field_refs
+            model_hint = meth.model_refs[0] if meth.model_refs else None
+            field_hint = meth.field_refs[0] if meth.field_refs else None
+            if model_hint and field_hint:
+                coverage_str = f"{model_hint}.{field_hint}"
+            elif model_hint:
+                coverage_str = model_hint
+            else:
+                coverage_str = "<no model ref>"
+
+            tagged_str = ""
+            if meth.tagged:
+                tagged_str = f"\n@tagged({', '.join(repr(t) for t in meth.tagged)})"
+            header = (
+                f"[test] {coverage_str} via {tc.name}.{meth.name} ({version}, {tc.test_type})"
+                f"{tagged_str}"
+            )
+            body = meth.source_code or f"def {meth.name}(self): ..."
+            content = f"{header}\n{body}"
+            chunks.extend(_sliding(
+                content,
+                f"{tc.name}.{meth.name}",
+                "test_method",
+                module, version, fp, model_hint,
+                line_start=meth.line,
+                repo=repo, repo_id=repo_id,
+            ))
+
+    return chunks
+
+
+def make_js_test_chunks(
+    suites: list[JsTestSuiteInfo],
+    module: str,
+    version: str,
+    repo: str | None = None,
+    repo_id: int | None = None,
+) -> list[EmbeddingChunk]:
+    """Convert JsTestSuiteInfo objects into EmbeddingChunks for the pgvector store (WI-3).
+
+    Produces one chunk per JsTestSuiteInfo (file-level, matching §4.4 design decision).
+    The intent-header text shape enables NL queries like "Hoot test for account.move":
+
+        [js:hoot] account/static/tests/foo.test.js (18.0)
+        describe: X2many buttons
+        tests: renders add line, handles keyboard input
+        mounts: account.move, account.account
+        tags: desktop
+
+    chunk_type='js_test' (already in VALID_CHUNK_TYPES in constants.py).
+    """
+    chunks: list[EmbeddingChunk] = []
+    for suite in suites:
+        parts = [
+            f"[js:{suite.framework}] {suite.file_path} ({version})",
+        ]
+        if suite.describe_blocks:
+            parts.append(f"describe: {', '.join(suite.describe_blocks)}")
+        if suite.test_names:
+            # Limit to first 10 test names to keep chunk size reasonable
+            names_preview = suite.test_names[:10]
+            parts.append(f"tests: {', '.join(names_preview)}")
+            if len(suite.test_names) > 10:
+                parts.append(f"(+ {len(suite.test_names) - 10} more tests)")
+        if suite.mounts:
+            parts.append(f"mounts: {', '.join(suite.mounts)}")
+        if suite.tags:
+            parts.append(f"tags: {', '.join(suite.tags)}")
+        if suite.mock_models:
+            parts.append(f"mock_models: {', '.join(suite.mock_models[:5])}")
+
+        content = "\n".join(parts)
+        _proto = EmbeddingChunk(
+            chunk_type="js_test",
+            module=module,
+            odoo_version=version,
+            entity_name=suite.file_path,
+            model_name=suite.mounts[0] if suite.mounts else None,
+            file_path=suite.file_path,
+            chunk_idx=0,
+            content="",
+            repo=repo,
+            repo_id=repo_id,
+            line_start=suite.line,
+        )
+        chunks.extend(_token_split_chunk(_proto, content, 0))
+
     return chunks
 
 

@@ -422,6 +422,14 @@ class _CapturingWriter:
     def write_js_graph_results(self, *_a, profiles=None, **_kw):
         self._rec(profiles=profiles)
 
+    # WI-1/WI-3: _index_repo now also calls these test-surface writers. Stubs
+    # record the profiles= so the provenance contract is exercised here too.
+    def write_test_results(self, *_a, profiles=None, **_kw):
+        self._rec(profiles=profiles)
+
+    def write_js_test_results(self, *_a, profiles=None, **_kw):
+        self._rec(profiles=profiles)
+
     def write_stylesheets(self, *_a, profiles=None, **_kw):
         self._rec(profiles=profiles)
 

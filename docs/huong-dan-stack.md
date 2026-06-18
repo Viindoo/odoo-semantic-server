@@ -24,7 +24,7 @@ Indexer Pipeline
                               │
                               ▼
                      FastMCP Server :8002
-                    @mcp.tool() × 25 tools
+                    @mcp.tool() × 31 tools
                               │  HTTP / MCP protocol
                               ▼
               Claude Code / VS Code / Codex / Gemini

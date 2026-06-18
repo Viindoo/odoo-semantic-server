@@ -194,6 +194,72 @@ def open_production_pg():
 # head_sha advance order (ADR-0007) and provenance stamping are byte-identical.
 
 
+def _profiles_for_run(repos: list[dict], profile_name: str) -> list[str]:
+    """Return the deduped OWNING-profile array for the framework TestHelper seeding.
+
+    Mirrors per-repo ADR-0034 provenance (``_index_repo`` stamps each node with
+    ``_owning_profiles(repo, profile_name, repo_root_name)``). Framework helpers are
+    cross-repo (per-version), so we take the union of every repo's owner. Falls back
+    to ``[profile_name]`` if no repo yields an owner. NEVER returns ``[]`` (the choke
+    denies profile=[] nodes to all scoped tenants).
+    """
+    owners: list[str] = []
+    seen: set[str] = set()
+    for repo in repos:
+        try:
+            repo_root_name = Path(repo.get("local_path", "")).name
+            for owner in _owning_profiles(repo, profile_name, repo_root_name):
+                if owner and owner not in seen:
+                    owners.append(owner)
+                    seen.add(owner)
+        except Exception:  # noqa: BLE001 — defensive; never break seeding on a bad repo row
+            continue
+    return owners or [profile_name]
+
+
+def reconcile_test_surface(
+    writer: IndexWriterProtocol,
+    versions: list[str],
+    *,
+    framework_profiles: list[str],
+) -> None:
+    """Version-wide post-pass that builds ALL test-surface EDGES + helpers (WI-1, C1).
+
+    The TestClass/TestMethod/JsTestSuite NODES are written per-repo in _index_repo,
+    but the EDGES (INHERITS_TEST, COVERS_*) and is_helper promotion can only be built
+    VERSION-WIDE after all repos of a version are written (an extender test file in
+    repo A may subclass a helper in repo B; an INHERITS_TEST edge needs both nodes
+    present). Mirrors reconcile_same_name_inherits. Order matters:
+      1. seed framework TestHelper nodes (so INHERITS_TEST resolves framework bases
+         like TransactionCase),
+      2. reconcile_test_inherits (builds INHERITS_TEST edges),
+      3. finalize_is_helper (counts inbound INHERITS_TEST edges - AFTER inherits),
+      4. reconcile_test_coverage (COVERS_* edges to is_definition nodes).
+    All passes are idempotent (MERGE) and non-fatal on error.
+
+    ADR-0034 provenance: framework TestHelper nodes are stamped with the OWNING
+    profile array of the run (mirrors every other node from the checkout). When the
+    shared CE/base profile is indexed, these helpers carry the shared profile ->
+    visible to ALL tenants through the choke (TransactionCase etc. are public Odoo
+    source, not tenant data). A non-empty profile[] is REQUIRED: the choke denies
+    profile=[] nodes to every scoped tenant (size(profile)>0 guard), so seeding with
+    [] would make test_base_classes return nothing for non-admin keys.
+
+    Extracted as a module-level function so the pipeline-level e2e test can drive the
+    EXACT production wiring (red-before-green: this would build zero edges on the old
+    orphaned-reconcile state because nothing called it).
+    """
+    from src.indexer.parser_odoo_core import seed_framework_test_helpers
+    for rv in versions:
+        writer.write_framework_test_helpers(
+            seed_framework_test_helpers(rv),
+            profiles=framework_profiles,
+        )
+        writer.reconcile_test_inherits(rv)
+        writer.finalize_is_helper(rv)
+        writer.reconcile_test_coverage(rv)
+
+
 def index_profile(
     pg_conn,
     *,
@@ -448,6 +514,16 @@ def index_profile(
                 writer.reconcile_same_name_inherits(_rv)
             # === End post-pass reconciliation ===
 
+            # === Post-pass test-surface reconciliation (WI-1, C1 wiring) ===
+            # Extracted into reconcile_test_surface() so the pipeline-level e2e test
+            # exercises the SAME production code path (not a copy) - red-before-green.
+            reconcile_test_surface(
+                writer,
+                sorted(_indexed_versions),
+                framework_profiles=_profiles_for_run(repos, profile_name),
+            )
+            # === End test-surface reconciliation ===
+
             # Auto-reseed pattern catalogue (W2-7).
             # Hash-gated via _SeedMeta sentinel (W2-6) - cheap when patterns.json unchanged.
             # Per --no-embed semantic: if embedder is None, pattern embedding is also skipped.
@@ -582,7 +658,7 @@ def index_core(
     from src.indexer.diff_engine import compute_diff
     from src.indexer.parser_cli import parse_cli_commands, parse_cli_flags
     from src.indexer.parser_lint_rules import parse_lint_rules_for_version
-    from src.indexer.parser_odoo_core import parse_odoo_core
+    from src.indexer.parser_odoo_core import parse_odoo_core, seed_framework_test_helpers
     from src.indexer.parser_tools_symbols import load_tools_symbols
 
     _logger.info("index_core: version=%s source_root=%s", odoo_version, source_root)
@@ -636,6 +712,18 @@ def index_core(
     flags = parse_cli_flags(source_root, odoo_version, static_data_dir=static_data_dir)
     writer.write_cli_flags(flags)
     _logger.info("index_core: wrote %d CLIFlag nodes", len(flags))
+
+    # 4b. Framework TestHelper seeding (WI-1, C1 wiring): seed the built-in Odoo
+    # test base classes (TransactionCase, HttpCase, ...) as TestHelper nodes with
+    # module='@framework' so INHERITS_TEST edges from addon test classes can resolve
+    # to them. Seeded here (the core path) AND in index_profile (so a profile-only
+    # run that does not call index_core is still complete). MERGE-idempotent.
+    framework_helpers = seed_framework_test_helpers(odoo_version)
+    writer.write_framework_test_helpers(framework_helpers)
+    _logger.info(
+        "index_core: seeded %d framework TestHelper nodes (@framework)",
+        len(framework_helpers),
+    )
     cli_curate_status = _read_spec_curate_status(
         "cli_flags", odoo_version, static_data_dir,
     )
