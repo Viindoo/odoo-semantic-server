@@ -222,10 +222,13 @@ def _resolve_cache_ttl() -> float:
 def get_cache() -> ResourceCache:
     """Return the process-wide :class:`ResourceCache` singleton.
 
-    Created lazily on first call so the TTL can pick up the live overlay
-    value (set via the admin-settings API) without requiring a process
-    restart for the first cache reader.  Re-tunes after this point require
-    explicit :func:`reset_cache`.
+    Created lazily on first call (after the Postgres pool is initialised) so
+    the overlay-backed TTL is resolved at runtime rather than at import time.
+    The TTL is read ONCE when the singleton is built and then frozen for the
+    life of the process; a later change to ``mcp.resource_cache_ttl_seconds``
+    does NOT re-tune a live cache, which is why that setting declares
+    ``requires_restart=True``.  Tests may force a re-read via
+    :func:`reset_cache`.
     """
     global _CACHE
     if _CACHE is None:
@@ -236,11 +239,13 @@ def get_cache() -> ResourceCache:
 
 
 def reset_cache() -> None:
-    """Drop the singleton so the next :func:`get_cache` re-reads the TTL.
+    """Drop the singleton so the next :func:`get_cache` rebuilds it with a
+    freshly-resolved TTL.
 
-    Intended for test teardown or after an admin tunes
-    ``mcp.resource_cache_ttl_seconds``.  Not currently auto-called on
-    setting change — operators may schedule a worker restart instead.
+    Intended for test teardown.  It is NOT auto-called when an admin tunes
+    ``mcp.resource_cache_ttl_seconds`` (the MCP server and web-UI run in
+    separate processes), so applying a new TTL in production requires an MCP
+    restart — hence that setting declares ``requires_restart=True``.
     """
     global _CACHE
     with _CACHE_INIT_LOCK:

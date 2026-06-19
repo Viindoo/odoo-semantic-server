@@ -100,3 +100,29 @@ def test_setup_indexes_still_full_schema(fake_writer):
         assert label in joined
     # And it issues far more than the 3 pattern indexes.
     assert len(fake.statements) > 3
+
+
+def test_pattern_indexes_single_source_of_truth(fake_writer):
+    """Drift guard (review #334 finding 2): both setup_indexes() and
+    setup_pattern_indexes() must draw their PatternExample statements from the
+    shared ``_PATTERN_EXAMPLE_INDEX_STATEMENTS`` constant, so a new
+    PatternExample index can never be added to one path but missed by the other.
+    """
+    const = list(writer_mod._PATTERN_EXAMPLE_INDEX_STATEMENTS)
+    # The golden expectation must itself match the shared constant.
+    assert const == _EXPECTED_PATTERN_INDEXES
+
+    w, fake = fake_writer
+
+    # The PatternExample subset of the FULL schema setup == the shared constant.
+    w.setup_indexes()
+    pattern_subset = [s for s in fake.statements if "PatternExample" in s]
+    assert pattern_subset == const, (
+        "setup_indexes() PatternExample statements drifted from "
+        "_PATTERN_EXAMPLE_INDEX_STATEMENTS"
+    )
+
+    # The patterns-only path emits exactly the same constant, nothing else.
+    fake.statements.clear()
+    w.setup_pattern_indexes()
+    assert fake.statements == const

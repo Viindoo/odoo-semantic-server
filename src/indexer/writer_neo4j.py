@@ -58,6 +58,22 @@ def _chunked(items, size):
         yield items[i:i + size]
 
 
+# PatternExample indexes (M4.6 pattern layer, ADR-0003) — single source of truth
+# shared by setup_indexes() (full schema) and setup_pattern_indexes()
+# (patterns-only reseed) so the two paths can never drift. Adding a
+# PatternExample index here updates BOTH (CLAUDE.md: duplicate = SoT conflict);
+# tests/test_writer_setup_pattern_indexes.py guards that setup_indexes() still
+# contains every statement in this tuple.
+_PATTERN_EXAMPLE_INDEX_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+    " ON (n.pattern_id)",
+    "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+    " ON (n.language, n.odoo_version_min)",
+    "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+    " ON (n.category)",
+)
+
+
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
         # notifications_min_severity=WARNING is a Bolt-level, SERVER-SIDE filter
@@ -123,13 +139,8 @@ class Neo4jWriter:
                 " ON (n.flag_name, n.command_name, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:SpecMetadata)"
                 " ON (n.kind, n.odoo_version)",
-                # M4.6 pattern layer (per ADR-0003):
-                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
-                " ON (n.pattern_id)",
-                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
-                " ON (n.language, n.odoo_version_min)",
-                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
-                " ON (n.category)",
+                # M4.6 pattern layer (per ADR-0003) — shared SoT (module constant):
+                *_PATTERN_EXAMPLE_INDEX_STATEMENTS,
                 # WI-A1 stylesheet layer (per ADR-0025):
                 "CREATE INDEX IF NOT EXISTS FOR (n:Stylesheet)"
                 " ON (n.file_path, n.module, n.odoo_version)",
@@ -166,29 +177,22 @@ class Neo4jWriter:
                 session.run(stmt)
 
     def setup_pattern_indexes(self) -> None:
-        """Create ONLY the 3 PatternExample indexes (patterns-only reseed path).
+        """Create ONLY the PatternExample indexes (patterns-only reseed path).
 
         A patterns reseed (``seed_patterns._write_neo4j``) writes only
         ``PatternExample`` nodes, so it does not need the full ~33-statement
         schema setup that :meth:`setup_indexes` issues for every node label.
         Running the full setup against an already-indexed DB is harmless
         (``IF NOT EXISTS`` no-ops) but emits ~30 unrelated
-        ``IndexOrConstraintAlreadyExists`` notifications. These 3 statements are
-        copied verbatim from :meth:`setup_indexes` (same names/keys) so they
-        remain idempotent no-ops against the live schema. The full indexer
-        (``pipeline.py`` / ``indexer/__main__.py``) still calls
-        :meth:`setup_indexes` for every index on a fresh DB.
+        ``IndexOrConstraintAlreadyExists`` notifications. Both this method and
+        :meth:`setup_indexes` draw their statements from
+        :data:`_PATTERN_EXAMPLE_INDEX_STATEMENTS` (single source of truth) so
+        the two paths cannot drift. The full indexer (``pipeline.py`` /
+        ``indexer/__main__.py``) still calls :meth:`setup_indexes` for every
+        index on a fresh DB.
         """
         with self.driver.session() as session:
-            for stmt in [
-                # M4.6 pattern layer (per ADR-0003):
-                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
-                " ON (n.pattern_id)",
-                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
-                " ON (n.language, n.odoo_version_min)",
-                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
-                " ON (n.category)",
-            ]:
+            for stmt in _PATTERN_EXAMPLE_INDEX_STATEMENTS:
                 session.run(stmt)
 
     def write_results(
