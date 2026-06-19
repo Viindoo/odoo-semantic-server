@@ -6,8 +6,8 @@
 ## Plugin: Odoo AI Agent Team
 
 - Landing: https://odoo-semantic.viindoo.com/odoo-ai-agents
-- 41 pre-built AI skills, 7 autonomous agents, 9 slash commands for Claude Code
-- Every agent grounded on the OSM knowledge graph (12,400+ models, 184,000+ fields)
+- 42 pre-built AI skills, 8 autonomous agents, 10 slash commands for Claude Code
+- Every agent grounded on the OSM knowledge graph (12,000+ models, 184,000+ fields)
 - Install: claude plugin marketplace add Viindoo/claude-plugins --scope user
            claude plugin install odoo-ai-agents@viindoo-plugins --scope user
 - GitHub (MIT): https://github.com/Viindoo/odoo-mcp-client
@@ -29,7 +29,7 @@
 ## Pricing & Install
 
 - Pricing: https://odoo-semantic.viindoo.com/pricing
-  Free tier: 30 queries/day, no credit card. Paid from $19/month.
+  Free tier: 1,000 tool calls/month, no credit card. Paid from $19/seat/month.
 - Install guide: https://odoo-semantic.viindoo.com/install/
 - Accuracy benchmark: 95% vs 43% on 40 real Odoo tasks
   (Claude claude-sonnet-4-5, tested 2026-05)

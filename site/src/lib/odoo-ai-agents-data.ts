@@ -7,10 +7,10 @@
  * No inline markup — consumers render as needed.
  *
  * Counts are imported from plugins-data.ts (SSOT) and MUST NOT be re-declared.
- * Skill uniqueness: odoo-test-writer appears in both Developer and QA/CS source
- * surveys; it is ONLY listed under QA/CS here so that `unique skills = 41`.
+ * Skill uniqueness: odoo-test-writing appears in both Developer and QA/CS source
+ * surveys; it is ONLY listed under QA/CS here so that `unique skills = 42`.
  *
- * Verify: `skillGroups.flatMap(g => g.skills)` filtered to distinct values === 41.
+ * Verify: `skillGroups.flatMap(g => g.skills)` filtered to distinct values === 42.
  */
 
 export {
@@ -29,7 +29,7 @@ export {
 /** Model tier a specialist agent runs on by default. */
 export type AgentTier = 'opus' | 'sonnet' | 'haiku' | 'fable';
 
-/** One of the 7 specialist agents in the plugin. */
+/** One of the 8 specialist agents in the plugin. */
 export interface Agent {
   /** Stable kebab-case identifier matching the agent file name. */
   id: string;
@@ -52,14 +52,14 @@ export interface SkillGroup {
   /**
    * Skill identifiers in this group.
    * INVARIANT: no skill appears in more than one group across all groups —
-   * this ensures `skillGroups.flatMap(g => g.skills)` gives 41 unique values.
+   * this ensures `skillGroups.flatMap(g => g.skills)` gives 42 unique values.
    */
   skills: string[];
   /** One to two sentences explaining the value delivered to this persona. */
   valueProp: string;
 }
 
-/** One of the 9 workflow slash commands. */
+/** One of the 10 workflow slash commands. */
 export interface Command {
   /** Slash command name without the leading `/`. */
   name: string;
@@ -89,11 +89,11 @@ export interface FaqEntry {
 }
 
 // ---------------------------------------------------------------------------
-// 7 Agents
+// 8 Agents
 // ---------------------------------------------------------------------------
 
 /**
- * The seven specialist agents shipped with the odoo-ai-agents plugin.
+ * The eight specialist agents shipped with the odoo-ai-agents plugin.
  * All are depth-1 leaf workers — they do not spawn sub-agents.
  * Order mirrors the typical pipeline: design -> code -> review -> debug -> UI.
  */
@@ -154,17 +154,25 @@ export const agents: Agent[] = [
     benefit:
       'A six-lens UI verdict with Lighthouse scores, accessibility findings, and design-token reality check — grounded in both the live rendered screen and the indexed stylesheet source, not a visual eyeball.',
   },
+  {
+    id: 'odoo-intent-extractor',
+    name: 'odoo-intent-extractor',
+    role: 'Read-only per-commit intent analysis for forward-port pre-analysis pipelines.',
+    tier: 'haiku',
+    benefit:
+      'Extract the business intent and behavioral contract from a single Odoo commit — separating what behavior the commit was designed to produce from its implementation details, enabling safe parallel dispatch over many commits before forward-porting.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
-// 41 Skills in 7 groups
+// 42 Skills in 7 groups
 //
 // DEDUPLICATION NOTE:
-//   odoo-test-writer appears in both the Developer survey (phase4b Group 1)
+//   odoo-test-writing appears in both the Developer survey (phase4b Group 1)
 //   and the QA/CS survey (phase4b Group 5). It is placed ONLY in the QA/CS
-//   group here. This brings the Developer group to 12 skills and keeps the
-//   total unique skill count at exactly 41.
-//   Test: new Set(skillGroups.flatMap(g => g.skills)).size === 41
+//   group here. This brings the Developer group to 13 skills and keeps the
+//   total unique skill count at exactly 42.
+//   Test: new Set(skillGroups.flatMap(g => g.skills)).size === 42
 // ---------------------------------------------------------------------------
 
 export const skillGroups: SkillGroup[] = [
@@ -184,8 +192,9 @@ export const skillGroups: SkillGroup[] = [
       'odoo-version-diff',
       'odoo-frontend-design',
       'odoo-addon-diff',
+      'odoo-run-forward-port',
     ],
-    // 12 skills — odoo-test-writer is in QA/CS to avoid duplicate
+    // 13 skills — odoo-test-writing is in QA/CS to avoid duplicate
     valueProp:
       'From writing a computed field to refactoring a multi-file module, developers describe the behavior they want and the AI analyzes the correct hook point, dispatches coder and frontend-coder in dependency order, and verifies every field name against the indexed source — wrong names are caught before they reach git.',
   },
@@ -236,7 +245,7 @@ export const skillGroups: SkillGroup[] = [
     persona: 'QA Engineer / Customer Success Manager / Support',
     skills: [
       'odoo-qa-suite',
-      'odoo-test-writer',
+      'odoo-test-writing',
       'odoo-customer-health',
       'odoo-support-triage',
     ],
@@ -269,7 +278,7 @@ export const skillGroups: SkillGroup[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// 9 Commands
+// 10 Commands
 // ---------------------------------------------------------------------------
 
 export const commands: Command[] = [
@@ -318,6 +327,11 @@ export const commands: Command[] = [
     description:
       'Kick off depth-0 multi-subagent git-wave orchestration: integration branch, per-WI worktrees, cherry-pick, end-of-wave Opus review, PR creation, squash with tree-identity gate, and human-confirm before merge.',
   },
+  {
+    name: 'odoo-forward-port',
+    description:
+      'Forward-port Odoo commits from a source series to a target series — continuous mode (watches a branch) or one-shot (list of SHAs) — with per-commit intent extraction, conflict triage, and migration-key renaming.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -334,7 +348,7 @@ export const personas: Persona[] = [
   {
     name: 'Coder',
     description:
-      'Writes idiomatic Odoo backend (Python/XML) or frontend (JS/OWL) code and debugs runtime failures using odoo-coding, odoo-debug, odoo-test-writer, odoo-security-audit, and odoo-perf-audit.',
+      'Writes idiomatic Odoo backend (Python/XML) or frontend (JS/OWL) code and debugs runtime failures using odoo-coding, odoo-debug, odoo-test-writing, odoo-security-audit, and odoo-perf-audit.',
     primary: true,
   },
   {
@@ -390,7 +404,7 @@ export const faqs: FaqEntry[] = [
   {
     question: 'What is the Odoo AI Agent Team plugin?',
     answer:
-      'Odoo AI Agent Team is a Claude Code plugin that provides 41 pre-built AI skills, 7 autonomous specialist agents, and 9 slash commands. Every agent is grounded on the Odoo Semantic MCP knowledge graph, which indexes 12,400+ models and 184,000+ fields across Odoo 8 to the latest version — including test classes, methods, and JS test suites. Unlike ungrounded AI, agents verify field names and inheritance chains against the indexed source before suggesting code.',
+      'Odoo AI Agent Team is a Claude Code plugin that provides 42 pre-built AI skills, 8 autonomous specialist agents, and 10 slash commands. Every agent is grounded on the Odoo Semantic MCP knowledge graph, which indexes 12,000+ models and 184,000+ fields across Odoo 8 to the latest version — including test classes, methods, and JS test suites. Unlike ungrounded AI, agents verify field names and inheritance chains against the indexed source before suggesting code.',
   },
   {
     question: 'Which Odoo versions does the plugin support?',
@@ -405,17 +419,17 @@ export const faqs: FaqEntry[] = [
   {
     question: 'Is there a free tier for Odoo AI Agent Team?',
     answer:
-      'Yes. The free tier provides 30 MCP queries per day with no credit card required. Paid plans with higher daily limits are available - see the pricing page for current options. All plans include the full set of 41 skills, 7 agents, and 9 commands; the free tier is limited only by daily query count.',
+      'Yes. The free tier provides 1,000 MCP tool calls per month with no credit card required. Paid plans with higher monthly limits are available - see the pricing page for current options. All plans include the full set of 42 skills, 8 agents, and 10 commands; the free tier is limited only by monthly tool-call count.',
   },
   {
     question: 'What is the difference between Odoo AI Agent Team and odoo-ls (language server)?',
     answer:
-      'odoo-ls is an IDE language server for syntax checking and autocompletion in a single local Odoo checkout. Odoo AI Agent Team is a Claude Code plugin that runs 7 specialist AI agents grounded on a cross-version knowledge graph covering 12 Odoo versions. Both can be used together: odoo-ls checks syntax in your editor while Odoo AI Agent Team handles semantic questions — what breaks if I change this field, what is the override chain, is this ORM path valid across versions.',
+      'odoo-ls is an IDE language server for syntax checking and autocompletion in a single local Odoo checkout. Odoo AI Agent Team is a Claude Code plugin that runs 8 specialist AI agents grounded on a cross-version knowledge graph covering 12 Odoo versions. Both can be used together: odoo-ls checks syntax in your editor while Odoo AI Agent Team handles semantic questions — what breaks if I change this field, what is the override chain, is this ORM path valid across versions.',
   },
   {
     question: 'What AI tools does Odoo AI Agent Team work with?',
     answer:
-      'Odoo AI Agent Team is optimized for Claude Code. The underlying OSM knowledge graph (Odoo Semantic MCP) works with any MCP-compatible tool including Cursor, Codex CLI, Gemini CLI, VS Code 1.99+, Windsurf, JetBrains AI Assistant, and Continue.dev. The 41 skills and 7 agents are Claude Code-specific; other tools access the 31 MCP tools directly.',
+      'Odoo AI Agent Team is optimized for Claude Code. The underlying OSM knowledge graph (Odoo Semantic MCP) works with any MCP-compatible tool including Cursor, Codex CLI, Gemini CLI, VS Code 1.99+, Windsurf, JetBrains AI Assistant, and Continue.dev. The 42 skills and 8 agents are Claude Code-specific; other tools access the 31 MCP tools directly.',
   },
   {
     question: 'How accurate is Odoo AI Agent Team compared to ungrounded AI?',

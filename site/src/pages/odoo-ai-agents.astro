@@ -45,9 +45,9 @@ import {
 export const prerender = true;
 
 // ---- Exact meta (r2-seo-geo-spec §2) -------------------------------------
-const PAGE_TITLE = 'Odoo AI Agent Team - 41 Skills, 7 Agents for Claude Code';
+const PAGE_TITLE = 'Odoo AI Agent Team - 42 Skills, 8 Agents for Claude Code';
 const PAGE_DESC =
-  '41 pre-built AI skills, 7 specialist agents, 9 slash commands grounded on an indexed Odoo knowledge graph. Zero config for Claude Code, Codex, Gemini. Free tier: 30 queries/day.';
+  '42 pre-built AI skills, 8 specialist agents, 10 slash commands grounded on an indexed Odoo knowledge graph. Zero config for Claude Code, Codex, Gemini. Free tier: 1,000 tool calls/month.';
 const PAGE_URL = 'https://odoo-semantic.viindoo.com/odoo-ai-agents';
 
 // ---- JSON-LD block 1: SoftwareApplication (r2-seo-geo-spec §3.1) ----------
@@ -69,7 +69,7 @@ const softwareAppJsonLd = JSON.stringify({
     `${SKILLS_COUNT} pre-built AI skills for Odoo development, sales, QA, and marketing`,
     `${AGENTS_COUNT} autonomous specialist agents (architect, coder, reviewer, debugger, UI)`,
     `${COMMANDS_COUNT} slash commands for multi-phase workflow automation`,
-    'Grounded on 12,400+ indexed Odoo models and 184,000+ fields',
+    'Grounded on 12,000+ indexed Odoo models and 184,000+ fields',
     'Supports Odoo 8 through the latest version (recent releases actively maintained)',
     'Zero configuration after install - auto-routes to the right agent',
     `${PERSONAS_COUNT} persona types covered: developer, consultant, sales, CEO, QA, and more`,
@@ -78,7 +78,7 @@ const softwareAppJsonLd = JSON.stringify({
     '@type': 'Offer',
     price: '0',
     priceCurrency: 'USD',
-    description: 'Free tier: 30 queries/day, no credit card required. Paid plans with higher daily limits available - see the pricing page.',
+    description: 'Free tier: 1,000 tool calls/month, no credit card required. Paid plans with higher limits available - see the pricing page.',
     url: 'https://odoo-semantic.viindoo.com/pricing',
     availability: 'https://schema.org/InStock',
   },
@@ -116,7 +116,7 @@ const breadcrumbJsonLd = JSON.stringify({
 });
 
 // ---- Section helpers ------------------------------------------------------
-// The opus architect is agents[0]; the remaining 6 are sonnet-tier.
+// The opus architect is agents[0]; the remaining 7 are sonnet/haiku-tier.
 const architect = agents[0];
 const sonnetAgents = agents.slice(1);
 
@@ -130,6 +130,7 @@ const agentTools: Record<string, string> = {
   'odoo-backend-debugger': 'resolve_orm_chain · find_override_point',
   'odoo-ui-debugger': 'browser tools · resolve_stylesheet',
   'odoo-ui-reviewer': 'browser tools · find_style_override',
+  'odoo-intent-extractor': 'entity_lookup · find_examples · api_version_diff',
 };
 
 // Tier label for the badge: opus, sonnet, or "sonnet + browser" for UI agents.
@@ -234,17 +235,17 @@ const featuredCommands = commands.slice(0, 3);
     </div>
   </section>
 
-  <!-- ===== S3 · 7 AGENTS (data-driven) ===== -->
+  <!-- ===== S3 · 8 AGENTS (data-driven) ===== -->
   <section id="agents" class="bg-viindoo-bg-1 py-24" aria-labelledby="agents-h2">
     <div class="mx-auto max-w-7xl px-6">
       <div class="cv-reveal">
         <span class="cv-kicker text-viindoo-primary-bright">The Team</span>
         <h2 id="agents-h2" class="mt-4 font-display font-bold tracking-tight text-viindoo-on-dark" style="font-size:clamp(28px,3.4vw,44px); line-height:1.08;">
-          Seven specialist agents. One shared knowledge graph.
+          Eight specialist agents. One shared knowledge graph.
         </h2>
         <p class="mt-5 text-viindoo-on-dark-muted text-lg leading-relaxed max-w-3xl">
-          Odoo AI Agent Team provides seven specialist agents: an architect (Opus-tier, design-gate), five engineering
-          agents (Sonnet-tier), and two UI agents with live browser tools. Each agent queries the indexed knowledge
+          Odoo AI Agent Team provides eight specialist agents: an architect (Opus-tier, design-gate), four engineering
+          agents (Sonnet-tier), two UI agents with live browser tools, and a Haiku-tier intent extractor for forward-port pipelines. Each agent queries the indexed knowledge
           graph on every run &mdash; not its training memory. They cross-link through
           <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">{TOOL_COUNT} MCP tools</a>.
         </p>
@@ -269,7 +270,7 @@ const featuredCommands = commands.slice(0, 3);
         </div>
       </div>
 
-      <!-- 6 sonnet agents -->
+      <!-- 7 sonnet/haiku agents -->
       <div class="mt-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {sonnetAgents.map((agent, i) => (
           <article class="cv-reveal group relative rounded-2xl cv-glass p-6 overflow-hidden" style={`transition-delay:${0.08 + i * 0.02}s;`}>
@@ -323,7 +324,7 @@ const featuredCommands = commands.slice(0, 3);
     </div>
   </section>
 
-  <!-- ===== S5 · 9 COMMANDS (data-driven) ===== -->
+  <!-- ===== S5 · 10 COMMANDS (data-driven) ===== -->
   <section id="commands" class="bg-viindoo-bg-1 py-24" aria-labelledby="commands-h2">
     <div class="mx-auto max-w-7xl px-6">
       <div class="cv-reveal">
@@ -415,7 +416,7 @@ const featuredCommands = commands.slice(0, 3);
           <p class="text-viindoo-on-dark-muted leading-relaxed">
             One install pulls the companion connector automatically. Agents read
             <a href="/tools" class="text-viindoo-primary-bright underline decoration-viindoo-primary/40 underline-offset-2 hover:decoration-viindoo-primary">{TOOL_COUNT} MCP tools and {RESOURCE_COUNT} resources</a>
-            over a single namespace, against an index of 12,400+ models and 184,000+ fields &mdash; cross-repo,
+            over a single namespace, against an index of 12,000+ models and 184,000+ fields &mdash; cross-repo,
             cross-version, inheritance already resolved, covering Odoo 8 to the latest version.
           </p>
           <div class="mt-5 rounded-xl border border-white/10 bg-viindoo-bg-1 overflow-hidden shadow-lift">
@@ -639,7 +640,7 @@ const featuredCommands = commands.slice(0, 3);
         <div class="rounded-2xl cv-glass p-7">
           <p class="font-mono text-[11px] uppercase tracking-widest text-viindoo-secondary-bright">The service it connects to</p>
           <h3 class="mt-2 font-display text-xl font-semibold text-viindoo-on-dark">OSM knowledge service</h3>
-          <p class="mt-2 text-sm text-viindoo-on-dark-muted leading-relaxed">The indexed graph the plugin queries. Free tier: 30 queries/day, no credit card. Paid plans for professional use.</p>
+          <p class="mt-2 text-sm text-viindoo-on-dark-muted leading-relaxed">The indexed graph the plugin queries. Free tier: 1,000 tool calls/month, no credit card. Paid plans for professional use.</p>
           <a href="/pricing" class="mt-3 inline-flex items-center gap-1.5 font-semibold text-viindoo-primary-bright text-sm transition-colors hover:text-viindoo-on-dark">
             See full pricing
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
