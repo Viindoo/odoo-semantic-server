@@ -1,8 +1,8 @@
 # Odoo Semantic MCP (OSM)
 
-AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 10,000+ models and 100,000+ fields across Odoo v14-v19 (as of 2026-06). No running Odoo database required.
+AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v14-v19 (as of 2026-06). No running Odoo database required.
 
-**10,000+ models** | **100,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free: 30 queries/day**
+**12,000+ models** | **184,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free: 1,000 tool calls/month**
 
 ---
 
@@ -29,14 +29,14 @@ claude mcp add --transport http https://odoo-semantic.viindoo.com/mcp/demo
 
 The demo endpoint gives you 20 read-only queries with a shared public key. No signup needed.
 
-**Option 2 - Full access (free tier: 30 queries/day):**
+**Option 2 - Full access (free tier: 1,000 tool calls/month):**
 
 1. [Sign up for a free API key](https://odoo-semantic.viindoo.com/signup/) - 30 seconds, no credit card
 2. Visit **https://odoo-semantic.viindoo.com/install/**, paste your API key, copy the snippet for your AI tool
 
 ### Claude Code (plugin path)
 
-Two free plugins (MIT): `odoo-semantic-mcp` (MCP config) and `odoo-ai-agents` (41 skills, 7 agents, 9 commands). The skills plugin pulls in the MCP plugin automatically:
+Two free plugins (MIT): `odoo-semantic-mcp` (MCP config) and `odoo-ai-agents` (42 skills, 8 agents, 10 commands). The skills plugin pulls in the MCP plugin automatically:
 
 ```bash
 claude plugin marketplace add Viindoo/claude-plugins --scope user
@@ -66,14 +66,13 @@ For other AI tools (Cursor, Codex CLI, Gemini CLI, VS Code, Windsurf, JetBrains 
 
 ## Pricing
 
-Free tier: 30 queries/day. Paid plans from $19/month.
+Free tier: 1,000 tool calls/month. Paid plans from $19/seat/month.
 
-| Plan | Queries/day | Price |
-|------|-------------|-------|
-| Free | 30 | $0 |
-| Solo | 500 | $19/month |
-| Team | Unlimited | $49/month |
-| Agency | Unlimited | $149/month |
+| Plan | Tool calls/month | Rate limit | Price |
+|------|-----------------|------------|-------|
+| Free | 1,000 | 30 calls/min | $0 |
+| Pro | 10,000 | 120 calls/min | $19/seat/mo (up to 5 seats) |
+| Team | 100,000 | 300 calls/min | $39/seat/mo (min 3 seats - from $117/mo) |
 
 [Get your free API key](https://odoo-semantic.viindoo.com/signup/) - no credit card required.
 
@@ -120,7 +119,7 @@ Sample output:
 3. ORM call uses deprecated `count` kwarg in v16. Replace with len(self.env['sale.order'].search(...)).
 ```
 
-Odoo v14 EOL: October 31, 2026. [Start your upgrade assessment.](https://odoo-semantic.viindoo.com/upgrade)
+Odoo v14 EOL: October 31, 2026. Start your upgrade assessment with the `find_deprecated_usage` tool.
 
 ---
 

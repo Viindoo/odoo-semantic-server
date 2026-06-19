@@ -16,10 +16,10 @@ export const PLUGIN_REPO_URL = 'https://github.com/Viindoo/odoo-mcp-client';
 /** Command users run after install to wire URL + API key. */
 export const CONNECT_COMMAND = '/odoo-semantic-mcp:connect';
 
-/** Plugin counts — source: plugin.json (odoo-mcp-client VERSION 2.1.0). */
-export const SKILLS_COUNT = 41;
-export const AGENTS_COUNT = 7;
-export const COMMANDS_COUNT = 9;
+/** Plugin counts — source: plugin.json (odoo-mcp-client VERSION 3.15.0). */
+export const SKILLS_COUNT = 42;
+export const AGENTS_COUNT = 8;
+export const COMMANDS_COUNT = 10;
 export const PERSONA_COUNT = 9;
 /** Alias for PERSONA_COUNT — import-compatible name used by WI-5/WI-6. */
 export const PERSONAS_COUNT = PERSONA_COUNT;
@@ -46,7 +46,7 @@ export const MCP_PLUGIN: PluginMeta = {
 
 export const SKILLS_PLUGIN: PluginMeta = {
   slug: 'odoo-ai-agents',
-  version: '2.1.0',
+  version: '3.15.0',
   tagline: `${SKILLS_COUNT} skills · ${AGENTS_COUNT} agents · ${COMMANDS_COUNT} commands — auto-pulls the MCP plugin.`,
   highlights: [
     `${SKILLS_COUNT} skills fire from plain-English intent — no tool names to memorize`,
@@ -58,7 +58,7 @@ export const SKILLS_PLUGIN: PluginMeta = {
 /** Install command lines (slash-command form for in-session Claude Code).
  *
  *  PRIMARY install path  → marketplace + installMcp + connect
- *  OPTIONAL add-on       → installSkills (41 skills · 7 agents · 9 commands; auto-pulls MCP)
+ *  OPTIONAL add-on       → installSkills (42 skills · 8 agents · 10 commands; auto-pulls MCP)
  */
 export const INSTALL_STEPS_SLASH = {
   marketplace: `/plugin marketplace add ${PLUGIN_MARKETPLACE}`,
@@ -74,7 +74,7 @@ export const INSTALL_STEPS_SLASH = {
 /** Install command lines (CLI form — `claude plugin ...`).
  *
  *  PRIMARY install path  → marketplace + installMcp (= installMcpOnly alias) + connect
- *  OPTIONAL add-on       → installSkills (41 skills · 7 agents · 9 commands; auto-pulls MCP)
+ *  OPTIONAL add-on       → installSkills (42 skills · 8 agents · 10 commands; auto-pulls MCP)
  */
 export const INSTALL_STEPS_CLI = {
   marketplace: `claude plugin marketplace add ${PLUGIN_MARKETPLACE} --scope user`,

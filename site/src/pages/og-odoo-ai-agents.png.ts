@@ -30,7 +30,7 @@ const fontSemiBold = readFileSync(path.join(fontsDir, 'montserrat-latin-600-norm
 
 // ---------------------------------------------------------------------------
 // Constellation SVG (background layer, rendered as data URI img in satori)
-// Core knowledge-graph node centred at (760, 315); 7 agent nodes orbit it.
+// Core knowledge-graph node centred at (760, 315); 8 agent nodes orbit it.
 // ---------------------------------------------------------------------------
 const CX = 760;
 const CY = 315;
@@ -43,12 +43,13 @@ function polar(cx: number, cy: number, deg: number, r: number): [number, number]
 // [angle_deg, radius, label, stroke_color]
 const AGENTS: [number, number, string, string][] = [
   [ -90, 190, 'Architect',     '#7F4282'],
-  [ -25, 210, 'Coder',         '#00BBCE'],
-  [  35, 200, 'Frontend',      '#00BBCE'],
-  [  90, 195, 'Reviewer',      '#00BBCE'],
-  [ 145, 205, 'Backend Debug', '#00BBCE'],
-  [-155, 210, 'UI Debug',      '#00BBCE'],
-  [-210, 195, 'UI Review',     '#00BBCE'],
+  [ -45, 210, 'Coder',         '#00BBCE'],
+  [  10, 200, 'Frontend',      '#00BBCE'],
+  [  65, 195, 'Reviewer',      '#00BBCE'],
+  [ 120, 205, 'Backend Debug', '#00BBCE'],
+  [ 175, 210, 'UI Debug',      '#00BBCE'],
+  [-155, 195, 'UI Review',     '#00BBCE'],
+  [-120, 200, 'Intent',        '#00BBCE'],
 ];
 
 const edges = AGENTS.map(([a, r, , c]) => {
@@ -67,7 +68,7 @@ const [skX, skY] = polar(CX, CY, 200, 230);
 const skillsNode = `
   <line x1="${CX}" y1="${CY}" x2="${skX}" y2="${skY}" stroke="#4CAF50" stroke-width="1.2" stroke-dasharray="4,4" opacity="0.45"/>
   <circle cx="${skX}" cy="${skY}" r="32" fill="#07131A" stroke="#4CAF50" stroke-width="1.8"/>
-  <text x="${skX}" y="${skY - 5}" text-anchor="middle" font-family="Montserrat" font-size="11" font-weight="700" fill="#4CAF50">+41</text>
+  <text x="${skX}" y="${skY - 5}" text-anchor="middle" font-family="Montserrat" font-size="11" font-weight="700" fill="#4CAF50">+42</text>
   <text x="${skX}" y="${skY + 10}" text-anchor="middle" font-family="Montserrat" font-size="9" font-weight="600" fill="#4CAF50">skills</text>
 `;
 
@@ -265,7 +266,7 @@ const layout = {
                       color: '#89BAC8',
                       lineHeight: 1.4,
                     },
-                    children: '41 skills · 7 agents · 9 commands',
+                    children: '42 skills · 8 agents · 10 commands',
                   },
                 },
               },
@@ -303,9 +304,9 @@ const layout = {
                   marginBottom: 32,
                 },
                 children: [
-                  pill('41 Skills',   'rgba(0,187,206,0.14)',  '#00BBCE', '#00BBCE'),
-                  pill('7 Agents',    'rgba(127,66,130,0.14)', '#7F4282', '#C084C9'),
-                  pill('9 Commands',  'rgba(0,187,206,0.10)',  '#00BBCE', '#7EC8D0'),
+                  pill('42 Skills',   'rgba(0,187,206,0.14)',  '#00BBCE', '#00BBCE'),
+                  pill('8 Agents',    'rgba(127,66,130,0.14)', '#7F4282', '#C084C9'),
+                  pill('10 Commands', 'rgba(0,187,206,0.10)',  '#00BBCE', '#7EC8D0'),
                 ],
               },
             },
