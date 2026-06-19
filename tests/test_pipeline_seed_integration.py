@@ -322,55 +322,57 @@ def test_pattern_example_category_written_and_reseed_idempotent(
     # Ensure the two test nodes are absent before we begin.
     _teardown_category_patterns(neo4j_driver)
 
-    run_migrations(clean_pg)
-    repo = make_git_repo(tmp_path / "repo_cat", branch=TEST_VERSION)
-    _seed_minimal_module(repo, "cat_mod")
-    pid = repo_store().add_profile("cat_prof", TEST_VERSION)
-    repo_store().add_repo(pid, "local/cat", TEST_VERSION, str(repo))
+    try:
+        run_migrations(clean_pg)
+        repo = make_git_repo(tmp_path / "repo_cat", branch=TEST_VERSION)
+        _seed_minimal_module(repo, "cat_mod")
+        pid = repo_store().add_profile("cat_prof", TEST_VERSION)
+        repo_store().add_repo(pid, "local/cat", TEST_VERSION, str(repo))
 
-    # First run - seeds patterns.
-    summary = index_profile(clean_pg, profile_name="cat_prof")
-    assert summary["modules"] >= 1
+        # First run - seeds patterns.
+        summary = index_profile(clean_pg, profile_name="cat_prof")
+        assert summary["modules"] >= 1
 
-    # Assert category is written correctly on both nodes.
-    cat_test = _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat")
-    assert cat_test == "test", (
-        f"Expected category='test' on wi331-cat-test-pat, got {cat_test!r}"
-    )
+        # Assert category is written correctly on both nodes.
+        cat_test = _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat")
+        assert cat_test == "test", (
+            f"Expected category='test' on wi331-cat-test-pat, got {cat_test!r}"
+        )
 
-    cat_prod = _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat")
-    assert cat_prod == "production", (
-        f"Expected category='production' on wi331-cat-prod-pat, got {cat_prod!r}"
-    )
+        cat_prod = _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat")
+        assert cat_prod == "production", (
+            f"Expected category='production' on wi331-cat-prod-pat, got {cat_prod!r}"
+        )
 
-    sha_after_first = _get_seed_meta_sha(neo4j_driver)
-    assert sha_after_first is not None, "_SeedMeta sentinel not written after first run"
+        sha_after_first = _get_seed_meta_sha(neo4j_driver)
+        assert sha_after_first is not None, "_SeedMeta sentinel not written after first run"
 
-    # Second run - patterns file unchanged, sentinel present: reseed skips Neo4j writes.
-    # categories must be identical after the second run.
-    summary2 = index_profile(clean_pg, profile_name="cat_prof")
-    assert summary2["modules"] >= 1
+        # Second run - patterns file unchanged, sentinel present: reseed skips Neo4j writes.
+        # categories must be identical after the second run.
+        summary2 = index_profile(clean_pg, profile_name="cat_prof")
+        assert summary2["modules"] >= 1
 
-    cat_test_2 = _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat")
-    assert cat_test_2 == "test", (
-        f"After reseed: expected category='test' on wi331-cat-test-pat, got {cat_test_2!r}"
-    )
+        cat_test_2 = _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat")
+        assert cat_test_2 == "test", (
+            f"After reseed: expected category='test' on wi331-cat-test-pat, got {cat_test_2!r}"
+        )
 
-    cat_prod_2 = _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat")
-    assert cat_prod_2 == "production", (
-        f"After reseed: expected category='production' on wi331-cat-prod-pat, "
-        f"got {cat_prod_2!r}"
-    )
+        cat_prod_2 = _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat")
+        assert cat_prod_2 == "production", (
+            f"After reseed: expected category='production' on wi331-cat-prod-pat, "
+            f"got {cat_prod_2!r}"
+        )
 
-    sha_after_second = _get_seed_meta_sha(neo4j_driver)
-    assert sha_after_second == sha_after_first, (
-        "Sentinel sha changed on second run - sentinel was re-written even though "
-        "patterns file was not modified (reseed not idempotent)"
-    )
-
-    # Teardown: remove test nodes by pattern_id (PatternExample has no odoo_version).
-    _teardown_category_patterns(neo4j_driver)
-    _wipe_seed_meta(neo4j_driver)
+        sha_after_second = _get_seed_meta_sha(neo4j_driver)
+        assert sha_after_second == sha_after_first, (
+            "Sentinel sha changed on second run - sentinel was re-written even though "
+            "patterns file was not modified (reseed not idempotent)"
+        )
+    finally:
+        # Teardown: remove test nodes by pattern_id (PatternExample has no odoo_version).
+        # Runs even if an assert above fails, preventing PatternExample node leaks.
+        _teardown_category_patterns(neo4j_driver)
+        _wipe_seed_meta(neo4j_driver)
 
     # Verify teardown: both nodes must be gone.
     assert _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat") is None

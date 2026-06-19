@@ -1,5 +1,5 @@
 -- migrations/0002_add_category_to_patterns.sql
--- Add category column to patterns table (ADR-0009, #331).
+-- Add category column to patterns table (ADR-0042, #331).
 --
 -- Adds a nullable TEXT column with a CHECK constraint limiting values to
 -- 'test' (test-writing patterns) or 'production' (production coding patterns).

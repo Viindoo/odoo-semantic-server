@@ -361,6 +361,8 @@ def _format_suggest_pattern(
         lines.append(
             f"{prefix}├─ Language: {rec['lang']} (v{rec['vmin']}-{vmax_disp})"
         )
+        category_disp = "uncategorized" if rec.get("category") is None else rec.get("category")
+        lines.append(f"{prefix}├─ Category: {category_disp}")
         lines.append(f"{prefix}├─ File:     {rec['fr']}")
         snippet_lines = (rec.get("sn") or "").splitlines()
         if snippet_lines:

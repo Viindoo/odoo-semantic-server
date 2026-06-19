@@ -59,7 +59,7 @@ def _seed_pattern(
                 ["test", "example"],
                 "addons/test/models/test.py:10",
                 "# test snippet",
-                json.dumps([{"text": "watch out for this"}, {"text": "also this"}]),
+                json.dumps(["watch out for this", "also this"]),
                 "17.0",
                 language,
                 category,
@@ -148,7 +148,7 @@ class TestCreateUniqueViolation:
             "intent_keywords": ["test"],
             "file_ref": "addons/foo/bar.py:1",
             "snippet_text": "x = 1",
-            "gotchas": [{"text": "gotcha"}],
+            "gotchas": ["gotcha"],
             "odoo_version_min": "17.0",
             "language": "python",
             "reason": "test conflict check",
@@ -176,7 +176,7 @@ class TestCreateBumpsSentinel:
             "intent_keywords": ["sentinel", "test"],
             "file_ref": "addons/sale/models/order.py:42",
             "snippet_text": "# new pattern",
-            "gotchas": [{"text": "important"}],
+            "gotchas": ["important"],
             "odoo_version_min": "17.0",
             "language": "python",
             "reason": "test sentinel bump",
@@ -380,7 +380,7 @@ class TestInvalidPatternIdFormat:
             "intent_keywords": ["test"],
             "file_ref": "addons/foo/bar.py:1",
             "snippet_text": "x = 1",
-            "gotchas": [{"text": "gotcha"}],
+            "gotchas": ["gotcha"],
             "odoo_version_min": "17.0",
             "language": "python",
             "reason": "test invalid id",
@@ -493,3 +493,43 @@ class TestPatchCategory:
             get_resp = await client.get("/api/admin/patterns/test-patch-cat")
         assert get_resp.status_code == 200
         assert get_resp.json()["category"] == "test"
+
+
+# ---------------------------------------------------------------------------
+# Test 14: patch_category_clear_to_null (F6 - nullable PATCH)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchCategoryClearToNull:
+    @pytest.mark.asyncio
+    async def test_patch_category_null_clears_value(self, migrated_pg):
+        """PATCH {category: null} must clear category to NULL in DB (F6 fix).
+
+        Before the fix, model_dump(exclude_none=True) dropped explicit null
+        -> PATCH with null was silently ignored, category stayed 'test'.
+        After the fix, _NULLABLE_FIELDS allowlist passes null through.
+        """
+        _seed_pattern(migrated_pg, pattern_id="test-patch-cat-null", category="test")
+
+        patch_payload = {"category": None, "reason": "clear category"}
+        fake_sha = "cc" * 32
+
+        with mock.patch(
+            "src.indexer.seed_patterns.recompute_sentinel_sha",
+            return_value=fake_sha,
+        ):
+            async with _client() as client:
+                resp = await client.patch(
+                    "/api/admin/patterns/test-patch-cat-null",
+                    json=patch_payload,
+                )
+
+        assert resp.status_code == 200, f"PATCH returned {resp.status_code}: {resp.text[:200]}"
+        assert resp.json()["updated"] is True
+
+        async with _client() as client:
+            get_resp = await client.get("/api/admin/patterns/test-patch-cat-null")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["category"] is None, (
+            f"Expected category=null after PATCH null, got {get_resp.json()['category']!r}"
+        )

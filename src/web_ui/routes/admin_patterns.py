@@ -45,7 +45,7 @@ class PatternCreate(BaseModel):
     intent_keywords: list[str] = Field(min_length=1, max_length=20)
     file_ref: str = Field(min_length=1, max_length=500)
     snippet_text: str = Field(min_length=1, max_length=50000)
-    gotchas: list[dict] = Field(default_factory=list)
+    gotchas: list[str] = Field(default_factory=list)
     odoo_version_min: str = Field(min_length=1)
     odoo_version_max: str | None = None
     language: Literal["python", "xml", "js"]
@@ -59,7 +59,7 @@ class PatternPatch(BaseModel):
     intent_keywords: list[str] | None = None
     file_ref: str | None = None
     snippet_text: str | None = None
-    gotchas: list[dict] | None = None
+    gotchas: list[str] | None = None
     odoo_version_min: str | None = None
     odoo_version_max: str | None = None
     language: Literal["python", "xml", "js"] | None = None
@@ -286,7 +286,11 @@ async def update_pattern(
     actor_id: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
     """Update one or more fields of an existing pattern. Bumps sentinel SHA."""
-    updates = payload.model_dump(exclude_none=True, exclude={"reason"})
+    # Columns that are nullable in the DB - explicit null is allowed to clear them.
+    # All other columns are NOT NULL; dropping their value would cause a DB error.
+    _NULLABLE_FIELDS = {"category", "odoo_version_max"}
+    _all_set = payload.model_dump(exclude_unset=True, exclude={"reason"})
+    updates = {k: v for k, v in _all_set.items() if v is not None or k in _NULLABLE_FIELDS}
     if not updates:
         raise HTTPException(400, "No fields to update")
 

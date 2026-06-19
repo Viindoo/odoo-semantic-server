@@ -988,6 +988,12 @@ _PG_TEST_TABLES = [
         "key_rotation_log",
         # schema tables in FK-safe order
         "pattern_feedback",
+        # patterns: curated catalogue seeded by admin-patterns CRUD + seed_patterns.
+        # Must appear before webui_users (updated_by FK) and after pattern_feedback
+        # (pattern_feedback.pattern_node_id is TEXT, not a FK to patterns).
+        # Omitting this caused test-isolation failures: rows from test_admin_patterns_endpoints
+        # leaked into test_pipeline_seed_integration (DB-primary loader read stale rows).
+        "patterns",
         "indexer_jobs",
         "usage_log",
         # M10B / m13_006 — usage_counter FK→api_keys, must drop BEFORE api_keys.

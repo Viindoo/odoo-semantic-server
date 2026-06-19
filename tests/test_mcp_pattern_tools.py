@@ -614,6 +614,7 @@ class TestFormatSuggestPatternTruncation:
             "fr": "addons/sale/models/s.py:1",
             "sn": "def foo(): pass",
             "g": [],
+            "category": "test",
         }
 
     def test_truncate_to_limit_after_version_filter(self):
@@ -656,6 +657,12 @@ class TestFormatSuggestPatternTruncation:
         # The match count header must say exactly 5 (truncated to limit).
         assert "5 matches" in result, (
             f"expected '5 matches' in header after truncation, got: {result[:200]!r}"
+        )
+
+        # F2: Category line must appear in output (red-green: fails if line is absent).
+        assert "Category:" in result, (
+            f"expected 'Category:' line in _format_suggest_pattern output (F2 fix), "
+            f"got: {result[:400]!r}"
         )
 
     def test_empty_after_filter_does_not_truncate(self):

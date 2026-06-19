@@ -12,7 +12,7 @@ interface Pattern {
   intent_keywords: string[];
   file_ref: string;
   snippet_text: string;
-  gotchas: Array<{ title: string; body: string }>;
+  gotchas: string[];
   odoo_version_min: string;
   odoo_version_max: string | null;
   language: Language;
@@ -199,8 +199,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   <div className="space-y-2">
                     {pattern.gotchas.map((g, i) => (
                       <div key={i} className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs">
-                        <p className="font-semibold text-amber-800 mb-0.5">{g.title}</p>
-                        <p className="text-amber-700">{g.body}</p>
+                        <p className="text-amber-700">{g}</p>
                       </div>
                     ))}
                   </div>
