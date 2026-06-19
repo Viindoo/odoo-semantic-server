@@ -39,23 +39,30 @@ def _client():
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
-def _seed_pattern(conn, *, pattern_id: str, language: str = "python") -> None:
+def _seed_pattern(
+    conn,
+    *,
+    pattern_id: str,
+    language: str = "python",
+    category: str | None = None,
+) -> None:
     """Insert one minimal pattern row for testing."""
     with conn.cursor() as cur:
         cur.execute(
             """INSERT INTO patterns
                  (pattern_id, intent_keywords, file_ref, snippet_text,
-                  gotchas, odoo_version_min, language, core_symbol_names)
-               VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                  gotchas, odoo_version_min, language, category, core_symbol_names)
+               VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
                ON CONFLICT (pattern_id) DO NOTHING""",
             (
                 pattern_id,
                 ["test", "example"],
                 "addons/test/models/test.py:10",
                 "# test snippet",
-                json.dumps([{"text": "watch out for this"}, {"text": "also this"}]),
+                json.dumps(["watch out for this", "also this"]),
                 "17.0",
                 language,
+                category,
                 [],
             ),
         )
@@ -141,7 +148,7 @@ class TestCreateUniqueViolation:
             "intent_keywords": ["test"],
             "file_ref": "addons/foo/bar.py:1",
             "snippet_text": "x = 1",
-            "gotchas": [{"text": "gotcha"}],
+            "gotchas": ["gotcha"],
             "odoo_version_min": "17.0",
             "language": "python",
             "reason": "test conflict check",
@@ -169,7 +176,7 @@ class TestCreateBumpsSentinel:
             "intent_keywords": ["sentinel", "test"],
             "file_ref": "addons/sale/models/order.py:42",
             "snippet_text": "# new pattern",
-            "gotchas": [{"text": "important"}],
+            "gotchas": ["important"],
             "odoo_version_min": "17.0",
             "language": "python",
             "reason": "test sentinel bump",
@@ -373,7 +380,7 @@ class TestInvalidPatternIdFormat:
             "intent_keywords": ["test"],
             "file_ref": "addons/foo/bar.py:1",
             "snippet_text": "x = 1",
-            "gotchas": [{"text": "gotcha"}],
+            "gotchas": ["gotcha"],
             "odoo_version_min": "17.0",
             "language": "python",
             "reason": "test invalid id",
@@ -383,4 +390,146 @@ class TestInvalidPatternIdFormat:
         assert resp.status_code == 422, (
             f"Expected 422 for pattern_id={bad_id!r}, got {resp.status_code}: "
             f"{resp.text[:200]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 11: create_with_category
+# ---------------------------------------------------------------------------
+
+
+class TestCreateWithCategory:
+    @pytest.mark.asyncio
+    async def test_create_with_category_reads_back_correctly(self, migrated_pg):
+        """POST with category='test' stores and GET returns the same category."""
+        payload = {
+            "pattern_id": "test-category-create",
+            "intent_keywords": ["category", "test"],
+            "file_ref": "addons/sale/models/order.py:10",
+            "snippet_text": "# category snippet",
+            "gotchas": [],
+            "odoo_version_min": "17.0",
+            "language": "python",
+            "category": "test",
+            "reason": "test category create",
+        }
+        fake_sha = "aa" * 32
+
+        with mock.patch(
+            "src.indexer.seed_patterns.recompute_sentinel_sha",
+            return_value=fake_sha,
+        ):
+            async with _client() as client:
+                resp = await client.post("/api/admin/patterns", json=payload)
+
+        assert resp.status_code == 200
+        assert resp.json()["created"] is True
+
+        async with _client() as client:
+            get_resp = await client.get("/api/admin/patterns/test-category-create")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["category"] == "test"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: filter_by_category
+# ---------------------------------------------------------------------------
+
+
+class TestFilterByCategory:
+    @pytest.mark.asyncio
+    async def test_filter_by_category_returns_only_matching(self, migrated_pg):
+        """GET ?category=test returns only patterns with category='test'."""
+        _seed_pattern(migrated_pg, pattern_id="test-cat-test-1", category="test")
+        _seed_pattern(migrated_pg, pattern_id="test-cat-prod-1", category="production")
+        _seed_pattern(migrated_pg, pattern_id="test-cat-none-1", category=None)
+
+        async with _client() as client:
+            resp = await client.get(
+                "/api/admin/patterns", params={"category": "test"}
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        returned_ids = [p["pattern_id"] for p in body["patterns"]]
+        assert "test-cat-test-1" in returned_ids
+        assert "test-cat-prod-1" not in returned_ids
+        assert "test-cat-none-1" not in returned_ids
+        for p in body["patterns"]:
+            assert p["category"] == "test"
+
+
+# ---------------------------------------------------------------------------
+# Test 13: patch_category
+# ---------------------------------------------------------------------------
+
+
+class TestPatchCategory:
+    @pytest.mark.asyncio
+    async def test_patch_category_updates_and_reads_back(self, migrated_pg):
+        """PATCH category field updates DB and GET reflects new value."""
+        _seed_pattern(migrated_pg, pattern_id="test-patch-cat", category="production")
+
+        patch_payload = {
+            "category": "test",
+            "reason": "promote to test category",
+        }
+        fake_sha = "bb" * 32
+
+        with mock.patch(
+            "src.indexer.seed_patterns.recompute_sentinel_sha",
+            return_value=fake_sha,
+        ) as mock_bump:
+            async with _client() as client:
+                resp = await client.patch(
+                    "/api/admin/patterns/test-patch-cat",
+                    json=patch_payload,
+                )
+
+        assert resp.status_code == 200
+        assert resp.json()["updated"] is True
+        mock_bump.assert_called_once()
+
+        async with _client() as client:
+            get_resp = await client.get("/api/admin/patterns/test-patch-cat")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["category"] == "test"
+
+
+# ---------------------------------------------------------------------------
+# Test 14: patch_category_clear_to_null (F6 - nullable PATCH)
+# ---------------------------------------------------------------------------
+
+
+class TestPatchCategoryClearToNull:
+    @pytest.mark.asyncio
+    async def test_patch_category_null_clears_value(self, migrated_pg):
+        """PATCH {category: null} must clear category to NULL in DB (F6 fix).
+
+        Before the fix, model_dump(exclude_none=True) dropped explicit null
+        -> PATCH with null was silently ignored, category stayed 'test'.
+        After the fix, _NULLABLE_FIELDS allowlist passes null through.
+        """
+        _seed_pattern(migrated_pg, pattern_id="test-patch-cat-null", category="test")
+
+        patch_payload = {"category": None, "reason": "clear category"}
+        fake_sha = "cc" * 32
+
+        with mock.patch(
+            "src.indexer.seed_patterns.recompute_sentinel_sha",
+            return_value=fake_sha,
+        ):
+            async with _client() as client:
+                resp = await client.patch(
+                    "/api/admin/patterns/test-patch-cat-null",
+                    json=patch_payload,
+                )
+
+        assert resp.status_code == 200, f"PATCH returned {resp.status_code}: {resp.text[:200]}"
+        assert resp.json()["updated"] is True
+
+        async with _client() as client:
+            get_resp = await client.get("/api/admin/patterns/test-patch-cat-null")
+        assert get_resp.status_code == 200
+        assert get_resp.json()["category"] is None, (
+            f"Expected category=null after PATCH null, got {get_resp.json()['category']!r}"
         )

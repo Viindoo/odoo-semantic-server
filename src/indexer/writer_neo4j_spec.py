@@ -127,10 +127,12 @@ def _write_pattern_examples_batch(tx, patterns: list[PatternExample]) -> None:
                 pe.gotchas = $g,
                 pe.odoo_version_min = $vmin,
                 pe.odoo_version_max = $vmax,
-                pe.language = $lang
+                pe.language = $lang,
+                pe.category = $category
         """, pid=p.pattern_id, kw=p.intent_keywords, fr=p.file_ref,
              sn=p.snippet_text, g=p.gotchas, vmin=p.odoo_version_min,
-             vmax=p.odoo_version_max, lang=p.language)
+             vmax=p.odoo_version_max, lang=p.language,
+             category=p.category)
         # USES_CORE_SYMBOL edges — silent skip when no CoreSymbol matches
         # (M4.5 not shipped yet, or symbol simply absent at this version).
         for cs_name in p.core_symbol_names:

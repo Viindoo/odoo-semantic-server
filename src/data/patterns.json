@@ -11,7 +11,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "computed-field-lang-context",
@@ -25,7 +26,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends_context", "odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends_context", "odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "create-multi-v17",
@@ -39,7 +41,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.model_create_multi"]
+    "core_symbol_names": ["odoo.api.model_create_multi"],
+    "category": "production"
   },
   {
     "pattern_id": "write-read-before-super",
@@ -53,7 +56,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "xpath-avoid-replace",
@@ -67,7 +71,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "xpath-specific-expr",
@@ -81,7 +86,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-patch-v17",
@@ -95,7 +101,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "inherits-vs-inherit",
@@ -109,7 +116,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "action-return-super",
@@ -123,7 +131,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "crud-return-value",
@@ -137,7 +146,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "old-style-super",
@@ -151,7 +161,8 @@
     ],
     "odoo_version_min": "8.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "missing-return-override",
@@ -165,7 +176,8 @@
     ],
     "odoo_version_min": "8.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "store-computed-field",
@@ -179,7 +191,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "model-create-multi-batch",
@@ -193,7 +206,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.model_create_multi"]
+    "core_symbol_names": ["odoo.api.model_create_multi"],
+    "category": "production"
   },
   {
     "pattern_id": "depends-full-dotted-path",
@@ -207,7 +221,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "aggregator-not-group-operator",
@@ -221,7 +236,8 @@
     ],
     "odoo_version_min": "18.0",
     "language": "python",
-    "core_symbol_names": ["group_operator"]
+    "core_symbol_names": ["group_operator"],
+    "category": "production"
   },
   {
     "pattern_id": "name-get-removed-v18",
@@ -235,7 +251,8 @@
     ],
     "odoo_version_min": "18.0",
     "language": "python",
-    "core_symbol_names": ["name_get"]
+    "core_symbol_names": ["name_get"],
+    "category": "production"
   },
   {
     "pattern_id": "field-states-removed",
@@ -249,7 +266,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "safe-eval-v19-signature",
@@ -263,7 +281,8 @@
     ],
     "odoo_version_min": "19.0",
     "language": "python",
-    "core_symbol_names": ["safe_eval"]
+    "core_symbol_names": ["safe_eval"],
+    "category": "production"
   },
   {
     "pattern_id": "read-group-v19-deprecated",
@@ -277,7 +296,8 @@
     ],
     "odoo_version_min": "19.0",
     "language": "python",
-    "core_symbol_names": ["read_group"]
+    "core_symbol_names": ["read_group"],
+    "category": "production"
   },
   {
     "pattern_id": "query-init-cr-vs-env",
@@ -291,7 +311,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "mail-thread-mixin-inherit",
@@ -305,7 +326,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "mail-activity-mixin",
@@ -319,7 +341,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "recompute-store-true",
@@ -333,7 +356,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "compute-recursive-true",
@@ -347,7 +371,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "monetary-currency-field",
@@ -361,7 +386,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "selection-extend",
@@ -375,7 +401,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "many2many-relation-table",
@@ -389,7 +416,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "domain-leaf-tuple-format",
@@ -403,7 +431,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "context-as-frozendict",
@@ -417,7 +446,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "with-company-context",
@@ -431,7 +461,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "sudo-vs-with-user",
@@ -445,7 +476,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "record-rule-domain-force",
@@ -459,7 +491,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "sql-constraint-name-uniq",
@@ -473,7 +506,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "sql-injection-cr-execute-safe",
@@ -487,7 +521,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "pattern-orm-search-fetch-v17",
@@ -501,7 +536,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "ondelete-restrict-cascade",
@@ -515,7 +551,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "tree-list-tag-v18",
@@ -529,7 +566,8 @@
     ],
     "odoo_version_min": "18.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "qweb-t-out-not-t-esc",
@@ -543,7 +581,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "constrains-decorator-validation",
@@ -557,7 +596,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "onchange-vs-compute",
@@ -571,7 +611,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.onchange", "odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.onchange", "odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "state-machine-action-method",
@@ -585,7 +626,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "tree-decoration-v18-list",
@@ -599,7 +641,8 @@
     ],
     "odoo_version_min": "18.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "view-arch-no-mixed-modes",
@@ -613,7 +656,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-private-attr-v19",
@@ -627,7 +671,8 @@
     ],
     "odoo_version_min": "19.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "fields-translate-true",
@@ -641,7 +686,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "selection-extend-callable",
@@ -655,7 +701,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "company-dependent-field",
@@ -669,7 +716,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "groups-attribute-field-acl",
@@ -683,7 +731,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "log-not-print",
@@ -697,7 +746,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "default-for-field-callable",
@@ -711,7 +761,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "cron-deferred-task",
@@ -725,7 +776,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-component-state-vs-props",
@@ -739,7 +791,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-services-injection",
@@ -753,7 +806,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "portal-sudo-public-user-access",
@@ -767,7 +821,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.http.request"]
+    "core_symbol_names": ["odoo.http.request"],
+    "category": "production"
   },
   {
     "pattern_id": "portal-layout-template-inherit",
@@ -781,7 +836,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "portal-mixin-ensure-token",
@@ -795,7 +851,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.addons.portal.models.portal_mixin.PortalMixin"]
+    "core_symbol_names": ["odoo.addons.portal.models.portal_mixin.PortalMixin"],
+    "category": "production"
   },
   {
     "pattern_id": "portal-compute-with-sudo",
@@ -809,7 +866,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "wizard-transient-default-get-context",
@@ -823,7 +881,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.models.TransientModel"]
+    "core_symbol_names": ["odoo.models.TransientModel"],
+    "category": "production"
   },
   {
     "pattern_id": "wizard-action-close-vs-open",
@@ -837,7 +896,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "wizard-backorder-default-get-x2m",
@@ -851,7 +911,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "multi-company-with-company-context",
@@ -865,7 +926,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.Environment.company"]
+    "core_symbol_names": ["odoo.api.Environment.company"],
+    "category": "production"
   },
   {
     "pattern_id": "multi-company-ir-rule-domain-force",
@@ -879,7 +941,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "multi-company-property-field",
@@ -893,7 +956,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.fields.Many2one"]
+    "core_symbol_names": ["odoo.fields.Many2one"],
+    "category": "production"
   },
   {
     "pattern_id": "ir-attachment-create-res-model-res-id",
@@ -907,7 +971,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.addons.base.models.ir_attachment.IrAttachment"]
+    "core_symbol_names": ["odoo.addons.base.models.ir_attachment.IrAttachment"],
+    "category": "production"
   },
   {
     "pattern_id": "ir-attachment-binary-field-attachment-true",
@@ -921,7 +986,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.fields.Binary"]
+    "core_symbol_names": ["odoo.fields.Binary"],
+    "category": "production"
   },
   {
     "pattern_id": "ir-attachment-download-url",
@@ -935,7 +1001,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-onmounted-lifecycle",
@@ -949,7 +1016,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-usestate-reactive-mutation",
@@ -963,7 +1031,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-template-t-attf-class",
@@ -977,7 +1046,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-patch-service-override",
@@ -991,7 +1061,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "security-acl-csv-group-model",
@@ -1005,7 +1076,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "security-ir-rule-portal-domain",
@@ -1019,7 +1091,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "security-groups-field-attribute",
@@ -1033,7 +1106,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.fields.Float"]
+    "core_symbol_names": ["odoo.fields.Float"],
+    "category": "production"
   },
   {
     "pattern_id": "domain-or-operator-prefix-notation",
@@ -1047,7 +1121,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "domain-child-of-parent-of",
@@ -1061,7 +1136,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "domain-filter-domain-search-view",
@@ -1075,7 +1151,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "mail-thread-mixin-message-post",
@@ -1089,7 +1166,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"]
+    "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"],
+    "category": "production"
   },
   {
     "pattern_id": "mail-thread-activity-schedule",
@@ -1103,7 +1181,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.addons.mail.models.mail_activity_mixin.MailActivityMixin.activity_schedule"]
+    "core_symbol_names": ["odoo.addons.mail.models.mail_activity_mixin.MailActivityMixin.activity_schedule"],
+    "category": "production"
   },
   {
     "pattern_id": "mail-thread-override-message-post",
@@ -1117,7 +1196,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"]
+    "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"],
+    "category": "production"
   },
   {
     "pattern_id": "report-qweb-t-foreach-docs",
@@ -1131,7 +1211,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "report-qweb-t-set-subtotal",
@@ -1145,7 +1226,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "website-published-mixin",
@@ -1159,7 +1241,8 @@
     ],
     "odoo_version_min": "16.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "osv-osv-columns-dict-v9",
@@ -1175,7 +1258,8 @@
     "odoo_version_min": "9.0",
     "odoo_version_max": "9.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "osv-constraints-tuple-v9",
@@ -1191,7 +1275,8 @@
     "odoo_version_min": "9.0",
     "odoo_version_max": "9.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "fields-function-store-v9",
@@ -1207,7 +1292,8 @@
     "odoo_version_min": "9.0",
     "odoo_version_max": "9.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "openerp-py-defaults-v9",
@@ -1223,7 +1309,8 @@
     "odoo_version_min": "9.0",
     "odoo_version_max": "9.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "manifest-transition-v10",
@@ -1238,7 +1325,8 @@
     ],
     "odoo_version_min": "10.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "api-depends-dotted-path-v10",
@@ -1253,7 +1341,8 @@
     ],
     "odoo_version_min": "10.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "inherit-extension-pattern-v10",
@@ -1268,7 +1357,8 @@
     ],
     "odoo_version_min": "10.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "python3-super-no-args-v11",
@@ -1283,7 +1373,8 @@
     ],
     "odoo_version_min": "11.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "ir-sequence-lambda-default-v11",
@@ -1298,7 +1389,8 @@
     ],
     "odoo_version_min": "11.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "api-depends-context-lang-v11",
@@ -1313,7 +1405,8 @@
     ],
     "odoo_version_min": "11.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends_context"]
+    "core_symbol_names": ["odoo.api.depends_context"],
+    "category": "production"
   },
   {
     "pattern_id": "mail-thread-mixin-v11",
@@ -1328,7 +1421,8 @@
     ],
     "odoo_version_min": "11.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "inherits-delegation-v12",
@@ -1343,7 +1437,8 @@
     ],
     "odoo_version_min": "12.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "api-model-class-method-v12",
@@ -1358,7 +1453,8 @@
     ],
     "odoo_version_min": "12.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.model"]
+    "core_symbol_names": ["odoo.api.model"],
+    "category": "production"
   },
   {
     "pattern_id": "compute-inverse-editable-field-v12",
@@ -1373,7 +1469,8 @@
     ],
     "odoo_version_min": "12.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "super-py3-create-v12",
@@ -1388,7 +1485,8 @@
     ],
     "odoo_version_min": "12.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "check-company-constrains-v13",
@@ -1403,7 +1501,8 @@
     ],
     "odoo_version_min": "13.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "force-company-context-v13",
@@ -1419,7 +1518,8 @@
     "odoo_version_min": "13.0",
     "odoo_version_max": "13.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "api-constrains-validation-v13",
@@ -1434,7 +1534,8 @@
     ],
     "odoo_version_min": "13.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "model-extension-mail-thread-v14",
@@ -1449,7 +1550,8 @@
     ],
     "odoo_version_min": "14.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "legacy-widget-extend-v14",
@@ -1465,7 +1567,8 @@
     "odoo_version_min": "14.0",
     "odoo_version_max": "14.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-abstract-field-v14",
@@ -1481,7 +1584,8 @@
     "odoo_version_min": "14.0",
     "odoo_version_max": "14.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "odoo-module-owl2-component-v15",
@@ -1496,7 +1600,8 @@
     ],
     "odoo_version_min": "15.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "use-position-hook-v15",
@@ -1511,7 +1616,8 @@
     ],
     "odoo_version_min": "15.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "odoo-module-view-extension-v15",
@@ -1526,7 +1632,8 @@
     ],
     "odoo_version_min": "15.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "view-inherit-xpath-v10",
@@ -1541,7 +1648,8 @@
     ],
     "odoo_version_min": "10.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "computed-field-stored-v10",
@@ -1556,7 +1664,8 @@
     ],
     "odoo_version_min": "10.0",
     "language": "python",
-    "core_symbol_names": ["odoo.api.depends"]
+    "core_symbol_names": ["odoo.api.depends"],
+    "category": "production"
   },
   {
     "pattern_id": "xml-qweb-report-template-v11",
@@ -1571,7 +1680,8 @@
     ],
     "odoo_version_min": "11.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "security-access-csv-v12",
@@ -1586,7 +1696,8 @@
     ],
     "odoo_version_min": "12.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "one2many-domain-v13",
@@ -1601,7 +1712,8 @@
     ],
     "odoo_version_min": "13.0",
     "language": "python",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "xml-tree-optional-column-v15",
@@ -1616,7 +1728,8 @@
     ],
     "odoo_version_min": "15.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-field-widget-register-v17",
@@ -1635,7 +1748,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "js",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-field-widget-with-template-v17",
@@ -1654,7 +1768,8 @@
     ],
     "odoo_version_min": "17.0",
     "language": "xml",
-    "core_symbol_names": []
+    "core_symbol_names": [],
+    "category": "production"
   },
   {
     "pattern_id": "owl-t-on-handler-binding",
@@ -1663,7 +1778,8 @@
     "snippet_text": "<!-- valid: auto-bound method ref -->\n<button t-on-click=\"onSave\"/>\n<!-- valid: explicit this in an arrow -->\n<button t-on-click=\"() => this.onSave(ev)\"/>\n<!-- BUG: bare free identifier resolves to nothing at render -->\n<button t-on-click=\"() => onSave()\"/>",
     "gotchas": ["OWL injects this=component into the template context, so () => this.foo() is valid (not a stale-this bug)", "t-on-click=\"foo\" auto-binds to the component method - also safe", "The real bug is a bare free identifier () => onFoo() where onFoo is not on the component, props, or a slot variable"],
     "odoo_version_min": "16.0",
-    "language": "js"
+    "language": "js",
+    "category": "production"
   },
   {
     "pattern_id": "owl-useservice-reactivity",
@@ -1672,7 +1788,8 @@
     "snippet_text": "// preserve reactivity when the service is not already reactive\nthis.ui = useState(useService(\"ui\"));",
     "gotchas": ["v16 requires wrapping useState(useService(\"ui\")) or size/state changes never re-render", "v17/v18 keep useState(useService(...)) as the canonical form", "v19+ some services are already reactive() so a plain useService() re-renders - verify per service"],
     "odoo_version_min": "16.0",
-    "language": "js"
+    "language": "js",
+    "category": "production"
   },
   {
     "pattern_id": "owl-wysiwyg-not-contenteditable",
@@ -1681,7 +1798,8 @@
     "snippet_text": "// lazy-load the audited editor in onWillStart, build stable props once\nsetup() {\n    onWillStart(async () => {\n        await loadBundle('web_editor.backend_assets_wysiwyg');\n    });\n}",
     "gotchas": ["Raw contenteditable bypasses OdooEditor sanitisation (an XSS / data-corruption surface)", "Mounting the editor with fresh props each render remounts it and drops the captured instance", "Build stable props once in setup and lazy-load the bundle in onWillStart"],
     "odoo_version_min": "17.0",
-    "language": "js"
+    "language": "js",
+    "category": "production"
   },
   {
     "pattern_id": "owl-dialog-default-slot",
@@ -1690,7 +1808,8 @@
     "snippet_text": "<Dialog title=\"'Title'\">\n    <!-- body goes in the default slot, no t-set-slot -->\n    <p>Body content</p>\n    <t t-set-slot=\"footer\"><button t-on-click=\"confirm\">OK</button></t>\n</Dialog>",
     "gotchas": ["The default slot of Dialog IS the body; wrapping it in t-set-slot=\"body\" targets a slot Dialog never renders", "Only header and footer are named slots", "v18/v19 reorder the body/footer markup but the slot names are unchanged"],
     "odoo_version_min": "16.0",
-    "language": "js"
+    "language": "js",
+    "category": "production"
   },
   {
     "pattern_id": "scss-interpolate-sass-fn-in-calc",
@@ -1699,7 +1818,8 @@
     "snippet_text": "// interpolate Sass values before they reach CSS calc()\nwidth: calc(#{map-get($spacers, 2)} * 2);",
     "gotchas": ["The SCSS compiler does not evaluate map-get()/min() inside a calc() token stream - the property is silently dropped", "Always interpolate: calc(#{map-get(...)} * value)", "This is a compiler behaviour, not a version-specific issue"],
     "odoo_version_min": "16.0",
-    "language": "js"
+    "language": "js",
+    "category": "production"
   },
   {
     "pattern_id": "scss-runtime-token-not-bs-var",
@@ -1708,7 +1828,8 @@
     "snippet_text": "// reference the runtime tokens Odoo actually emits\ncolor: var(--primary);\nbackground-color: var(--o-color-1);",
     "gotchas": ["Odoo sets $variable-prefix to '' so Bootstrap --bs-* runtime custom properties are absent; var(--bs-primary) resolves to empty", "Use the un-prefixed tokens Odoo emits: --primary, --o-color-*, --gray-*", "A self-referential custom property (--x: var(--x, ...)) is a cycle that resolves to empty and flattens the theme"],
     "odoo_version_min": "16.0",
-    "language": "js"
+    "language": "js",
+    "category": "production"
   },
   {
     "pattern_id": "test-transaction-savepoint-v16plus",

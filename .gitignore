@@ -16,3 +16,6 @@ site/.astro/
 # uv.lock IS committed (issue #319): it is the exact dependency lock CI installs
 # from via `uv sync --locked`. Do NOT ignore it.
 site/node_modules
+
+# Wave/agent scaffolding (worklogs, plan artifacts) - not product code
+.odoo-ai/

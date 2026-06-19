@@ -19,6 +19,7 @@ Column mapping (JSON field -> DB column):
     gotchas             -> gotchas          (JSONB, list of strings)
     odoo_version_min    -> odoo_version_min (TEXT)
     odoo_version_max    -> odoo_version_max (TEXT, nullable)
+    category            -> category         (TEXT, nullable, enum test/production)
     language            -> language         (TEXT, enum python/xml/js)
     core_symbol_names   -> core_symbol_names (TEXT[], default [])
 """
@@ -80,6 +81,7 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
             gotchas = json.dumps(p.get("gotchas", []))
             odoo_version_min = p["odoo_version_min"]
             odoo_version_max = p.get("odoo_version_max")  # nullable
+            category = p.get("category")  # nullable
             language = p["language"]
             core_symbol_names = p.get("core_symbol_names", [])
 
@@ -91,11 +93,11 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
                 """
                 INSERT INTO patterns (
                     pattern_id, intent_keywords, file_ref, snippet_text,
-                    gotchas, odoo_version_min, odoo_version_max,
+                    gotchas, odoo_version_min, odoo_version_max, category,
                     language, core_symbol_names
                 ) VALUES (
                     %s, %s, %s, %s,
-                    %s::jsonb, %s, %s,
+                    %s::jsonb, %s, %s, %s,
                     %s, %s
                 )
                 ON CONFLICT (pattern_id) DO UPDATE SET
@@ -105,6 +107,7 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
                     gotchas          = EXCLUDED.gotchas,
                     odoo_version_min = EXCLUDED.odoo_version_min,
                     odoo_version_max = EXCLUDED.odoo_version_max,
+                    category         = EXCLUDED.category,
                     language         = EXCLUDED.language,
                     core_symbol_names = EXCLUDED.core_symbol_names,
                     updated_at       = now()
@@ -115,6 +118,7 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
                     OR patterns.gotchas        IS DISTINCT FROM EXCLUDED.gotchas
                     OR patterns.odoo_version_min IS DISTINCT FROM EXCLUDED.odoo_version_min
                     OR patterns.odoo_version_max IS DISTINCT FROM EXCLUDED.odoo_version_max
+                    OR patterns.category       IS DISTINCT FROM EXCLUDED.category
                     OR patterns.language       IS DISTINCT FROM EXCLUDED.language
                     OR patterns.core_symbol_names IS DISTINCT FROM EXCLUDED.core_symbol_names
                 RETURNING xmax
@@ -127,6 +131,7 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
                     gotchas,
                     odoo_version_min,
                     odoo_version_max,
+                    category,
                     language,
                     core_symbol_names,
                 ),

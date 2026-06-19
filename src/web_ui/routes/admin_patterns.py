@@ -45,10 +45,11 @@ class PatternCreate(BaseModel):
     intent_keywords: list[str] = Field(min_length=1, max_length=20)
     file_ref: str = Field(min_length=1, max_length=500)
     snippet_text: str = Field(min_length=1, max_length=50000)
-    gotchas: list[dict] = Field(default_factory=list)
+    gotchas: list[str] = Field(default_factory=list)
     odoo_version_min: str = Field(min_length=1)
     odoo_version_max: str | None = None
     language: Literal["python", "xml", "js"]
+    category: Literal["test", "production"] | None = None
     core_symbol_names: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
     reason: str = Field(min_length=3, max_length=500)
@@ -58,10 +59,11 @@ class PatternPatch(BaseModel):
     intent_keywords: list[str] | None = None
     file_ref: str | None = None
     snippet_text: str | None = None
-    gotchas: list[dict] | None = None
+    gotchas: list[str] | None = None
     odoo_version_min: str | None = None
     odoo_version_max: str | None = None
     language: Literal["python", "xml", "js"] | None = None
+    category: Literal["test", "production"] | None = None
     core_symbol_names: list[str] | None = None
     metadata: dict | None = None
     soft_deleted: bool | None = None
@@ -100,6 +102,7 @@ async def list_patterns(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     language: Literal["python", "xml", "js"] | None = None,
+    category: Literal["test", "production"] | None = None,
     actor_id: int = Depends(require_admin),
 ) -> dict:
     """List pattern catalogue with optional filters and pagination."""
@@ -113,13 +116,16 @@ async def list_patterns(
     if language:
         where.append("language = %s")
         params.append(language)
+    if category:
+        where.append("category = %s")
+        params.append(category)
     clause = ("WHERE " + " AND ".join(where)) if where else ""
 
     with pool.checkout() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT pattern_id, intent_keywords, file_ref, snippet_text, gotchas, "
-                f"odoo_version_min, odoo_version_max, language, core_symbol_names, "
+                f"odoo_version_min, odoo_version_max, language, category, core_symbol_names, "
                 f"metadata, soft_deleted, created_at, updated_at "
                 f"FROM patterns {clause} ORDER BY pattern_id "
                 f"LIMIT %s OFFSET %s",
@@ -135,11 +141,12 @@ async def list_patterns(
                     "odoo_version_min": r[5],
                     "odoo_version_max": r[6],
                     "language": r[7],
-                    "core_symbol_names": r[8],
-                    "metadata": r[9],
-                    "soft_deleted": r[10],
-                    "created_at": r[11].isoformat() if r[11] else None,
-                    "updated_at": r[12].isoformat() if r[12] else None,
+                    "category": r[8],
+                    "core_symbol_names": r[9],
+                    "metadata": r[10],
+                    "soft_deleted": r[11],
+                    "created_at": r[12].isoformat() if r[12] else None,
+                    "updated_at": r[13].isoformat() if r[13] else None,
                 }
                 for r in cur.fetchall()
             ]
@@ -178,7 +185,7 @@ async def get_pattern(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT pattern_id, intent_keywords, file_ref, snippet_text, gotchas, "
-                "odoo_version_min, odoo_version_max, language, core_symbol_names, "
+                "odoo_version_min, odoo_version_max, language, category, core_symbol_names, "
                 "metadata, soft_deleted "
                 "FROM patterns WHERE pattern_id = %s",
                 (pattern_id,),
@@ -195,9 +202,10 @@ async def get_pattern(
                 "odoo_version_min": r[5],
                 "odoo_version_max": r[6],
                 "language": r[7],
-                "core_symbol_names": r[8],
-                "metadata": r[9],
-                "soft_deleted": r[10],
+                "category": r[8],
+                "core_symbol_names": r[9],
+                "metadata": r[10],
+                "soft_deleted": r[11],
             }
 
 
@@ -226,8 +234,8 @@ async def create_pattern(
                     """INSERT INTO patterns
                          (pattern_id, intent_keywords, file_ref, snippet_text,
                           gotchas, odoo_version_min, odoo_version_max, language,
-                          core_symbol_names, metadata, updated_by)
-                       VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s::jsonb, %s)
+                          category, core_symbol_names, metadata, updated_by)
+                       VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s)
                        ON CONFLICT (pattern_id) DO NOTHING""",
                     (
                         payload.pattern_id,
@@ -238,6 +246,7 @@ async def create_pattern(
                         payload.odoo_version_min,
                         payload.odoo_version_max,
                         payload.language,
+                        payload.category,
                         payload.core_symbol_names,
                         json.dumps(payload.metadata),
                         updated_by,
@@ -277,7 +286,11 @@ async def update_pattern(
     actor_id: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
     """Update one or more fields of an existing pattern. Bumps sentinel SHA."""
-    updates = payload.model_dump(exclude_none=True, exclude={"reason"})
+    # Columns that are nullable in the DB - explicit null is allowed to clear them.
+    # All other columns are NOT NULL; dropping their value would cause a DB error.
+    _NULLABLE_FIELDS = {"category", "odoo_version_max"}
+    _all_set = payload.model_dump(exclude_unset=True, exclude={"reason"})
+    updates = {k: v for k, v in _all_set.items() if v is not None or k in _NULLABLE_FIELDS}
     if not updates:
         raise HTTPException(400, "No fields to update")
 

@@ -349,6 +349,11 @@ class PatternExample:
     # filters out patterns whose range excludes the resolved query version (era1/era2
     # split: e.g. SavepointCase is v8-v15, must NOT surface for a v17 query).
     odoo_version_max: str | None = None
+    # #331 - optional bucket for the pattern. Values: 'test' | 'production' | None (uncategorized).
+    # Placed AFTER odoo_version_max so existing positional constructors stay valid.
+    # suggest_pattern can filter by category (e.g. category='test' surfaces only
+    # test-writing idioms; category='production' surfaces only production idioms).
+    category: str | None = None
 
 
 # --- Spec layer (M4.5, per ADR-0002) ----------------------------------------

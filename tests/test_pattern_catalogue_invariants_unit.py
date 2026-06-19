@@ -183,3 +183,26 @@ def test_test_patterns_version_range_sane():
     assert not violations, (
         f"test patterns with inverted version range (max < min): {sorted(violations)}"
     )
+
+
+def test_all_patterns_have_valid_category():
+    """#331 backfill guard: every entry must have category in ('test', 'production').
+
+    No entry may be uncategorized (None or absent key). Locks the backfill so that:
+    - adding a new pattern without a category makes this test fail immediately.
+    - removing the ``category`` key from an existing entry makes this test fail.
+
+    The oracle is the closed set {'test', 'production'} - hardcoded here so the
+    test cannot trivially pass by accepting any value the file happens to contain.
+    """
+    data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
+    valid_categories = {"test", "production"}
+    violations = [
+        (p.get("pattern_id", f"<index {i}>"), p.get("category"))
+        for i, p in enumerate(data)
+        if p.get("category") not in valid_categories
+    ]
+    assert not violations, (
+        f"patterns.json has {len(violations)} entries with missing or invalid category "
+        f"(must be 'test' or 'production'): {sorted(violations)}"
+    )

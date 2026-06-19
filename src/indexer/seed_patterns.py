@@ -100,6 +100,10 @@ def _canonical_patterns_json(patterns: list[PatternExample]) -> str:
                 "odoo_version_max": p.odoo_version_max,
                 "language": p.language,
                 "core_symbol_names": p.core_symbol_names,
+                # #331 one-time migration: adding category to the canonical JSON
+                # DELIBERATELY changes the SHA once, forcing a single reseed so the
+                # new field lands in Neo4j (same migration rationale as odoo_version_max).
+                "category": p.category,
             }
             for p in patterns
         ],
@@ -231,7 +235,7 @@ def _load_patterns_from_db(
         pool = get_pool()
         sql = (
             "SELECT pattern_id, intent_keywords, file_ref, snippet_text, gotchas, "
-            "odoo_version_min, odoo_version_max, language, core_symbol_names "
+            "odoo_version_min, odoo_version_max, language, core_symbol_names, category "
             "FROM patterns WHERE soft_deleted = FALSE"
         )
         params: tuple = ()
@@ -266,6 +270,8 @@ def _load_patterns_from_db(
                     odoo_version_max=r[6],
                     language=r[7],
                     core_symbol_names=list(r[8]) if r[8] else [],
+                    # r[9] = category (#331 plumbs it through).
+                    category=r[9],
                 )
             )
         return result
@@ -394,6 +400,7 @@ def _load_patterns(
             odoo_version_max=entry.get("odoo_version_max"),
             language=entry["language"],
             core_symbol_names=entry.get("core_symbol_names", []),
+            category=entry.get("category"),
         ))
     return patterns
 
