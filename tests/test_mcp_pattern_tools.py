@@ -117,6 +117,7 @@ def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
             language="python",
             core_symbol_names=[],
             odoo_version_max="15.0",
+            category="test",
         ),
         PatternExample(
             pattern_id="test-transaction-savepoint-v16plus",
@@ -128,6 +129,7 @@ def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
             language="python",
             core_symbol_names=[],
             odoo_version_max=None,
+            category="test",
         ),
         PatternExample(
             pattern_id="test-computed-field",
@@ -139,6 +141,7 @@ def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
             language="python",
             core_symbol_names=[],
             odoo_version_max=None,
+            category="test",
         ),
         PatternExample(
             pattern_id="test-httpcase-tour-qunit-v17",
@@ -150,6 +153,7 @@ def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
             language="python",
             core_symbol_names=[],
             odoo_version_max="17.0",
+            category="test",
         ),
         PatternExample(
             pattern_id="test-httpcase-tour-hoot-v18",
@@ -161,6 +165,7 @@ def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
             language="js",
             core_symbol_names=[],
             odoo_version_max=None,
+            category="test",
         ),
     ]
 
@@ -198,6 +203,92 @@ def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
     # clean_neo4j only sweeps nodes WHERE odoo_version = '99.0'; PatternExample
     # uses odoo_version_min/max so those nodes persist without this teardown,
     # corrupting tests that MERGE the same pattern_ids later in the session.
+    seeded_pids = [p.pattern_id for p in patterns]
+    with clean_neo4j.session() as session:
+        session.run(
+            "UNWIND $ids AS pid "
+            "MATCH (p:PatternExample {pattern_id: pid}) "
+            "DETACH DELETE p",
+            ids=seeded_pids,
+        )
+
+
+@pytest.fixture
+def seeded_category_oracle_patterns(clean_pg_embeddings, clean_neo4j):
+    """Seed PatternExample nodes with non-prefix-aligned category values.
+
+    WI-7 oracle fixture: proves filter reads p.category property, NOT pattern_id
+    prefix. Two patterns break the old prefix assumption:
+      - 'savepoint-helper' (category='test')  : id does NOT start with 'test-'
+        -> must be returned when category='test'
+      - 'test-production-tip' (category='production'): id STARTS with 'test-'
+        -> must NOT be returned when category='test'
+
+    Teardown: DETACH DELETE by pattern_id (same as seeded_version_window_patterns).
+    """
+    import os
+
+    from src.constants import GLOBAL_PROFILE
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.models import PatternExample
+    from src.indexer.writer_neo4j import Neo4jWriter
+    from src.indexer.writer_pgvector import _INSERT_SQL, make_pattern_chunks
+
+    patterns = [
+        # category='test' but id does NOT start with 'test-'
+        PatternExample(
+            pattern_id="savepoint-helper",
+            intent_keywords=["savepoint", "test", "isolation"],
+            file_ref="addons/base/tests/common.py:10",
+            snippet_text="with self.cr.savepoint(): ...",
+            gotchas=["do not commit inside savepoint"],
+            odoo_version_min="16.0",
+            language="python",
+            core_symbol_names=[],
+            odoo_version_max=None,
+            category="test",
+        ),
+        # id starts with 'test-' but category='production'
+        PatternExample(
+            pattern_id="test-production-tip",
+            intent_keywords=["production", "tip"],
+            file_ref="addons/sale/models/sale_order.py:5",
+            snippet_text="# production pattern",
+            gotchas=[],
+            odoo_version_min="16.0",
+            language="python",
+            core_symbol_names=[],
+            odoo_version_max=None,
+            category="production",
+        ),
+    ]
+
+    neo4j_uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("NEO4J_TEST_USER", "neo4j")
+    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", "password")
+
+    writer = Neo4jWriter(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
+    writer.setup_indexes()
+    writer.write_pattern_examples(patterns)
+    writer.close()
+
+    embedder = FakeEmbedder(dim=1024)
+    chunks = make_pattern_chunks(patterns)
+    for _c in chunks:
+        _c.odoo_version = TEST_VERSION
+        _c.profile_name = GLOBAL_PROFILE
+    texts = [c.content for c in chunks]
+    vecs = embedder.embed(texts)
+    from psycopg2.extras import execute_values
+    with clean_pg_embeddings.cursor() as cur:
+        execute_values(
+            cur, _INSERT_SQL,
+            [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
+        )
+
+    yield clean_pg_embeddings, clean_neo4j
+
+    # Teardown: DETACH DELETE the PatternExample nodes written above.
     seeded_pids = [p.pattern_id for p in patterns]
     with clean_neo4j.session() as session:
         session.run(
@@ -436,6 +527,60 @@ class TestSuggestPattern:
         assert "test-httpcase-tour-qunit-v17" in result, (
             "the 16.0-17.0 pattern was wrongly dropped for a v17 query - the "
             "window filter rejects the inclusive upper boundary"
+        )
+
+    def test_category_filter_reads_property_not_prefix(
+        self, seeded_category_oracle_patterns,
+    ):
+        """WI-7 oracle: category filter reads p.category property, NOT pattern_id prefix.
+
+        'savepoint-helper' has category='test' but id does NOT start with 'test-'.
+        The old prefix-based hack would exclude it; the property-based filter keeps it.
+        Assert: category='test' returns 'savepoint-helper'.
+        """
+        pg, neo4j_driver = seeded_category_oracle_patterns
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _suggest_pattern
+
+        result = _suggest_pattern(
+            "savepoint isolation test",
+            odoo_version="17.0",
+            language="python",
+            limit=20,
+            category="test",
+            _driver=neo4j_driver, _pg_conn=pg,
+            _embedder=FakeEmbedder(dim=1024),
+        )
+        assert "savepoint-helper" in result, (
+            "pattern with category='test' and non-'test-' prefix must be returned "
+            "when category='test' - prefix-based filter would wrongly exclude it"
+        )
+
+    def test_category_filter_excludes_wrong_category_despite_prefix(
+        self, seeded_category_oracle_patterns,
+    ):
+        """WI-7 oracle: pattern id starting with 'test-' but category='production'
+        must NOT appear when filtering by category='test'.
+
+        The old prefix-based hack would include 'test-production-tip' (its id
+        starts with 'test-'). The property-based filter correctly excludes it.
+        """
+        pg, neo4j_driver = seeded_category_oracle_patterns
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _suggest_pattern
+
+        result = _suggest_pattern(
+            "production tip pattern",
+            odoo_version="17.0",
+            language="python",
+            limit=20,
+            category="test",
+            _driver=neo4j_driver, _pg_conn=pg,
+            _embedder=FakeEmbedder(dim=1024),
+        )
+        assert "test-production-tip" not in result, (
+            "pattern with id starting 'test-' but category='production' must be "
+            "excluded when category='test' - old prefix hack would wrongly include it"
         )
 
 

@@ -16,6 +16,7 @@ type Pattern = {
   odoo_version_min: string;
   odoo_version_max: string | null;
   language: 'python' | 'xml' | 'js';
+  category: 'test' | 'production' | null;
   core_symbol_names: string[];
   metadata: Record<string, unknown>;
   soft_deleted: boolean;

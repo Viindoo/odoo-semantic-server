@@ -309,6 +309,7 @@ def test_prod_sim_no_reapply(pg_conn, _ephemeral_pg_db):
         "SELECT migration_id FROM _yoyo_migration ORDER BY migration_id",
     )
     migration_ids = [r["migration_id"] for r in yoyo_rows]
-    assert migration_ids == ["0001_initial"], (
-        f"Expected exactly ['0001_initial'] in _yoyo_migration after squash, got {migration_ids}"
+    assert migration_ids == ["0001_initial", "0002_add_category_to_patterns"], (
+        f"Expected ['0001_initial', '0002_add_category_to_patterns'] in _yoyo_migration "
+        f"after squash, got {migration_ids}"
     )

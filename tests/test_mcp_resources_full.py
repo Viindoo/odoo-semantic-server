@@ -145,6 +145,7 @@ def f4_db(neo4j_driver):
             gotchas=["Always call super() in action_confirm."],
             odoo_version_min="14.0",
             language="python",
+            category="production",
         ),
     ])
 
@@ -282,11 +283,58 @@ def test_pattern_resource_returns_snippet_body(mcp_with_resources) -> None:
     body = _read(mcp_with_resources, uri)
 
     assert F4_PATTERN_ID in body, f"Body must mention the pattern_id; got: {body[:300]!r}"
-    # _render_pattern emits "Language:", "File:", and snippet
+    # _render_pattern emits "Language:", "Category:", "File:", and snippet
     assert "Language:" in body, "Body must include Language: branch"
+    assert "Category:" in body, "Body must include Category: branch"
+    assert "production" in body, "Body must include the seeded category"
     assert "File:" in body, "Body must include File: branch"
     # Our fixture snippet mentions action_confirm
     assert "action_confirm" in body, "Body must include the seeded snippet text"
+
+
+def test_pattern_resource_category_uncategorized(mcp_with_resources, f4_db) -> None:
+    """Pattern with None category renders as 'uncategorized'."""
+    # Seed a PatternExample with no category set (None).
+    with f4_db.session() as s:
+        s.run(
+            """
+            MATCH (n:PatternExample {pattern_id: $pid}) DETACH DELETE n
+            """,
+            pid="f4-test-pattern-uncategorized",
+        )
+    from src.indexer.models import PatternExample
+    from src.indexer.writer_neo4j import Neo4jWriter
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.write_pattern_examples([
+        PatternExample(
+            pattern_id="f4-test-pattern-uncategorized",
+            intent_keywords=["test", "example"],
+            file_ref="addons/sale/models/test.py:10",
+            snippet_text="# test snippet",
+            gotchas=[],
+            odoo_version_min="14.0",
+            language="python",
+            category=None,  # explicitly None
+        ),
+    ])
+    writer.close()
+
+    # Read the resource and verify "uncategorized" appears in body
+    uri = f"odoo://{F4_VERSION}/pattern/f4-test-pattern-uncategorized"
+    body = _read(mcp_with_resources, uri)
+    assert "Category:" in body, "Body must include Category: branch"
+    assert "uncategorized" in body, "Body must show 'uncategorized' when category is None"
+
+    # Cleanup
+    with f4_db.session() as s:
+        s.run(
+            "MATCH (n:PatternExample {pattern_id: $pid}) DETACH DELETE n",
+            pid="f4-test-pattern-uncategorized",
+        )
 
 
 def test_pattern_resource_unknown_returns_not_found(mcp_with_resources) -> None:

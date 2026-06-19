@@ -112,6 +112,8 @@ class Neo4jWriter:
                 " ON (n.pattern_id)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
                 " ON (n.language, n.odoo_version_min)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+                " ON (n.category)",
                 # WI-A1 stylesheet layer (per ADR-0025):
                 "CREATE INDEX IF NOT EXISTS FOR (n:Stylesheet)"
                 " ON (n.file_path, n.module, n.odoo_version)",

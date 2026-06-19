@@ -40,7 +40,7 @@ def _fetch_pattern(conn, pattern_id: str) -> dict | None:
         cur.execute(
             """
             SELECT pattern_id, intent_keywords, file_ref, snippet_text,
-                   gotchas, odoo_version_min, odoo_version_max,
+                   gotchas, odoo_version_min, odoo_version_max, category,
                    language, core_symbol_names
               FROM patterns
              WHERE pattern_id = %s
@@ -58,8 +58,9 @@ def _fetch_pattern(conn, pattern_id: str) -> dict | None:
         "gotchas": row[4],
         "odoo_version_min": row[5],
         "odoo_version_max": row[6],
-        "language": row[7],
-        "core_symbol_names": row[8],
+        "category": row[7],
+        "language": row[8],
+        "core_symbol_names": row[9],
     }
 
 
@@ -159,6 +160,11 @@ class TestBackfillDataParity:
                 f"{pid}: odoo_version_max mismatch (expected {raw.get('odoo_version_max')!r})"
             )
 
+            # category
+            assert db["category"] == raw.get("category"), (
+                f"{pid}: category mismatch (expected {raw.get('category')!r})"
+            )
+
             # language
             assert db["language"] == raw["language"], f"{pid}: language mismatch"
 
@@ -169,7 +175,7 @@ class TestBackfillDataParity:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: idempotency — zero diff on re-run
+# Test 3: idempotency - zero diff on re-run
 # ---------------------------------------------------------------------------
 
 
@@ -180,12 +186,12 @@ class TestBackfillIdempotentZeroDiff:
         This verifies the ON CONFLICT ... WHERE (drift detection) logic correctly
         identifies that no field has changed between runs.
         """
-        # First run — populate
+        # First run - populate
         ins1, upd1 = backfill(fresh_pg)
         fresh_pg.commit()
         assert ins1 > 0, "First run should have inserted rows"
 
-        # Second run — must be a no-op
+        # Second run - must be a no-op
         ins2, upd2 = backfill(fresh_pg)
         fresh_pg.commit()
 
@@ -200,7 +206,7 @@ class TestBackfillIdempotentZeroDiff:
 
 
 # ---------------------------------------------------------------------------
-# Test 4: drift detection — drifted row is corrected on re-run
+# Test 4: drift detection - drifted row is corrected on re-run
 # ---------------------------------------------------------------------------
 
 
@@ -232,7 +238,7 @@ class TestBackfillDetectsDrift:
         db_before = _fetch_pattern(fresh_pg, target_id)
         assert db_before["snippet_text"] == "# CORRUPTED", "Corruption setup failed"
 
-        # Re-run backfill — must correct the drifted row
+        # Re-run backfill - must correct the drifted row
         ins, upd = backfill(fresh_pg)
         fresh_pg.commit()
 
@@ -268,4 +274,101 @@ class TestMeetsAdr0009Minimum:
         assert count >= 80, (
             f"patterns table has only {count} rows; ADR-0009 requires >= 80. "
             "Was patterns.json accidentally truncated?"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 6: category field backfill
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillCategory:
+    def test_category_inserted_correctly(self, fresh_pg):
+        """Backfill must insert the category field correctly from patterns.json."""
+        backfill(fresh_pg)
+        fresh_pg.commit()
+
+        source = json.loads(PATTERNS_JSON.read_text())
+        # Check a pattern with category
+        test_pattern = next((p for p in source if p.get("category") == "test"), None)
+        prod_pattern = next((p for p in source if p.get("category") == "production"), None)
+
+        if test_pattern:
+            db = _fetch_pattern(fresh_pg, test_pattern["pattern_id"])
+            assert db is not None
+            assert db["category"] == "test", (
+                f"{test_pattern['pattern_id']}: category should be 'test', got {db['category']!r}"
+            )
+
+        if prod_pattern:
+            db = _fetch_pattern(fresh_pg, prod_pattern["pattern_id"])
+            assert db is not None
+            assert db["category"] == "production", (
+                f"{prod_pattern['pattern_id']}: category should be 'production', "
+                f"got {db['category']!r}"
+            )
+
+    def test_category_drift_detection_and_update(self, fresh_pg):
+        """A drifted category in DB must be corrected when backfill runs again.
+
+        This ensures the ON CONFLICT ... WHERE drift detection covers
+        the category field.
+        """
+        # Populate DB
+        backfill(fresh_pg)
+        fresh_pg.commit()
+
+        # Pick a pattern with category from JSON
+        source = json.loads(PATTERNS_JSON.read_text())
+        target = next((p for p in source if p.get("category") is not None), None)
+        if not target:
+            pytest.skip("No patterns with category in patterns.json")
+
+        target_id = target["pattern_id"]
+        original_category = target.get("category")
+
+        # Corrupt the category in DB (set to a different value or NULL)
+        corrupted_value = "test" if original_category != "test" else "production"
+        with fresh_pg.cursor() as cur:
+            cur.execute(
+                "UPDATE patterns SET category = %s WHERE pattern_id = %s",
+                (corrupted_value, target_id),
+            )
+        fresh_pg.commit()
+
+        # Confirm corruption
+        db_before = _fetch_pattern(fresh_pg, target_id)
+        assert db_before["category"] == corrupted_value, "Corruption setup failed"
+
+        # Re-run backfill - must correct the drifted row
+        ins, upd = backfill(fresh_pg)
+        fresh_pg.commit()
+
+        db_after = _fetch_pattern(fresh_pg, target_id)
+        assert db_after["category"] == original_category, (
+            f"Category drift not corrected. Expected {original_category!r}, "
+            f"got {db_after['category']!r}"
+        )
+        assert upd >= 1, (
+            f"Expected at least 1 updated row (the drifted one), got {upd}"
+        )
+
+    def test_category_no_spurious_update_when_unchanged(self, fresh_pg):
+        """Running backfill twice with unchanged category must yield zero updates.
+
+        This verifies that the drift detection correctly handles the category
+        field when it hasn't changed, avoiding spurious updates.
+        """
+        # First run - populate
+        ins1, upd1 = backfill(fresh_pg)
+        fresh_pg.commit()
+        assert ins1 > 0, "First run should have inserted rows"
+
+        # Second run - must be a no-op for category field too
+        ins2, upd2 = backfill(fresh_pg)
+        fresh_pg.commit()
+
+        assert upd2 == 0, (
+            f"Second run should update 0 rows (category unchanged), got {upd2}. "
+            "Drift detection falsely fired on identical category."
         )

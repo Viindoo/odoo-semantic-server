@@ -5,6 +5,7 @@ import { submitJson } from '../../../lib/apiClient';
 import { flash } from '../../../lib/flash';
 
 type Language = 'python' | 'xml' | 'js';
+type Category = 'test' | 'production';
 
 interface Pattern {
   pattern_id: string;
@@ -15,6 +16,7 @@ interface Pattern {
   odoo_version_min: string;
   odoo_version_max: string | null;
   language: Language;
+  category: Category | null;
   core_symbol_names: string[];
   metadata: Record<string, unknown>;
   soft_deleted: boolean;
@@ -33,6 +35,11 @@ const LANG_COLORS: Record<Language, string> = {
   js: 'bg-yellow-100 text-yellow-700',
 };
 
+const CATEGORY_COLORS: Record<Category, string> = {
+  test: 'bg-purple-100 text-purple-700',
+  production: 'bg-green-100 text-green-700',
+};
+
 // ─── Pattern detail modal ────────────────────────────────────────────────────
 
 interface DetailModalProps {
@@ -48,6 +55,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
   const [versionMin, setVersionMin] = useState(pattern.odoo_version_min);
   const [versionMax, setVersionMax] = useState(pattern.odoo_version_max ?? '');
   const [language, setLanguage] = useState<Language>(pattern.language);
+  const [category, setCategory] = useState<Category | ''>(pattern.category ?? '');
   const [keywords, setKeywords] = useState(pattern.intent_keywords.join(', '));
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -68,6 +76,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
       odoo_version_min: versionMin,
       odoo_version_max: versionMax.trim() || null,
       language,
+      category: category || null,
       intent_keywords: keywords.split(',').map((k) => k.trim()).filter(Boolean),
     };
 
@@ -138,11 +147,21 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
               <div className="grid grid-cols-2 gap-4 text-xs">
                 <div>
                   <span className="font-medium text-gray-600">Version range:</span>
-                  <span className="ml-2 font-mono">{pattern.odoo_version_min} – {pattern.odoo_version_max ?? 'latest'}</span>
+                  <span className="ml-2 font-mono">{pattern.odoo_version_min} - {pattern.odoo_version_max ?? 'latest'}</span>
                 </div>
                 <div>
                   <span className="font-medium text-gray-600">Updated:</span>
-                  <span className="ml-2">{pattern.updated_at?.slice(0, 10) ?? '—'}</span>
+                  <span className="ml-2">{pattern.updated_at?.slice(0, 10) ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="font-medium text-gray-600">Category:</span>
+                  {pattern.category ? (
+                    <span className={`ml-2 font-medium rounded-full px-2 py-0.5 ${CATEGORY_COLORS[pattern.category]}`}>
+                      {pattern.category}
+                    </span>
+                  ) : (
+                    <span className="ml-2 text-gray-400">-</span>
+                  )}
                 </div>
               </div>
 
@@ -224,14 +243,27 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">File Ref</label>
-                  <input
-                    type="text"
-                    value={fileRef}
-                    onChange={(e) => setFileRef(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
-                  />
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+                  <select
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value as Category | '')}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white"
+                  >
+                    <option value="">None</option>
+                    <option value="test">test</option>
+                    <option value="production">production</option>
+                  </select>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">File Ref</label>
+                <input
+                  type="text"
+                  value={fileRef}
+                  onChange={(e) => setFileRef(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+                />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -317,6 +349,7 @@ function PatternDetailModal({ pattern, onClose, onSaved }: DetailModalProps) {
 function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [patternId, setPatternId] = useState('');
   const [language, setLanguage] = useState<Language>('python');
+  const [category, setCategory] = useState<Category | ''>('');
   const [fileRef, setFileRef] = useState('');
   const [snippet, setSnippet] = useState('');
   const [keywords, setKeywords] = useState('');
@@ -338,6 +371,7 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
         body: {
           pattern_id: patternId.trim(),
           language,
+          category: category || null,
           file_ref: fileRef.trim(),
           snippet_text: snippet,
           intent_keywords: keywords.split(',').map((k) => k.trim()).filter(Boolean),
@@ -389,6 +423,16 @@ function AddPatternModal({ onClose, onSuccess }: { onClose: () => void; onSucces
                 <option value="js">JS</option>
               </select>
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+            <select value={category} onChange={(e) => setCategory(e.target.value as Category | '')}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white">
+              <option value="">None</option>
+              <option value="test">test</option>
+              <option value="production">production</option>
+            </select>
           </div>
 
           <div>
@@ -455,18 +499,21 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
   const [loading, setLoading] = useState(false);
   const [offset, setOffset] = useState(0);
   const [languageFilter, setLanguageFilter] = useState<Language | ''>('');
+  const [categoryFilter, setCategoryFilter] = useState<Category | ''>('');
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [selectedPattern, setSelectedPattern] = useState<Pattern | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [pendingReseed, setPendingReseed] = useState(false);
 
-  const load = async (opts: { offset?: number; lang?: Language | ''; deleted?: boolean }) => {
+  const load = async (opts: { offset?: number; lang?: Language | ''; cat?: Category | ''; deleted?: boolean }) => {
     setLoading(true);
     const lang = opts.lang ?? languageFilter;
+    const cat = opts.cat ?? categoryFilter;
     const deleted = opts.deleted ?? includeDeleted;
     const off = opts.offset ?? offset;
     const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(off) });
     if (lang) qs.set('language', lang);
+    if (cat) qs.set('category', cat);
     if (deleted) qs.set('include_deleted', 'true');
 
     const r = await submitJson<{ patterns: Pattern[]; total: number }>(`/api/admin/patterns?${qs.toString()}`, { method: 'GET', stepUp: false });
@@ -486,6 +533,7 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
     setLoading(true);
     const qs = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
     if (languageFilter) qs.set('language', languageFilter);
+    if (categoryFilter) qs.set('category', categoryFilter);
     if (includeDeleted) qs.set('include_deleted', 'true');
     let landed = false;
     const r = await submitJson<{ patterns: Pattern[]; total: number }>(`/api/admin/patterns?${qs.toString()}`, { method: 'GET', stepUp: false });
@@ -550,6 +598,21 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
           <option value="js">JS</option>
         </select>
 
+        <select
+          value={categoryFilter}
+          onChange={(e) => {
+            const val = e.target.value as Category | '';
+            setCategoryFilter(val);
+            setOffset(0);
+            load({ cat: val, offset: 0 });
+          }}
+          className="border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep bg-white"
+        >
+          <option value="">All categories</option>
+          <option value="test">test</option>
+          <option value="production">production</option>
+        </select>
+
         <label className="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer">
           <input
             type="checkbox"
@@ -586,6 +649,7 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Pattern ID</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Lang</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Category</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">File Ref</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Snippet Preview</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Versions</th>
@@ -596,11 +660,11 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
             <tbody className="divide-y divide-gray-100">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">Loading...</td>
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">Loading...</td>
                 </tr>
               ) : patterns.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">No patterns found.</td>
+                  <td colSpan={8} className="px-4 py-8 text-center text-gray-400 text-sm">No patterns found.</td>
                 </tr>
               ) : (
                 patterns.map((p) => (
@@ -619,6 +683,15 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
                         {p.language}
                       </span>
                     </td>
+                    <td className="px-4 py-3">
+                      {p.category ? (
+                        <span className={`text-xs font-medium rounded-full px-2 py-0.5 ${CATEGORY_COLORS[p.category]}`}>
+                          {p.category}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-gray-400">-</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs font-mono text-gray-500 max-w-[200px] truncate" title={p.file_ref}>
                       {p.file_ref}
                     </td>
@@ -628,7 +701,7 @@ export default function PatternsEditorIsland({ initialPatterns, initialTotal }: 
                       </span>
                     </td>
                     <td className="px-4 py-3 text-xs font-mono text-gray-500 whitespace-nowrap">
-                      {p.odoo_version_min}–{p.odoo_version_max ?? 'latest'}
+                      {p.odoo_version_min}-{p.odoo_version_max ?? 'latest'}
                     </td>
                     <td className="px-4 py-3 text-center">
                       {p.soft_deleted ? (

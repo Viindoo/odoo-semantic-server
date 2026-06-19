@@ -215,6 +215,64 @@ def test_canonical_sha_includes_odoo_version_max():
     assert sha_open != sha_bounded
 
 
+def test_canonical_sha_includes_category():
+    """#331: the canonical SHA MUST cover category.
+
+    The seed sentinel skips re-seeding when the canonical SHA is unchanged
+    (ADR-0007 auto-reseed). If category were omitted from
+    _canonical_patterns_json, then editing a pattern's category in the DB
+    would leave the SHA identical -> the indexer would skip the reseed and
+    Neo4j would keep stale data, silently serving a production pattern under
+    a 'test' filter. This test pins the field INTO the canonical form: two
+    pattern lists that differ ONLY in category must produce DIFFERENT canonical
+    JSON, hence a DIFFERENT SHA.
+
+    Pure unit test over _canonical_patterns_json (no DB / no Neo4j).
+    """
+    import hashlib
+
+    from src.indexer.models import PatternExample
+    from src.indexer.seed_patterns import _canonical_patterns_json
+
+    base_kwargs = dict(
+        pattern_id="test-category-sha",
+        intent_keywords=["computed", "depends"],
+        file_ref="addons/sale/models/sale_order.py:100",
+        snippet_text="@api.depends('partner_id')\ndef _compute_amount(self): ...",
+        gotchas=["missing depends causes stale cache"],
+        odoo_version_min="17.0",
+        language="python",
+        core_symbol_names=[],
+    )
+    # Identical EXCEPT category (None = uncategorized vs a concrete value).
+    uncategorized = [PatternExample(**base_kwargs, category=None)]
+    production = [PatternExample(**base_kwargs, category="production")]
+    test_cat = [PatternExample(**base_kwargs, category="test")]
+
+    json_uncat = _canonical_patterns_json(uncategorized)
+    json_prod = _canonical_patterns_json(production)
+    json_test = _canonical_patterns_json(test_cat)
+
+    # The field must be emitted (so any future omission regresses loudly here)...
+    assert '"category"' in json_uncat
+    assert '"category"' in json_prod
+    assert '"category"' in json_test
+    # ...and changing only that field must change the canonical form + the SHA.
+    assert json_uncat != json_prod, (
+        "canonical JSON ignores category -> sentinel SHA would not churn "
+        "on a category edit, so the reseed would be wrongly skipped"
+    )
+    assert json_prod != json_test, (
+        "canonical JSON ignores category -> 'production' and 'test' produce "
+        "identical SHA, masking a category change"
+    )
+    sha_uncat = hashlib.sha256(json_uncat.encode("utf-8")).hexdigest()
+    sha_prod = hashlib.sha256(json_prod.encode("utf-8")).hexdigest()
+    sha_test = hashlib.sha256(json_test.encode("utf-8")).hexdigest()
+    assert sha_uncat != sha_prod
+    assert sha_prod != sha_test
+
+
 def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
     """After --no-embed seed, patterns_neo4j sentinel is written but NOT patterns_pgvector.
 

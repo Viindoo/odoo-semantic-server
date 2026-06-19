@@ -410,7 +410,8 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
                    p.file_ref AS fr, p.snippet_text AS sn,
                    p.gotchas AS g, p.language AS lang,
                    p.odoo_version_min AS vmin,
-                   p.odoo_version_max AS vmax
+                   p.odoo_version_max AS vmax,
+                   p.category AS category
             """,
             f"pattern '{pattern_id}'",
             pid=pattern_id,
@@ -431,6 +432,8 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
     # render as '*'.
     vmax_disp = "*" if rec.get("vmax") is None else rec.get("vmax")
     lines.append(f"├─ Language: {rec['lang']} (v{rec['vmin']}-{vmax_disp})")
+    category_disp = rec.get("category") or "uncategorized"
+    lines.append(f"├─ Category: {category_disp}")
     lines.append(f"├─ File:     {rec['fr']}")
     kw = rec.get("kw") or []
     if kw:

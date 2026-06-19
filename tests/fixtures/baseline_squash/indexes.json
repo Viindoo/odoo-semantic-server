@@ -286,6 +286,11 @@
   },
   {
     "tablename": "patterns",
+    "indexname": "idx_patterns_category",
+    "indexdef": "CREATE INDEX idx_patterns_category ON public.patterns USING btree (category)"
+  },
+  {
+    "tablename": "patterns",
     "indexname": "idx_patterns_intent_keywords_gin",
     "indexdef": "CREATE INDEX idx_patterns_intent_keywords_gin ON public.patterns USING gin (intent_keywords)"
   },

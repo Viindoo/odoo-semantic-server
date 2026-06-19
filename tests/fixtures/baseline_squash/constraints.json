@@ -247,6 +247,12 @@
   },
   {
     "table_name": "patterns",
+    "conname": "patterns_category_check",
+    "contype": "c",
+    "def": "CHECK ((category = ANY (ARRAY['test'::text, 'production'::text])))"
+  },
+  {
+    "table_name": "patterns",
     "conname": "patterns_language_check",
     "contype": "c",
     "def": "CHECK ((language = ANY (ARRAY['python'::text, 'xml'::text, 'js'::text])))"

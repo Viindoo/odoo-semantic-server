@@ -94,9 +94,9 @@ def _suggest_pattern(
     Neo4j batch fetch metadata via UNWIND on pattern_id list. Language filter
     via entity_name slug LIKE '<language>__%'.
 
-    WI-4: optional ``category`` filter (e.g. ``'test'``) post-filters results
-    to PatternExample nodes whose ``pattern_id`` starts with ``<category>-``
-    (convention: all test-writing patterns have IDs prefixed with ``test-``).
+    WI-7: optional ``category`` filter (e.g. ``'test'``) post-filters results
+    to PatternExample nodes whose ``p.category`` property equals the requested
+    category (reads the real Neo4j property, not a pattern_id prefix).
     """
     if not intent.strip():
         return (
@@ -213,23 +213,6 @@ def _suggest_pattern(
         pattern_ids.append(pid)
         score_map[pid] = float(cosine)
 
-    # WI-4: category post-filter (e.g. category='test' -> keep only 'test-*' IDs).
-    if category:
-        prefix = f"{category}-"
-        pattern_ids = [pid for pid in pattern_ids if pid.startswith(prefix)]
-        score_map = {pid: s for pid, s in score_map.items() if pid in pattern_ids}
-        if not pattern_ids:
-            next_line = format_next_step([
-                f"find_test_examples(query='{intent}', odoo_version='{v}')"
-                " for real-world test examples",
-            ])
-            return (
-                f"suggest_pattern({intent!r}, {v!r}, category={category!r})\n"
-                f"├─ No patterns found for category={category!r}. "
-                "Seed test-writing patterns with pattern_id prefix 'test-'.\n"
-                + next_line
-            )
-
     # #287: bound the PatternExample batch fetch under the per-query Neo4j
     # timeout. suggest_pattern is async (embeds on the event loop, then offloads
     # this body via asyncio.to_thread) so it has NO @offload_neo4j backstop — the
@@ -246,7 +229,8 @@ def _suggest_pattern(
                        p.file_ref AS fr, p.snippet_text AS sn,
                        p.gotchas AS g, p.language AS lang,
                        p.odoo_version_min AS vmin,
-                       p.odoo_version_max AS vmax
+                       p.odoo_version_max AS vmax,
+                       p.category AS category
                 """,
                 label=f"pattern metadata batch (Odoo {v})",
                 ids=pattern_ids,
@@ -255,6 +239,33 @@ def _suggest_pattern(
         return _srv._nonorm_timeout_response(exc, "suggest_pattern")
 
     by_id = {r["id"]: r for r in records}
+
+    # WI-7: category post-filter using the real p.category property (not prefix).
+    # Replaces the old prefix-based hack (pid.startswith(f"{category}-")).
+    if category:
+        pattern_ids = [
+            pid for pid in pattern_ids
+            if by_id.get(pid, {}).get("category") == category
+        ]
+        score_map = {pid: s for pid, s in score_map.items() if pid in pattern_ids}
+        if not pattern_ids:
+            # Category-aware next step: test patterns -> find_test_examples,
+            # other categories (e.g. production) -> find_examples.
+            example_step = (
+                f"find_test_examples(query='{intent}', odoo_version='{v}')"
+                " for real-world test examples"
+                if category == "test"
+                else f"find_examples(query='{intent}', odoo_version='{v}')"
+                " for real-world usage examples"
+            )
+            next_line = format_next_step([example_step])
+            return (
+                f"suggest_pattern({intent!r}, {v!r}, category={category!r})\n"
+                f"├─ No patterns found with category={category!r}. "
+                f"Seed patterns with category='{category}' in the pattern catalogue.\n"
+                + next_line
+            )
+
     return _format_suggest_pattern(
         ordered_ids=pattern_ids, by_id=by_id, score_map=score_map,
         intent=intent, version=v, language=language, limit=limit,
@@ -806,7 +817,7 @@ async def suggest_pattern(
         language: 'python' | 'xml' | 'js' | 'all'. Default 'python'.
         limit: Max patterns to return (default 5).
         category: Optional filter. 'test' restricts to test-writing patterns
-            (pattern_ids prefixed 'test-').
+            (PatternExample nodes with category='test' in the graph).
 
     Returns:
         Tree of patterns ranked by score, each with snippet (first 5 lines),

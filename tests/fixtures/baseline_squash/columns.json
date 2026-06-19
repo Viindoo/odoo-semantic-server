@@ -1071,6 +1071,13 @@
     "column_default": "false"
   },
   {
+    "table_name": "patterns",
+    "column_name": "category",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
     "table_name": "plans",
     "column_name": "id",
     "data_type": "integer",

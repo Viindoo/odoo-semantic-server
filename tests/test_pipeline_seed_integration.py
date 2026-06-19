@@ -247,6 +247,137 @@ def test_index_profile_no_embed_skips_pattern_embeddings(
 
 
 # ---------------------------------------------------------------------------
+# Test 3b: category property is written to PatternExample nodes + reseed idempotent
+# ---------------------------------------------------------------------------
+
+_CATEGORY_PATTERN_IDS = ["wi331-cat-test-pat", "wi331-cat-prod-pat"]
+
+
+def _make_category_patterns_json(tmp_path: Path) -> Path:
+    """Write a patterns.json with one 'test' and one 'production' category entry."""
+    data = [
+        {
+            "pattern_id": "wi331-cat-test-pat",
+            "intent_keywords": ["test"],
+            "file_ref": "f:1",
+            "snippet_text": "# test snippet",
+            "gotchas": ["gotcha one", "gotcha two", "gotcha three"],
+            "odoo_version_min": TEST_VERSION,
+            "language": "python",
+            "category": "test",
+        },
+        {
+            "pattern_id": "wi331-cat-prod-pat",
+            "intent_keywords": ["production"],
+            "file_ref": "f:2",
+            "snippet_text": "# production snippet",
+            "gotchas": ["gotcha one", "gotcha two", "gotcha three"],
+            "odoo_version_min": TEST_VERSION,
+            "language": "python",
+            "category": "production",
+        },
+    ]
+    p = tmp_path / "patterns_cat.json"
+    p.write_text(json.dumps(data))
+    return p
+
+
+def _teardown_category_patterns(neo4j_driver) -> None:
+    """DETACH DELETE the two category test PatternExample nodes by pattern_id."""
+    with neo4j_driver.session() as session:
+        session.run(
+            "UNWIND $pids AS pid "
+            "MATCH (pe:PatternExample {pattern_id: pid}) "
+            "DETACH DELETE pe",
+            pids=_CATEGORY_PATTERN_IDS,
+        )
+
+
+def _read_category_for_pattern(neo4j_driver, pattern_id: str) -> str | None:
+    """Return the category property of a PatternExample node, or None if absent."""
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (pe:PatternExample {pattern_id: $pid}) RETURN pe.category AS cat LIMIT 1",
+            pid=pattern_id,
+        ).single()
+        return row["cat"] if row else None
+
+
+def test_pattern_example_category_written_and_reseed_idempotent(
+    clean_neo4j, clean_pg, neo4j_driver, tmp_path, monkeypatch
+):
+    """PatternExample.category is persisted to Neo4j and reseed is idempotent.
+
+    Acceptance:
+    - After seeding, pe.category == 'test' for wi331-cat-test-pat.
+    - After seeding, pe.category == 'production' for wi331-cat-prod-pat.
+    - A second seed run (same file, sentinel present) produces the same categories.
+    - Teardown: DETACH DELETE both nodes by pattern_id (not odoo_version).
+    """
+    patterns_file = _make_category_patterns_json(tmp_path)
+    import src.indexer.seed_patterns as _sp_mod
+    monkeypatch.setattr(_sp_mod, "_DEFAULT_PATTERNS_FILE", patterns_file)
+
+    _wipe_seed_meta(neo4j_driver)
+    # Ensure the two test nodes are absent before we begin.
+    _teardown_category_patterns(neo4j_driver)
+
+    run_migrations(clean_pg)
+    repo = make_git_repo(tmp_path / "repo_cat", branch=TEST_VERSION)
+    _seed_minimal_module(repo, "cat_mod")
+    pid = repo_store().add_profile("cat_prof", TEST_VERSION)
+    repo_store().add_repo(pid, "local/cat", TEST_VERSION, str(repo))
+
+    # First run - seeds patterns.
+    summary = index_profile(clean_pg, profile_name="cat_prof")
+    assert summary["modules"] >= 1
+
+    # Assert category is written correctly on both nodes.
+    cat_test = _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat")
+    assert cat_test == "test", (
+        f"Expected category='test' on wi331-cat-test-pat, got {cat_test!r}"
+    )
+
+    cat_prod = _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat")
+    assert cat_prod == "production", (
+        f"Expected category='production' on wi331-cat-prod-pat, got {cat_prod!r}"
+    )
+
+    sha_after_first = _get_seed_meta_sha(neo4j_driver)
+    assert sha_after_first is not None, "_SeedMeta sentinel not written after first run"
+
+    # Second run - patterns file unchanged, sentinel present: reseed skips Neo4j writes.
+    # categories must be identical after the second run.
+    summary2 = index_profile(clean_pg, profile_name="cat_prof")
+    assert summary2["modules"] >= 1
+
+    cat_test_2 = _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat")
+    assert cat_test_2 == "test", (
+        f"After reseed: expected category='test' on wi331-cat-test-pat, got {cat_test_2!r}"
+    )
+
+    cat_prod_2 = _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat")
+    assert cat_prod_2 == "production", (
+        f"After reseed: expected category='production' on wi331-cat-prod-pat, "
+        f"got {cat_prod_2!r}"
+    )
+
+    sha_after_second = _get_seed_meta_sha(neo4j_driver)
+    assert sha_after_second == sha_after_first, (
+        "Sentinel sha changed on second run - sentinel was re-written even though "
+        "patterns file was not modified (reseed not idempotent)"
+    )
+
+    # Teardown: remove test nodes by pattern_id (PatternExample has no odoo_version).
+    _teardown_category_patterns(neo4j_driver)
+    _wipe_seed_meta(neo4j_driver)
+
+    # Verify teardown: both nodes must be gone.
+    assert _read_category_for_pattern(neo4j_driver, "wi331-cat-test-pat") is None
+    assert _read_category_for_pattern(neo4j_driver, "wi331-cat-prod-pat") is None
+
+
+# ---------------------------------------------------------------------------
 # Test 4: seed failure does not fail the whole indexer run
 # ---------------------------------------------------------------------------
 
