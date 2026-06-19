@@ -94,6 +94,10 @@ def _canonical_patterns_json(patterns: list[PatternExample]) -> str:
                 "snippet_text": p.snippet_text,
                 "gotchas": p.gotchas,
                 "odoo_version_min": p.odoo_version_min,
+                # #329 one-time migration: adding odoo_version_max to the canonical
+                # JSON DELIBERATELY changes the SHA once, forcing a single reseed so
+                # the new field lands in Neo4j (mirrors the WI-RV F-D migration note).
+                "odoo_version_max": p.odoo_version_max,
                 "language": p.language,
                 "core_symbol_names": p.core_symbol_names,
             }
@@ -258,6 +262,8 @@ def _load_patterns_from_db(
                     snippet_text=r[3],
                     gotchas=gotchas_raw or [],
                     odoo_version_min=r[5],
+                    # r[6] = odoo_version_max (already SELECTed; #329 plumbs it through).
+                    odoo_version_max=r[6],
                     language=r[7],
                     core_symbol_names=list(r[8]) if r[8] else [],
                 )
@@ -385,6 +391,7 @@ def _load_patterns(
             snippet_text=entry["snippet_text"],
             gotchas=entry.get("gotchas", []),
             odoo_version_min=entry["odoo_version_min"],
+            odoo_version_max=entry.get("odoo_version_max"),
             language=entry["language"],
             core_symbol_names=entry.get("core_symbol_names", []),
         ))

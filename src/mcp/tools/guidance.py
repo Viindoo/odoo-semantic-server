@@ -155,6 +155,11 @@ def _suggest_pattern(
     # filters on it directly so this read is immune to GUC state; the
     # embeddings_tenant RLS policy passes the sentinel unconditionally via the
     # "profile_name = '__global__'" branch — no GUC wiring needed here.
+    # Over-fetch from ANN so the post-version-filter truncation (in
+    # _format_suggest_pattern) has enough candidates even when the top-limit
+    # results are dominated by out-of-version patterns.  The valid in-range
+    # patterns ranked below `limit` would otherwise be silently discarded.
+    _overfetch = max(limit * 4, 20)
     _pg_ctx = nullcontext(_pg_conn) if _pg_conn is not None else _srv._checkout_pg()
     with _pg_ctx as pg:
         with pg.cursor() as cur:
@@ -168,7 +173,7 @@ def _suggest_pattern(
                          AND profile_name = %s
                        ORDER BY vec <=> %s::vector
                        LIMIT %s""",
-                    [intent_vec, GLOBAL_PROFILE, intent_vec, limit],
+                    [intent_vec, GLOBAL_PROFILE, intent_vec, _overfetch],
                 )
             else:
                 cur.execute(
@@ -181,7 +186,7 @@ def _suggest_pattern(
                          AND entity_name LIKE %s
                        ORDER BY vec <=> %s::vector
                        LIMIT %s""",
-                    [intent_vec, GLOBAL_PROFILE, f"{language}__%", intent_vec, limit],
+                    [intent_vec, GLOBAL_PROFILE, f"{language}__%", intent_vec, _overfetch],
                 )
             ranked = cur.fetchall()
 
@@ -240,7 +245,8 @@ def _suggest_pattern(
                 RETURN p.pattern_id AS id, p.intent_keywords AS kw,
                        p.file_ref AS fr, p.snippet_text AS sn,
                        p.gotchas AS g, p.language AS lang,
-                       p.odoo_version_min AS vmin
+                       p.odoo_version_min AS vmin,
+                       p.odoo_version_max AS vmax
                 """,
                 label=f"pattern metadata batch (Odoo {v})",
                 ids=pattern_ids,
@@ -251,14 +257,77 @@ def _suggest_pattern(
     by_id = {r["id"]: r for r in records}
     return _format_suggest_pattern(
         ordered_ids=pattern_ids, by_id=by_id, score_map=score_map,
-        intent=intent, version=v, language=language,
+        intent=intent, version=v, language=language, limit=limit,
     )
+
+
+def _version_covers(query_version: str, vmin, vmax) -> bool:
+    """Return True iff *query_version* falls in the ``[vmin, vmax]`` window.
+
+    #329: NUMERIC compare (``float``), never lexicographic - Odoo versions like
+    ``"8.0"`` vs ``"15.0"`` sort wrong as strings ("15.0" < "8.0"); CLAUDE.md
+    Neo4j gotcha (toFloat for version sort) applies equally on the Python side.
+
+    Rule: keep the pattern when ``float(vmin) <= float(v)`` AND
+    (``vmax is None`` OR ``float(v) <= float(vmax)``).  An unparseable version is
+    treated as covered (fail-open) so a malformed sentinel never silently drops a
+    valid pattern - ``v`` is already resolved to a concrete numeric version by
+    ``_resolve_version`` upstream, so this is a defensive belt only.
+    """
+    try:
+        v = float(query_version)
+    except (TypeError, ValueError):
+        return True
+    try:
+        if vmin is not None and float(vmin) > v:
+            return False
+    except (TypeError, ValueError):
+        pass
+    try:
+        if vmax is not None and float(vmax) < v:
+            return False
+    except (TypeError, ValueError):
+        pass
+    return True
 
 
 def _format_suggest_pattern(
     *, ordered_ids: list[str], by_id: dict[str, dict],
     score_map: dict[str, float], intent: str, version: str, language: str,
+    limit: int = 5,
 ) -> str:
+    # #329: drop patterns whose [vmin, vmax] window does not cover the resolved
+    # query version BEFORE rendering - a v17 query must never list a v8-v15
+    # SavepointCase pattern (that IS a hallucinated recommendation, the exact
+    # failure OSM exists to prevent). Numeric compare via _version_covers.
+    ordered_ids = [
+        pid for pid in ordered_ids
+        if pid in by_id
+        and _version_covers(version, by_id[pid].get("vmin"), by_id[pid].get("vmax"))
+    ]
+    # Truncate to the caller-requested limit AFTER the version filter. The ANN
+    # query over-fetches (limit * 4, min 20) so valid in-range patterns ranked
+    # below the original limit are not silently discarded.
+    ordered_ids = ordered_ids[:limit]
+
+    # Edge case: version filtering emptied the list. Emit a dedicated branch that
+    # names the version (do NOT fall through to the generic "catalogue may not be
+    # populated" message - that misleads when the catalogue IS populated but holds
+    # no pattern valid for this version).
+    if not ordered_ids:
+        next_line = format_next_step([
+            f"find_test_examples(query='{intent}', odoo_version='{version}')"
+            " for real-world test examples",
+            f"find_examples(query='{intent}', odoo_version='{version}')"
+            " for real-world variants",
+        ])
+        return (
+            f"suggest_pattern({intent!r}, {version}, language={language})\n"
+            f"├─ No curated patterns are valid for Odoo {version}. "
+            "Matches exist but their version ranges exclude this version.\n"
+            + next_line
+        )
+
     lines = [
         f"suggest_pattern({intent!r}, {version}, language={language}) "
         f"— {len(ordered_ids)} matches",
@@ -273,7 +342,14 @@ def _format_suggest_pattern(
         score = score_map.get(pid, 0.0)
         lines.append(f"{connector} #{i + 1} · score {score:.2f} · {pid}")
         prefix = "│   "
-        lines.append(f"{prefix}├─ Language: {rec['lang']} (min v{rec['vmin']})")
+        # #329: render the [min, max] window transparently. ASCII hyphen only
+        # (repo output convention - no en-dash). '*' marks an open-ended max.
+        # Explicit None check: a falsy-but-not-None vmax (e.g. '0') must not
+        # render as '*'.
+        vmax_disp = "*" if rec.get("vmax") is None else rec.get("vmax")
+        lines.append(
+            f"{prefix}├─ Language: {rec['lang']} (v{rec['vmin']}-{vmax_disp})"
+        )
         lines.append(f"{prefix}├─ File:     {rec['fr']}")
         snippet_lines = (rec.get("sn") or "").splitlines()
         if snippet_lines:

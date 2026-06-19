@@ -62,6 +62,26 @@ _WG5_PATTERN_IDS = {
     "owl-field-widget-with-template-v17",
 }
 
+# -------------------------------------------------------------------
+# Test-writing patterns from issue #329 (anti-truncation + range-sane guard)
+#
+# HARDCODED ORACLE - deliberately independent of patterns.json so that
+# deleting or renaming any of these 8 ``category="test"`` entries makes a
+# test FAIL.  Do NOT derive this set from the JSON: an oracle that reads
+# its own answer from the file under test cannot detect the file losing an
+# entry.
+# -------------------------------------------------------------------
+_TEST_PATTERN_IDS = {
+    "test-transaction-savepoint-v16plus",
+    "test-savepointcase-v8-v15",
+    "test-computed-field",
+    "test-access-rights",
+    "test-multicompany-constraint",
+    "test-httpcase-tour-qunit-v17",
+    "test-httpcase-tour-hoot-v18",
+    "test-form-onchange",
+}
+
 
 # -------------------------------------------------------------------
 # Catalogue-level tests (no DB required)
@@ -103,4 +123,63 @@ def test_catalogue_w3_3_entries_have_3_gotchas():
     ]
     assert not violations, (
         f"W3-3 patterns with fewer than 3 gotchas: {violations}"
+    )
+
+
+def test_catalogue_contains_all_test_patterns():
+    """All 8 test-writing pattern IDs must be present with category=='test' (anti-truncation guard).
+
+    Issue #329: deleting or renaming any of these production ``test-*`` entries
+    must FAIL here.  Checking category guards against an entry being demoted out
+    of the ``category="test"`` filter that ``suggest_pattern(category='test')``
+    relies on.
+    """
+    data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
+    by_id = {p["pattern_id"]: p for p in data}
+    missing = _TEST_PATTERN_IDS - set(by_id)
+    assert not missing, (
+        f"test patterns missing from catalogue ({len(missing)} absent): {sorted(missing)}"
+    )
+    wrong_category = [
+        pid for pid in _TEST_PATTERN_IDS
+        if by_id[pid].get("category") != "test"
+    ]
+    assert not wrong_category, (
+        f"test patterns not tagged category=='test': {sorted(wrong_category)}"
+    )
+
+
+def test_test_patterns_have_3_gotchas():
+    """Every test-writing entry must have ≥3 gotchas (behavior-level guard vs schema relaxation)."""
+    data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
+    by_id = {p["pattern_id"]: p for p in data}
+    violations = [
+        pid for pid in _TEST_PATTERN_IDS
+        if pid in by_id and len(by_id[pid].get("gotchas", [])) < 3
+    ]
+    assert not violations, (
+        f"test patterns with fewer than 3 gotchas: {sorted(violations)}"
+    )
+
+
+def test_test_patterns_version_range_sane():
+    """Every test-writing entry must have a sane [min, max] version range (numeric compare).
+
+    Protects the ``odoo_version_max`` range filter that WI-1 adds: an inverted
+    range (max < min) would silently exclude the pattern from every version.
+    NUMERIC compare, not string (``"8.0" < "15.0"`` only by float, not lexicographically).
+    """
+    data = json.loads(_PATTERNS_PATH.read_text(encoding="utf-8"))
+    by_id = {p["pattern_id"]: p for p in data}
+    violations = []
+    for pid in _TEST_PATTERN_IDS:
+        entry = by_id.get(pid)
+        if entry is None:
+            continue
+        vmin = entry.get("odoo_version_min")
+        vmax = entry.get("odoo_version_max")
+        if vmax is not None and float(vmax) < float(vmin):
+            violations.append((pid, vmin, vmax))
+    assert not violations, (
+        f"test patterns with inverted version range (max < min): {sorted(violations)}"
     )

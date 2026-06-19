@@ -75,6 +75,140 @@ def seeded_patterns(clean_pg_embeddings, clean_neo4j):
 
 
 @pytest.fixture
+def seeded_version_window_patterns(clean_pg_embeddings, clean_neo4j):
+    """Seed test-* PatternExample nodes with VARIED [vmin, vmax] windows.
+
+    #329 oracle fixture. The pgvector ANN query in _suggest_pattern does NOT
+    filter by version (it ranks ALL '__patterns__' chunks); version selection is
+    enforced purely by the post-fetch [vmin, vmax] window filter reading the
+    Neo4j PatternExample nodes. So the embeddings are all stamped TEST_VERSION
+    (99.0) - that keeps clean_pg_embeddings cleanup working (it deletes only
+    odoo_version=99.0) WITHOUT weakening the test: the version semantics live
+    entirely in the Neo4j window, which is exactly what WI-1 filters on.
+
+    Windows mirror the real catalogue's era1/era2 split:
+      - test-savepointcase-v8-v15   : 8.0 - 15.0  (excluded for a v17 query)
+      - test-httpcase-tour-qunit-v17: 16.0 - 17.0 (INCLUDED for v17)
+      - test-httpcase-tour-hoot-v18 : 18.0 - open (excluded for v17)
+      - test-transaction-savepoint-v16plus / test-computed-field : 16.0 - open
+
+    Teardown: DETACH DELETEs the PatternExample nodes written here by their
+    pattern_ids. clean_neo4j only deletes nodes WHERE odoo_version = '99.0',
+    and PatternExample uses odoo_version_min/max (not odoo_version), so without
+    explicit teardown these nodes persist across the session and corrupt later
+    tests that MERGE the same pattern_ids (test-order dependent).
+    """
+    import os
+
+    from src.constants import GLOBAL_PROFILE
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.models import PatternExample
+    from src.indexer.writer_neo4j import Neo4jWriter
+    from src.indexer.writer_pgvector import _INSERT_SQL, make_pattern_chunks
+
+    patterns = [
+        PatternExample(
+            pattern_id="test-savepointcase-v8-v15",
+            intent_keywords=["transaction", "savepoint", "test"],
+            file_ref="addons/base/tests/common.py:1",
+            snippet_text="class Foo(SavepointCase): ...",
+            gotchas=["SavepointCase merged into TransactionCase in v16"],
+            odoo_version_min="8.0",
+            language="python",
+            core_symbol_names=[],
+            odoo_version_max="15.0",
+        ),
+        PatternExample(
+            pattern_id="test-transaction-savepoint-v16plus",
+            intent_keywords=["transaction", "savepoint", "test", "rollback"],
+            file_ref="addons/base/tests/common.py:2",
+            snippet_text="class Foo(TransactionCase): ...",
+            gotchas=["use cr.savepoint() not cr.commit() in an isolation context"],
+            odoo_version_min="16.0",
+            language="python",
+            core_symbol_names=[],
+            odoo_version_max=None,
+        ),
+        PatternExample(
+            pattern_id="test-computed-field",
+            intent_keywords=["compute", "test", "assertEqual"],
+            file_ref="addons/sale/tests/test_compute.py:1",
+            snippet_text="def test_amount(self): self.assertEqual(...)",
+            gotchas=["recompute after write"],
+            odoo_version_min="16.0",
+            language="python",
+            core_symbol_names=[],
+            odoo_version_max=None,
+        ),
+        PatternExample(
+            pattern_id="test-httpcase-tour-qunit-v17",
+            intent_keywords=["httpcase", "tour", "qunit", "test"],
+            file_ref="addons/web/tests/test_tour.py:1",
+            snippet_text="class Foo(HttpCase): self.start_tour(...)",
+            gotchas=["QUnit suite replaced by Hoot in v18"],
+            odoo_version_min="16.0",
+            language="python",
+            core_symbol_names=[],
+            odoo_version_max="17.0",
+        ),
+        PatternExample(
+            pattern_id="test-httpcase-tour-hoot-v18",
+            intent_keywords=["httpcase", "tour", "hoot", "test"],
+            file_ref="addons/web/static/tests/foo.test.js:1",
+            snippet_text="import { test } from '@odoo/hoot';",
+            gotchas=["Hoot is v18+ only"],
+            odoo_version_min="18.0",
+            language="js",
+            core_symbol_names=[],
+            odoo_version_max=None,
+        ),
+    ]
+
+    neo4j_uri = os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687")
+    neo4j_user = os.getenv("NEO4J_TEST_USER", "neo4j")
+    neo4j_password = os.getenv("NEO4J_TEST_PASSWORD", "password")
+
+    writer = Neo4jWriter(
+        uri=neo4j_uri, user=neo4j_user, password=neo4j_password,
+    )
+    writer.setup_indexes()
+    writer.write_pattern_examples(patterns)
+    writer.close()
+
+    embedder = FakeEmbedder(dim=1024)
+    chunks = make_pattern_chunks(patterns)
+    # Re-stamp every chunk to TEST_VERSION so clean_pg_embeddings reclaims them.
+    # The ANN query ignores embedding.odoo_version, so this is loss-free for the
+    # version semantics under test (those come from the Neo4j window).
+    for _c in chunks:
+        _c.odoo_version = TEST_VERSION
+        _c.profile_name = GLOBAL_PROFILE
+    texts = [c.content for c in chunks]
+    vecs = embedder.embed(texts)
+    from psycopg2.extras import execute_values
+    with clean_pg_embeddings.cursor() as cur:
+        execute_values(
+            cur, _INSERT_SQL,
+            [c.as_tuple(vecs[i]) for i, c in enumerate(chunks)],
+        )
+
+    yield clean_pg_embeddings, clean_neo4j
+
+    # Teardown: DETACH DELETE the PatternExample nodes written above.
+    # clean_neo4j only sweeps nodes WHERE odoo_version = '99.0'; PatternExample
+    # uses odoo_version_min/max so those nodes persist without this teardown,
+    # corrupting tests that MERGE the same pattern_ids later in the session.
+    seeded_pids = [p.pattern_id for p in patterns]
+    with clean_neo4j.session() as session:
+        session.run(
+            "UNWIND $ids AS pid "
+            "MATCH (p:PatternExample {pattern_id: pid}) "
+            "DETACH DELETE p",
+            ids=seeded_pids,
+        )
+
+
+@pytest.fixture
 def seeded_modules(clean_neo4j):
     """Seed Module nodes for check_module_exists tests."""
     import os
@@ -230,6 +364,178 @@ class TestSuggestPattern:
         )
         assert "Gotchas" in result
         assert "Many2one root" in result
+
+    def test_suggest_pattern_category_test_returns_results_after_seed(
+        self, seeded_version_window_patterns,
+    ):
+        """#329 regression: a v17 category='test' query surfaces in-range test
+        patterns, NOT the empty 'No patterns found' branch.
+
+        Guards against the version filter over-pruning: if the [vmin, vmax]
+        window check wrongly rejected open-ended (max=None) patterns, every
+        test pattern would vanish and the tool would falsely claim the
+        catalogue is empty. The in-range v16+ test patterns MUST appear.
+        """
+        pg, neo4j_driver = seeded_version_window_patterns
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _suggest_pattern
+
+        result = _suggest_pattern(
+            "write a transaction test with savepoint rollback",
+            odoo_version="17.0",
+            language="all",
+            limit=20,
+            category="test",
+            _driver=neo4j_driver, _pg_conn=pg,
+            _embedder=FakeEmbedder(dim=1024),
+        )
+        # An open-ended (max=None) v16+ pattern is valid for v17 -> must render.
+        assert "test-transaction-savepoint-v16plus" in result
+        # The tool must NOT report the catalogue as empty for this query.
+        assert "No patterns found" not in result
+        assert "No curated patterns are valid" not in result
+
+    def test_suggest_pattern_excludes_out_of_range_version(
+        self, seeded_version_window_patterns,
+    ):
+        """#329 core correctness oracle: a v17 query MUST drop patterns whose
+        [vmin, vmax] window excludes v17, and KEEP the one that covers it.
+
+        - test-savepointcase-v8-v15 (max 15.0) -> EXCLUDED (15.0 < 17.0).
+        - test-httpcase-tour-hoot-v18 (min 18.0) -> EXCLUDED (18.0 > 17.0).
+        - test-httpcase-tour-qunit-v17 (16.0-17.0) -> INCLUDED (boundary).
+
+        Numeric compare is load-bearing: lexicographically "8.0" > "15.0" and
+        "18.0" < "8.0", so a string compare would mis-classify both excluded
+        patterns. Asserting on rendered pattern IDs (observable output), not on
+        internal call counts.
+        """
+        pg, neo4j_driver = seeded_version_window_patterns
+        from src.indexer.embedder import FakeEmbedder
+        from src.mcp.server import _suggest_pattern
+
+        result = _suggest_pattern(
+            "httpcase tour test savepoint",
+            odoo_version="17.0",
+            language="all",
+            limit=20,
+            _driver=neo4j_driver, _pg_conn=pg,
+            _embedder=FakeEmbedder(dim=1024),
+        )
+        # Upper-bound excluded: v8-v15 pattern must NOT surface for a v17 query.
+        assert "test-savepointcase-v8-v15" not in result, (
+            "a v8-v15 pattern leaked into a v17 result - the upper-bound "
+            "(odoo_version_max) filter is not applied"
+        )
+        # Lower-bound excluded: v18-only pattern must NOT surface for v17.
+        assert "test-httpcase-tour-hoot-v18" not in result, (
+            "a v18+ pattern leaked into a v17 result - the lower-bound filter "
+            "is not applied"
+        )
+        # Boundary INCLUDED: the 16.0-17.0 pattern covers v17 exactly.
+        assert "test-httpcase-tour-qunit-v17" in result, (
+            "the 16.0-17.0 pattern was wrongly dropped for a v17 query - the "
+            "window filter rejects the inclusive upper boundary"
+        )
+
+
+# --- _format_suggest_pattern unit tests (no DB) ----------------------------
+#
+# These test _format_suggest_pattern directly (no ANN / no Neo4j / no PG) to
+# prove the over-fetch+truncate fix (Finding 1). pytestmark is postgres+neo4j
+# at module level but these tests do NOT touch either service; they pass
+# unconditionally because _format_suggest_pattern is pure Python.
+
+
+class TestFormatSuggestPatternTruncation:
+    """Unit tests for the version-filter + limit-truncation in
+    _format_suggest_pattern. No DB required.
+
+    Red-green contract (Finding 1):
+      - BEFORE the fix (no `limit` param / no truncation line), calling
+        _format_suggest_pattern with 3 out-of-version + 5 in-version ids and
+        limit=5 either raises TypeError (unexpected kwarg) or returns all 8
+        in-version ids untruncated (> limit).
+      - AFTER the fix, the function accepts `limit`, applies it AFTER the
+        version filter, and returns exactly the 5 in-version ids in score order
+        with none of the 3 out-of-version ids.
+    """
+
+    def _make_rec(self, vmin, vmax):
+        return {
+            "lang": "python",
+            "vmin": vmin,
+            "vmax": vmax,
+            "fr": "addons/sale/models/s.py:1",
+            "sn": "def foo(): pass",
+            "g": [],
+        }
+
+    def test_truncate_to_limit_after_version_filter(self):
+        """5 in-version ids returned; 3 out-of-version ids excluded; total = limit."""
+        from src.mcp.tools.guidance import _format_suggest_pattern
+
+        # 3 out-of-version (v8-v15 only) + 5 in-version (v16+, open-ended)
+        out_ids = [f"old-pattern-{i}" for i in range(3)]
+        in_ids = [f"new-pattern-{i}" for i in range(5)]
+        ordered_ids = out_ids + in_ids
+
+        by_id = {}
+        for pid in out_ids:
+            by_id[pid] = self._make_rec("8.0", "15.0")
+        for pid in in_ids:
+            by_id[pid] = self._make_rec("16.0", None)
+
+        score_map = {pid: 0.9 - i * 0.05 for i, pid in enumerate(ordered_ids)}
+
+        result = _format_suggest_pattern(
+            ordered_ids=ordered_ids,
+            by_id=by_id,
+            score_map=score_map,
+            intent="test truncation",
+            version="17.0",
+            language="python",
+            limit=5,
+        )
+
+        # All 5 in-version ids must appear.
+        for pid in in_ids:
+            assert pid in result, f"in-version pattern {pid!r} missing from output"
+
+        # None of the 3 out-of-version ids must appear.
+        for pid in out_ids:
+            assert pid not in result, (
+                f"out-of-version pattern {pid!r} leaked into v17 output"
+            )
+
+        # The match count header must say exactly 5 (truncated to limit).
+        assert "5 matches" in result, (
+            f"expected '5 matches' in header after truncation, got: {result[:200]!r}"
+        )
+
+    def test_empty_after_filter_does_not_truncate(self):
+        """When ALL ids are out-of-version, the empty-after-filter branch fires
+        before truncation (truncation of an empty list is a no-op, but the
+        important thing is the right branch message is returned)."""
+        from src.mcp.tools.guidance import _format_suggest_pattern
+
+        out_ids = ["old-only-1", "old-only-2"]
+        by_id = {pid: self._make_rec("8.0", "10.0") for pid in out_ids}
+        score_map = {pid: 0.8 for pid in out_ids}
+
+        result = _format_suggest_pattern(
+            ordered_ids=out_ids,
+            by_id=by_id,
+            score_map=score_map,
+            intent="no valid patterns",
+            version="17.0",
+            language="python",
+            limit=5,
+        )
+
+        assert "No curated patterns are valid" in result
+        for pid in out_ids:
+            assert pid not in result
 
 
 # --- check_module_exists tests ----------------------------------------------

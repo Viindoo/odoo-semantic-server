@@ -166,6 +166,55 @@ def test_compute_patterns_sha256():
     assert len(sha1) == 64  # SHA256 hex is 64 chars
 
 
+def test_canonical_sha_includes_odoo_version_max():
+    """#329: the canonical SHA MUST cover odoo_version_max.
+
+    The seed sentinel skips re-seeding when the canonical SHA is unchanged
+    (ADR-0007 auto-reseed). If odoo_version_max were omitted from
+    _canonical_patterns_json, then editing a pattern's upper version bound in
+    the DB would leave the SHA identical -> the indexer would skip the reseed
+    and Neo4j would keep stale window data, silently surfacing a pattern for a
+    version it no longer covers. This test pins the field INTO the canonical
+    form: two pattern lists that differ ONLY in odoo_version_max must produce
+    DIFFERENT canonical JSON, hence a DIFFERENT SHA.
+
+    Pure unit test over _canonical_patterns_json (no DB / no Neo4j).
+    """
+    import hashlib
+
+    from src.indexer.models import PatternExample
+    from src.indexer.seed_patterns import _canonical_patterns_json
+
+    base_kwargs = dict(
+        pattern_id="test-window-sha",
+        intent_keywords=["transaction", "savepoint"],
+        file_ref="addons/base/tests/common.py:1",
+        snippet_text="class Foo(TransactionCase): ...",
+        gotchas=["use cr.savepoint() not cr.commit()"],
+        odoo_version_min="16.0",
+        language="python",
+        core_symbol_names=[],
+    )
+    # Identical EXCEPT odoo_version_max (None = open-ended vs a concrete bound).
+    open_ended = [PatternExample(**base_kwargs, odoo_version_max=None)]
+    bounded = [PatternExample(**base_kwargs, odoo_version_max="17.0")]
+
+    json_open = _canonical_patterns_json(open_ended)
+    json_bounded = _canonical_patterns_json(bounded)
+
+    # The field must be emitted (so any future omission regresses loudly here)...
+    assert '"odoo_version_max"' in json_open
+    assert '"odoo_version_max"' in json_bounded
+    # ...and changing only that field must change the canonical form + the SHA.
+    assert json_open != json_bounded, (
+        "canonical JSON ignores odoo_version_max -> sentinel SHA would not churn "
+        "on an upper-bound edit, so the reseed would be wrongly skipped"
+    )
+    sha_open = hashlib.sha256(json_open.encode("utf-8")).hexdigest()
+    sha_bounded = hashlib.sha256(json_bounded.encode("utf-8")).hexdigest()
+    assert sha_open != sha_bounded
+
+
 def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
     """After --no-embed seed, patterns_neo4j sentinel is written but NOT patterns_pgvector.
 
