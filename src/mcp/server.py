@@ -1867,6 +1867,12 @@ def _get_driver():
                 "Neo4j password missing. Set NEO4J_PASSWORD env var OR "
                 "neo4j_password in [database] section of odoo-semantic.conf."
             )
+        # MCP READ driver: deliberately NO notifications_min_severity filter
+        # here (unlike the write/indexer drivers in src/indexer/*). Read queries
+        # may surface useful INFORMATION-level notifications — e.g. cartesian
+        # product / index-miss performance hints — that we want logged. The
+        # INFORMATION "already exists" schema-notification noise that motivated
+        # the filter only occurs on the write path's CREATE INDEX statements.
         _driver = GraphDatabase.driver(uri, auth=(user, password))
 
         # Version check: fail-fast if Neo4j < 5.x (unless in CI with pinned image).

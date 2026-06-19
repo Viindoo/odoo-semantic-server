@@ -2,7 +2,7 @@
 # src/indexer/writer_neo4j.py
 import logging
 
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, NotificationMinimumSeverity
 
 from src.constants import (
     NEO4J_DELETE_BATCH_ROWS,
@@ -60,7 +60,23 @@ def _chunked(items, size):
 
 class Neo4jWriter:
     def __init__(self, uri: str, user: str, password: str):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        # notifications_min_severity=WARNING is a Bolt-level, SERVER-SIDE filter
+        # (neo4j 5.28.4): the DBMS simply never returns INFORMATION-severity
+        # notifications, so the driver's neo4j.notifications logger is never
+        # invoked for them. This is the write path — every `setup_indexes()` /
+        # `setup_pattern_indexes()` run against an already-indexed DB emits one
+        # expected `IndexOrConstraintAlreadyExists` INFORMATION notice per
+        # `CREATE INDEX IF NOT EXISTS`, which carries no actionable signal (the
+        # IF NOT EXISTS guard is the whole point). Genuine WARNING/ERROR
+        # notifications are still returned and logged. This is deliberately NOT
+        # applied to the MCP READ driver (src/mcp/server.py) — read queries may
+        # surface useful INFORMATION-level hints (e.g. cartesian product) we
+        # want to keep.
+        self.driver = GraphDatabase.driver(
+            uri,
+            auth=(user, password),
+            notifications_min_severity=NotificationMinimumSeverity.WARNING,
+        )
 
     def close(self) -> None:
         self.driver.close()
@@ -146,6 +162,32 @@ class Neo4jWriter:
                 " ON (n.file_path, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:JsTestSuite)"
                 " ON (n.module, n.odoo_version, n.framework)",
+            ]:
+                session.run(stmt)
+
+    def setup_pattern_indexes(self) -> None:
+        """Create ONLY the 3 PatternExample indexes (patterns-only reseed path).
+
+        A patterns reseed (``seed_patterns._write_neo4j``) writes only
+        ``PatternExample`` nodes, so it does not need the full ~33-statement
+        schema setup that :meth:`setup_indexes` issues for every node label.
+        Running the full setup against an already-indexed DB is harmless
+        (``IF NOT EXISTS`` no-ops) but emits ~30 unrelated
+        ``IndexOrConstraintAlreadyExists`` notifications. These 3 statements are
+        copied verbatim from :meth:`setup_indexes` (same names/keys) so they
+        remain idempotent no-ops against the live schema. The full indexer
+        (``pipeline.py`` / ``indexer/__main__.py``) still calls
+        :meth:`setup_indexes` for every index on a fresh DB.
+        """
+        with self.driver.session() as session:
+            for stmt in [
+                # M4.6 pattern layer (per ADR-0003):
+                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+                " ON (n.pattern_id)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+                " ON (n.language, n.odoo_version_min)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:PatternExample)"
+                " ON (n.category)",
             ]:
                 session.run(stmt)
 

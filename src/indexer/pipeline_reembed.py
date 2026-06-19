@@ -23,7 +23,7 @@ module at call time via a deferred (cold-import-safe) ``from . import pipeline``
 import logging
 from pathlib import Path
 
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, NotificationMinimumSeverity
 
 from src.db.pg import repo_store
 
@@ -76,7 +76,13 @@ def reembed_stubs_for_profile(
         return {"modules_checked": 0, "modules_reembedded": 0, "total_embed_calls": 0}
 
     uri, user, password = _pipeline._neo4j_creds()
-    driver = GraphDatabase.driver(uri, auth=(user, password))
+    # Indexer write/re-embed path: filter expected INFORMATION notifications
+    # server-side (NOT applied to the MCP read driver — see writer_neo4j.py).
+    driver = GraphDatabase.driver(
+        uri,
+        auth=(user, password),
+        notifications_min_severity=NotificationMinimumSeverity.WARNING,
+    )
     total_embed_calls = 0
     modules_checked = 0
     modules_reembedded = 0
@@ -268,7 +274,13 @@ def audit_repo_for_profile(
         )
 
     uri, user, password = _pipeline._neo4j_creds()
-    driver = GraphDatabase.driver(uri, auth=(user, password))
+    # Indexer audit path (write-side driver): filter expected INFORMATION
+    # notifications server-side (NOT the MCP read driver — see writer_neo4j.py).
+    driver = GraphDatabase.driver(
+        uri,
+        auth=(user, password),
+        notifications_min_severity=NotificationMinimumSeverity.WARNING,
+    )
     results: list[dict] = []
 
     try:
