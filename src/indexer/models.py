@@ -343,6 +343,12 @@ class PatternExample:
     odoo_version_min: str
     language: str            # 'python' | 'xml' | 'js'
     core_symbol_names: list[str] = field(default_factory=list)
+    # #329 - upper bound of the [min, max] version window this pattern applies to.
+    # None = open-ended (valid for every version >= odoo_version_min). Placed AFTER
+    # core_symbol_names so existing positional constructors stay valid. suggest_pattern
+    # filters out patterns whose range excludes the resolved query version (era1/era2
+    # split: e.g. SavepointCase is v8-v15, must NOT surface for a v17 query).
+    odoo_version_max: str | None = None
 
 
 # --- Spec layer (M4.5, per ADR-0002) ----------------------------------------

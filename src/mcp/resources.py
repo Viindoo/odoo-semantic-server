@@ -409,7 +409,8 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
             RETURN p.pattern_id AS id, p.intent_keywords AS kw,
                    p.file_ref AS fr, p.snippet_text AS sn,
                    p.gotchas AS g, p.language AS lang,
-                   p.odoo_version_min AS vmin
+                   p.odoo_version_min AS vmin,
+                   p.odoo_version_max AS vmax
             """,
             f"pattern '{pattern_id}'",
             pid=pattern_id,
@@ -424,7 +425,12 @@ def _render_pattern(version: str, pattern_id: str) -> tuple[str, str]:
         return text, MIME_MARKDOWN
 
     lines = [f"pattern({pattern_id!r}, {v})"]
-    lines.append(f"├─ Language: {rec['lang']} (min v{rec['vmin']})")
+    # #329: render the [min, max] version window so the resource agrees with
+    # suggest_pattern. ASCII hyphen only; '*' marks an open-ended max.
+    # Explicit None check: a falsy-but-not-None vmax (e.g. '0') must not
+    # render as '*'.
+    vmax_disp = "*" if rec.get("vmax") is None else rec.get("vmax")
+    lines.append(f"├─ Language: {rec['lang']} (v{rec['vmin']}-{vmax_disp})")
     lines.append(f"├─ File:     {rec['fr']}")
     kw = rec.get("kw") or []
     if kw:

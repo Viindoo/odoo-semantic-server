@@ -9,8 +9,11 @@ All notable changes to Odoo Semantic MCP are documented here.
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
 > **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
 
-## [Unreleased] — fastmcp v3 + CI vitest drift-guard
+## [0.16.0] - 2026-06-19 - Seed test-writing patterns + version-range correctness + fastmcp v3
 
+- **Seed 8 test-writing patterns (#329):** the `test-*` patterns (`category='test'`) are now seeded into the index and queryable via `suggest_pattern(category='test')`; previously the catalogue returned an empty "No patterns found" message because the rows existed in `patterns.json` but were never seeded into Neo4j/pgvector.
+- **Honor `odoo_version_max` (#329):** `suggest_pattern` now honors the upper version bound end-to-end, so it no longer suggests SavepointCase (`test-savepointcase-v8-v15`) for v16+ - the version filter compares numerically against both `odoo_version_min` and `odoo_version_max`.
+- **Narrow pattern pollution guard (#329):** the seed pollution guard now permits sanctioned production `test-*` patterns (those with `category='test'` in `patterns.json`) while still rejecting `t-`/`snap-`/`pipeline-seed-` prefixes and non-sanctioned `test-*` ids.
 - **fastmcp v2 -> v3 migration (#324):** upgraded fastmcp dependency to v3; closes 3 Dependabot security alerts. v3 decorator returns the original function unchanged (no `.fn` indirection on module-level names), removing the `_tool_manager`/`_resource_manager`/`_deprecated_settings` private attributes. `on_duplicate="replace"` explicit (v3 default resolves to "warn" via `on_duplicate or "warn"`). Tool surface unchanged: 31 tools, 9 resources.
 - **CI site-tests vitest drift-guard (#325):** added `vitest-drift-guard` CI job that runs `pnpm test` in `site/` on every push; catches constants.ts/tools-data.ts drift between server surface and site copy without a full build.
 
