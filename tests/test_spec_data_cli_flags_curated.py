@@ -191,7 +191,7 @@ class TestV19SubparserCommands:
     # These must exist with the EXACT (flag_name, command_name) pair.
     REPRESENTATIVE_FLAGS = [
         # i18n.py:75-83
-        ("--language", "i18n import"),   # required=True, confirmed
+        ("--language", "i18n import"),   # required (encoded in help text)
         # i18n.py:85-99
         ("--output", "i18n export"),
         # db.py:54-96
@@ -293,7 +293,6 @@ class TestV19SubparserCommands:
         # tsconfig must be absent from the commands list (preferred), OR if listed
         # it must have at least one flag with status='removed' to signal the removal.
         if "tsconfig" in command_names:
-            flags_by_cmd = self._flags_by_cmd(data)
             tsconfig_flags_statuses = [
                 f.get("status")
                 for f in data.get("flags", [])
