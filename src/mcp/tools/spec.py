@@ -835,24 +835,47 @@ def _format_cli_flag_detail(rec: dict, replacement: str | None, version: str) ->
 
 def _format_cli_command_summary(
     cmd_rec: dict, flags: list[dict], version: str,
+    sub_cmds: list[str] | None = None,
 ) -> str:
+    # Convention: compound command_name uses space as separator, matching the
+    # actual CLI syntax ("odoo-bin i18n export", "odoo-bin db init").
+    # Subparser parents (db/i18n/module) store shared flags under the parent
+    # command_name; each sub-action's own flags use the compound name.
     name = cmd_rec.get("name") or "?"
     desc = cmd_rec.get("description")
     lines = [f"cli_help({name!r}, Odoo {version})"]
     if desc:
         lines.append(f"├─ Description: {desc}")
-    if not flags:
+
+    has_sub_cmds = bool(sub_cmds)
+    has_flags = bool(flags)
+
+    if not has_flags and not has_sub_cmds:
         lines.append("└─ no flags indexed")
         return "\n".join(lines)
-    # ADR-0023 §1.3: Flags is the last branch → sublist indent is 4 spaces.
-    lines.append(f"└─ Flags ({len(flags)}):")
-    last_idx = len(flags) - 1
-    for i, f in enumerate(flags):
-        connector = "└─" if i == last_idx else "├─"
-        flag = f.get("flag_name") or "?"
-        status = f.get("status") or "stable"
-        suffix = f" (status={status})" if status != "stable" else ""
-        lines.append(f"    {connector} {flag}{suffix}")
+
+    if has_sub_cmds:
+        # ADR-0023 §1.3: sub-commands branch before flags branch.
+        sub_connector = "├─" if has_flags else "└─"
+        lines.append(f"{sub_connector} Sub-commands ({len(sub_cmds)}):")
+        last_sub_idx = len(sub_cmds) - 1
+        for i, sc in enumerate(sub_cmds):
+            sub_name_connector = "└─" if i == last_sub_idx else "├─"
+            lines.append(f"    {sub_name_connector} {sc}")
+        lines.append(
+            f"    Tip: use cli_help('{name} <sub-command>', ...) for sub-command flags"
+        )
+
+    if has_flags:
+        # ADR-0023 §1.3: Flags is the last branch → sublist indent is 4 spaces.
+        lines.append(f"└─ Flags ({len(flags)}):")
+        last_idx = len(flags) - 1
+        for i, f in enumerate(flags):
+            connector = "└─" if i == last_idx else "├─"
+            flag = f.get("flag_name") or "?"
+            status = f.get("status") or "stable"
+            suffix = f" (status={status})" if status != "stable" else ""
+            lines.append(f"    {connector} {flag}{suffix}")
     return "\n".join(lines)
 
 
@@ -949,7 +972,25 @@ def _cli_help(
                     label=f"CLI flags of {command!r} (Odoo {odoo_version})",
                     cmd=command, v=odoo_version,
                 )
-                result = _format_cli_command_summary(dict(cmd_rec), flags, odoo_version)
+                # Also query for sub-commands (compound names with a space prefix).
+                # This handles subparser commands (db/i18n/module) that have
+                # sub-actions stored as CLICommand nodes with compound names
+                # like "db init", "i18n export" (space-separated, matching CLI syntax).
+                sub_cmd_recs = _srv._data_bounded(
+                    session,
+                    """
+                    MATCH (c:CLICommand {odoo_version: $v})
+                    WHERE c.name STARTS WITH ($cmd + ' ')
+                    RETURN c.name AS name
+                    ORDER BY c.name
+                    """,
+                    label=f"CLI sub-commands of {command!r} (Odoo {odoo_version})",
+                    cmd=command, v=odoo_version,
+                )
+                sub_cmds = [r["name"] for r in sub_cmd_recs] if sub_cmd_recs else []
+                result = _format_cli_command_summary(
+                    dict(cmd_rec), flags, odoo_version, sub_cmds=sub_cmds
+                )
             if curate_status == "pending":
                 result = (
                     f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"

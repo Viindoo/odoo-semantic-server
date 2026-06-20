@@ -133,6 +133,9 @@ def model_inspect(
     PREFER over: separate per-view calls when you know the sub-view; one call
     with method= is friendlier for LLM context windows.
     SKIP when: cross-model entity dispatch by kind — use entity_lookup.
+    SKIP when: method='fields' returns too many rows and you know the exact
+    field name — narrow with entity_lookup(kind='field', model=<model>,
+    field=<exact_name>, odoo_version=...) for a single-field deep dive.
 
     Args:
         model: Dotted model name, e.g. 'sale.order'.
@@ -243,6 +246,9 @@ async def entity_lookup(
     to use on model_inspect — use kind= to dispatch without knowing whether
     to call model_inspect, module_inspect, or describe_module.
     Also: "tra cứu một entity cụ thể khi biết kind", "tìm field/method/view"
+    TRIGGER when: model_inspect(method='fields') returns too many rows and
+    you know the exact field name — narrow with entity_lookup(kind='field',
+    model=<model>, field=<exact_name>, odoo_version=...) for a targeted lookup.
     PREFER over: guessing the right superset tool + method combination;
     entity_lookup normalises the dispatch and returns the same tree text.
     SKIP when: the entity kind and tool are already known — call model_inspect,
