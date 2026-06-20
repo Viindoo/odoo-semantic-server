@@ -826,6 +826,149 @@
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
+    },
+    {
+      "flag_name": "--path",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "Path of the module to deploy. Source: deploy.py:64",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--url",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": "http://localhost:8069",
+      "type": "str",
+      "help": "URL of the server (default=http://localhost:8069). Source: deploy.py:65",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--db",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "Database to use if server does not use db-filter. Source: deploy.py:66",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--login",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": "admin",
+      "type": "str",
+      "help": "Login (default=admin). Source: deploy.py:67",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--password",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": "admin",
+      "type": "str",
+      "help": "Password (default=admin). Source: deploy.py:68",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--verify-ssl",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "Verify SSL certificate. Source: deploy.py:69",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--force",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "Force init even if module is already installed (will update noupdate=1 records). Source: deploy.py:70",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--path",
+      "command_name": "start",
+      "status": "stable",
+      "default": ".",
+      "type": "str",
+      "help": "Directory where project modules are stored (default: .). Source: start.py:32",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--database",
+      "command_name": "start",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "Specify the database name. Source: start.py:34",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--template",
+      "command_name": "scaffold",
+      "status": "stable",
+      "default": "default",
+      "type": "str",
+      "help": "Use a custom module template, can be a template name or path (default: default). Source: scaffold.py:17-19",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--database",
+      "command_name": "cloc",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "Database name. Source: cloc.py:32",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--path",
+      "command_name": "cloc",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "File or directory path. Source: cloc.py:33",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--verbose",
+      "command_name": "cloc",
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "Verbose output. Source: cloc.py:34",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
     }
   ]
 }

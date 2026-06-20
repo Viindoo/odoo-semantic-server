@@ -804,6 +804,149 @@
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
+    },
+    {
+      "flag_name": "--path",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "path of the module to deploy (positional, required). Source: deploy.py:78",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--url",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": "http://localhost:8069",
+      "type": "str",
+      "help": "URL of the Odoo server (positional, optional). Source: deploy.py:79",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--db",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "database to use if server does not use db-filter. Source: deploy.py:80",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--login",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": "admin",
+      "type": "str",
+      "help": "login for deployment (default: admin). Source: deploy.py:81",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--password",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": "admin",
+      "type": "str",
+      "help": "password for deployment (default: admin). Source: deploy.py:82",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--verify-ssl",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "verify SSL certificate (boolean flag). Source: deploy.py:83",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--force",
+      "command_name": "deploy",
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "force deployment even if module already installed (boolean flag). Source: deploy.py:84",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--path",
+      "command_name": "start",
+      "status": "stable",
+      "default": ".",
+      "type": "str",
+      "help": "directory where project modules are stored (autodetect from cwd). Source: start.py:30",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--database",
+      "command_name": "start",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "database name (-d shorthand, defaults to project directory name). Source: start.py:32",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--template",
+      "command_name": "scaffold",
+      "status": "stable",
+      "default": "default",
+      "type": "str",
+      "help": "module template name or path (-t shorthand). Source: scaffold.py:23",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--database",
+      "command_name": "cloc",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "database to analyze. Source: cloc.py:33",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--path",
+      "command_name": "cloc",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "file or directory path (-p shorthand). Source: cloc.py:34",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--verbose",
+      "command_name": "cloc",
+      "status": "stable",
+      "default": null,
+      "type": null,
+      "help": "verbose output (-v shorthand, boolean flag). Source: cloc.py:35",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
     }
   ]
 }

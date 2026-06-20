@@ -361,3 +361,291 @@ class TestV18SpecCorrectness:
         assert not missing, (
             f"cli_flags_18.0.json: upgrade_code flags missing: {sorted(missing)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# WI-1T: New test classes for issue #338 (CLI flag backfill v8-v18)
+# Red-green discipline: these tests FAIL on base (data not yet backfilled)
+# and turn GREEN once WI-1a through WI-1d complete the JSON entries.
+# ---------------------------------------------------------------------------
+
+# Required flags per argparse-backed command (long-form only; aliases excluded).
+# Source: solution-338.md §3 "Per-Version Checklist".
+_DEPLOY_REQUIRED: frozenset[str] = frozenset({
+    "--path", "--url", "--db", "--login", "--password", "--verify-ssl", "--force",
+})
+_START_REQUIRED: frozenset[str] = frozenset({"--path", "--database"})
+_SCAFFOLD_REQUIRED: frozenset[str] = frozenset({"--template"})
+_CLOC_REQUIRED: frozenset[str] = frozenset({"--database", "--path", "--verbose"})
+_GENPROXYTOKEN_REQUIRED: frozenset[str] = frozenset({"--token-length"})
+
+# Version ranges per command (solution-338 §3 + overall-plan §1).
+_DEPLOY_VERSIONS = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
+_START_VERSIONS = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
+_SCAFFOLD_VERSIONS = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
+_CLOC_VERSIONS = ["12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
+_GENPROXYTOKEN_VERSIONS = ["15.0", "16.0", "17.0", "18.0"]
+
+# Flags that are EXCLUSIVELY per-command argparse flags (NOT re-declared in
+# config.py as global flags). These must never appear with command_name=null.
+# Excluded from this set: --path, --database, --url (also in config.py globals).
+_EXCLUSIVE_PER_COMMAND_FLAGS: frozenset[str] = frozenset({
+    # deploy.py only
+    "--db", "--login", "--password", "--verify-ssl",
+    # scaffold.py only
+    "--template",
+    # cloc.py only
+    "--verbose",
+    # genproxytoken.py only
+    "--token-length",
+})
+
+
+class TestPerCommandFlagsCoverage:
+    """Per-command argparse flags (Gap 1) must be present with correct command_name.
+
+    Guards: cli_help('deploy', version=X) returns --db/--login/--password/
+    --verify-ssl/--force; cli_help('cloc', ...) returns --path/--verbose/
+    --database; etc. Fails on base because no per-command entries exist yet.
+    """
+
+    @pytest.mark.parametrize("version", _DEPLOY_VERSIONS)
+    def test_deploy_flags_per_version(self, version: str) -> None:
+        """deploy command has required flags with command_name='deploy' for all v8-18."""
+        data = _load_version(version)
+        present = {
+            f["flag_name"]
+            for f in data.get("flags", [])
+            if f.get("command_name") == "deploy"
+        }
+        missing = _DEPLOY_REQUIRED - present
+        assert not missing, (
+            f"cli_flags_{version}.json: deploy command missing flags: {sorted(missing)}"
+        )
+
+    @pytest.mark.parametrize("version", _START_VERSIONS)
+    def test_start_flags_per_version(self, version: str) -> None:
+        """start command has --path and --database with command_name='start' for all v8-18.
+
+        Note: both flags exist across all versions (v8/v9 source also has --database
+        long-form); only the long-form is indexed per v19 convention.
+        """
+        data = _load_version(version)
+        present = {
+            f["flag_name"]
+            for f in data.get("flags", [])
+            if f.get("command_name") == "start"
+        }
+        missing = _START_REQUIRED - present
+        assert not missing, (
+            f"cli_flags_{version}.json: start command missing flags: {sorted(missing)}"
+        )
+
+    @pytest.mark.parametrize("version", _SCAFFOLD_VERSIONS)
+    def test_scaffold_flags_per_version(self, version: str) -> None:
+        """scaffold command has --template with command_name='scaffold' for all v8-18.
+
+        v8/v9/v10 scaffold.py use Python-2 print syntax (AST parser returns 0 flags);
+        --template must be hand-curated for those versions.
+        """
+        data = _load_version(version)
+        present = {
+            f["flag_name"]
+            for f in data.get("flags", [])
+            if f.get("command_name") == "scaffold"
+        }
+        missing = _SCAFFOLD_REQUIRED - present
+        assert not missing, (
+            f"cli_flags_{version}.json: scaffold command missing flags: {sorted(missing)}"
+        )
+
+    @pytest.mark.parametrize("version", _CLOC_VERSIONS)
+    def test_cloc_flags_per_version(self, version: str) -> None:
+        """cloc command (introduced in v12) has --database/--path/--verbose for v12-18."""
+        data = _load_version(version)
+        present = {
+            f["flag_name"]
+            for f in data.get("flags", [])
+            if f.get("command_name") == "cloc"
+        }
+        missing = _CLOC_REQUIRED - present
+        assert not missing, (
+            f"cli_flags_{version}.json: cloc command missing flags: {sorted(missing)}"
+        )
+
+    @pytest.mark.parametrize("version", _GENPROXYTOKEN_VERSIONS)
+    def test_genproxytoken_flags_per_version(self, version: str) -> None:
+        """genproxytoken command (introduced in v15) has --token-length for v15-18.
+
+        --config must NOT be indexed here (it bleeds from config.load() and is
+        already indexed as a shared global with command_name=null).
+        """
+        data = _load_version(version)
+        present = {
+            f["flag_name"]
+            for f in data.get("flags", [])
+            if f.get("command_name") == "genproxytoken"
+        }
+        missing = _GENPROXYTOKEN_REQUIRED - present
+        assert not missing, (
+            f"cli_flags_{version}.json: genproxytoken command missing flags: "
+            f"{sorted(missing)}"
+        )
+
+    @pytest.mark.parametrize("version", _DEPLOY_VERSIONS)
+    def test_no_null_command_for_per_command_flags(self, version: str) -> None:
+        """Exclusively per-command flags must not appear with command_name=null.
+
+        Flags in _EXCLUSIVE_PER_COMMAND_FLAGS originate from argparse parsers in
+        cli/*.py and are NOT re-declared in config.py. If any of them appears
+        with command_name=null it was incorrectly indexed as a global flag.
+
+        Shared flags (--path, --database, --url) are explicitly excluded because
+        config.py also declares them as global options - having command_name=null
+        for those is correct alongside their per-command entries.
+        """
+        data = _load_version(version)
+        for flag in data.get("flags", []):
+            fname = flag.get("flag_name")
+            if fname in _EXCLUSIVE_PER_COMMAND_FLAGS and flag.get("command_name") is None:
+                pytest.fail(
+                    f"cli_flags_{version}.json: {fname!r} has command_name=null "
+                    f"but should have a per-command command_name (deploy/scaffold/"
+                    f"cloc/genproxytoken)"
+                )
+
+
+class TestV16V18DbSubcommands:
+    """db subcommands (Gap 2) must be indexed in v16/v17/v18.
+
+    Guards: 5 compound subcommand names appear in commands[]; db load has the
+    correct per-version flags (--move only in v17). Fails on base because no
+    db subcommand entries exist in v16-18 yet.
+    """
+
+    DB_VERSIONS = ["16.0", "17.0", "18.0"]
+
+    # All 5 compound db subcommand names that must appear in commands[].
+    DB_SUB_ACTIONS: frozenset[str] = frozenset({
+        "db load", "db dump", "db duplicate", "db rename", "db drop",
+    })
+
+    # Flags required on db load in ALL of v16/v17/v18.
+    DB_LOAD_REQUIRED: frozenset[str] = frozenset({
+        "--dump-file", "--database", "--force", "--neutralize",
+    })
+
+    @pytest.mark.parametrize("version", DB_VERSIONS)
+    def test_db_subcommands_in_commands_array(self, version: str) -> None:
+        """All 5 db compound subcommands must appear in commands[] for v16/v17/v18."""
+        data = _load_version(version)
+        command_names = {c.get("name") for c in data.get("commands", [])}
+        missing = self.DB_SUB_ACTIONS - command_names
+        assert not missing, (
+            f"cli_flags_{version}.json: missing db sub-actions in commands[]: "
+            f"{sorted(missing)}"
+        )
+
+    @pytest.mark.parametrize("version", DB_VERSIONS)
+    def test_db_load_required_flags_all_versions(self, version: str) -> None:
+        """db load has --dump-file/--database/--force/--neutralize in all v16-18.
+
+        These positionals must be normalized to --<name> per solution-338 §2.
+        """
+        data = _load_version(version)
+        present = {
+            f["flag_name"]
+            for f in data.get("flags", [])
+            if f.get("command_name") == "db load"
+        }
+        missing = self.DB_LOAD_REQUIRED - present
+        assert not missing, (
+            f"cli_flags_{version}.json: db load missing required flags: "
+            f"{sorted(missing)}"
+        )
+
+    def test_db_load_move_v17_only(self) -> None:
+        """--move on db load exists ONLY in v17, not in v16 or v18.
+
+        Source: v17 db.py adds '--move' (store_const, default=True, const=False)
+        to the load subparser. This flag was not present in v16 and was removed
+        before v18. Failing here means the version-specific flag was either
+        omitted from v17 or incorrectly added to v16/v18.
+        """
+        # v17: --move must be present on db load
+        data17 = _load_version("17.0")
+        db_load_flags_v17 = {
+            f["flag_name"]
+            for f in data17.get("flags", [])
+            if f.get("command_name") == "db load"
+        }
+        assert "--move" in db_load_flags_v17, (
+            "cli_flags_17.0.json: db load is missing --move (v17-only flag)"
+        )
+
+        # v16 and v18: --move must NOT be present on db load
+        for version in ("16.0", "18.0"):
+            data = _load_version(version)
+            db_load_flags = {
+                f["flag_name"]
+                for f in data.get("flags", [])
+                if f.get("command_name") == "db load"
+            }
+            assert "--move" not in db_load_flags, (
+                f"cli_flags_{version}.json: db load wrongly has --move "
+                f"(this flag is v17-only)"
+            )
+
+
+class TestGeoipAndGeventGap4:
+    """Geoip primary name and gevent limit flags (Gap 4) must be correctly indexed.
+
+    --geoip-city-db is the primary flag name in v17/v18 (--geoip-db became an
+    alias/deprecated in those versions). Two gevent memory-limit flags are new
+    in v18 only. Fails on base because these entries are absent or incorrectly
+    named.
+    """
+
+    def test_geoip_city_db_primary_v17_v18(self) -> None:
+        """v17 and v18 must index --geoip-city-db as a primary flag name.
+
+        Current state: v17/v18 JSON only has --geoip-db and --geoip-country-db.
+        Source confirms --geoip-city-db is the real primary in v17/v18 config.py;
+        --geoip-db is a deprecated alias pointing to --geoip-city-db.
+        v16 is excluded: --geoip-db IS the correct primary for v16.
+        """
+        for version in ("17.0", "18.0"):
+            data = _load_version(version)
+            flag_names = {f.get("flag_name") for f in data.get("flags", [])}
+            assert "--geoip-city-db" in flag_names, (
+                f"cli_flags_{version}.json: --geoip-city-db is missing; "
+                f"it must be indexed as the primary geoip flag for {version}"
+            )
+
+    def test_geoip_city_db_absent_v16(self) -> None:
+        """v16 must NOT have --geoip-city-db (--geoip-db is the correct primary for v16).
+
+        This ensures the fix for v17/v18 does not incorrectly spill into v16.
+        Source: v16 config.py only has --geoip-db.
+        """
+        data = _load_version("16.0")
+        flag_names = {f.get("flag_name") for f in data.get("flags", [])}
+        assert "--geoip-city-db" not in flag_names, (
+            "cli_flags_16.0.json: --geoip-city-db must NOT be present "
+            "(v16 uses --geoip-db as the primary; --geoip-city-db is v17+ only)"
+        )
+
+    def test_gevent_limit_flags_v18(self) -> None:
+        """v18 must index both gevent memory-limit flags (new in v18 config.py).
+
+        Source: v18 config.py L346 (--limit-memory-soft-gevent) and
+        L354 (--limit-memory-hard-gevent). Both have command_name=null
+        (global flags) and type=int.
+        """
+        data = _load_version("18.0")
+        flag_names = {f.get("flag_name") for f in data.get("flags", [])}
+        for flag in ("--limit-memory-soft-gevent", "--limit-memory-hard-gevent"):
+            assert flag in flag_names, (
+                f"cli_flags_18.0.json: {flag!r} is missing; "
+                f"this gevent memory-limit flag was added in v18 config.py"
+            )
