@@ -758,11 +758,11 @@
     {
       "flag_name": "--geoip-db",
       "command_name": null,
-      "status": "deprecated",
+      "status": "stable",
       "default": "/usr/share/GeoIP/GeoLite2-City.mmdb",
       "type": "int",
       "help": "Absolute path to the GeoIP database file.",
-      "replacement_flag_name": "--geoip-city-db",
+      "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
     },

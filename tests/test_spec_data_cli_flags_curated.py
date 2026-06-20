@@ -636,6 +636,73 @@ class TestGeoipAndGeventGap4:
             "(v16 uses --geoip-db as the primary; --geoip-city-db is v17+ only)"
         )
 
+    # Business rule (source-verified against odoo{N}/.../tools/config.py):
+    #   v8-v16: --geoip-db is the ONLY geoip database flag and is alive/primary
+    #           -> it MUST be status="stable" with no replacement.
+    #   v17+:   config.py renames it via add_option("--geoip-city-db", "--geoip-db", ...)
+    #           so --geoip-db becomes a deprecated alias of --geoip-city-db
+    #           -> it MUST be status="deprecated" with replacement="--geoip-city-db".
+    _GEOIP_DB_STABLE_VERSIONS = [
+        "8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0",
+    ]
+    _GEOIP_DB_DEPRECATED_VERSIONS = ["17.0", "18.0"]
+
+    @pytest.mark.parametrize("version", _GEOIP_DB_STABLE_VERSIONS)
+    def test_geoip_db_is_stable_primary_before_v17(self, version: str) -> None:
+        """--geoip-db is a live primary flag (stable, no replacement) for v8-v16.
+
+        Pre-fix bug: v8-v16 wrongly carried status="deprecated" +
+        replacement_flag_name="--geoip-city-db", even though --geoip-city-db does
+        not exist before v17. Source: odoo{N}/.../tools/config.py declares only
+        add_option("--geoip-db", ...) in v8-v16.
+        """
+        data = _load_version(version)
+        geoip_db = [
+            f for f in data.get("flags", [])
+            if f.get("flag_name") == "--geoip-db" and f.get("command_name") is None
+        ]
+        assert len(geoip_db) == 1, (
+            f"cli_flags_{version}.json: expected exactly one global --geoip-db "
+            f"entry, found {len(geoip_db)}"
+        )
+        entry = geoip_db[0]
+        assert entry["status"] == "stable", (
+            f"cli_flags_{version}.json: --geoip-db must be 'stable' (it is the "
+            f"live primary geoip flag in v8-v16; --geoip-city-db only appears in "
+            f"v17+), got {entry['status']!r}"
+        )
+        assert entry["replacement_flag_name"] is None, (
+            f"cli_flags_{version}.json: --geoip-db must have no replacement before "
+            f"v17, got {entry['replacement_flag_name']!r}"
+        )
+
+    @pytest.mark.parametrize("version", _GEOIP_DB_DEPRECATED_VERSIONS)
+    def test_geoip_db_is_deprecated_alias_from_v17(self, version: str) -> None:
+        """--geoip-db is a deprecated alias of --geoip-city-db from v17 onward.
+
+        Source: v17/v18 config.py declares
+        add_option("--geoip-city-db", "--geoip-db", ...) -> city-db is primary,
+        db is the deprecated alias.
+        """
+        data = _load_version(version)
+        geoip_db = [
+            f for f in data.get("flags", [])
+            if f.get("flag_name") == "--geoip-db" and f.get("command_name") is None
+        ]
+        assert len(geoip_db) == 1, (
+            f"cli_flags_{version}.json: expected exactly one global --geoip-db "
+            f"entry, found {len(geoip_db)}"
+        )
+        entry = geoip_db[0]
+        assert entry["status"] == "deprecated", (
+            f"cli_flags_{version}.json: --geoip-db must be 'deprecated' in {version} "
+            f"(renamed to --geoip-city-db), got {entry['status']!r}"
+        )
+        assert entry["replacement_flag_name"] == "--geoip-city-db", (
+            f"cli_flags_{version}.json: --geoip-db replacement must be "
+            f"'--geoip-city-db' in {version}, got {entry['replacement_flag_name']!r}"
+        )
+
     def test_gevent_limit_flags_v18(self) -> None:
         """v18 must index both gevent memory-limit flags (new in v18 config.py).
 
