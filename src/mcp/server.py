@@ -3571,7 +3571,10 @@ def main() -> None:
         # app_settings table (m13_010 not yet applied) never blocks startup.
         try:
             from src.settings_registry import bootstrap_settings_safe as _bootstrap
-            await _asyncio.to_thread(_bootstrap)
+            # MCP runs on the osm_reader DSN (no UPDATE on app_settings), and
+            # reads ZERO metadata columns from the DB, so it only INSERTs
+            # missing rows — never converges metadata (converge_metadata=False).
+            await _asyncio.to_thread(_bootstrap, converge_metadata=False)
         except Exception:  # noqa: BLE001
             pass  # non-fatal — logged inside bootstrap_settings_safe
 

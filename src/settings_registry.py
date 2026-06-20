@@ -5,8 +5,10 @@
 + 11 billing.* entries added in M10B P1 (ADR-0039) + 1 support.* entry (helpdesk URL, PR #223)
 + 1 analytics.* entry (GA4 measurement ID, PR #225).
 
-Each entry registers default + validation + metadata. Bootstrap inserts rows
-into app_settings table on process start (idempotent ON CONFLICT DO NOTHING).
+Each entry registers default + validation + metadata. Bootstrap inserts missing
+rows on process start (idempotent ON CONFLICT DO NOTHING). The webui (owner)
+process additionally re-syncs catalogue metadata onto existing rows
+(converge_metadata=True; the admin-set value_json is always preserved).
 """
 from __future__ import annotations
 
@@ -319,20 +321,113 @@ def _env_seed_signup_enabled() -> bool:
     return _cfg.coerce_bool(raw)
 
 
-def register_settings_idempotent(conn) -> int:
-    """Insert SETTINGS_CATALOGUE rows into app_settings table.
+# The 8 registry-derived METADATA columns re-synced from the catalogue when
+# ``converge_metadata=True``.  ``value_json`` (admin-set value) and the
+# identity/audit columns (``key``/``scope``/``tenant_id``/``updated_by``/
+# ``updated_at``/``change_reason``) are deliberately ABSENT — a metadata
+# convergence is a system op, not a user edit, and must never clobber a tuned
+# value or bump the audit trail.
+_METADATA_SET_CLAUSE = ",\n                    ".join(
+    f"{col} = EXCLUDED.{col}"
+    for col in (
+        "category",
+        "data_type",
+        "validation_json",
+        "default_value",
+        "requires_restart",
+        "requires_reseed",
+        "is_secret",
+        "description",
+    )
+)
 
-    ON CONFLICT (key) DO NOTHING — safe to call on every process start.
-    Returns number of rows actually inserted (new settings on this run).
+
+def register_settings_idempotent(conn, *, converge_metadata: bool = False) -> int:
+    """Insert missing settings; OPTIONALLY re-sync catalogue METADATA onto existing rows.
+
+    Safe to call on every process start.  Two modes, selected by
+    *converge_metadata*:
+
+    * **converge_metadata=False (default — reader / MCP path):**
+      ``ON CONFLICT ... DO NOTHING``.  Inserts only the MISSING rows; an
+      existing row is left entirely untouched.  This is the original safe
+      behaviour and needs only INSERT privilege, so the low-privilege
+      ``osm_reader`` role (the MCP server's DSN) can run it.
+
+    * **converge_metadata=True (owner / webui path):**
+      ``ON CONFLICT ... DO UPDATE SET`` re-syncs the 8 registry-derived
+      METADATA columns (``category``, ``data_type``, ``validation_json``,
+      ``default_value``, ``requires_restart``, ``requires_reseed``,
+      ``is_secret``, ``description``) from the catalogue (EXCLUDED), so a
+      metadata change (e.g. flipping ``requires_restart`` for a key) PROPAGATES
+      to deployments that already have the row — without a manual UPDATE.
+
+    In BOTH modes the admin-set ``value_json`` is **always preserved**: it is
+    NEVER in the SET list, so a converge run never resets an operator's tuned
+    value (ADR-0042: admin PATCH wins).  ``key``/``scope``/``tenant_id``
+    (identity) and the audit columns ``updated_by``/``updated_at``/
+    ``change_reason`` are also left untouched — a metadata convergence is a
+    system operation, not a user edit, so it must not bump ``updated_at``
+    (avoids churn on every restart).
+
+    **WHY only the owner converges:**  the ONLY consumer of the DB-row metadata
+    columns is the admin settings LIST grid (``GET /api/admin/settings``),
+    which runs in the owner-DSN webui process.  (The single-key ``GET /{key}``
+    reads metadata from the in-process catalogue, not from DB rows.)
+    The MCP server reads ZERO
+    metadata columns from ``app_settings`` (it reads only ``value_json``;
+    a missing row falls back to this in-process registry), so it never needs
+    convergence.  Convergence is therefore gated to the owner process, and
+    ``osm_reader`` deliberately holds NO UPDATE privilege on ``app_settings``
+    (least privilege: the public-facing read tier can never mutate settings).
+
+    Counting is honest in both modes.  With ``converge_metadata=True`` the
+    upsert uses ``RETURNING (xmax = 0) AS was_inserted`` to distinguish a fresh
+    INSERT (``xmax = 0``) from a metadata-only UPDATE.  With
+    ``converge_metadata=False`` (DO NOTHING) ``RETURNING`` yields a row ONLY on
+    an actual insert, so ``cur.rowcount`` counts inserts directly.  The RETURN
+    VALUE is the number of rows newly INSERTED on this run in either mode (so
+    callers/tests expecting "0 on a converged DB / all on a fresh DB" stay
+    correct); the log line reports inserted AND updated counts separately.
 
     For ``signup.enabled`` specifically, the seed value is derived from the
     ``SIGNUP_ENABLED`` env var at call time instead of using the catalogue
-    default (False).  This honours the operator's deploy-time env on a fresh
-    install.  Existing deployments (row already present) are never affected
-    because ON CONFLICT DO NOTHING skips the INSERT entirely.  Admin PATCH
-    at runtime still wins — it overwrites the same row (ADR-0042 honoured).
+    default (False).  This only matters on a FRESH insert; because neither mode
+    touches ``value_json``, an existing ``signup.enabled`` value is preserved
+    (env intent is a first-install concern).  Its ``default_value`` column
+    re-syncs to the catalogue default (False) under convergence, which is
+    correct — reset-to-default stays invite-only.
     """
+    # Build the conflict action conditionally; the SELECT/INSERT column list is
+    # IDENTICAL for both modes — only the ON CONFLICT tail differs.
+    if converge_metadata:
+        conflict_action = (
+            "DO UPDATE SET\n                    "
+            + _METADATA_SET_CLAUSE
+            # RETURNING (xmax = 0) is reliable here: bootstrap runs as a single
+            # serial transaction per process start (no concurrent updater racing
+            # this upsert), so xmax = 0 unambiguously means a fresh INSERT.
+            + "\n                RETURNING (xmax = 0) AS was_inserted"
+        )
+    else:
+        conflict_action = "DO NOTHING"
+
+    sql = (
+        """
+                INSERT INTO app_settings (
+                    key, value_json, category, scope, data_type,
+                    validation_json, default_value, requires_restart,
+                    requires_reseed, is_secret, description
+                ) VALUES (%s, %s::jsonb, %s, 'system', %s,
+                          %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+                ON CONFLICT (key) WHERE scope = 'system' AND tenant_id IS NULL
+                """
+        + conflict_action
+        + "\n"
+    )
+
     inserted = 0
+    updated = 0
     with conn.cursor() as cur:
         for sdef in SETTINGS_CATALOGUE:
             # For the signup gate: capture operator deploy-time intent from env.
@@ -345,38 +440,68 @@ def register_settings_idempotent(conn) -> int:
             default_json = json.dumps({"v": sdef.default_value})
             validation_json = json.dumps(sdef.validation)
             cur.execute(
-                """
-                INSERT INTO app_settings (
-                    key, value_json, category, scope, data_type,
-                    validation_json, default_value, requires_restart,
-                    requires_reseed, is_secret, description
-                ) VALUES (%s, %s::jsonb, %s, 'system', %s,
-                          %s::jsonb, %s::jsonb, %s, %s, %s, %s)
-                ON CONFLICT (key) WHERE scope = 'system' AND tenant_id IS NULL DO NOTHING
-                """,
+                sql,
                 (sdef.key, value_json, sdef.category, sdef.data_type,
                  validation_json, default_json, sdef.requires_restart,
                  sdef.requires_reseed, sdef.is_secret, sdef.description),
             )
-            if cur.rowcount > 0:
-                inserted += 1
+            if converge_metadata:
+                # RETURNING fires for both INSERT and UPDATE: xmax = 0 ⟺ a fresh
+                # INSERT (no prior tuple version); otherwise the row already
+                # existed and we only re-synced its metadata.
+                row = cur.fetchone()
+                if row is not None and row[0]:
+                    inserted += 1
+                else:
+                    updated += 1
+            else:
+                # DO NOTHING: a row is affected ONLY on an actual insert.
+                if cur.rowcount > 0:
+                    inserted += 1
     conn.commit()
+    log.debug(
+        "register_settings_idempotent(converge_metadata=%s): "
+        "%d inserted, %d metadata re-synced",
+        converge_metadata, inserted, updated,
+    )
     return inserted
 
 
-def bootstrap_settings_safe() -> None:
-    """Process-start hook. Logs + swallows error to not block startup."""
+def bootstrap_settings_safe(*, converge_metadata: bool = False) -> None:
+    """Process-start hook. Logs + swallows error to not block startup.
+
+    *converge_metadata* is threaded straight through to
+    :func:`register_settings_idempotent`.  The webui (owner DSN) passes True to
+    converge catalogue metadata onto existing rows; the MCP server (osm_reader
+    DSN) passes False (the default) and only INSERTs missing rows, because
+    ``osm_reader`` holds no UPDATE privilege on ``app_settings`` (see the
+    function docstring for why only the owner converges).
+    """
     try:
         from src.db.pg import get_pool
         pool = get_pool()
         with pool.checkout() as conn:
             conn.autocommit = False
             try:
-                inserted = register_settings_idempotent(conn)
-                log.info(
-                    "Settings bootstrap: %d new row(s) inserted (catalogue=%d)",
-                    inserted, len(SETTINGS_CATALOGUE),
+                inserted = register_settings_idempotent(
+                    conn, converge_metadata=converge_metadata
                 )
+                if converge_metadata:
+                    # Every catalogue entry yields exactly one row (INSERT or
+                    # the metadata re-sync UPDATE), so updated = catalogue −
+                    # inserted.
+                    resynced = len(SETTINGS_CATALOGUE) - inserted
+                    log.info(
+                        "Settings bootstrap (converge): %d new row(s) inserted, "
+                        "%d existing row(s) metadata re-synced (catalogue=%d)",
+                        inserted, resynced, len(SETTINGS_CATALOGUE),
+                    )
+                else:
+                    log.info(
+                        "Settings bootstrap: %d new row(s) inserted "
+                        "(insert-missing-only; catalogue=%d)",
+                        inserted, len(SETTINGS_CATALOGUE),
+                    )
             except Exception:
                 conn.rollback()
                 raise
