@@ -1,20 +1,22 @@
 """Spec-layer MCP tools (split out of src/mcp/server.py, Phase 4).
 
-Five M4.5 spec tools and their implementation helpers — all ``@offload_neo4j``
+Four M4.5 spec tools and their implementation helpers — all ``@offload_neo4j``
 (sync Neo4j-read bodies offloaded off the event loop; per-query bounded, #287):
   - ``lookup_core_api``        — CoreSymbol signature/status/replacement lookup.
   - ``api_version_diff``       — diff one CoreSymbol between two versions.
   - ``find_deprecated_usage``  — scan indexed code for deprecated/removed API use.
   - ``lint_check``             — hybrid-match code vs indexed LintRule catalogue
                                  (language='xml' → ground-truth RelaxNG violations).
-  - ``cli_help``               — odoo-bin CLICommand / CLIFlag spec lookup.
+
+``cli_help`` and its helpers live in ``src/mcp/tools/cli.py`` (split in #336
+to keep this module under the TOOL_MODULE_MAX_LINES ceiling).
 
 Registration happens via the ``@mcp.tool`` import-time side effect; server.py
 imports this module at the end of the file so the decorators run.
 
 The implementation helpers (``_lookup_core_api`` / ``_api_version_diff`` /
-``_find_deprecated_usage`` / ``_lint_check`` / ``_cli_help`` and their format
-helpers) live HERE now (moved from server.py).  They reach the shared
+``_find_deprecated_usage`` / ``_lint_check`` and their format helpers) live HERE
+now (moved from server.py).  They reach the shared
 resolver/state hub (``_get_driver`` / ``_resolve_version`` / ``_scope`` /
 ``_scope_pred`` / ``_portable_path`` / ``logger``) through the module-level
 ``_srv`` server reference bound at the END of this file (see the note there) and
@@ -808,226 +810,6 @@ def lint_check(
         lint_check("", "17.0", "xml")   # RelaxNG violations grouped by view
     """
     return _lint_check(code, odoo_version, language)
-
-
-def _format_cli_flag_detail(rec: dict, replacement: str | None, version: str) -> str:
-    """Format a single CLIFlag detail."""
-    flag = rec.get("flag_name") or "?"
-    cmd = rec.get("command_name") or "?"
-    status = rec.get("status") or "stable"
-    typ = rec.get("type")
-    default = rec.get("default")
-    help_text = rec.get("help")
-    lines = [f"cli_help({cmd!r}, {flag!r}, Odoo {version})"]
-    lines.append(f"├─ Status:      {status}")
-    if typ:
-        lines.append(f"├─ Type:        {typ}")
-    if default is not None:
-        lines.append(f"├─ Default:     {default}")
-    if help_text:
-        lines.append(f"├─ Help:        {help_text}")
-    if replacement:
-        lines.append(f"└─ Replacement: {replacement}")
-    else:
-        lines[-1] = lines[-1].replace("├─", "└─")
-    return "\n".join(lines)
-
-
-def _format_cli_command_summary(
-    cmd_rec: dict, flags: list[dict], version: str,
-) -> str:
-    name = cmd_rec.get("name") or "?"
-    desc = cmd_rec.get("description")
-    lines = [f"cli_help({name!r}, Odoo {version})"]
-    if desc:
-        lines.append(f"├─ Description: {desc}")
-    if not flags:
-        lines.append("└─ no flags indexed")
-        return "\n".join(lines)
-    # ADR-0023 §1.3: Flags is the last branch → sublist indent is 4 spaces.
-    lines.append(f"└─ Flags ({len(flags)}):")
-    last_idx = len(flags) - 1
-    for i, f in enumerate(flags):
-        connector = "└─" if i == last_idx else "├─"
-        flag = f.get("flag_name") or "?"
-        status = f.get("status") or "stable"
-        suffix = f" (status={status})" if status != "stable" else ""
-        lines.append(f"    {connector} {flag}{suffix}")
-    return "\n".join(lines)
-
-
-def _cli_help(
-    command: str | None,
-    flag: str | None = None,
-    odoo_version: str = "auto",
-) -> str:
-    """Return CLICommand spec or CLIFlag status + replacement."""
-    with _srv._get_driver().session() as session:
-        odoo_version = _srv._resolve_version(odoo_version, session)
-
-        # Query SpecMetadata curation status for CLI at this version.
-        curate_rec = _srv._single_bounded(
-            session,
-            """
-            MATCH (sm:SpecMetadata {kind: 'cli', odoo_version: $v})
-            RETURN sm.curate_status AS curate_status
-            """,
-            label=f"CLI curation status (Odoo {odoo_version})",
-            v=odoo_version,
-        )
-        curate_status = curate_rec["curate_status"] if curate_rec else None
-
-        if command and flag:
-            rec = _srv._single_bounded(
-                session,
-                """
-                MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd, odoo_version: $v})
-                OPTIONAL MATCH (f)-[:REPLACED_BY]->(repl:CLIFlag)
-                RETURN f.flag_name AS flag_name,
-                       f.command_name AS command_name,
-                       f.status AS status,
-                       f.type AS type,
-                       f.default AS default,
-                       f.help AS help,
-                       repl.flag_name AS replacement
-                """,
-                label=f"CLI flag {flag!r} of {command!r} (Odoo {odoo_version})",
-                flag=flag, cmd=command, v=odoo_version,
-            )
-            if rec is None:
-                result = (
-                    f"cli_help({command!r}, {flag!r}, Odoo {odoo_version})\n"
-                    f"└─ flag {flag!r} not found on command {command!r}"
-                )
-            else:
-                data = dict(rec)
-                replacement = data.pop("replacement", None)
-                # Fallback: replacement_flag_name property when no REPLACED_BY edge.
-                if not replacement:
-                    fallback = _srv._single_bounded(
-                        session,
-                        """
-                        MATCH (f:CLIFlag {flag_name: $flag, command_name: $cmd,
-                                          odoo_version: $v})
-                        RETURN f.replacement_flag_name AS r
-                        """,
-                        label=f"CLI flag replacement for {flag!r} (Odoo {odoo_version})",
-                        flag=flag, cmd=command, v=odoo_version,
-                    )
-                    replacement = fallback["r"] if fallback else None
-                result = _format_cli_flag_detail(data, replacement, odoo_version)
-            if curate_status == "pending":
-                result = (
-                    f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
-                    + result
-                )
-            return result
-
-        if command:
-            cmd_rec = _srv._single_bounded(
-                session,
-                """
-                MATCH (c:CLICommand {name: $cmd, odoo_version: $v})
-                RETURN c.name AS name, c.description AS description
-                """,
-                label=f"CLI command {command!r} (Odoo {odoo_version})",
-                cmd=command, v=odoo_version,
-            )
-            if cmd_rec is None:
-                result = (
-                    f"cli_help({command!r}, Odoo {odoo_version})\n"
-                    f"└─ command {command!r} not found"
-                )
-            else:
-                flags = _srv._data_bounded(
-                    session,
-                    """
-                    MATCH (f:CLIFlag {command_name: $cmd, odoo_version: $v})
-                    RETURN f.flag_name AS flag_name, f.status AS status
-                    ORDER BY f.flag_name
-                    """,
-                    label=f"CLI flags of {command!r} (Odoo {odoo_version})",
-                    cmd=command, v=odoo_version,
-                )
-                result = _format_cli_command_summary(dict(cmd_rec), flags, odoo_version)
-            if curate_status == "pending":
-                result = (
-                    f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
-                    + result
-                )
-            return result
-
-        # No command — list all CLI commands at this version.
-        cmds = _srv._data_bounded(
-            session,
-            """
-            MATCH (c:CLICommand {odoo_version: $v})
-            RETURN c.name AS name
-            ORDER BY c.name
-            """,
-            label=f"CLI command list (Odoo {odoo_version})",
-            v=odoo_version,
-        )
-    if not cmds:
-        result = (
-            f"cli_help(Odoo {odoo_version})\n"
-            f"└─ no CLI commands indexed for this version"
-        )
-        if curate_status == "pending":
-            result = (
-                f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
-                + result
-            )
-        return result
-    lines = [f"cli_help(Odoo {odoo_version}) — {len(cmds)} commands"]
-    last_idx = len(cmds) - 1
-    for i, c in enumerate(cmds):
-        connector = "└─" if i == last_idx else "├─"
-        lines.append(f"{connector} {c['name']}")
-    result = "\n".join(lines)
-    if curate_status == "pending":
-        result = (
-            f"ℹ Spec data v{odoo_version} pending curation — limited results.\n" + result
-        )
-    return result
-
-
-@mcp.tool(**READONLY_TOOL_KWARGS)
-@offload_neo4j
-def cli_help(
-    command: str | None = None,
-    flag: str | None = None,
-    *,
-    odoo_version: RequiredOdooVersion,
-) -> str:
-    """Look up odoo-bin subcommand or flag: status, help text, replacement.
-
-    TRIGGER when: "how to run odoo-bin scaffold", "what CLI options does
-    odoo-bin have", "odoo-bin command for database update", "cách dùng
-    odoo-bin shell", "tham số nào để cài module mới", "is --longpolling-port
-    still valid in Odoo 18"
-    PREFER over: reading Odoo docs — returns version-specific CLI info from
-    indexed CLICommand catalogue, including deprecated flag replacements
-    SKIP when: user wants API reference → use lookup_core_api; user wants to
-    check module existence → use check_module_exists
-
-    Args:
-        command: Subcommand name (e.g. 'server', 'shell', 'scaffold').
-            If None, lists all known commands at this version.
-        flag: Optional flag (e.g. '--http-port'). With command, returns full
-            flag details including replacement when deprecated.
-
-    Returns:
-        Tree text: flag status, type, default, help text, replacement.
-
-    Example:
-        cli_help("server", "--longpolling-port", odoo_version="18.0")
-        → cli_help('server', '--longpolling-port', Odoo 18.0)
-          ├─ Status:      removed
-          ├─ Help:        Deprecated alias to the gevent-port option
-          └─ Replacement: --gevent-port
-    """
-    return _cli_help(command, flag, odoo_version)
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)

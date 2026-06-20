@@ -1,12 +1,12 @@
 """Inspect MCP tool wrappers (split out of src/mcp/server.py, Phase 3).
 
 Five discriminator / overview tools:
-  - ``describe_module`` (sync, ``@offload_neo4j``) — full module architecture
+  - ``describe_module`` (sync, ``@offload_neo4j``) - full module architecture
     overview.  Its impl ``_describe_module`` stays in the server hub (inspect.py
     uses it too), so this wrapper reaches it through ``_srv``.
   - ``model_inspect`` / ``module_inspect`` / ``profile_inspect`` (sync,
-    ``@offload_neo4j``) — method-discriminator supersets (ADR-0028).
-  - ``entity_lookup`` (``async def``, no offload — pre-embeds the pattern intent
+    ``@offload_neo4j``) - method-discriminator supersets (ADR-0028).
+  - ``entity_lookup`` (``async def``, no offload - pre-embeds the pattern intent
     on the loop before the to_thread hop, ADR-0046).
 
 The discriminator impls (``_model_inspect`` / ``_module_inspect`` /
@@ -53,7 +53,7 @@ from src.mcp.server import (
     offload_neo4j,
 )
 
-# Wave 1 — @mcp.tool(**READONLY_TOOL_KWARGS) wrappers for the 7 new tools (ADR-0023 §5).
+# Wave 1 - @mcp.tool(**READONLY_TOOL_KWARGS) wrappers for the 7 new tools (ADR-0023 §5).
 # TRIGGER docstrings keep EN + VI for router accuracy (ADR-0012 §2 exception).
 # ---------------------------------------------------------------------------
 
@@ -73,7 +73,7 @@ def describe_module(
     PREFER over: check_module_exists when caller needs module contents
     (models, views, JS), not just YES/NO. Also prefer over model_inspect
     when the question is about a module overview, not a single model.
-    SKIP when: caller only needs YES/NO — use check_module_exists (faster).
+    SKIP when: caller only needs YES/NO - use check_module_exists (faster).
 
     Args:
         name: Module technical name (e.g. 'sale', 'viin_sale').
@@ -128,11 +128,14 @@ def model_inspect(
     """Method-discriminator superset for model-scoped reads. See ADR-0028.
 
     TRIGGER when: inspecting one model from multiple angles (summary, fields,
-    methods, views) — fewer round trips than separate calls.
+    methods, views) - fewer round trips than separate calls.
     Also: "kiểm tra một model nhiều mặt", "xem mọi thông tin của model X"
     PREFER over: separate per-view calls when you know the sub-view; one call
     with method= is friendlier for LLM context windows.
-    SKIP when: cross-model entity dispatch by kind — use entity_lookup.
+    SKIP when: cross-model entity dispatch by kind - use entity_lookup.
+    SKIP when: method='fields' returns too many rows and you know the exact
+    field name - narrow with entity_lookup(kind='field', model=<model>,
+    field=<exact_name>, odoo_version=...) for a single-field deep dive.
 
     Args:
         model: Dotted model name, e.g. 'sale.order'.
@@ -147,8 +150,8 @@ def model_inspect(
         limit: Rows per page (cap: 50 fields, 20 methods/views/extenders,
             10 JS patches). Page via start_index, not limit.
         from_module: Filter to rows in this module (summary/fields/field).
-        kind: Filter fields by ttype, e.g. 'many2one' — fields only.
-        view_type: Filter views, e.g. 'form'/'tree'/'list' — views only.
+        kind: Filter fields by ttype, e.g. 'many2one' - fields only.
+        view_type: Filter views, e.g. 'form'/'tree'/'list' - views only.
             'list' is the v18+ alias for 'tree'.
     """
     text = _model_inspect(
@@ -184,12 +187,12 @@ def module_inspect(
 ) -> ToolResult:
     """Method-discriminator superset for module-scoped reads. See ADR-0028.
 
-    TRIGGER when: you need to inspect one module from multiple angles —
-    summary then views then OWL components — reducing round trips vs
+    TRIGGER when: you need to inspect one module from multiple angles -
+    summary then views then OWL components - reducing round trips vs
     multiple separate module_inspect or describe_module calls.
     Also: "khám phá nội dung module X", "module X chứa những gì"
     PREFER over: chaining describe_module + multiple module_inspect calls.
-    SKIP when: you need only a summary — use describe_module directly.
+    SKIP when: you need only a summary - use describe_module directly.
 
     Args:
         name: Technical module name, e.g. 'sale', 'website_sale'.
@@ -202,11 +205,11 @@ def module_inspect(
             ancestor chain). Default None = all profiles.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
-        view_type: Filter views by type, e.g. 'form'/'tree'/'list' — method='views' only.
+        view_type: Filter views by type, e.g. 'form'/'tree'/'list' - method='views' only.
             'list' is the v18+ alias for 'tree'.
-        bound_model: Filter OWL components bound to a model — method='owl' only.
-        era: era1|era2|era3 — filter JS patches by era — method='js' only.
-        target: filter JS patches by patched target — method='js' only.
+        bound_model: Filter OWL components bound to a model - method='owl' only.
+        era: era1|era2|era3 - filter JS patches by era - method='js' only.
+        target: filter JS patches by patched target - method='js' only.
     """
     text = _module_inspect(
         name=name,
@@ -240,12 +243,15 @@ async def entity_lookup(
     """Unified single-entity lookup by kind discriminator. See ADR-0028.
 
     TRIGGER when: kind of entity is known but you're unsure which method=
-    to use on model_inspect — use kind= to dispatch without knowing whether
+    to use on model_inspect - use kind= to dispatch without knowing whether
     to call model_inspect, module_inspect, or describe_module.
     Also: "tra cứu một entity cụ thể khi biết kind", "tìm field/method/view"
+    TRIGGER when: model_inspect(method='fields') returns too many rows and
+    you know the exact field name - narrow with entity_lookup(kind='field',
+    model=<model>, field=<exact_name>, odoo_version=...) for a targeted lookup.
     PREFER over: guessing the right superset tool + method combination;
     entity_lookup normalises the dispatch and returns the same tree text.
-    SKIP when: the entity kind and tool are already known — call model_inspect,
+    SKIP when: the entity kind and tool are already known - call model_inspect,
     module_inspect, or describe_module directly for a cleaner trace.
 
     Args:
@@ -256,7 +262,7 @@ async def entity_lookup(
         method_name: Required for kind='method'.
         xmlid: Required for kind='view'.
         name: Required for kind in {module, pattern}.
-        from_module: Optional module filter — restrict results to rows declared
+        from_module: Optional module filter - restrict results to rows declared
             in this module only (kind='model' and kind='field').
 
     Returns:
@@ -298,7 +304,7 @@ async def entity_lookup(
     # otherwise escape this async handler as a protocol-level isError. Record the
     # metric once here + return the clean message. (Exception: kind='model' →
     # _resolve_model self-catches and returns the clean string already counted as
-    # "model_inspect", so this catch never fires for model — no double-count.)
+    # "model_inspect", so this catch never fires for model - no double-count.)
     # kind='pattern' routes to _suggest_pattern (PR-2 scope) which does not raise
     # OrmQueryTimeout, so this catch fires only for field/method/view/module.
     try:
@@ -326,7 +332,7 @@ async def entity_lookup(
 
 
 # ---------------------------------------------------------------------------
-# WI-4 (#260, #259 chain) — profile_inspect discriminator tool (24 -> 25)
+# WI-4 (#260, #259 chain) - profile_inspect discriminator tool (24 -> 25)
 # ADR-0028: one discriminator superset, naming matches model_inspect/module_inspect.
 # ---------------------------------------------------------------------------
 
@@ -348,8 +354,8 @@ def profile_inspect(
     profile", "profile X có bao nhiêu module", "repos nào trong profile này".
     PREFER over: chaining list_available_profiles + describe_module when the
     question is about a profile's composition (repos, modules, parent chain).
-    SKIP when: you only need YES/NO on a module — use check_module_exists.
-    SKIP when: you need a single model's fields/methods — use model_inspect.
+    SKIP when: you only need YES/NO on a module - use check_module_exists.
+    SKIP when: you need a single model's fields/methods - use model_inspect.
 
     Args:
         method: 'summary' | 'repos' | 'modules'.
@@ -384,13 +390,13 @@ def profile_inspect(
 # sys.modules['src.mcp.server'] at THIS point is the generation that is importing
 # this module (server.py imports this module from the very end of its own body,
 # and that generation registered these tools onto its `mcp`). Binding at
-# end-of-module — rather than via a top-level `from src.mcp import server`, which
-# reads the stale `src.mcp` package attribute after a pop+reimport — makes `_srv`
+# end-of-module - rather than via a top-level `from src.mcp import server`, which
+# reads the stale `src.mcp` package attribute after a pop+reimport - makes `_srv`
 # track the SAME generation as the tool objects defined above. The bodies above
 # read the hub through `_srv.<name>` at call time so that
 # monkeypatch.setattr(srv, ...) on hub helpers (e.g. _get_api_key_id /
 # _get_embedder / _describe_module) is observed, and so a test holding a stale
 # top-level `srv` binding (after a pop+reimport) calls the stale-gen tool whose
-# `_srv` points back at that same stale generation — exactly as it was
+# `_srv` points back at that same stale generation - exactly as it was
 # pre-refactor when these bodies used bare-name globals in server.py.
 _srv = sys.modules["src.mcp.server"]

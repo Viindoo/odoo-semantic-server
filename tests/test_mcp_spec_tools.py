@@ -69,7 +69,7 @@ def seeded_spec_neo4j(neo4j_driver):
     )
 
     # CoreSymbol: name_get deprecated@v96, removed@v95 + replacement display_name@v95
-    # NOTE: write CoreSymbols BEFORE the user Model — _write_parse_result MERGEs
+    # NOTE: write CoreSymbols BEFORE the user Model - _write_parse_result MERGEs
     # USES_CORE_SYMBOL only when target CoreSymbol already exists.
     writer.write_core_symbols([
         CoreSymbolInfo(
@@ -259,11 +259,11 @@ class TestLintCheck:
     ):
         v_from, _ = seeded_spec_neo4j
         # Seeded LintRule E8502 message contains 'Bad usage of _, _lt function'.
-        # V0 matcher is substring-on-message — the rule's message keyword
+        # V0 matcher is substring-on-message - the rule's message keyword
         # 'gettext' / '_lt' / 'literal string' triggers the rule.
         code = "name = _(\"Hello %s\" % user.name)"
         out = spec_tools._lint_check(code, v_from, language="python")
-        # The rule may or may not match — V0 contract is structured output.
+        # The rule may or may not match - V0 contract is structured output.
         # Header `lint_check(...)` always present (banner may prepend per WI-F6).
         assert "lint_check(" in out
         # Output must mention either 'no violations' or list a rule id.
@@ -311,6 +311,112 @@ class TestCliHelp:
             "nonexistent_cmd_xyz", flag=None, odoo_version=v_from,
         )
         assert "not found" in out.lower()
+
+
+def _seed_db_subcommands(driver):
+    """Seed minimal 'db' parent + 'db init' / 'db dump' sub-actions at TEST_VERSION.
+
+    Returns the Neo4jWriter so the caller can call writer.close() when done.
+    """
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    writer.setup_indexes()
+    writer.write_cli_commands([
+        CLICommandInfo(
+            name="db",
+            odoo_version=TEST_VERSION,
+            description="Database management commands",
+        ),
+        CLICommandInfo(
+            name="db init",
+            odoo_version=TEST_VERSION,
+            description="Create a new database",
+        ),
+        CLICommandInfo(
+            name="db dump",
+            odoo_version=TEST_VERSION,
+            description="Dump a database",
+        ),
+    ])
+    writer.write_cli_flags([
+        # Shared flag on parent 'db'.
+        CLIFlagInfo("--config", "db", TEST_VERSION, help="config file"),
+        # Sub-action-specific flags.
+        CLIFlagInfo("--with-demo", "db init", TEST_VERSION, help="install demo data"),
+        CLIFlagInfo("--format", "db dump", TEST_VERSION,
+                    type="choice", default="zip", help="dump format"),
+    ])
+    return writer
+
+
+@pytest.fixture
+def subcommand_data(clean_neo4j):
+    """Seed sub-command test data using the clean_neo4j fixture for cleanup."""
+    writer = _seed_db_subcommands(clean_neo4j)
+    yield clean_neo4j
+    writer.close()
+
+
+class TestCliHelpSubcommands:
+    """WI-D integration: _cli_help() lists sub-commands for subparser commands.
+
+    Seeds a minimal 'db' command + 'db init' / 'db dump' sub-actions at
+    TEST_VERSION (99.0) using compound command_name space convention.
+    Verifies that cli_help('db') lists sub-commands and NOT "no flags indexed",
+    and that cli_help('db init') returns the sub-action's own flag.
+    """
+
+    def test_parent_command_lists_sub_commands(self, spec_tools, subcommand_data):
+        """cli_help('db') must list sub-commands (not 'no flags indexed')."""
+        out = spec_tools._cli_help("db", flag=None, odoo_version=TEST_VERSION)
+        assert "Sub-commands" in out, (
+            f"Expected 'Sub-commands' in output, got:\n{out}"
+        )
+        assert "db init" in out
+        assert "db dump" in out
+        assert "no flags indexed" not in out
+
+    def test_parent_command_also_shows_shared_flags(self, spec_tools, subcommand_data):
+        """cli_help('db') shows shared flags AND sub-command list."""
+        out = spec_tools._cli_help("db", flag=None, odoo_version=TEST_VERSION)
+        assert "--config" in out
+
+    def test_sub_action_shows_own_flags(self, spec_tools, subcommand_data):
+        """cli_help('db init') returns sub-action-specific flags."""
+        out = spec_tools._cli_help(
+            "db init", flag=None, odoo_version=TEST_VERSION,
+        )
+        assert "--with-demo" in out
+        assert "db init" in out
+
+    def test_sub_action_compound_name_flag_lookup(self, spec_tools, subcommand_data):
+        """cli_help('db dump', '--format') resolves the sub-action flag."""
+        out = spec_tools._cli_help(
+            "db dump", flag="--format", odoo_version=TEST_VERSION,
+        )
+        assert "--format" in out
+        assert "zip" in out
+
+    def test_no_command_listing_excludes_compound_names(
+        self, spec_tools, subcommand_data,
+    ):
+        """cli_help() with no command must NOT list compound sub-action names.
+
+        Top-level listing should show only 'db'; compound sub-actions like
+        'db init' and 'db dump' are reachable via cli_help('db'), not the
+        top-level index.
+        """
+        out = spec_tools._cli_help(None, flag=None, odoo_version=TEST_VERSION)
+        assert "db" in out, f"Expected 'db' in top-level listing, got:\n{out}"
+        assert "db init" not in out, (
+            f"Compound name 'db init' must NOT appear in top-level listing:\n{out}"
+        )
+        assert "db dump" not in out, (
+            f"Compound name 'db dump' must NOT appear in top-level listing:\n{out}"
+        )
 
 
 # --- profile_name filter tests for find_deprecated_usage -------------------
@@ -404,7 +510,7 @@ class TestFindDeprecatedUsageProfileFilter:
         consistent across the Neo4j and pgvector paths (fixes the split-brain).
 
         Pre-WG-3t the Neo4j path treated admin's profile_name as advisory (both hits
-        returned) while the pgvector path narrowed — a split-brain. Under T3 BOTH paths
+        returned) while the pgvector path narrowed - a split-brain. Under T3 BOTH paths
         narrow: admin asking for 'alpha_depr' narrows to that profile, so only the alpha
         hit surfaces; the beta hit (under 'beta_depr') is filtered out. The tenant
         boundary remains the isolation guarantee (test_cross_tenant_isolation).

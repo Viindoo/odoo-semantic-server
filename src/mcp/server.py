@@ -88,7 +88,7 @@ from src.mcp.tree_builder import render_list_block
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Facade-split patterns — DO NOT "unify for consistency" (each is FUNCTIONAL).
+# Facade-split patterns - DO NOT "unify for consistency" (each is FUNCTIONAL).
 # ---------------------------------------------------------------------------
 # The god-file split (server / orm / writer_neo4j / parser_python / pipeline /
 # auth_registry) left several DIFFERENT child<->parent wiring mechanisms in the
@@ -96,16 +96,16 @@ logger = logging.getLogger(__name__)
 # collapsing them to one style reintroduces an import cycle or a broken
 # monkeypatch. The variants and WHY they differ:
 #
-#  1. `_srv = sys.modules["src.mcp.server"]` (subscript) — used by the tool-mods
+#  1. `_srv = sys.modules["src.mcp.server"]` (subscript) - used by the tool-mods
 #     (e.g. tools/orm_tools.py, tools/discovery.py). Safe because each tool-mod
 #     ALSO top-imports `src.mcp.server`, so the key is guaranteed present.
-#  2. `_srv = sys.modules.get("src.mcp.server")` (.get) — used by describe.py /
+#  2. `_srv = sys.modules.get("src.mcp.server")` (.get) - used by describe.py /
 #     listings.py, which do NOT top-import the server. `.get` binds None on a
 #     cold import instead of raising KeyError (see test_facade_cold_import.py).
 #  3. Deferred function-local `from src.mcp import server` (inspect.py /
 #     orm_validators.py) and `from <parent> import X` inside a function
 #     (parser_python_era1.py, writer_neo4j_{orm,ui,spec}.py, pipeline_{repo,
-#     reembed}.py) — breaks a parent<->child module-load cycle AND/OR keeps the
+#     reembed}.py) - breaks a parent<->child module-load cycle AND/OR keeps the
 #     test monkeypatch contract (the binding is resolved at call time on the
 #     parent namespace, so `patch("src.indexer.pipeline.<name>")` is seen).
 # (The orm.py `_rebind` facade re-export loop was removed in the Phase 7.5
@@ -120,16 +120,16 @@ logger = logging.getLogger(__name__)
 # consolidation review reports and tests/test_facade_cold_import.py.
 # ---------------------------------------------------------------------------
 
-# Sentinel api_key_id for direct _impl calls (tests, CLI) — refs are scoped
+# Sentinel api_key_id for direct _impl calls (tests, CLI) - refs are scoped
 # to this namespace and do not collide with production tenant refs.
 _ANONYMOUS_API_KEY_ID = "anonymous"
 
 
-# Render-only edition label — WG-5 T1.
+# Render-only edition label - WG-5 T1.
 # Maps raw license string → human-readable label for MCP output.
 # License facts (Odoo S.A., https://www.odoo.com/documentation/19.0/legal/licenses.html):
-#   OEEL-1 = Odoo Enterprise Edition License — Odoo S.A.'s OWN Enterprise add-ons.
-#   OPL-1  = Odoo Proprietary License — Odoo S.A.'s license for THIRD-PARTY / proprietary
+#   OEEL-1 = Odoo Enterprise Edition License - Odoo S.A.'s OWN Enterprise add-ons.
+#   OPL-1  = Odoo Proprietary License - Odoo S.A.'s license for THIRD-PARTY / proprietary
 #            Odoo apps; Viindoo's tvtmaaddons are published under OPL-1. OPL-1 is NOT
 #            Odoo Enterprise.
 # OPL-1 is intentionally NOT mapped here so it falls through to the indexed `edition`
@@ -158,9 +158,9 @@ _EDITION_ENUM_TO_LABEL: dict[str, str] = {
 # than any license string, so it must NOT be overridden by a license mapping
 # (#263 / N3). OPL-1 is Odoo S.A.'s third-party proprietary license, under which
 # Viindoo publishes its addons (it is NOT Odoo Enterprise, and OEEL-1 is Odoo
-# S.A.'s own Enterprise license — not a Viindoo license). A first-party Viindoo
-# module (`edition='viindoo'`) must read "Viindoo Enterprise (EE)" — never
-# "Odoo Enterprise (EE)" — even on the defensive edge where its license string
+# S.A.'s own Enterprise license - not a Viindoo license). A first-party Viindoo
+# module (`edition='viindoo'`) must read "Viindoo Enterprise (EE)" - never
+# "Odoo Enterprise (EE)" - even on the defensive edge where its license string
 # would otherwise map elsewhere.
 _FIRST_PARTY_EDITIONS: frozenset[str] = frozenset({"viindoo"})
 
@@ -170,10 +170,10 @@ def _edition_label(edition: str | None, license: str | None = None) -> str:
 
     Resolution order:
       1. A DEFINITIVE first-party ``edition`` enum (``_FIRST_PARTY_EDITIONS``)
-         wins outright — license can never override a known first-party author
+         wins outright - license can never override a known first-party author
          (#263 / N3: even if a module's license string would otherwise map to
          Odoo Enterprise, a ``viindoo`` edition still reads "Viindoo Enterprise").
-      2. Otherwise ``license`` (SPDX string) — more specific than a generic
+      2. Otherwise ``license`` (SPDX string) - more specific than a generic
          ``edition`` enum (e.g. disambiguates raw ``'enterprise'`` via OEEL-1).
       3. Otherwise the ``edition`` enum mapping, then the raw value, then CE.
 
@@ -204,7 +204,7 @@ def _render_capped(
     Returns a list of formatted lines. When `total` (or len(items)) exceeds
     `cap`, appends a trailing "... and {N-cap} more (use {more_hint})" line.
 
-    `total` defaults to len(items) — pass explicitly when caller has already
+    `total` defaults to len(items) - pass explicitly when caller has already
     sliced items (e.g., from a Cypher LIMIT). `more_hint` is the suggested
     tool invocation to retrieve the full list, e.g.
     "model_inspect(model='sale.order', method='fields', odoo_version='17.0') for full list".
@@ -248,7 +248,7 @@ def _portable_path(
          name is dropped from the path to avoid redundancy.
       3. ``/{module}/`` segment (when repo dirname unavailable, e.g. stylesheet
          tools) → cut just *before* it so the module dir is kept
-         (``css_mod/static/...``) — a close approximation of repo-relative.
+         (``css_mod/static/...``) - a close approximation of repo-relative.
       4. No anchor (e.g. CoreSymbol) → first ``/odoo/`` or ``/openerp/`` package
          segment kept (Odoo core source layout → ``odoo/orm/models.py``).
       5. Last resort → strip the leading "/" so no absolute path ever leaks.
@@ -287,15 +287,15 @@ def _repo_url_for_id(repo_id: int | None) -> str | None:
     """Resolve a repo's portable git URL from its id (ADR-0037, cached).
 
     The ``[repo]`` label must show a *semantic* identity an AI client can map
-    to its own checkout — the git URL (``github.com/odoo/odoo``) — never the
+    to its own checkout - the git URL (``github.com/odoo/odoo``) - never the
     server checkout directory name (``odoo_17.0``), which is host-specific
     detail the client neither knows nor needs.
 
     Returns None when repo_id is None, the repo is unknown, or the repo has no
-    URL (locally-registered repos) — callers then fall back to the dirname.
+    URL (locally-registered repos) - callers then fall back to the dirname.
     Successful lookups (incl. a genuine NULL url) are memoised; transient DB
     failures are not cached so a later call can retry.  Note: the cache has no
-    TTL/invalidation — a url set AFTER the first lookup serves the stale value
+    TTL/invalidation - a url set AFTER the first lookup serves the stale value
     (or dirname fallback) until process restart.  Acceptable: display-only, and
     a restart clears it (same restart that ADR-0037 D1 prescribes after a
     local_path re-point).
@@ -363,20 +363,20 @@ resolve_orm_chain. If you need live records, this is the wrong server.
 
 # on_duplicate="replace": the tool-wrapper modules at the end of this file are
 # deliberately re-imported (sys.modules.pop + re-import) so their @mcp.tool
-# decorators re-run against the CURRENT `mcp` after any reload — that is how the
+# decorators re-run against the CURRENT `mcp` after any reload - that is how the
 # full tool surface survives importlib.reload / sys.modules.pop in ~15 tests
 # (see the "Tool wrapper modules" block + ADR/#H3). When the entry point is a
 # tool module itself, that module's body also executes a second time, so each
 # tool registers twice on the same `mcp`. fastmcp v2 replaced silently;
 # v3's default (on_duplicate=None, resolves to "warn") logs "Component already exists" on every
 # re-register. "replace" restores the v2 silent-override semantics this
-# re-import architecture relies on — same final tool count, no log noise. It is
+# re-import architecture relies on - same final tool count, no log noise. It is
 # NOT a log suppression: it declares the duplicate policy the design requires.
 mcp = FastMCP("odoo-semantic", instructions=INSTRUCTIONS, on_duplicate="replace")
-# Register 7 MCP resources (odoo:// URIs) — Pattern 8, Wave F.
+# Register 7 MCP resources (odoo:// URIs) - Pattern 8, Wave F.
 register_resources(mcp)
 # Register FastMCP-layer usage logging middleware so that on_call_tool has
-# access to context.message.name (the real tool name) — see F5 fix in
+# access to context.message.name (the real tool name) - see F5 fix in
 # src/mcp/tool_log_middleware.py.
 mcp.add_middleware(_UsageLogMiddleware())
 
@@ -399,10 +399,10 @@ READONLY_TOOL_KWARGS = {
     }
 }
 
-# Session-mutating tools (set_active_version, set_active_profile) — write the
+# Session-mutating tools (set_active_version, set_active_profile) - write the
 # per-(api_key, mcp_session) in-memory pin store but are idempotent and
 # non-destructive.  readOnlyHint=False because they mutate session state
-# (the in-memory pin — no DB write since #251).
+# (the in-memory pin - no DB write since #251).
 MUTATING_TOOL_KWARGS = {
     "annotations": {
         "readOnlyHint": False,
@@ -425,7 +425,7 @@ MUTATING_TOOL_KWARGS = {
 #   * It is syntactically a non-default parameter, so it must precede any
 #     defaulted positional params (or be keyword-only, e.g. cli_help/entity_lookup).
 # The 4 session/bootstrap tools (set_active_version, list_available_versions,
-# set_active_profile, list_available_profiles) intentionally do NOT use this —
+# set_active_profile, list_available_profiles) intentionally do NOT use this -
 # they are how a client discovers/sets the version in the first place.
 # MCP Resources (odoo://{version}/...) keep sentinel support: the version is
 # always present in the URI path, so the silent-omission failure mode cannot
@@ -434,13 +434,13 @@ RequiredOdooVersion = Annotated[
     str,
     Field(
         description=(
-            "REQUIRED — pass the concrete Odoo version explicitly on every call "
+            "REQUIRED - pass the concrete Odoo version explicitly on every call "
             "(e.g. '17.0'). Passing it per call is the correct, race-free choice "
             "under concurrency: parallel sessions or concurrent sub-agents that "
             "share one MCP session each get the version they pass, regardless of "
             "any session pin. 'auto' is a single-actor convenience that reuses "
             "the pin set by set_active_version; it is NOT safe when multiple "
-            "actors share a session (the pin is last-write-wins) — pass the "
+            "actors share a session (the pin is last-write-wins) - pass the "
             "version explicitly instead. Use list_available_versions if unsure "
             "which versions are indexed."
         ),
@@ -482,14 +482,14 @@ class _LazyBoundedSemaphore:
     double-check-locked lazy-build logic the three pools used to duplicate as 12
     module globals + 3 near-identical factory functions (#273/#275/#276). A
     *threading* (NOT asyncio) BoundedSemaphore so acquire()/release() can run
-    INSIDE the worker thread — the slot's lifetime is tied to the THREAD, never
+    INSIDE the worker thread - the slot's lifetime is tied to the THREAD, never
     the (possibly cancelled) caller coroutine. That is the #276 / CRITICAL-2
     cancel-safety invariant: a client disconnect cancels the wrapper coroutine
     but the worker thread keeps the slot until its own ``finally`` releases it.
 
-    Built once on first ``.get()`` — lazily and post-dotenv, so a ``.env``-only
+    Built once on first ``.get()`` - lazily and post-dotenv, so a ``.env``-only
     cap is honoured (``config.init_dotenv()`` runs in __main__ AFTER this module
-    imports; the import-time constant can be stale — ADR-0031). ``cap_in_use`` /
+    imports; the import-time constant can be stale - ADR-0031). ``cap_in_use`` /
     ``timeout_in_use`` are cached so the hot path logs exactly the value the
     semaphore was sized for (#276 G6/G7). ``importlib.reload(server)`` re-runs the
     module body → a fresh instance with ``_sem=None`` → the next ``.get()``
@@ -554,16 +554,16 @@ class _LazyBoundedSemaphore:
 # a worker thread, bounded by a module-level semaphore so a burst of concurrent
 # embeds cannot exhaust the upstream Ollama connection pool / queue unboundedly.
 #
-# #276 G7 — CANCEL-SAFE SLOT: the original guard used an asyncio.Semaphore whose
+# #276 G7 - CANCEL-SAFE SLOT: the original guard used an asyncio.Semaphore whose
 # slot was released in a coroutine `finally`. When a client disconnected mid-embed
-# FastMCP cancelled the coroutine; the `finally: sem.release()` ran on cancel —
+# FastMCP cancelled the coroutine; the `finally: sem.release()` ran on cancel -
 # but the underlying embed thread (inside embed_async's own to_thread) kept
 # running and STILL held the Ollama connection. The slot freed early → the exact
 # #276 pool-drain. Fixed by porting the offload_bounded thread-held
 # BoundedSemaphore pattern: acquire()/release() now happen INSIDE the worker
 # thread, so the slot's lifetime is tied to the THREAD, not the coroutine. A
 # cancel can no longer free a slot while a thread is still embedding. In the
-# worker thread we call the SYNC embed path DIRECTLY (NOT embed_async — that
+# worker thread we call the SYNC embed path DIRECTLY (NOT embed_async - that
 # would double-to_thread / spin a child event loop, R-A6), routing through the
 # short-timeout query client so a hung query never inherits the 1200s batch
 # read timeout.
@@ -581,7 +581,7 @@ class EmbedOverloaded(RuntimeError):
 
 
 # #276 G7: a *threading* BoundedSemaphore (NOT asyncio.Semaphore) so the slot is
-# acquired/released inside the worker thread — no event-loop affinity, no
+# acquired/released inside the worker thread - no event-loop affinity, no
 # released-on-cancel hazard. Built once on first .get() (lazy + post-dotenv so
 # the cap honours a .env-only EMBEDDER_MAX_CONCURRENCY); a module reload (tests)
 # yields a fresh instance so the next .get() rebuilds from the freshly-set env.
@@ -602,7 +602,7 @@ def _cap_query_text(embedder, text: str) -> str:
     A user can paste kilobytes of text into a query/intent/selector argument;
     embedding the whole thing wastes the upstream context window and slows the
     hot path. We keep only the first budgeted chunk (split_by_token_budget
-    returns the whole string unchanged when it already fits — a cheap no-op for
+    returns the whole string unchanged when it already fits - a cheap no-op for
     normal short queries).
     """
     from src.indexer.embedder import split_by_token_budget
@@ -616,10 +616,10 @@ def _embed_sync_query(embedder, payload: list[str]) -> list[list[float]]:
 
     Called only from inside the embed worker thread (#276 G7). Prefers the HTTP
     base's ``_embed_with_timeout`` so the query goes through the dedicated
-    short-timeout (TIMEOUT_EMBEDDER_READ_QUERY) client — never the 1200s batch
+    short-timeout (TIMEOUT_EMBEDDER_READ_QUERY) client - never the 1200s batch
     client. Falls back to the Protocol-guaranteed sync ``embed`` for embedders
     without that method (e.g. FakeEmbedder in tests). We deliberately do NOT call
-    ``embed_async`` here — that would nest a second to_thread / child loop inside
+    ``embed_async`` here - that would nest a second to_thread / child loop inside
     this already-offloaded thread (R-A6).
     """
     fn = getattr(embedder, "_embed_with_timeout", None)
@@ -629,23 +629,23 @@ def _embed_sync_query(embedder, payload: list[str]) -> list[list[float]]:
 
 
 def _embed_query_in_thread(embedder, payload: list[str]) -> list[float]:
-    """Worker-thread body for a single query embed — thread-held slot (#276 G7).
+    """Worker-thread body for a single query embed - thread-held slot (#276 G7).
 
     Acquires the embed BoundedSemaphore HERE (on the worker thread) so the slot
     lives with the thread, not the caller coroutine. On acquire-timeout: fast
     fail with EmbedOverloaded. The sync embed runs while the slot is held and the
-    slot is released only in this thread's ``finally`` — a cancelled coroutine
+    slot is released only in this thread's ``finally`` - a cancelled coroutine
     can never free it early while the embed is still in flight.
     """
     sem = _get_embed_semaphore()  # builds the pool → populates cap_in_use below
     # _get_embed_semaphore() (just called, same thread) always populates
     # cap_in_use / timeout_in_use under the pool lock before returning, so these
-    # are never None here — read them directly (no default-constant fallback).
+    # are never None here - read them directly (no default-constant fallback).
     cap = _embed_pool.cap_in_use
     slot_timeout = _embed_pool.timeout_in_use
     if not sem.acquire(timeout=slot_timeout):
         raise EmbedOverloaded(
-            "server busy — too many concurrent embedding requests"
+            "server busy - too many concurrent embedding requests"
             f" (max {cap}); retry shortly"
         )
     try:
@@ -680,7 +680,7 @@ def offload(fn):
 
     FastMCP 2.14.x runs a sync ``def`` tool handler DIRECTLY on the event-loop
     thread (no implicit to_thread). Any Neo4j/Postgres I/O inside such a handler
-    therefore blocks the whole server — a single slow/locked query freezes
+    therefore blocks the whole server - a single slow/locked query freezes
     /health and every concurrent request (the #227 504). This decorator wraps a
     sync handler in an ``async def`` that runs the original body in a worker
     thread via ``asyncio.to_thread``, so the loop stays free.
@@ -688,7 +688,7 @@ def offload(fn):
     Mechanism notes:
       * ``functools.wraps`` copies ``__wrapped__`` so ``inspect.signature``
         (which FastMCP uses to build the input schema) resolves to the ORIGINAL
-        handler signature — the generic ``*a, **k`` wrapper is invisible to
+        handler signature - the generic ``*a, **k`` wrapper is invisible to
         introspection, so the tool schema and FastMCP's "no **kwargs" rule are
         preserved.
       * ``asyncio.to_thread`` copies the current ``contextvars.Context``, so the
@@ -718,7 +718,7 @@ def offload(fn):
 #
 # ORM_QUERY_MAX_CONCURRENCY caps in-flight ORM queries; ORM_SLOT_ACQUIRE_TIMEOUT
 # is the fast-reject window. Both are the SSOT in constants.py (imported above)
-# and validated at server startup by _validate_orm_env() — a value of 0 or an
+# and validated at server startup by _validate_orm_env() - a value of 0 or an
 # acquire-timeout >= the Neo4j query timeout is rejected fail-fast there.
 #
 # A *threading* BoundedSemaphore (NOT asyncio.Semaphore) is used here, built
@@ -729,7 +729,7 @@ def offload(fn):
 #   - acquire()/release() happen INSIDE the worker thread (see offload_bounded),
 #     so the slot's lifetime is tied to the THREAD, not the coroutine. When a
 #     client disconnects mid-call FastMCP cancels the wrapper coroutine and
-#     `await asyncio.to_thread(...)` raises CancelledError immediately — but the
+#     `await asyncio.to_thread(...)` raises CancelledError immediately - but the
 #     worker thread keeps running the blocking Neo4j call. Because the slot is
 #     held by the thread, cancellation can no longer free it early; the slot
 #     stays held until the thread itself exits (its own `finally`), i.e. until
@@ -744,12 +744,12 @@ def offload(fn):
 # safe behind a plain lock (none of the lazy-per-loop dance the embed Semaphore
 # needs). Resolving the cap + acquire-timeout here too means the live semaphore,
 # the fast-reject window, and _validate_orm_env() all read the SAME post-dotenv
-# value — there is no import-time/.env mismatch to warn about (#275 LOW).
+# value - there is no import-time/.env mismatch to warn about (#275 LOW).
 class OrmOverloaded(RuntimeError):
     """Raised when the bounded ORM semaphore cannot be acquired in time.
 
     Caught in ``offload_bounded`` and surfaced to the MCP client as a fast,
-    actionable overload *string* (NOT a protocol-level error) — uniform with the
+    actionable overload *string* (NOT a protocol-level error) - uniform with the
     embed path's EmbedOverloaded (ADR-0046 D3) and the ADR-0023 raw-text posture
     (so "server busy" never shows up as ``isError=true``, MED isError fix).
     """
@@ -772,7 +772,7 @@ def _get_orm_semaphore() -> threading.BoundedSemaphore:
 
 # --- Bounded offload for NON-ORM heavy reads (#276 G6) ----------------------
 # A SEPARATE threading BoundedSemaphore pool for non-ORM heavy reads (currently
-# impact_analysis — a 6-query fan-out over TARGETS_MODEL / DEPENDS_ON / BOUND_TO
+# impact_analysis - a 6-query fan-out over TARGETS_MODEL / DEPENDS_ON / BOUND_TO
 # / PATCHES that can run long on a dense graph). Kept distinct from the ORM pool
 # so a fan-out burst of one class cannot starve the other (#276 G6). Built lazily
 # on first use under its own lock, post-dotenv, exactly like the ORM semaphore.
@@ -809,15 +809,15 @@ def _make_bounded_offload(
     Single source of the thread-held-semaphore offload machinery the ORM and
     non-ORM decorators used to duplicate (~70 LOC each). Consolidating them means
     a future cancel-safety fix lands in ONE place and cannot silently regress one
-    pool while patching the other — the exact missed-fix class that bit the embed
+    pool while patching the other - the exact missed-fix class that bit the embed
     path in #275 (fixed late in #278).
 
-    THREAD-LIFETIME RELEASE (the #276 / CRITICAL-2 invariant — preserved verbatim):
+    THREAD-LIFETIME RELEASE (the #276 / CRITICAL-2 invariant - preserved verbatim):
       ``acquire()``/``release()`` run INSIDE the worker thread, so a slot's
       lifetime is bound to the THREAD, never the (possibly cancelled) caller
       coroutine. When a client disconnects mid-call FastMCP cancels the wrapper
       coroutine and the awaited ``to_thread`` future raises ``CancelledError``
-      immediately — but the worker thread keeps running and STILL HOLDS the slot
+      immediately - but the worker thread keeps running and STILL HOLDS the slot
       until its own ``finally`` releases it. Overload + timeout metric/log
       bookkeeping also runs in-thread, so it is recorded even after a cancel.
       ``functools.wraps`` preserves ``__wrapped__`` so FastMCP introspects the
@@ -827,16 +827,16 @@ def _make_bounded_offload(
     The four observable strings that differ between the ORM and non-ORM pools are
     parameters so the log lines (ops grep them) and the client-facing busy string
     stay byte-identical to the pre-consolidation behaviour:
-      * ``log_label``         — overload-log prefix ("ORM tool" | "non-ORM read").
-      * ``overload_phrase``   — exception text ("ORM-validation requests" |
+      * ``log_label``         - overload-log prefix ("ORM tool" | "non-ORM read").
+      * ``overload_phrase``   - exception text ("ORM-validation requests" |
                                 "heavy read requests").
-      * ``timeout_log_prefix``— timeout-log prefix ("ORM query" | "non-ORM read
+      * ``timeout_log_prefix``- timeout-log prefix ("ORM query" | "non-ORM read
                                 query").
-      * ``timeout_msg_default``— wrapper fallback when the timeout exc has no
+      * ``timeout_msg_default``- wrapper fallback when the timeout exc has no
                                 ``user_message``.
     ``call_context_fn`` (the ORM model/version/profile context, ``None`` for the
     non-ORM pool whose tools have a different signature) decides whether the log
-    lines append a trailing context string — when ``None`` the format strings
+    lines append a trailing context string - when ``None`` the format strings
     omit the trailing ``%s`` entirely, so a non-ORM log line carries NO trailing
     space (observable byte-identical to the old non-ORM decorator).
     """
@@ -852,7 +852,7 @@ def _make_bounded_offload(
             sem = pool.get()
             # pool.get() (just called, same thread) always populates cap_in_use /
             # timeout_in_use under its lock before returning, so these are never
-            # None here — read them directly (no _default_* fallback needed).
+            # None here - read them directly (no _default_* fallback needed).
             cap = pool.cap_in_use
             slot_timeout = pool.timeout_in_use
             if not sem.acquire(timeout=slot_timeout):
@@ -861,7 +861,7 @@ def _make_bounded_offload(
                 metric_overloaded(tool_name)
                 if call_context_fn is not None:
                     logger.warning(
-                        "%s overloaded — semaphore full (max %d): tool=%s %s",
+                        "%s overloaded - semaphore full (max %d): tool=%s %s",
                         log_label,
                         cap,
                         tool_name,
@@ -869,13 +869,13 @@ def _make_bounded_offload(
                     )
                 else:
                     logger.warning(
-                        "%s overloaded — semaphore full (max %d): tool=%s",
+                        "%s overloaded - semaphore full (max %d): tool=%s",
                         log_label,
                         cap,
                         tool_name,
                     )
                 raise OrmOverloaded(
-                    f"server busy — too many concurrent {overload_phrase}"
+                    f"server busy - too many concurrent {overload_phrase}"
                     f" (max {cap}); retry shortly"
                 )
             try:
@@ -923,35 +923,35 @@ def _make_bounded_offload(
 
 # The two decorators (`offload_bounded` / `offload_bounded_nonorm`) are bound
 # from this factory just below the metric + call-context helpers they reference
-# (those are defined a little further down — the bindings must come after them).
+# (those are defined a little further down - the bindings must come after them).
 
 
 def _validate_orm_env() -> None:
     """Fail-fast guard for the ORM concurrency / timeout env knobs (HIGH #3).
 
-    Called once at server startup (NOT at import — see the call site in the
+    Called once at server startup (NOT at import - see the call site in the
     __main__ block), so pytest collection and tool imports never trip these
     assertions. Values are re-read from ``os.getenv`` here rather than trusting
     the import-time constants, because ``config.init_dotenv()`` runs in the
-    __main__ block AFTER this module imports — so a ``.env``-only value would
+    __main__ block AFTER this module imports - so a ``.env``-only value would
     not yet be reflected in the module-level constant when this runs. Each
     foot-gun below silently reverts a load-bearing #273/#276 protection:
 
-      * NEO4J_QUERY_TIMEOUT_SECONDS <= 0 — the neo4j driver treats 0 as
+      * NEO4J_QUERY_TIMEOUT_SECONDS <= 0 - the neo4j driver treats 0 as
         "no timeout", reverting the core #273 per-query-timeout fix.
-      * ORM_QUERY_MAX_CONCURRENCY <= 0 — every ORM call fast-rejects forever
+      * ORM_QUERY_MAX_CONCURRENCY <= 0 - every ORM call fast-rejects forever
         (0 slots can never be acquired).
-      * ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS — the reject is
+      * ORM_SLOT_ACQUIRE_TIMEOUT >= NEO4J_QUERY_TIMEOUT_SECONDS - the reject is
         no longer "fast", so an overloaded server pins a worker-thread slot for
         as long as the query itself would run. The .env.example states this
         constraint; this enforces it.
       * NONORM_READ_MAX_CONCURRENCY <= 0 / NONORM_SLOT_ACQUIRE_TIMEOUT >=
-        NEO4J_QUERY_TIMEOUT_SECONDS — same two foot-guns for the separate
+        NEO4J_QUERY_TIMEOUT_SECONDS - same two foot-guns for the separate
         non-ORM heavy-read pool (#276 G6).
-      * EMBEDDER_MAX_CONCURRENCY <= 0 — BoundedSemaphore(0) can never be
+      * EMBEDDER_MAX_CONCURRENCY <= 0 - BoundedSemaphore(0) can never be
         acquired, so every query-embed fast-rejects forever (#276 G7); same
         foot-gun the ORM/non-ORM pools already guard.
-      * EMBEDDER_SLOT_ACQUIRE_TIMEOUT >= EMBEDDER_TIMEOUT_READ_QUERY — the
+      * EMBEDDER_SLOT_ACQUIRE_TIMEOUT >= EMBEDDER_TIMEOUT_READ_QUERY - the
         query-embed fast-reject is no longer "fast", so an overloaded embedder
         pins a worker-thread slot for as long as the embed itself would run
         (#276 G7). Must stay strictly below the query read timeout.
@@ -1016,7 +1016,7 @@ def _validate_orm_env() -> None:
         raise SystemExit(
             "FATAL: EMBEDDER_MAX_CONCURRENCY must be > 0 "
             f"(got {embed_max}); 0 makes every query-embed fast-reject forever "
-            "(BoundedSemaphore(0) can never be acquired) — #276 G7."
+            "(BoundedSemaphore(0) can never be acquired) - #276 G7."
         )
     if embed_acquire >= embed_read_query:
         raise SystemExit(
@@ -1031,7 +1031,7 @@ def _validate_orm_env() -> None:
 def _orm_call_context(args: tuple, kwargs: dict) -> str:
     """Build a WARNING-safe context string from an ORM tool's call args.
 
-    Logs only structural identifiers (model / version / profile) — never the
+    Logs only structural identifiers (model / version / profile) - never the
     domain / dotted_path / code text the user submitted. All 4 ORM tools take
     ``model`` first positionally, but the positional INDEX of ``odoo_version``
     differs: it is positional[2] for resolve_orm_chain / validate_domain /
@@ -1049,7 +1049,7 @@ def _orm_call_context(args: tuple, kwargs: dict) -> str:
     # positional[2] fallback is correct for 3 of the 4 tools; for
     # validate_relation positional[2] is target_model. Model names also contain
     # dots ('res.partner'), so only trust the positional fallback when the
-    # value is purely numeric like '17.0' — otherwise leave it None rather
+    # value is purely numeric like '17.0' - otherwise leave it None rather
     # than log target_model under the version label.
     version = kwargs.get("odoo_version")
     if (
@@ -1127,7 +1127,7 @@ def _nonorm_timeout_response(exc: OrmQueryTimeout, tool: str) -> str:
 # Bounded offload for the 4 ORM-validation tools (#273): a thread-held
 # BoundedSemaphore so a fan-out burst of dense ORM traversals cannot drain the
 # shared ThreadPoolExecutor / Neo4j pool. The slot is thread-bound (#276
-# CRITICAL-2 cancel-safety — see _make_bounded_offload). Accepted trade-off: a
+# CRITICAL-2 cancel-safety - see _make_bounded_offload). Accepted trade-off: a
 # fast-reject occupies one executor slot for up to ORM_SLOT_ACQUIRE_TIMEOUT while
 # it blocks on acquire(); the Neo4j pool (~24) comfortably exceeds the ORM cap (8)
 # plus that headroom, and rejecting in-thread is what makes the accounting
@@ -1142,14 +1142,14 @@ offload_bounded = _make_bounded_offload(
     timeout_log_prefix="ORM query",
     tool_name_default="orm_tool",
     timeout_msg_default=(
-        "ORM query timed out — the request was too expensive to"
+        "ORM query timed out - the request was too expensive to"
         " complete; narrow the model/version and retry."
     ),
     call_context_fn=_orm_call_context,
 )
 
 
-# Bounded offload for NON-ORM heavy reads (#276 G6, currently impact_analysis — a
+# Bounded offload for NON-ORM heavy reads (#276 G6, currently impact_analysis - a
 # 6-query fan-out). Identical machinery, but a SEPARATE pool so a burst of one
 # read class cannot starve the other, distinct metrics, and no call-context (the
 # non-ORM tools have a different signature than the ORM tools).
@@ -1162,7 +1162,7 @@ offload_bounded_nonorm = _make_bounded_offload(
     timeout_log_prefix="non-ORM read query",
     tool_name_default="nonorm_tool",
     timeout_msg_default=(
-        "Query timed out — the request was too expensive to"
+        "Query timed out - the request was too expensive to"
         " complete; narrow the model/version and retry."
     ),
     call_context_fn=None,
@@ -1172,22 +1172,22 @@ offload_bounded_nonorm = _make_bounded_offload(
 # --- Pool-less Neo4j offload for the read-surface discriminator tools --------
 # `@offload_neo4j` = `@offload` + an OrmQueryTimeout catch that records the
 # non-ORM timeout metric + returns the clean English `user_message` string
-# (ADR-0023 raw-text contract — never a protocol-level isError). It is the
+# (ADR-0023 raw-text contract - never a protocol-level isError). It is the
 # backstop that turns a *raised* OrmQueryTimeout into a clean string; the
 # per-query work (routing bare `session.run(...)` through `_data_bounded` /
 # `_single_bounded`, which wrap the Cypher in neo4j.Query(timeout=...) and
 # convert a tx-timeout ClientError → OrmQueryTimeout) still happens at every
-# query site. Both halves are required — see the timeout-hardening design §1.1.
+# query site. Both halves are required - see the timeout-hardening design §1.1.
 #
 # Kept SEPARATE from `@offload` (not a retrofit): `@offload` also wraps handlers
 # that do non-Neo4j work (Postgres reads, on-disk file reads) and embed-then-
 # offload handlers (find_style_override embeds on the event loop BEFORE the
-# to_thread hop) — catching OrmQueryTimeout there would be pointless (no Neo4j)
+# to_thread hop) - catching OrmQueryTimeout there would be pointless (no Neo4j)
 # or wrong (would swallow / mislabel a timeout from a different subsystem).
 #
 # POOL-LESS by design (NO semaphore). The tools this wraps are single bounded
 # queries or small fixed multi-query helpers, each individually 30s-bounded by
-# the per-query Neo4j timeout — not the heavy fan-out drain the bounded pools
+# the per-query Neo4j timeout - not the heavy fan-out drain the bounded pools
 # (offload_bounded / offload_bounded_nonorm) were built to contain. Putting them
 # behind the 8-slot non-ORM pool would create a NEW starvation surface and make
 # them newly emit the "server busy" string (a client-visible wire change these
@@ -1209,9 +1209,9 @@ def offload_neo4j(fn):
       * The OrmQueryTimeout metric is recorded IN-THREAD (in ``_run``) so it is
         counted even if the awaiting coroutine was already cancelled by a client
         disconnect (the #276 / CRITICAL-2 cancel-path invariant). The exception
-        re-raises to the async wrapper which only *returns* ``user_message`` —
+        re-raises to the async wrapper which only *returns* ``user_message`` -
         it does NOT re-record, so the metric fires exactly once.
-      * A non-OrmQueryTimeout exception propagates unchanged — we never swallow
+      * A non-OrmQueryTimeout exception propagates unchanged - we never swallow
         an unrelated error.
     """
     tool_name = getattr(fn, "__name__", "neo4j_read")
@@ -1232,7 +1232,7 @@ def offload_neo4j(fn):
             # Metric already recorded in-thread; return the clean str (no Cypher).
             return getattr(
                 exc, "user_message",
-                "Query timed out — narrow the entity/version and retry.",
+                "Query timed out - narrow the entity/version and retry.",
             )
 
     return wrapper
@@ -1251,16 +1251,16 @@ def _data_bounded(session, text: str, label: str, **params) -> list[dict]:
     """Run a NON-ORM read under the per-query Neo4j timeout, return ``.data()`` (#276 G5).
 
     The Cypher is wrapped in ``neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)``
-    via the shared ``_bounded`` helper (reused from src.mcp.orm — a peer module
-    server already imports — so there is NO duplicate timeout helper). Neo4j
+    via the shared ``_bounded`` helper (reused from src.mcp.orm - a peer module
+    server already imports - so there is NO duplicate timeout helper). Neo4j
     Result consumption is LAZY, so the transaction-timeout ``ClientError`` fires
-    during ``.data()``, not during ``session.run`` — both are therefore inside
+    during ``.data()``, not during ``session.run`` - both are therefore inside
     the try here. A tx-timeout ``ClientError`` becomes ``OrmQueryTimeout`` so the
     ``offload_bounded_nonorm`` wrapper records the metric in-thread and surfaces a
     clean English message; any other ``ClientError`` propagates unchanged.
 
     ``label`` is a short English noun phrase naming what was being resolved (e.g.
-    "impact analysis for 'sale.order'"), used only in the timeout message — never
+    "impact analysis for 'sale.order'"), used only in the timeout message - never
     leaks Cypher.
     """
     from neo4j.exceptions import ClientError
@@ -1292,7 +1292,7 @@ def _single_bounded(session, text: str, label: str, **params):
 def _get_api_key_id() -> str:
     """Return the API key ID for the current async/sync context.
 
-    Uses a ContextVar so the value is isolated per coroutine — concurrent
+    Uses a ContextVar so the value is isolated per coroutine - concurrent
     async requests running in the same event-loop thread cannot clobber each
     other's api_key_id (the old threading.local() approach suffered this race
     because asyncio is single-threaded but multiplexes coroutines).
@@ -1307,7 +1307,7 @@ def _get_api_key_id() -> str:
     ``contextvars.Context`` that is captured per-connection BEFORE the per-call
     ``UsageLogMiddleware.on_call_tool`` runs. The ``_api_key_id_var.set()`` the
     middleware performs therefore mutates a context that is NOT an ancestor of
-    the tool-body execution context — so the tool body still reads the
+    the tool-body execution context - so the tool body still reads the
     ``'default'`` sentinel even though the middleware (reading in its OWN
     context) logged the correct numeric PK. That asymmetry is exactly the #248
     bug: ``set_active_version`` / ``set_active_profile`` skipped the persist and
@@ -1317,7 +1317,7 @@ def _get_api_key_id() -> str:
     make a second, additive attempt: recover the numeric PK directly from the
     CURRENT HTTP request's own ``X-API-Key`` header via the warm auth cache
     (the same machinery the middleware uses). This derives the id ONLY from the
-    request's own header — never from a shared/global — so it cannot bleed an
+    request's own header - never from a shared/global - so it cannot bleed an
     id from one request into another. On any miss / no HTTP request we keep
     returning ``'default'`` (graceful, no regression); this function never
     raises.
@@ -1333,7 +1333,7 @@ def _get_api_key_id() -> str:
         # ContextVar propagated correctly (stdio, in-process tests, or a
         # transport where on_call_tool shares the tool-body context).
         return value
-    # ContextVar is the sentinel — try the per-request header-recovery fallback.
+    # ContextVar is the sentinel - try the per-request header-recovery fallback.
     recovered = _recover_api_key_id_from_request()
     return recovered if recovered is not None else value
 
@@ -1347,11 +1347,11 @@ def _recover_api_key_id_from_request() -> int | None:
     uses, so the id is the same numeric PK ``AuthMiddleware`` already resolved
     for THIS request.
 
-    SECURITY: the key material comes solely from ``get_http_request()`` — the
-    request bound to the current ASGI task — so the recovered id can never be
+    SECURITY: the key material comes solely from ``get_http_request()`` - the
+    request bound to the current ASGI task - so the recovered id can never be
     one belonging to a different concurrent request / tenant. Returns ``None``
     on any of: no active HTTP request, no ``X-API-Key`` header, or a cache miss
-    (TTL edge) — the caller then keeps the graceful ``'default'`` sentinel.
+    (TTL edge) - the caller then keeps the graceful ``'default'`` sentinel.
     Never raises.
     """
     try:
@@ -1375,10 +1375,10 @@ def _http_request_has_api_key() -> bool:
     """True when the current call carries an ``X-API-Key`` header.
 
     Distinguishes an authenticated HTTP request (where a skipped session persist
-    is a real error worth surfacing loudly — #248) from the benign stdio / CLI
+    is a real error worth surfacing loudly - #248) from the benign stdio / CLI
     no-op (gentle note). Header presence is a far more reliable HTTP-auth signal
     than ``_get_api_key_id()`` (which can read ``'default'`` on the #248
-    propagation path). Never raises — absence of an HTTP request returns False.
+    propagation path). Never raises - absence of an HTTP request returns False.
     """
     try:
         from fastmcp.server.dependencies import get_http_request
@@ -1400,7 +1400,7 @@ def _get_mcp_session_id() -> str:
       2. A DIRECT read of the ``mcp-session-id`` header from the current HTTP
          request. Unlike the #248 api-key path, this header survives intact on
          ``scope["headers"]`` across the BaseHTTPMiddleware↔request_ctx
-         boundary, so no warm-cache recovery dance is needed — a plain header
+         boundary, so no warm-cache recovery dance is needed - a plain header
          read suffices when the ContextVar did not propagate.
 
     Returns the ``_session._NO_SESSION_SENTINEL`` for stdio / no active HTTP
@@ -1410,7 +1410,7 @@ def _get_mcp_session_id() -> str:
     value = _mcp_session_id_var.get()
     if value != _session._NO_SESSION_SENTINEL:
         return value
-    # ContextVar is the sentinel — try a direct per-request header read.
+    # ContextVar is the sentinel - try a direct per-request header read.
     try:
         from fastmcp.server.dependencies import get_http_request
         from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
@@ -1428,7 +1428,7 @@ class TenantResolutionDenied(RuntimeError):
     tenant is neither in the ContextVar nor recoverable from the warm cache, AND
     whose authoritative DB lookup is unavailable / fails. In that state we must
     NOT fall through to ``None`` (which ``_effective_allowed`` / ``_allowed_to_guc``
-    treat as the unrestricted ``'*'`` admin sentinel) — doing so would let a
+    treat as the unrestricted ``'*'`` admin sentinel) - doing so would let a
     tenant-scoped key read ACROSS tenants. Raising instead surfaces a clean deny
     at the read entry points (which already wrap tenant resolution in
     ``try/except`` → structured ToolResult error, or let the FastMCP layer turn
@@ -1441,25 +1441,25 @@ def _get_tenant_id() -> int | None:
 
     Populated by UsageLogMiddleware (tool_log_middleware.py) from
     request.state.tenant_id before each tool call, reset in the finally block.
-    Returns None when not set — this covers:
+    Returns None when not set - this covers:
       - Unit tests and CLI invocations (no request context)
       - Global/admin keys (tenant_id IS NULL in DB)
       - Any code path that has not yet been wired to carry tenant context
 
-    None means admin/global access (legacy NULL-tenant key, unit tests, CLI) —
+    None means admin/global access (legacy NULL-tenant key, unit tests, CLI) -
     consumed by ``_effective_allowed`` (WI-4) as "unrestricted" while a real
     tenant id scopes every user-data query to that tenant's allowed profiles.
 
     ContextVar semantics: each coroutine has its own isolated copy so
     concurrent requests cannot interfere with each other's tenant scope.
 
-    #248 context-boundary fallback (SECURITY — tenant-isolation bypass)
+    #248 context-boundary fallback (SECURITY - tenant-isolation bypass)
     ------------------------------------------------------------------
     On the stateful streamable-HTTP transport FastMCP runs the tool body in a
     ``contextvars.Context`` captured per-connection BEFORE the per-call
     ``UsageLogMiddleware.on_call_tool`` runs. ``_set_server_tenant_id(tenant_id)``
     therefore mutates a context that is NOT an ancestor of the tool-body context,
-    so a bare ``_tenant_id_var.get()`` reads ``None`` for EVERY HTTP call — even a
+    so a bare ``_tenant_id_var.get()`` reads ``None`` for EVERY HTTP call - even a
     tenant-scoped key. ``None`` then flows ``_get_allowed_profiles`` →
     ``_effective_allowed`` → ``_allowed_to_guc(None) = '*'`` → the RLS
     ``app.allowed_profiles`` GUC becomes ``'*'`` and the policy reads ALL profiles
@@ -1472,18 +1472,18 @@ def _get_tenant_id() -> int | None:
 
       - ContextVar is a real int                    → return it (primary path).
       - ContextVar None, no HTTP request / no header → ``None`` (stdio/CLI/local
-        admin — unchanged, legitimate unrestricted access).
+        admin - unchanged, legitimate unrestricted access).
       - ContextVar None, header present, warm-cache hit with int   → that int
-        (tenant-scoped key — CLOSES the bypass).
+        (tenant-scoped key - CLOSES the bypass).
       - ContextVar None, header present, warm-cache hit with None   → ``None``
-        (genuine admin / global key — tenant_id IS NULL in DB; correct).
+        (genuine admin / global key - tenant_id IS NULL in DB; correct).
       - ContextVar None, header present, warm-cache MISS (TTL race) → FAIL-CLOSED:
         resolve AUTHORITATIVELY via ``verify_api_key_full`` (the same DB path the
         middleware uses on cache miss). Only a confirmed NULL tenant returns
         ``None``; a real tenant returns its int; if even the authoritative lookup
         is unavailable/fails we RAISE ``TenantResolutionDenied`` rather than widen
         to unrestricted. The warm cache is populated by AuthMiddleware BEFORE this
-        hook fires, so this DB edge is rare — correctness over micro-perf.
+        hook fires, so this DB edge is rare - correctness over micro-perf.
 
     The recovery derives the key material SOLELY from ``get_http_request()`` (the
     request bound to the current ASGI task), so it can never bleed a tenant from
@@ -1495,7 +1495,7 @@ def _get_tenant_id() -> int | None:
         # ContextVar propagated correctly (stdio, in-process tests, or a
         # transport where on_call_tool shares the tool-body context).
         return value
-    # ContextVar is None — could be a genuine admin/global key OR the #248
+    # ContextVar is None - could be a genuine admin/global key OR the #248
     # context-boundary loss. Disambiguate from the request's own header.
     return _recover_tenant_id_from_request()
 
@@ -1512,16 +1512,16 @@ def _recover_tenant_id_from_request() -> int | None:
       - the key is authoritatively a global/admin key (tenant_id IS NULL in DB,
         confirmed via warm cache OR ``verify_api_key_full``).
 
-    Returns an ``int`` when the request's key is tenant-scoped — this is what
+    Returns an ``int`` when the request's key is tenant-scoped - this is what
     closes the GUC='*' bypass.
 
     Raises ``TenantResolutionDenied`` on the dangerous edge: an AUTHENTICATED key
     (``X-API-Key`` present) whose tenant is neither cached nor resolvable via the
-    authoritative DB lookup. Failing closed here is mandatory — returning ``None``
+    authoritative DB lookup. Failing closed here is mandatory - returning ``None``
     would widen a scoped key to the unrestricted ``'*'`` GUC.
 
-    SECURITY: the key material comes solely from ``get_http_request()`` — the
-    request bound to the current ASGI task — so the recovered tenant can never be
+    SECURITY: the key material comes solely from ``get_http_request()`` - the
+    request bound to the current ASGI task - so the recovered tenant can never be
     one belonging to a different concurrent request.
     """
     # 1) No HTTP request at all (stdio / CLI / in-process test) → legitimate None.
@@ -1534,7 +1534,7 @@ def _recover_tenant_id_from_request() -> int | None:
     if not raw_key:
         return None
 
-    # 3) Authenticated request — consult the warm tenant cache first. The
+    # 3) Authenticated request - consult the warm tenant cache first. The
     #    middleware's AuthMiddleware.dispatch already populated it for THIS key
     #    before the tool hook fired, so a hit is the overwhelmingly common case.
     try:
@@ -1556,8 +1556,8 @@ def _recover_tenant_id_from_request() -> int | None:
 def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
     """Resolve tenant_id from the DB for *raw_key*; deny if unresolvable.
 
-    Reuses ``verify_api_key_full`` — the same authoritative lookup
-    ``AuthMiddleware`` uses on a cache miss — returning the (key_id, tenant_id,
+    Reuses ``verify_api_key_full`` - the same authoritative lookup
+    ``AuthMiddleware`` uses on a cache miss - returning the (key_id, tenant_id,
     user_id, owner_is_admin) tuple. We also warm the in-memory caches on success
     so the next call in this TTL window takes the fast path.
 
@@ -1565,7 +1565,7 @@ def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
     authoritatively confirms tenant_id IS NULL (genuine admin/global key).
 
     Raises ``TenantResolutionDenied`` when the key cannot be authoritatively
-    resolved — verify returns ``None`` (key vanished / deactivated mid-window),
+    resolved - verify returns ``None`` (key vanished / deactivated mid-window),
     an unexpected shape, or the DB is unavailable. Failing closed is mandatory:
     an authenticated key with an unknown tenant must never widen to the
     unrestricted ``'*'`` GUC.
@@ -1574,29 +1574,29 @@ def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
         from src.db.pg import auth_store
         result = auth_store().verify_api_key_full(raw_key)
     except Exception as exc:
-        # DB unavailable / verify raised — cannot confirm admin status, so deny.
+        # DB unavailable / verify raised - cannot confirm admin status, so deny.
         raise TenantResolutionDenied(
             "tenant could not be resolved for an authenticated key "
-            "(authoritative lookup unavailable) — denying to preserve tenant isolation"
+            "(authoritative lookup unavailable) - denying to preserve tenant isolation"
         ) from exc
     if result is None or not (isinstance(result, tuple) and len(result) == 4):
-        # Key not active/valid, or an unexpected return shape — deny.
+        # Key not active/valid, or an unexpected return shape - deny.
         raise TenantResolutionDenied(
             "tenant could not be resolved for an authenticated key "
-            "(key inactive or lookup returned no row) — denying to preserve tenant isolation"
+            "(key inactive or lookup returned no row) - denying to preserve tenant isolation"
         )
     key_id, tenant_id, user_id, owner_is_admin = result
     # Read-side escalation guard (ADR-0034, mirrors AuthMiddleware): a user-owned,
     # non-admin key with tenant_id IS NULL is the invalid "unrestricted" state a
     # scoped key must NEVER be in. AuthMiddleware 401s it upstream, but this
-    # authoritative path must not diverge — re-applying the guard here means that
+    # authoritative path must not diverge - re-applying the guard here means that
     # even on a path that bypassed the middleware we deny instead of widening to
     # the '*' GUC. Raise BEFORE warming caches so the bad state is never cached.
     from src.mcp.middleware import _is_null_tenant_escalation
     if _is_null_tenant_escalation(tenant_id, user_id, owner_is_admin):
         raise TenantResolutionDenied(
             "authenticated key resolved to a non-admin owner with NULL tenant "
-            "(escalation state) — denying to preserve tenant isolation"
+            "(escalation state) - denying to preserve tenant isolation"
         )
     # Warm the caches so the rest of this request / TTL window is fast and
     # consistent with the middleware's own population.
@@ -1606,12 +1606,12 @@ def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
         _cache_set_tenant(raw_key, tenant_id)
         _cache_set_owner(raw_key, user_id, owner_is_admin)
     except Exception:
-        pass  # cache warming is best-effort — never block on it
+        pass  # cache warming is best-effort - never block on it
     # tenant_id int → scoped key; None → DB-confirmed admin/global (unrestricted).
     return tenant_id
 
 
-# ContextVar storage for API key ID — populated by UsageLogMiddleware.
+# ContextVar storage for API key ID - populated by UsageLogMiddleware.
 # ContextVar is used instead of threading.local() because asyncio multiplexes
 # coroutines in a single thread: a threading.local write in coroutine A is
 # shared with coroutine B (same thread), so one request's finally-reset would
@@ -1620,14 +1620,14 @@ def _authoritative_tenant_id_or_deny(raw_key: str) -> int | None:
 # its own isolated copy, propagated to worker threads by anyio (if needed).
 _api_key_id_var: ContextVar[str] = ContextVar("_api_key_id", default="default")
 
-# ContextVar storage for tenant_id — populated alongside _api_key_id_var
+# ContextVar storage for tenant_id - populated alongside _api_key_id_var
 # by UsageLogMiddleware from request.state.tenant_id (ADR-0034 D4.1).
 _tenant_id_var: ContextVar[int | None] = ContextVar("_tenant_id", default=None)
 
 # ContextVar storage for the MCP transport session id (#251). Populated by
 # UsageLogMiddleware from the ``mcp-session-id`` header before each tool /
 # resource call so the per-session version/profile pin (src.mcp.session) is
-# keyed by (api_key_id, mcp_session_id) — concurrent Claude Code sessions on
+# keyed by (api_key_id, mcp_session_id) - concurrent Claude Code sessions on
 # one API key no longer clobber each other's pins. Defaults to the
 # single-session sentinel for stdio / no-request / header-less callers.
 _mcp_session_id_var: ContextVar[str] = ContextVar(
@@ -1647,7 +1647,7 @@ def _get_allowed_profiles() -> list[str] | None:
 
 def _effective_allowed(profile_name: str | None) -> list[str] | None:
     """SINGLE-VALUE filter param (pgvector ``profile_name = ANY(%s)``, profile
-    listing) — the flat union ``own ∪ shared`` with optional explicit narrowing.
+    listing) - the flat union ``own ∪ shared`` with optional explicit narrowing.
 
     - admin (None), no profile_name → ``None``  (no filter applied)
     - admin (None), explicit profile → ``[profile_name]``
@@ -1673,7 +1673,7 @@ def _effective_allowed(profile_name: str | None) -> list[str] | None:
 def _allowed_to_guc(allowed: list[str] | None) -> str:
     """Convert ``_effective_allowed`` output to a GUC string for ``app.allowed_profiles``.
 
-    Pure function (no I/O) — easy to unit-test.
+    Pure function (no I/O) - easy to unit-test.
 
     - ``None``  → ``'*'``    admin sentinel: policy USING clause returns TRUE.
     - ``[]``    → ``''``     tenant with no profiles: deny-all
@@ -1690,7 +1690,7 @@ def _rls_read_tx(conn, allowed: list[str] | None):
     """Set ``app.allowed_profiles`` GUC for the duration of one read transaction.
 
     Uses ``SET LOCAL`` so the GUC is scoped to the current transaction and
-    automatically cleared on COMMIT/ROLLBACK — zero pool-leak risk.
+    automatically cleared on COMMIT/ROLLBACK - zero pool-leak risk.
 
     Two operating modes:
     - Pool mode (``conn.autocommit=True``): temporarily disables autocommit,
@@ -1706,7 +1706,7 @@ def _rls_read_tx(conn, allowed: list[str] | None):
       manage their own transaction (not currently used in the test suite).
 
     Armed-but-dormant: while the table owner (``odoo_semantic``) connects, RLS
-    is ENABLED but NOT FORCED — PostgreSQL skips all policy evaluation for the
+    is ENABLED but NOT FORCED - PostgreSQL skips all policy evaluation for the
     owner, so this context manager is a no-op in production until the operator
     runs ``ALTER TABLE embeddings FORCE ROW LEVEL SECURITY`` and switches to a
     non-owner read role (ADR-0034 WI-7 ops runbook).
@@ -1751,20 +1751,20 @@ def _set_iterative_scan(cur) -> None:
     try:
         cur.execute("SET LOCAL hnsw.iterative_scan = %s", (HNSW_ITERATIVE_SCAN,))
     except Exception:
-        pass  # pgvector <0.8 — silently ignored; supported deploys enforce >=0.8
+        pass  # pgvector <0.8 - silently ignored; supported deploys enforce >=0.8
 
 
 def _scope_pred(alias: str) -> str:
     """Canonical fail-closed tenant choke-point predicate for Neo4j node *alias*.
 
-    Single source of truth for the Cypher fragment (WG-3t — avoids per-site drift)::
+    Single source of truth for the Cypher fragment (WG-3t - avoids per-site drift)::
 
         ($own IS NULL OR (size(<alias>.profile) > 0
                           AND all(__p IN <alias>.profile WHERE __p IN $own OR __p IN $shared)))
 
     The ``size(...) > 0`` guard closes the F-6 vacuous-truth hole: an empty
     ``profile=[]`` array makes ``all(__p IN [] ...)`` evaluate to TRUE in Cypher
-    (universal quantification over the empty set), which would fail-OPEN — letting
+    (universal quantification over the empty set), which would fail-OPEN - letting
     legacy / un-reindexed nodes leak to every tenant. With the guard, a node with
     no profiles is denied to all *scoped* tenants (admin, ``$own IS NULL``, still
     sees everything by design).
@@ -1786,12 +1786,12 @@ def _scope(profile_name: str | None = None) -> dict:
 
     ``own=None`` (admin / no tenant) disables the filter. A node is granted iff it
     has at least one profile AND EVERY profile on it is one of the tenant's OWN
-    profiles or a shared/global profile — so another tenant's private node (which
+    profiles or a shared/global profile - so another tenant's private node (which
     also carries the shared base in its ``profile[]``) is denied (its foreign private
     profile fails the ``all(...)``), and a same-name cross-tenant collision
     fail-closes (denied to both).
 
-    ``profile_name`` is a NON-ESCALATING narrowing filter (WG-3t T3 — fixes the
+    ``profile_name`` is a NON-ESCALATING narrowing filter (WG-3t T3 - fixes the
     Neo4j/pgvector split-brain). It can only shrink the visible set *within*
     ``own ∪ shared``; it can never widen it:
 
@@ -1800,13 +1800,13 @@ def _scope(profile_name: str | None = None) -> dict:
       (admin convenience; shared/CE base nodes with [own, base] still visible).
     - tenant, no profile_name                 → full ``(own, shared)`` boundary.
     - tenant, profile_name ∈ own∪shared       → narrow own to ``[profile]``, keep ``shared``
-      (nodes that carry [own, base] both remain visible — shared is never stripped).
+      (nodes that carry [own, base] both remain visible - shared is never stripped).
     - tenant, profile_name ∉ own∪shared       → deny-all (``own=[], shared=[]``);
       a tenant cannot borrow another tenant's profile name to escalate.
     """
     # #251: when the caller omits an explicit profile, inject the per-session
     # pinned default (set via set_active_profile) BEFORE the ADR-0034 tenant
-    # narrowing below. The injection is NARROWING-ONLY — the existing tenant
+    # narrowing below. The injection is NARROWING-ONLY - the existing tenant
     # logic re-validates the pinned profile at read time: an out-of-scope pin
     # (not in own ∪ shared, with a scoped tenant) fail-closes to deny-all, and
     # an admin (own=None) stays unrestricted. The pin can never widen beyond
@@ -1829,7 +1829,7 @@ def _scope(profile_name: str | None = None) -> dict:
     return {"own": [], "shared": []}
 
 
-# find_examples rerank coefficients — extracted so calibration harness can
+# find_examples rerank coefficients - extracted so calibration harness can
 # monkey-patch them. See _find_examples + tests/test_calibration_eval.py.
 _RERANK_LOG_COEFF = 0.02
 _RERANK_CHAIN_BOOST = 0.20
@@ -1845,7 +1845,7 @@ _LITERAL_RANK_EPS = 1e-6
 
 def _get_driver():
     global _driver, _version_checked
-    if _driver is not None:  # fast path — no lock overhead on hot calls
+    if _driver is not None:  # fast path - no lock overhead on hot calls
         return _driver
     with _init_lock:
         if _driver is not None:  # re-check after acquiring lock
@@ -1869,14 +1869,14 @@ def _get_driver():
             )
         # MCP READ driver: deliberately NO notifications_min_severity filter
         # here (unlike the write/indexer drivers in src/indexer/*). Read queries
-        # may surface useful INFORMATION-level notifications — e.g. cartesian
-        # product / index-miss performance hints — that we want logged. The
+        # may surface useful INFORMATION-level notifications - e.g. cartesian
+        # product / index-miss performance hints - that we want logged. The
         # INFORMATION "already exists" schema-notification noise that motivated
         # the filter only occurs on the write path's CREATE INDEX statements.
         _driver = GraphDatabase.driver(uri, auth=(user, password))
 
         # Version check: fail-fast if Neo4j < 5.x (unless in CI with pinned image).
-        # _version_checked is protected by _init_lock here — no separate flag needed.
+        # _version_checked is protected by _init_lock here - no separate flag needed.
         if not _version_checked and os.getenv("CI") != "true":
             with _driver.session() as _s:
                 _row = _s.run(
@@ -1897,7 +1897,7 @@ def _get_driver():
 def _ensure_pg() -> None:
     """Initialize centralized PG pool on first call. No-op if already initialized.
 
-    Single-attempt with `connect_timeout` (default 5s) — fails fast on an
+    Single-attempt with `connect_timeout` (default 5s) - fails fast on an
     unreachable PG instead of hanging. The lifespan handler is responsible
     for tolerating the failure (degraded mode + background retry) so the
     MCP server keeps serving /health even when the DB tier is down.
@@ -1928,7 +1928,7 @@ def _checkout_pg():
 
 def _get_embedder():
     global _embedder_instance
-    if _embedder_instance is not None:  # fast path — no lock overhead on hot calls
+    if _embedder_instance is not None:  # fast path - no lock overhead on hot calls
         return _embedder_instance
     with _init_lock:
         if _embedder_instance is not None:  # re-check after acquiring lock
@@ -1962,8 +1962,8 @@ def _latest_version(session) -> str | None:
 
     Filters:
       - excludes 'unknown' and any non-semver-shaped string (must match `\\d+\\.\\d+`)
-      - sorts by `toInteger(split(v,'.')[0])` then minor — handles 9.0 < 17.0 correctly
-        (lexicographic compare would put '9.0' > '17.0', a Neo4j 5.x gotcha — see
+      - sorts by `toInteger(split(v,'.')[0])` then minor - handles 9.0 < 17.0 correctly
+        (lexicographic compare would put '9.0' > '17.0', a Neo4j 5.x gotcha - see
         project CLAUDE.md).
       - scoped to tenant boundary via $allowed (ADR-0034 WI-4): admin gets None →
         unrestricted; tenant gets their allowed list → version only from their data.
@@ -1998,7 +1998,7 @@ def _latest_version(session) -> str | None:
 
 
 def _resolve_version(version_arg: str, session) -> str:
-    """Session-aware version resolution — 3-tier order per ADR-0029.
+    """Session-aware version resolution - 3-tier order per ADR-0029.
 
     Resolution order (delegated to session.resolve_version_v2):
       1. Explicit *version_arg* after sentinel normalization (auto/default/
@@ -2009,7 +2009,7 @@ def _resolve_version(version_arg: str, session) -> str:
     Raises ValueError when all three tiers fail (empty index + no session
     + no explicit version).
 
-    All 24 existing call sites are unchanged — this function's external
+    All 24 existing call sites are unchanged - this function's external
     signature is preserved.
     """
     api_key_id = _get_api_key_id()
@@ -2018,12 +2018,12 @@ def _resolve_version(version_arg: str, session) -> str:
 
 
 def _resolve_profile(profile_arg: str | None) -> str | None:
-    """Session-aware profile resolution — proposes the pinned default (#251).
+    """Session-aware profile resolution - proposes the pinned default (#251).
 
     Peer of :func:`_resolve_version`. Delegates to
     ``session.resolve_profile_v2`` with the per-session pin key so a tool that
     omits ``profile_name`` inherits the profile pinned via ``set_active_profile``
-    for THIS MCP session. The resolution performs NO authorization — the
+    for THIS MCP session. The resolution performs NO authorization - the
     returned profile is re-validated (narrowing-only, fail-closed) by the
     ADR-0034 choke in :func:`_scope` / :func:`_effective_allowed`.
 
@@ -2058,7 +2058,7 @@ def _resolve_model(
         When ``True``, an INHERITS-heavy query timeout re-raises ``OrmQueryTimeout``
         instead of being converted to the clean string. The ``odoo://`` model
         resource handler sets this so a *transient* timeout body is never written
-        to the resource LRU cache (``get_or_compute`` stores unconditionally — a
+        to the resource LRU cache (``get_or_compute`` stores unconditionally - a
         30s blip would otherwise pin the error for the full TTL). The default
         ``False`` keeps the model_inspect tool path returning a clean ``str``
         (it runs under a plain ``@offload`` that does not catch the exception).
@@ -2072,11 +2072,11 @@ def _resolve_model(
     # #279 follow-up (ADR-0048 / ADR-0023): both queries below are INHERITS-heavy
     # (the ranking query is the #273 same-name-mesh path-explosion target). Each is
     # wrapped by `_data_bounded` so it runs under the per-query Neo4j timeout
-    # (neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)) — the 600s server-side
+    # (neo4j.Query(timeout=NEO4J_QUERY_TIMEOUT_SECONDS)) - the 600s server-side
     # db.transaction.timeout backstop alone let #273 hang for 19-24h. On timeout
     # `_data_bounded` raises OrmQueryTimeout (clean English, no Cypher leaked).
     # `_resolve_model` returns `str`, and its callers run under a plain `@offload`
-    # (model_inspect) / the MCP resource handler — NEITHER catches OrmQueryTimeout,
+    # (model_inspect) / the MCP resource handler - NEITHER catches OrmQueryTimeout,
     # so an uncaught raise would surface as a protocol-level isError and not the
     # ADR-0023 raw-text contract. We therefore catch it HERE (approach (a)) and
     # return the clean user_message string. This is preferred over flipping
@@ -2088,14 +2088,14 @@ def _resolve_model(
         with _get_driver().session() as session:
             odoo_version = _resolve_version(odoo_version, session)
 
-            # Ranking tiers — see docs/adr/0013:
+            # Ranking tiers - see docs/adr/0013:
             # T1 is_def_rank: m.is_definition flag (post-reindex, authoritative).
-            # T2 field_count: Field nodes declared on this model in this module —
+            # T2 field_count: Field nodes declared on this model in this module -
             #                 100% accurate signal pre-reindex on real data
             #                 (defining module always has the most fields).
             # T3 dependents : DEPENDS_ON inbound on Module (manifest depends).
             # T4 edition    : community < enterprise < viindoo < oca < custom.
-            # T5 mod_name   : alphabetical tiebreak — eliminates arbitrary order.
+            # T5 mod_name   : alphabetical tiebreak - eliminates arbitrary order.
             layers = _data_bounded(
                 session,
                 f"""
@@ -2133,7 +2133,7 @@ def _resolve_model(
                 return f"Model '{model_name}' not found in Odoo {odoo_version}."
 
             # M2 (#262): the "Extended by" list MUST use the SAME predicate as
-            # _list_extenders — `NOT is_definition` — so the summary "... and N more"
+            # _list_extenders - `NOT is_definition` - so the summary "... and N more"
             # count and the paginated extenders total are always equal. The previous
             # `layers[1:]` assumed exactly one definition row on top, which:
             #   - under-counts by 1 when the definition node is out of scope (a pure
@@ -2141,7 +2141,7 @@ def _resolve_model(
             #   - over-counts when >1 module carries is_definition=true.
             # `base` (the "Defined in" line) stays as the top-ranked row (ADR-0013);
             # in the rare no-definition-row case it is also a NOT-is_definition row,
-            # so it appears in both sections — identical to what _list_extenders
+            # so it appears in both sections - identical to what _list_extenders
             # would return, which is the parity contract M2 requires.
             base = layers[0]
             extensions = [row for row in layers if not row["is_definition"]]
@@ -2152,7 +2152,7 @@ def _resolve_model(
             # `viin.approval.request` lives under `abstract.approval.request.fields`).
             # Use the same per-hop-dedup traversal + DISTINCT-name count as the list
             # tools so the summary never contradicts the enumeration. from_module
-            # scoping is intentionally NOT applied here — the summary count reflects
+            # scoping is intentionally NOT applied here - the summary count reflects
             # the model as a whole, counting the deduped own+inherited name set.
             try:
                 fields_count = _count_fields_with_inherited(
@@ -2163,7 +2163,7 @@ def _resolve_model(
                 )
             except OrmQueryTimeout:
                 # Dense-graph fallback (#283): a timed-out INHERITED count must not
-                # blank the whole summary — degrade to the flat own-model count
+                # blank the whole summary - degrade to the flat own-model count
                 # rather than failing the model overview. This inner timeout is
                 # recoverable; the OUTER ranking/parents `_data_bounded` timeout is
                 # not, and still returns a clean string via the function-level except
@@ -2171,7 +2171,7 @@ def _resolve_model(
                 fields_count = base["fields_count"]
                 methods_count = base["methods_count"]
 
-            # DISTINCT on p.name only — the same parent (e.g. mail.thread) is reachable
+            # DISTINCT on p.name only - the same parent (e.g. mail.thread) is reachable
             # via multiple INHERITS edges (one per module that declares _inherit), and
             # each one resolves to a separate (parent_name, module) pair. Without
             # collapsing here the rendered list shows duplicates like
@@ -2191,14 +2191,14 @@ def _resolve_model(
             )
     except OrmQueryTimeout as exc:
         # Approach (a): _resolve_model returns str, so surface the clean English
-        # timeout message (ADR-0023 — no Cypher leaked) rather than letting the
+        # timeout message (ADR-0023 - no Cypher leaked) rather than letting the
         # exception escape to FastMCP as a protocol-level isError. The 30s driver
         # timeout itself is the load-bearing #279 protection.
         #
         # #284 review: the odoo:// model resource caches this return value via
         # ResourceCache.get_or_compute, which stores UNCONDITIONALLY. Returning
         # the (transient) timeout string there would poison the LRU entry for the
-        # full TTL — a 30s blip becomes a 300s stale-error outage on that URI.
+        # full TTL - a 30s blip becomes a 300s stale-error outage on that URI.
         # The resource handler therefore passes `_reraise_timeout=True` so the
         # exception propagates and is rendered uncached; the sibling field/method
         # resolvers already raise their raw ClientError for the same reason.
@@ -2210,7 +2210,7 @@ def _resolve_model(
         # Tool path (model_inspect summary): record the timeout so ops can see
         # dense-mesh timeouts on this non-ORM read. _resolve_model is NOT inside a
         # bounded-offload pool, so this is the only place the tool-path timeout is
-        # observable — no double-count (the bounded pools have their own metric).
+        # observable - no double-count (the bounded pools have their own metric).
         _metric_nonorm_query_timeout("model_inspect")
         return exc.user_message
 
@@ -2264,7 +2264,7 @@ def _provenance_token(
     method-row (e.g. ``inherited from sale.mixin`` or
     ``delegated via partner_id from res.partner (separate table, fields-only)``),
     or ``None`` for an OWN entity (``owner_model`` equals ``model``, or no owner /
-    depth-0) so the caller appends nothing — output for own entities stays
+    depth-0) so the caller appends nothing - output for own entities stays
     byte-identical to the pre-inherited behaviour.
 
     Single source for the wording across :func:`_list_fields._fmt_field_row` and
@@ -2272,14 +2272,14 @@ def _provenance_token(
     renderers (:func:`_render_inherited_field` / :func:`_render_inherited_method`)
     use a distinct capitalised ``├─`` branch grammar and are intentionally NOT
     routed through this helper. ``edge_kind == 'delegates'`` only ever occurs on
-    the FIELD path — methods are INHERITS-only (GAP-1), so the method caller
+    the FIELD path - methods are INHERITS-only (GAP-1), so the method caller
     always lands on the ``inherited from`` branch.
     """
     if not owner_model or owner_model == model:
         return None
     if edge_kind == "delegates":
         # GAP-5: `_inherits` delegation gives the child the owner's FIELDS ONLY,
-        # stored in the owner's SEPARATE table via the FK — signal it explicitly
+        # stored in the owner's SEPARATE table via the FK - signal it explicitly
         # so an AI client does not mistake it for ordinary in-place inheritance.
         if via_field:
             return (
@@ -2312,12 +2312,12 @@ def _render_inherited_field(
         + (f" ({inh['compute']})" if inh.get('compute') else ""),
         f"├─ Stored:   {'Yes' if inh.get('stored', True) else 'No'}",
         f"├─ Required: {'Yes' if inh.get('required', False) else 'No'}",
-        f"├─ Related:  {inh.get('related') or '—'}",
+        f"├─ Related:  {inh.get('related') or '-'}",
     ]
     if inh.get("comodel_name"):
         lines.append(f"├─ Comodel:  {inh['comodel_name']}")
-    # A2-followup: label + help parity with own-field detail (V3 fix — ADR-0023).
-    # Populated after reindex; absent on pre-reindex graphs — omit gracefully.
+    # A2-followup: label + help parity with own-field detail (V3 fix - ADR-0023).
+    # Populated after reindex; absent on pre-reindex graphs - omit gracefully.
     if inh.get("string"):
         lines.append(f"├─ Label:    {inh['string']}")
     if inh.get("help"):
@@ -2331,7 +2331,7 @@ def _render_inherited_field(
         )
     # Provenance branch - distinguish INHERITS mixin vs _inherits delegation.
     # GAP-5: delegation gives the child the owner's FIELDS ONLY, stored in the
-    # owner's SEPARATE table via the FK — signal that explicitly so the AI client
+    # owner's SEPARATE table via the FK - signal that explicitly so the AI client
     # does not mistake it for ordinary in-place inheritance.
     if inh.get("edge_kind") == "delegates":
         via = inh.get("via_field")
@@ -2406,10 +2406,10 @@ def _resolve_field(
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
-        # 5-tier ranking via m_node proxy — see docs/adr/0013.
+        # 5-tier ranking via m_node proxy - see docs/adr/0013.
         # Routed through `_data_bounded` so a tx-timeout on a dense field ranking
         # becomes OrmQueryTimeout (clean English, no Cypher leaked). The PRIMARY
-        # query is intentionally NOT caught here — it propagates so the owning
+        # query is intentionally NOT caught here - it propagates so the owning
         # @offload_neo4j handler (model_inspect / entity_lookup) records the
         # metric + returns the clean string (tool path), or the field resource
         # handler records + returns it UNCACHED (resource path). The only inner
@@ -2442,7 +2442,7 @@ def _resolve_field(
         )
 
     # D2: If not found in graph, check whether it's a magic field.
-    # Magic fields are synthetic — not in Neo4j — so we build a synthetic record.
+    # Magic fields are synthetic - not in Neo4j - so we build a synthetic record.
     if not records:
         if from_module is None and field_name in MAGIC_FIELDS:
             ttype, _comodel = MAGIC_FIELDS[field_name]
@@ -2452,11 +2452,11 @@ def _resolve_field(
                 "├─ Computed: No",
                 "├─ Stored:   Yes",
                 "├─ Required: No",
-                "├─ Related:  —",
-                # WI-1 (#238): magic fields are ORM-managed — never writable.
+                "├─ Related:  -",
+                # WI-1 (#238): magic fields are ORM-managed - never writable.
                 "├─ Readonly: Yes",
                 "├─ Declared in:",
-                "│   └─ <builtin>  [ORM magic field — injected at runtime, not in source]",
+                "│   └─ <builtin>  [ORM magic field - injected at runtime, not in source]",
             ]
             lines.append(format_next_step([
                 f"find_examples(query='{model_name}.{field_name} usage'"
@@ -2469,21 +2469,21 @@ def _resolve_field(
         # Inherited fallback: the flat exact-match on the child model MISSED and
         # it is not a magic field. Walk INHERITS|DELEGATES_TO (depth 1-3) to find
         # the field on a mixin (e.g. `res_ref` declared on a mixin model, not on
-        # `viin.approval.request` itself). Keeps the exact-first fast path —
+        # `viin.approval.request` itself). Keeps the exact-first fast path -
         # native fields never pay the BFS cost.
         #
         # from_module semantics (V2 fix): when from_module is set we still run the
-        # inherited fallback — the field may be declared on a mixin model that
+        # inherited fallback - the field may be declared on a mixin model that
         # BELONGS to from_module (e.g. `abstract.approval.request.fields` lives in
         # module `viin_approval`). After the BFS we post-filter: only surface the
         # inherited hit if its declaring module matches from_module. If the module
-        # doesn't match we keep the "not found" path — the user asked specifically
+        # doesn't match we keep the "not found" path - the user asked specifically
         # for that module and the field isn't there.
         # FIX-1 (review #283): _resolve_field_inherited is bounded + tx-timeout-
         # mapped. The owning tool handlers now wrap this in @offload_neo4j (PR-1),
         # which catches OrmQueryTimeout at the boundary; the tool-path catch here
         # still returns the clean ADR-0023 string directly (and the resource path
-        # re-raises so the transient body is never cached — see below).
+        # re-raises so the transient body is never cached - see below).
         try:
             with _get_driver().session() as session:
                 inh = _resolve_field_inherited(
@@ -2492,7 +2492,7 @@ def _resolve_field(
         except OrmQueryTimeout as exc:
             # Resource path (_reraise_timeout=True): re-raise so the transient
             # body is never cached (the field resource handler records the metric
-            # once and returns the message uncached) — and so the resolver never
+            # once and returns the message uncached) - and so the resolver never
             # double-counts the resource-path timeout.
             if _reraise_timeout:
                 raise
@@ -2517,7 +2517,7 @@ def _resolve_field(
         + (f" ({base_f['compute']})" if base_f.get('compute') else ""),
         f"├─ Stored:   {'Yes' if base_f.get('stored', True) else 'No'}",
         f"├─ Required: {'Yes' if base_f.get('required', False) else 'No'}",
-        f"├─ Related:  {base_f.get('related') or '—'}",
+        f"├─ Related:  {base_f.get('related') or '-'}",
     ]
     # B1: render comodel_name for relational fields (only when non-null).
     if base_f.get("comodel_name"):
@@ -2528,7 +2528,7 @@ def _resolve_field(
         lines.append(f"├─ Label:    {base_f['string']}")
     if base_f.get("help"):
         lines.append(f"├─ Help:     {base_f['help']}")
-    # WI-1 (#238): writability signal. Graceful degradation — pre-reindex
+    # WI-1 (#238): writability signal. Graceful degradation - pre-reindex
     # graphs lack effective_readonly (None); omit the line rather than print a
     # misleading "Readonly: No". Only render once the field has been reindexed.
     _eff_ro = base_f.get("effective_readonly")
@@ -2619,8 +2619,8 @@ def _render_inherited_method(
     own-method detail in :func:`_resolve_method` with an ``Inherited from``
     provenance branch.
 
-    Methods are inherited via INHERITS only (Python MRO) — ``_inherits``
-    delegation NEVER carries methods (GAP-1) — so the provenance is always
+    Methods are inherited via INHERITS only (Python MRO) - ``_inherits``
+    delegation NEVER carries methods (GAP-1) - so the provenance is always
     "Inherited from", never "Delegated".
 
     ``owner_chain`` is the REAL multi-module override chain on the OWNER model
@@ -2644,12 +2644,12 @@ def _render_inherited_method(
     def _fmt_owner_override(r: dict) -> str:
         mth = r["mth"]
         super_info = "✓ calls super()" if mth.get("has_super_call") else "✗ no super()"
-        decs = ", ".join(mth.get("decorators") or []) or "—"
+        decs = ", ".join(mth.get("decorators") or []) or "-"
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
-        return f"{repo_str}{r['module_name']} — {super_info} — decorators: {decs}"
+        return f"{repo_str}{r['module_name']} - {super_info} - decorators: {decs}"
 
     if owner_chain:
-        # GAP-3: render the REAL override chain on the owner model — every module
+        # GAP-3: render the REAL override chain on the owner model - every module
         # that declares this method on its owner, MRO/last-loaded ranked, capped
         # with ADR-0023 §3 disclosure. No more misleading hardcoded "(1)".
         chain_total = len(owner_chain)
@@ -2666,20 +2666,20 @@ def _render_inherited_method(
         )
         lines.extend(render_list_block(capped_chain, prefix="│   "))
     else:
-        # Defensive fallback: no owner chain supplied — render the single owner
+        # Defensive fallback: no owner chain supplied - render the single owner
         # entry from `inh` (pre-GAP-3 behaviour, but no longer the normal path).
         lines.append("├─ Override chain (1):")
         super_info = "✓ calls super()" if inh.get("has_super_call") else "✗ no super()"
-        decs = ", ".join(inh.get("decorators") or []) or "—"
+        decs = ", ".join(inh.get("decorators") or []) or "-"
         repo_str = f"[{inh['repo']}] " if inh.get("repo") else ""
         lines.append(
-            f"│   └─ {repo_str}{inh.get('module') or '?'} — {super_info}"
-            f" — decorators: {decs}"
+            f"│   └─ {repo_str}{inh.get('module') or '?'} - {super_info}"
+            f" - decorators: {decs}"
         )
     # FIX-3 (review #283, symmetric to _render_inherited_field): the method NODE
     # and its whole override chain live on `owner` (the mixin), not the child
     # `model_name`. find_override_point + impact_analysis flat-match on the
-    # declaring model, so hints keyed by `{child}.{method}` return EMPTY — wrongly
+    # declaring model, so hints keyed by `{child}.{method}` return EMPTY - wrongly
     # signalling "no override point / no impact". Key both drill-downs by `owner`
     # so they resolve. The header still names the child (what the user asked).
     lines.append(format_next_step([
@@ -2707,13 +2707,13 @@ def _resolve_method(
     # transient timeout body is never written to the resource LRU (mirrors
     # _resolve_model / _resolve_field). The default False keeps the model_inspect
     # / entity_lookup tool path returning a clean ADR-0023 string directly. (The
-    # tool-path method-detail timeout is therefore not yet counted in the metric —
-    # the deferred M2 gap, PR-3 / issue #287 — matching _resolve_field's M1.)
+    # tool-path method-detail timeout is therefore not yet counted in the metric -
+    # the deferred M2 gap, PR-3 / issue #287 - matching _resolve_field's M1.)
     try:
         with _get_driver().session() as session:
             odoo_version = _resolve_version(odoo_version, session)
 
-            # 5-tier ranking via m_node proxy — see docs/adr/0013
+            # 5-tier ranking via m_node proxy - see docs/adr/0013
             records = _method_override_chain(
                 session, model_name, method_name, odoo_version, profile_name
             )
@@ -2723,8 +2723,8 @@ def _resolve_method(
             # on the child model MISSED. Walk INHERITS (depth 1-3) to find the method
             # on a mixin (e.g. `_compute_res_ref` declared on a mixin model, not on
             # `viin.approval.request` itself). Methods are inherited via INHERITS only
-            # — `_inherits` delegation never carries methods (GAP-1). Exact-first fast
-            # path is preserved — own methods never pay the BFS cost.
+            # - `_inherits` delegation never carries methods (GAP-1). Exact-first fast
+            # path is preserved - own methods never pay the BFS cost.
             with _get_driver().session() as session:
                 inh = _resolve_method_inherited(
                     model_name, method_name, odoo_version, session, profile_name
@@ -2750,7 +2750,7 @@ def _resolve_method(
         # Consistent with _resolve_field / _resolve_model. Resource path
         # (_reraise_timeout=True): re-raise so the transient body is never cached
         # (propagates out of get_or_compute before the put; the method resource
-        # handler records the metric once + returns it uncached) — the resolver
+        # handler records the metric once + returns it uncached) - the resolver
         # never double-counts the resource-path timeout.
         if _reraise_timeout:
             raise
@@ -2769,7 +2769,7 @@ def _resolve_method(
         lines.append(f"├─ Signature:   ({base_mth['signature']})")
     if base_mth.get("convention_kind"):
         lines.append(f"├─ Convention:  {base_mth['convention_kind']}")
-    # B2: render docstring first line (A2a — populated after reindex; absent pre-reindex).
+    # B2: render docstring first line (A2a - populated after reindex; absent pre-reindex).
     if base_mth.get("docstring"):
         first_line = base_mth["docstring"].strip().splitlines()[0][:120]
         lines.append(f"├─ Docstring:   {first_line}")
@@ -2779,9 +2779,9 @@ def _resolve_method(
     def _fmt_override(r: dict) -> str:
         mth = r["mth"]
         super_info = "✓ calls super()" if mth.get("has_super_call") else "✗ no super()"
-        decs = ", ".join(mth.get("decorators") or []) or "—"
+        decs = ", ".join(mth.get("decorators") or []) or "-"
         repo_str = f"[{r['repo']}] " if r.get("repo") else ""
-        return f"{repo_str}{r['module_name']} — {super_info} — decorators: {decs}"
+        return f"{repo_str}{r['module_name']} - {super_info} - decorators: {decs}"
 
     # G4: cap override chain at LIST_PREVIEW_MAX_ITEMS with disclosure (ADR-0023 §3)
     capped_chain = _render_capped(
@@ -2794,8 +2794,8 @@ def _resolve_method(
             f", odoo_version='{odoo_version}') for full override chain"
         ),
     )
-    # ADR-0023 §1.2: render via the shared helper so the LAST row — including a
-    # "... and N more" disclosure row — always gets the └─ connector. Parent
+    # ADR-0023 §1.2: render via the shared helper so the LAST row - including a
+    # "... and N more" disclosure row - always gets the └─ connector. Parent
     # header "Override chain (...)" was appended as a non-last child (├─), so
     # the vertical line must continue: prefix "│   ".
     lines.extend(render_list_block(capped_chain, prefix="│   "))
@@ -2969,7 +2969,7 @@ def _resolve_view(
             last_e = len(rendered) - 1
             # Only the first `min(len(exts), cap)` entries map to real ext
             # records (with xpaths). The trailing "... and K more" line, when
-            # present, has no xpath subtree — handle it separately.
+            # present, has no xpath subtree - handle it separately.
             for j, row in enumerate(rendered):
                 econn = "└─" if j == last_e else "├─"
                 lines.append(f"{sub_indent}{econn} {row}")
@@ -3052,24 +3052,24 @@ def _mcp_port() -> int:
     return int(config.get("server", "port", fallback="8002"))
 
 
-# Health endpoint — registered as custom route on MCP app
+# Health endpoint - registered as custom route on MCP app
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
     from src.mcp.health import health_handler
     return await health_handler(request)
 
 
-# Readiness endpoint (WI-D) — cached DB-count readiness probe. Distinct from
+# Readiness endpoint (WI-D) - cached DB-count readiness probe. Distinct from
 # /health liveness: /ready reports whether the index is populated and both DBs
 # are reachable, reading from the shared TTL cache so it never scans on the hot
-# path. Registered as an HTTP custom route (NOT an MCP tool — tool count is 31 after WI-4).
+# path. Registered as an HTTP custom route (NOT an MCP tool - tool count is 31 after WI-4).
 @mcp.custom_route("/ready", methods=["GET"])
 async def ready_check(request: Request):
     from src.mcp.health import ready_handler
     return await ready_handler(request)
 
 
-# Prometheus metrics endpoint — no auth (mirroring /health bypass in middleware.py).
+# Prometheus metrics endpoint - no auth (mirroring /health bypass in middleware.py).
 # Cross-process caveat: this endpoint only reflects metrics from the MCP server
 # process (:8002).  Batch-indexer embed calls run in a separate process and are
 # NOT visible here.  See src/metrics.py for full caveat.
@@ -3091,15 +3091,15 @@ def _resolve_session_idle_timeout() -> float:
     instead of crashing startup with a raw ``float()`` ValueError).
 
     The MCP SDK's ``StreamableHTTPSessionManager`` raises ``ValueError`` for any
-    ``session_idle_timeout <= 0`` (it has no "0 = disable" affordance — that is
+    ``session_idle_timeout <= 0`` (it has no "0 = disable" affordance - that is
     expressed as ``None``, which Option B never passes). A misconfigured ``<= 0``
-    would therefore crash startup AND, if it didn't, silently disable reaping —
+    would therefore crash startup AND, if it didn't, silently disable reaping -
     re-opening the #279 leak. We are NOT offering an intentional opt-out here, so
     clamp any ``<= 0`` back to the 3600s default and log a warning.
 
     ``_resolve_orm_float`` parses ``SESSION_IDLE_TIMEOUT=nan`` / ``=inf`` to a
     float without raising (Python ``float()`` accepts both), and ``nan <= 0`` is
-    ``False`` — so a bare ``<= 0`` guard would let a non-finite value through to
+    ``False`` - so a bare ``<= 0`` guard would let a non-finite value through to
     the SDK. ``nan`` yields a deadline that never compares true, ``inf`` a
     never-expiring one: either silently disables reaping and re-opens #279. We
     therefore reject any non-finite value the same way as ``<= 0``.
@@ -3107,7 +3107,7 @@ def _resolve_session_idle_timeout() -> float:
     resolved = _resolve_orm_float("SESSION_IDLE_TIMEOUT", 3600.0)
     if not math.isfinite(resolved) or resolved <= 0:
         logging.getLogger(__name__).warning(
-            "SESSION_IDLE_TIMEOUT=%s is non-finite or <= 0 — that would disable "
+            "SESSION_IDLE_TIMEOUT=%s is non-finite or <= 0 - that would disable "
             "streamable-http session reaping (re-opening the #279 leak) and is "
             "rejected by the MCP SDK. Falling back to the 3600s (1h) default.",
             resolved,
@@ -3120,7 +3120,7 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
     """Build the Option B streamable-http app core (#279 item 1, ADR-0049).
 
     Single source of truth for the manual ``create_streamable_http_app()``
-    reproduction — both ``main()`` and ``tests/test_session_idle_timeout.py``
+    reproduction - both ``main()`` and ``tests/test_session_idle_timeout.py``
     call this so the construction can never drift out of lockstep (FIX 3).
 
     Returns ``(app, session_manager)``. The caller (``main()``) is responsible
@@ -3130,11 +3130,11 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
 
     FastMCP's ``mcp.http_app()`` / ``create_streamable_http_app()`` still do NOT
     forward ``session_idle_timeout`` to ``StreamableHTTPSessionManager`` (verified
-    on fastmcp 3.4.2 — its ``http_app()`` signature carries no such kwarg), so we
+    on fastmcp 3.4.2 - its ``http_app()`` signature carries no such kwarg), so we
     reproduce that factory here and add the one kwarg. The MCP SDK's manager DOES
     accept it.
 
-    FRAGILE — depends on FastMCP private internals (``mcp._mcp_server``,
+    FRAGILE - depends on FastMCP private internals (``mcp._mcp_server``,
     ``mcp._lifespan_manager()``, ``mcp._get_additional_http_routes()``) plus the
     public-but-undocumented ``StreamableHTTPASGIApp`` / ``create_base_app``. The
     smoke test guards drift.
@@ -3171,7 +3171,7 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
     _stateless = bool(getattr(_settings, "stateless_http", False))
     # FIX C: forward debug the same way FastMCP.http_app() does
     # (debug=fastmcp.settings.debug). getattr fallback keeps us safe if a future
-    # fastmcp drops the attr — create_base_app(debug=) is a public kwarg.
+    # fastmcp drops the attr - create_base_app(debug=) is a public kwarg.
     _debug = bool(getattr(_settings, "debug", False))
     # The SDK rejects session_idle_timeout in stateless mode (no sessions to
     # reap). Pass None there so an operator opting into stateless mode does not
@@ -3189,7 +3189,7 @@ def _build_streamable_http_app(*, idle_timeout: float, middleware, mcp_server=No
     @_asynccontextmanager
     async def _mcp_session_lifespan(app):
         # Inner lifespan (becomes _existing_lifespan in main(), wrapped by
-        # _lifespan_with_pg). Starts/stops the session manager — mirrors the
+        # _lifespan_with_pg). Starts/stops the session manager - mirrors the
         # lifespan FastMCP's create_streamable_http_app() would have built.
         async with _mcp._lifespan_manager(), session_manager.run():
             try:
@@ -3250,12 +3250,13 @@ for _tool_mod in (
     "src.mcp.tools.inspect_tools",   # Phase 3
     "src.mcp.tools.session_tools",   # Phase 3
     "src.mcp.tools.spec",            # Phase 4
+    "src.mcp.tools.cli",             # #336 (cli_help split out of spec)
     "src.mcp.tools.discovery",       # Phase 5
     "src.mcp.tools.guidance",        # A2 (split out of discovery)
     "src.mcp.tools.test_tools",      # WI-4 test-surface tools (25->31)
 ):
     sys.modules.pop(_tool_mod, None)
-    # H3 fix: popping the submodule from sys.modules is NOT enough — the parent
+    # H3 fix: popping the submodule from sys.modules is NOT enough - the parent
     # package object (`src.mcp.tools`) RETAINS the submodule as an ATTRIBUTE, so a
     # later `from src.mcp.tools import <mod>` binds that STALE attribute WITHOUT a
     # fresh import (no @mcp.tool re-run -> tools registered on the dead `mcp`). This
@@ -3274,6 +3275,7 @@ for _tool_mod in (
             pass
 del _tool_mod, _pkg_name, _sub, _pkg
 
+from src.mcp.tools import cli as _cli_tools  # noqa: E402,F401 - #336 cli_help split
 from src.mcp.tools import discovery as _discovery_tools  # noqa: E402,F401
 from src.mcp.tools import guidance as _guidance_tools  # noqa: E402,F401
 from src.mcp.tools import inspect_tools as _inspect_tools  # noqa: E402,F401
@@ -3281,7 +3283,16 @@ from src.mcp.tools import orm_tools as _orm_tools  # noqa: E402,F401
 from src.mcp.tools import session_tools as _session_tools  # noqa: E402,F401
 from src.mcp.tools import spec as _spec_tools  # noqa: E402,F401
 from src.mcp.tools import stylesheet as _stylesheet_tools  # noqa: E402,F401
-from src.mcp.tools import test_tools as _test_tools  # noqa: E402,F401 — WI-4 test-surface
+from src.mcp.tools import test_tools as _test_tools  # noqa: E402,F401 - WI-4 test-surface
+
+# Re-exports from cli.py (#336 split): _cli_help / cli_help moved out of spec.py
+# to keep that module under TOOL_MODULE_MAX_LINES. Tests import these via
+# src.mcp.server (e.g. test_mcp_spec_tools.py spec_tools fixture), so they must
+# remain accessible under the same server namespace as before.
+from src.mcp.tools.cli import (  # noqa: E402,F401
+    _cli_help,
+    cli_help,
+)
 
 # Phase 5 / A2 re-exports: the two public discovery tools, plus the impl symbols
 # that tests import via src.mcp.server (directly, e.g. test_mcp_find_examples.py
@@ -3365,7 +3376,6 @@ from src.mcp.tools.spec import (  # noqa: E402,F401
     _LINT_V0_BANNER,
     _api_version_diff,
     _build_noqa_suppress,
-    _cli_help,
     _compile_lint_pattern,
     _find_deprecated_usage,
     _format_deprecated_usage,
@@ -3375,7 +3385,6 @@ from src.mcp.tools.spec import (  # noqa: E402,F401
     _lookup_core_api,
     _match_lint_rule_lines,
     api_version_diff,
-    cli_help,
     find_deprecated_usage,
     lint_check,
     lookup_core_api,
@@ -3399,7 +3408,7 @@ from src.mcp.tools.stylesheet import (  # noqa: E402,F401
 # --- Module-overview + entity-listing helper modules (Phase 7 / A1) ----------
 # src/mcp/describe.py + src/mcp/listings.py hold the _describe_module /
 # _module_dep_closure / _list_* read helpers moved out of this hub.  They are
-# NOT tool modules (no @mcp.tool, no registration side effect) — they are
+# NOT tool modules (no @mcp.tool, no registration side effect) - they are
 # imported here only to re-export their symbols so src.mcp.server._describe_module
 # / _list_* keep resolving for tests + the inspect.py / resources.py call sites.
 #
@@ -3440,7 +3449,7 @@ def main() -> None:
     Lives in ``src/mcp/server.py`` as a plain importable function rather than an
     ``if __name__ == "__main__"`` block on purpose: running this file directly
     (``python -m src.mcp.server``) makes it ``__main__``, and the tool wrapper
-    modules then re-import it under its real name ``src.mcp.server`` — creating a
+    modules then re-import it under its real name ``src.mcp.server`` - creating a
     SECOND FastMCP ``mcp`` instance that carries all 31 ``@mcp.tool`` registrations
     while ``__main__.mcp`` stays empty. The served app would then be built from the
     0-tool ``__main__`` instance (MCP ``tools/list`` returns 0). Keeping startup in
@@ -3448,7 +3457,7 @@ def main() -> None:
     loads this module exactly once under its real name, so the served ``mcp`` is the
     one that owns the 31 tools.
 
-    Uses the module-global ``mcp`` — the instance the ``@mcp.tool`` decorators in
+    Uses the module-global ``mcp`` - the instance the ``@mcp.tool`` decorators in
     ``src/mcp/tools/*`` registered against when this module was imported.
     """
     import logging as _logging
@@ -3467,7 +3476,7 @@ def main() -> None:
     # --- Option B: build the streamable-http app directly so we can pass
     # session_idle_timeout (#279 item 1, ADR-0049) ------------------------------
     # The core construction lives in the module-level _build_streamable_http_app()
-    # helper (single source of truth — tests/test_session_idle_timeout.py calls
+    # helper (single source of truth - tests/test_session_idle_timeout.py calls
     # the SAME helper so the two can never drift). main() owns the wrapping:
     # lifespan compose with _lifespan_with_pg, feedback mount, uvicorn.
     # ADR-0049 records the 3 triggers to revert to the http_app() kwarg once
@@ -3487,7 +3496,7 @@ def main() -> None:
     # --- Resilient PG startup: degraded mode + background retry (incident 2026-05-19) ---
     # AuthMiddleware.dispatch calls auth_store() → get_pool() on every authenticated
     # request. If init_pool() never ran, get_pool() raises RuntimeError. Previously
-    # we blocked startup on _ensure_pg() — but that turned any DB blip into uvicorn
+    # we blocked startup on _ensure_pg() - but that turned any DB blip into uvicorn
     # exit(3), and systemd Restart=on-failure happily looped the process forever
     # (~11k restarts in 26h during the May 2026 incident).
     #
@@ -3511,9 +3520,9 @@ def main() -> None:
         try:
             await _asyncio.to_thread(_ensure_pg)
             _log.info("PG pool initialized at startup")
-        except Exception as e:  # noqa: BLE001 — any failure → degraded mode
+        except Exception as e:  # noqa: BLE001 - any failure → degraded mode
             _log.warning(
-                "PG pool init failed at startup — entering DEGRADED mode."
+                "PG pool init failed at startup - entering DEGRADED mode."
                 " Service stays UP; /health returns degraded; non-public requests"
                 " return 503 until the pool recovers. Cause: %s",
                 str(e)[:300],
@@ -3528,7 +3537,7 @@ def main() -> None:
                         await _asyncio.to_thread(_ensure_pg)
                         _log.info(
                             "PG pool initialized after background retry"
-                            " — degraded mode cleared",
+                            " - degraded mode cleared",
                         )
                         return
                     except Exception as bg_e:  # noqa: BLE001
@@ -3558,13 +3567,13 @@ def main() -> None:
                 ).single()
                 if _row and _row["legacy_count"] > 0:
                     _logging.getLogger(__name__).warning(
-                        "%d Neo4j nodes have no `profile` property — these are invisible"
+                        "%d Neo4j nodes have no `profile` property - these are invisible"
                         " to profile-scoped MCP queries. Run a full reindex per ADR-0016"
                         " to backfill.",
                         _row["legacy_count"],
                     )
         except Exception:
-            pass  # startup warning is best-effort — never block startup
+            pass  # startup warning is best-effort - never block startup
 
         # Bootstrap admin settings catalogue (idempotent, best-effort).
         # Runs after PG pool init attempt. Swallows errors so a missing
@@ -3573,10 +3582,10 @@ def main() -> None:
             from src.settings_registry import bootstrap_settings_safe as _bootstrap
             # MCP runs on the osm_reader DSN (no UPDATE on app_settings), and
             # reads ZERO metadata columns from the DB, so it only INSERTs
-            # missing rows — never converges metadata (converge_metadata=False).
+            # missing rows - never converges metadata (converge_metadata=False).
             await _asyncio.to_thread(_bootstrap, converge_metadata=False)
         except Exception:  # noqa: BLE001
-            pass  # non-fatal — logged inside bootstrap_settings_safe
+            pass  # non-fatal - logged inside bootstrap_settings_safe
 
         try:
             async with _existing_lifespan(app):
@@ -3610,7 +3619,7 @@ def main() -> None:
 
     # Mount feedback API on MCP port so remote users can submit thumbs-up/down.
     # feedback.router exposes POST /api/feedback and GET /api/feedback/{pattern_id}.
-    # Auth is already enforced by AuthMiddleware above — no loopback guard needed.
+    # Auth is already enforced by AuthMiddleware above - no loopback guard needed.
     # We wrap the router in a mini FastAPI sub-app (include_router) and mount it
     # at the root prefix '' so its /api/feedback paths remain unchanged.
     from fastapi import FastAPI as _FastAPI
@@ -3621,7 +3630,7 @@ def main() -> None:
     _feedback_app = _FastAPI()
     _feedback_app.include_router(_feedback.router)
     # Mount tenant self-service deploy-key endpoint (ADR-0034 D7, WI-I).
-    # GET /api/tenant/deploy-key — tenant_id resolved from X-API-Key auth state,
+    # GET /api/tenant/deploy-key - tenant_id resolved from X-API-Key auth state,
     # never from a user-supplied path parameter (cross-tenant leakage impossible).
     _feedback_app.include_router(_deploy_key.router)
     _app.mount("", _feedback_app)
@@ -3629,7 +3638,7 @@ def main() -> None:
     # #227 backpressure: cap the number of concurrent connections uvicorn will
     # service. Beyond this, uvicorn returns HTTP 503 immediately instead of
     # letting the accept-backlog grow unbounded (which turns overload into
-    # latency + OOM). There are now THREE independent inner bounds — the embed
+    # latency + OOM). There are now THREE independent inner bounds - the embed
     # semaphore (EMBEDDER_MAX_CONCURRENCY), the ORM semaphore
     # (ORM_QUERY_MAX_CONCURRENCY) and the non-ORM heavy-read semaphore
     # (NONORM_READ_MAX_CONCURRENCY, #276 G6). The connection ceiling is a
