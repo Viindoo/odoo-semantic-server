@@ -811,7 +811,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "path of the module to deploy (positional, required). Source: deploy.py:78",
+      "help": "path of the module to deploy (positional, required). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -822,7 +822,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the Odoo server (positional, optional). Source: deploy.py:79",
+      "help": "URL of the Odoo server (positional, optional). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -833,7 +833,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to use if server does not use db-filter. Source: deploy.py:80",
+      "help": "database to use if server does not use db-filter. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -844,7 +844,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "login for deployment (default: admin). Source: deploy.py:81",
+      "help": "login for deployment (default: admin). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -855,7 +855,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "password for deployment (default: admin). Source: deploy.py:82",
+      "help": "password for deployment (default: admin). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -866,7 +866,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "verify SSL certificate (boolean flag). Source: deploy.py:83",
+      "help": "verify SSL certificate (boolean flag). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -877,7 +877,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "force deployment even if module already installed (boolean flag). Source: deploy.py:84",
+      "help": "force deployment even if module already installed (boolean flag). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -888,7 +888,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "directory where project modules are stored (autodetect from cwd). Source: start.py:30",
+      "help": "directory where project modules are stored (autodetect from cwd). Source: start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -899,7 +899,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name (-d shorthand, defaults to project directory name). Source: start.py:32",
+      "help": "database name (-d shorthand, defaults to project directory name). Source: start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -910,7 +910,7 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "module template name or path (-t shorthand). Source: scaffold.py:23",
+      "help": "module template name or path (-t shorthand). Source: scaffold.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -921,7 +921,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to analyze. Source: cloc.py:33",
+      "help": "database to analyze. Source: cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -932,7 +932,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "file or directory path (-p shorthand). Source: cloc.py:34",
+      "help": "file or directory path (-p shorthand). Source: cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -941,9 +941,9 @@
       "flag_name": "--verbose",
       "command_name": "cloc",
       "status": "stable",
-      "default": null,
-      "type": null,
-      "help": "verbose output (-v shorthand, boolean flag). Source: cloc.py:35",
+      "default": 0,
+      "type": "count",
+      "help": "verbose output (-v shorthand, boolean flag). Source: cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

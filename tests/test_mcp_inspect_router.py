@@ -530,7 +530,7 @@ class TestListTestClassesSessionAndTimeout:
 
 
 # ---------------------------------------------------------------------------
-# name_filter tests — issue #339
+# name_filter tests - issue #339
 #
 # pytestmark = pytest.mark.neo4j applies globally (file-level marker set below).
 # All tests use TEST_VERSION="99.0" + clean_neo4j fixture (auto-seeded data

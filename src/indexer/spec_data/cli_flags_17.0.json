@@ -976,7 +976,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Path of the module to deploy (positional argument). Source: odoo/cli/deploy.py:68",
+      "help": "Path of the module to deploy (positional argument). Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -987,7 +987,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the server (default=http://localhost:8069). Source: odoo/cli/deploy.py:69",
+      "help": "URL of the server (default=http://localhost:8069). Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -998,7 +998,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Database to use if server does not use db-filter. Source: odoo/cli/deploy.py:70",
+      "help": "Database to use if server does not use db-filter. Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1009,7 +1009,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "Login (default=admin). Source: odoo/cli/deploy.py:71",
+      "help": "Login (default=admin). Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1020,7 +1020,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "Password (default=admin). Source: odoo/cli/deploy.py:72",
+      "help": "Password (default=admin). Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1031,7 +1031,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "Verify SSL certificate. Source: odoo/cli/deploy.py:73",
+      "help": "Verify SSL certificate. Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1042,7 +1042,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "Force init even if module is already installed. Source: odoo/cli/deploy.py:74",
+      "help": "Force init even if module is already installed. Source: odoo/cli/deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1053,7 +1053,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "Directory where your project's modules are stored. Source: odoo/cli/start.py:32",
+      "help": "Directory where your project's modules are stored. Source: odoo/cli/start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1064,7 +1064,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Specify the database name. Source: odoo/cli/start.py:34",
+      "help": "Specify the database name. Source: odoo/cli/start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1075,7 +1075,7 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "Use a custom module template, can be a template name or path. Source: odoo/cli/scaffold.py:22",
+      "help": "Use a custom module template, can be a template name or path. Source: odoo/cli/scaffold.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1086,7 +1086,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Database name. Source: odoo/cli/cloc.py:33",
+      "help": "Database name. Source: odoo/cli/cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1097,7 +1097,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "File or directory path. Source: odoo/cli/cloc.py:34",
+      "help": "File or directory path. Source: odoo/cli/cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1106,9 +1106,20 @@
       "flag_name": "--verbose",
       "command_name": "cloc",
       "status": "stable",
+      "default": 0,
+      "type": "count",
+      "help": "Verbose output. Source: odoo/cli/cloc.py",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--config",
+      "command_name": "genproxytoken",
+      "status": "stable",
       "default": null,
-      "type": null,
-      "help": "Verbose output. Source: odoo/cli/cloc.py:35",
+      "type": "str",
+      "help": "specify alternate config file (-c shorthand). Source: odoo/cli/genproxytoken.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1117,9 +1128,9 @@
       "flag_name": "--token-length",
       "command_name": "genproxytoken",
       "status": "stable",
-      "default": "16",
+      "default": 16,
       "type": "int",
-      "help": "Token Length (default=16). Source: odoo/cli/genproxytoken.py:29",
+      "help": "Token Length (default=16). Source: odoo/cli/genproxytoken.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1130,7 +1141,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "specify alternate config file (-c shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py:36",
+      "help": "specify alternate config file (-c shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1141,7 +1152,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "data directory (-D shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py:37",
+      "help": "data directory (-D shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1152,7 +1163,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "addons path. Shared by all db sub-commands. Source: odoo/cli/db.py:38",
+      "help": "addons path. Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1163,7 +1174,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database user (-r shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py:39",
+      "help": "database user (-r shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1174,7 +1185,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database password (-w shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py:40",
+      "help": "database password (-w shorthand). Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1185,7 +1196,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "pg binaries path. Shared by all db sub-commands. Source: odoo/cli/db.py:41",
+      "help": "pg binaries path. Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1196,7 +1207,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database host. Shared by all db sub-commands. Source: odoo/cli/db.py:42",
+      "help": "database host. Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1207,7 +1218,7 @@
       "status": "stable",
       "default": null,
       "type": "int",
-      "help": "database port. Shared by all db sub-commands. Source: odoo/cli/db.py:43",
+      "help": "database port. Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1218,7 +1229,7 @@
       "status": "stable",
       "default": null,
       "type": "choice",
-      "help": "database SSL mode (see PostgreSQL documentation). Shared by all db sub-commands. Source: odoo/cli/db.py:44",
+      "help": "database SSL mode (see PostgreSQL documentation). Shared by all db sub-commands. Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1229,7 +1240,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "zip or pg_dump file to load (positional argument). Source: odoo/cli/db.py:68",
+      "help": "zip or pg_dump file to load (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1240,7 +1251,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to create, defaults to dump file stem (positional, optional). Source: odoo/cli/db.py:63",
+      "help": "database to create, defaults to dump file stem (positional, optional). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1251,7 +1262,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "delete target database before loading if it exists (-f shorthand). Source: odoo/cli/db.py:54",
+      "help": "delete target database before loading if it exists (-f shorthand). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1262,7 +1273,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "neutralize the database after restore (-n shorthand). Source: odoo/cli/db.py:58",
+      "help": "neutralize the database after restore (-n shorthand). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1273,7 +1284,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "restore as a moved database, keeping its UUID instead of generating a new one (store_const). Source: odoo/cli/db.py:62",
+      "help": "restore as a moved database, keeping its UUID instead of generating a new one (store_const). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1284,7 +1295,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to dump (positional argument). Source: odoo/cli/db.py:77",
+      "help": "database to dump (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1295,7 +1306,7 @@
       "status": "stable",
       "default": "-",
       "type": "str",
-      "help": "destination path; if omitted or '-', dumps to stdout (positional, optional). Source: odoo/cli/db.py:79",
+      "help": "destination path; if omitted or '-', dumps to stdout (positional, optional). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1306,7 +1317,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "source database to duplicate (positional argument). Source: odoo/cli/db.py:92",
+      "help": "source database to duplicate (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1317,7 +1328,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "target database name (positional argument). Source: odoo/cli/db.py:93",
+      "help": "target database name (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1328,7 +1339,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "delete target database before copying if it exists (-f shorthand). Source: odoo/cli/db.py:85",
+      "help": "delete target database before copying if it exists (-f shorthand). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1339,7 +1350,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "neutralize the target database after duplicate (-n shorthand). Source: odoo/cli/db.py:89",
+      "help": "neutralize the target database after duplicate (-n shorthand). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1350,7 +1361,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "source database to rename (positional argument). Source: odoo/cli/db.py:102",
+      "help": "source database to rename (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1361,7 +1372,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "target database name (positional argument). Source: odoo/cli/db.py:103",
+      "help": "target database name (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1372,7 +1383,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "delete target database before renaming if it exists (-f shorthand). Source: odoo/cli/db.py:97",
+      "help": "delete target database before renaming if it exists (-f shorthand). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1383,7 +1394,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to delete (positional argument). Source: odoo/cli/db.py:108",
+      "help": "database to delete (positional argument). Source: odoo/cli/db.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1394,7 +1405,7 @@
       "status": "stable",
       "default": "/usr/share/GeoIP/GeoLite2-City.mmdb",
       "type": "str",
-      "help": "Absolute path to the GeoIP City database file (primary flag in v17+). Source: odoo/tools/config.py:329",
+      "help": "Absolute path to the GeoIP City database file (primary flag in v17+). Source: odoo/tools/config.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

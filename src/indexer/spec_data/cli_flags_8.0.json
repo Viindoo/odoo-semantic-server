@@ -823,7 +823,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "path of the module to deploy (positional, required). Source: deploy.py:65",
+      "help": "path of the module to deploy (positional, required). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -834,7 +834,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the Odoo server (positional, optional). Source: deploy.py:66",
+      "help": "URL of the Odoo server (positional, optional). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -845,7 +845,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to use if server does not use db-filter. Source: deploy.py:67",
+      "help": "database to use if server does not use db-filter. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -856,7 +856,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "login username for authentication. Source: deploy.py:68",
+      "help": "login username for authentication. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -867,7 +867,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "password for authentication. Source: deploy.py:69",
+      "help": "password for authentication. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -878,7 +878,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "verify SSL certificate on connection. Source: deploy.py:70",
+      "help": "verify SSL certificate on connection. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -889,7 +889,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "force init even if module is already installed (updates noupdate=1 records). Source: deploy.py:71",
+      "help": "force init even if module is already installed (updates noupdate=1 records). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -900,7 +900,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "directory where project modules are stored (autodetects from cwd). Passes remaining args to server. Source: start.py:18",
+      "help": "directory where project modules are stored (autodetects from cwd). Passes remaining args to server. Source: start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -911,7 +911,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name (defaults to project directory name, -d shorthand). Source: start.py:20",
+      "help": "database name (defaults to project directory name, -d shorthand). Source: start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -922,7 +922,7 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "module template name or path (-t shorthand). Source: scaffold.py:23",
+      "help": "module template name or path (-t shorthand). Source: scaffold.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
