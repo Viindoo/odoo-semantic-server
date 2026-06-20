@@ -313,6 +313,102 @@ class TestCliHelp:
         assert "not found" in out.lower()
 
 
+class TestCliHelpSubcommands:
+    """WI-D integration: _cli_help() lists sub-commands for subparser commands.
+
+    Seeds a minimal 'db' command + 'db init' / 'db dump' sub-actions at
+    TEST_VERSION (99.0) using compound command_name space convention.
+    Verifies that cli_help('db') lists sub-commands and NOT "no flags indexed",
+    and that cli_help('db init') returns the sub-action's own flag.
+    """
+
+    SUB_VERSION = "99.0"  # TEST_VERSION, cleaned by seeded_spec_neo4j teardown
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _seed_subcommand_data(self, neo4j_driver):
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        # Clean before seed (99.0 may have data from other fixtures).
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self.SUB_VERSION,
+            )
+
+        # Parent command 'db' with shared flags.
+        writer.write_cli_commands([
+            CLICommandInfo(
+                name="db",
+                odoo_version=self.SUB_VERSION,
+                description="Database management commands",
+            ),
+            CLICommandInfo(
+                name="db init",
+                odoo_version=self.SUB_VERSION,
+                description="Create a new database",
+            ),
+            CLICommandInfo(
+                name="db dump",
+                odoo_version=self.SUB_VERSION,
+                description="Dump a database",
+            ),
+        ])
+        writer.write_cli_flags([
+            # Shared flag on parent 'db'.
+            CLIFlagInfo("--config", "db", self.SUB_VERSION, help="config file"),
+            # Sub-action-specific flags.
+            CLIFlagInfo("--with-demo", "db init", self.SUB_VERSION,
+                        help="install demo data"),
+            CLIFlagInfo("--format", "db dump", self.SUB_VERSION,
+                        type="choice", default="zip", help="dump format"),
+        ])
+
+        yield
+
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=self.SUB_VERSION,
+            )
+        writer.close()
+
+    def test_parent_command_lists_sub_commands(self, spec_tools):
+        """cli_help('db') must list sub-commands (not 'no flags indexed')."""
+        out = spec_tools._cli_help("db", flag=None, odoo_version=self.SUB_VERSION)
+        assert "Sub-commands" in out, (
+            f"Expected 'Sub-commands' in output, got:\n{out}"
+        )
+        assert "db init" in out
+        assert "db dump" in out
+        assert "no flags indexed" not in out
+
+    def test_parent_command_also_shows_shared_flags(self, spec_tools):
+        """cli_help('db') shows shared flags AND sub-command list."""
+        out = spec_tools._cli_help("db", flag=None, odoo_version=self.SUB_VERSION)
+        assert "--config" in out
+
+    def test_sub_action_shows_own_flags(self, spec_tools):
+        """cli_help('db init') returns sub-action-specific flags."""
+        out = spec_tools._cli_help(
+            "db init", flag=None, odoo_version=self.SUB_VERSION,
+        )
+        assert "--with-demo" in out
+        assert "db init" in out
+
+    def test_sub_action_compound_name_flag_lookup(self, spec_tools):
+        """cli_help('db dump', '--format') resolves the sub-action flag."""
+        out = spec_tools._cli_help(
+            "db dump", flag="--format", odoo_version=self.SUB_VERSION,
+        )
+        assert "--format" in out
+        assert "zip" in out
+
+
 # --- profile_name filter tests for find_deprecated_usage -------------------
 
 
