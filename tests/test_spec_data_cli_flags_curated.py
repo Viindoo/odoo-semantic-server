@@ -380,9 +380,10 @@ _CLOC_REQUIRED: frozenset[str] = frozenset({"--database", "--path", "--verbose"}
 _GENPROXYTOKEN_REQUIRED: frozenset[str] = frozenset({"--token-length"})
 
 # Version ranges per command (solution-338 §3 + overall-plan §1).
-_DEPLOY_VERSIONS = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
-_START_VERSIONS = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
-_SCAFFOLD_VERSIONS = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
+_V8_TO_V18 = ["8.0", "9.0", "10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
+_DEPLOY_VERSIONS = _V8_TO_V18
+_START_VERSIONS = _V8_TO_V18
+_SCAFFOLD_VERSIONS = _V8_TO_V18
 _CLOC_VERSIONS = ["12.0", "13.0", "14.0", "15.0", "16.0", "17.0", "18.0"]
 _GENPROXYTOKEN_VERSIONS = ["15.0", "16.0", "17.0", "18.0"]
 
