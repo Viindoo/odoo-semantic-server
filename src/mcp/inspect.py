@@ -61,6 +61,7 @@ def _model_inspect(
     from_module: str | None = None,
     kind: str | None = None,
     view_type: str | None = None,
+    name_filter: str | None = None,
 ) -> str:
     """Route to a model-scoped tool by discriminator.
 
@@ -99,6 +100,11 @@ def _model_inspect(
     view_type:
         Filter views by type, e.g. ``'form'`` or ``'tree'``.
         Only applied when ``method='views'``.  Default ``None``.
+    name_filter:
+        Case-insensitive substring match on field/method names (e.g.
+        ``'invoice'`` returns all fields whose names contain ``'invoice'``).
+        Only applied when ``method='fields'`` or ``method='methods'``.
+        Silently ignored for all other methods.  Default ``None``.
 
     Returns
     -------
@@ -125,6 +131,7 @@ def _model_inspect(
             api_key_id=api_key_id,
             limit=limit,
             start_index=start_index,
+            name_filter=name_filter,
         )
 
     if method == "methods":
@@ -135,6 +142,7 @@ def _model_inspect(
             api_key_id=api_key_id,
             limit=limit,
             start_index=start_index,
+            name_filter=name_filter,
         )
 
     if method == "views":

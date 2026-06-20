@@ -295,6 +295,7 @@ def _list_fields_with_inherited(
     kind: str | None = None,
     skip: int = 0,
     limit: int = 50,
+    name_filter: str | None = None,
 ) -> list[dict]:
     """Enumerate fields on ``model`` INCLUDING those inherited from mixins.
 
@@ -311,9 +312,10 @@ def _list_fields_with_inherited(
     inherited; ``edge_kind`` ∈ {``inherits``, ``delegates``}.
 
     Dedup runs IN-QUERY before ``SKIP``/``LIMIT`` so pagination is consistent
-    with :func:`_count_fields_with_inherited`. ``module``/``kind`` filter the
-    kept (deduped) fields. Tenant choke (``_scope_pred("f")``) is applied on the
-    Field node (ADR-0034 fail-closed). Bounded by ``_bounded()`` (issue #273).
+    with :func:`_count_fields_with_inherited`. ``module``/``kind``/``name_filter``
+    filter the kept (deduped) fields. ``name_filter`` is a case-insensitive
+    substring match on ``f.name``. Tenant choke (``_scope_pred("f")``) is applied
+    on the Field node (ADR-0034 fail-closed). Bounded by ``_bounded()`` (issue #273).
     """
     try:
         rows = session.run(
@@ -323,6 +325,7 @@ def _list_fields_with_inherited(
                 WHERE """ + _scope_pred("f") + """
                   AND ($module IS NULL OR f.module = $module)
                   AND ($kind IS NULL OR f.ttype = $kind)
+                  AND ($name_filter IS NULL OR toLower(f.name) CONTAINS toLower($name_filter))
                   AND f.module <> '__unresolved__'
                 OPTIONAL MATCH (mod:Module {name: f.module, odoo_version: $v})
                 // Dedup by field NAME: nearest depth wins (child overrides mixin);
@@ -351,6 +354,7 @@ def _list_fields_with_inherited(
                 """
             ),
             mn=model, v=odoo_version, module=module, kind=kind,
+            name_filter=name_filter,
             skip=skip, limit=limit, **_scope(profile_name),
         ).data()
     except ClientError as exc:
@@ -372,12 +376,16 @@ def _count_fields_with_inherited(
     profile_name: str | None = None,
     module: str | None = None,
     kind: str | None = None,
+    name_filter: str | None = None,
 ) -> int:
     """Count distinct field names on ``model`` including inherited (own + mixin).
 
-    Applies the SAME traversal + name-dedup as
+    Applies the SAME traversal + name-dedup + filters as
     :func:`_list_fields_with_inherited` then ``count(DISTINCT fname)`` — so the
-    "Showing X of N" total stays consistent with the paginated rows. Bounded.
+    "Showing X of N" total stays consistent with the paginated rows. ``name_filter``
+    is a case-insensitive substring match applied identically to the list query
+    (risk R4: omitting it here causes the total to diverge from the filtered rows).
+    Bounded.
     """
     try:
         rec = session.run(
@@ -387,11 +395,13 @@ def _count_fields_with_inherited(
                 WHERE """ + _scope_pred("f") + """
                   AND ($module IS NULL OR f.module = $module)
                   AND ($kind IS NULL OR f.ttype = $kind)
+                  AND ($name_filter IS NULL OR toLower(f.name) CONTAINS toLower($name_filter))
                   AND f.module <> '__unresolved__'
                 RETURN count(DISTINCT f.name) AS c
                 """
             ),
             mn=model, v=odoo_version, module=module, kind=kind,
+            name_filter=name_filter,
             **_scope(profile_name),
         ).single()
     except ClientError as exc:
@@ -472,6 +482,7 @@ def _list_methods_with_inherited(
     module: str | None = None,
     skip: int = 0,
     limit: int = 50,
+    name_filter: str | None = None,
 ) -> list[dict]:
     """Enumerate methods on ``model`` INCLUDING those inherited from mixins.
 
@@ -495,6 +506,7 @@ def _list_methods_with_inherited(
                 MATCH (mth:Method {model: owner_model, odoo_version: $v})
                 WHERE """ + _scope_pred("mth") + """
                   AND ($module IS NULL OR mth.module = $module)
+                  AND ($name_filter IS NULL OR toLower(mth.name) CONTAINS toLower($name_filter))
                   AND mth.module <> '__unresolved__'
                 OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
                 WITH mth.name AS mname, depth, mth, mod, owner_model,
@@ -519,6 +531,7 @@ def _list_methods_with_inherited(
                 """
             ),
             mn=model, v=odoo_version, module=module,
+            name_filter=name_filter,
             skip=skip, limit=limit, **_scope(profile_name),
         ).data()
     except ClientError as exc:
@@ -539,12 +552,15 @@ def _count_methods_with_inherited(
     session,
     profile_name: str | None = None,
     module: str | None = None,
+    name_filter: str | None = None,
 ) -> int:
     """Count distinct method names on ``model`` including inherited (own + mixin).
 
-    Same traversal (INHERITS only — GAP-1) + name-dedup as
+    Same traversal (INHERITS only — GAP-1) + name-dedup + filters as
     :func:`_list_methods_with_inherited` then ``count(DISTINCT mname)`` — keeps
-    the method total consistent with the paginated rows. Bounded.
+    the method total consistent with the paginated rows. ``name_filter`` is
+    applied identically to the list query (risk R4: omitting it causes the total
+    to diverge from the filtered rows). Bounded.
     """
     try:
         rec = session.run(
@@ -553,11 +569,13 @@ def _count_methods_with_inherited(
                 MATCH (mth:Method {model: owner_model, odoo_version: $v})
                 WHERE """ + _scope_pred("mth") + """
                   AND ($module IS NULL OR mth.module = $module)
+                  AND ($name_filter IS NULL OR toLower(mth.name) CONTAINS toLower($name_filter))
                   AND mth.module <> '__unresolved__'
                 RETURN count(DISTINCT mth.name) AS c
                 """
             ),
             mn=model, v=odoo_version, module=module,
+            name_filter=name_filter,
             **_scope(profile_name),
         ).single()
     except ClientError as exc:

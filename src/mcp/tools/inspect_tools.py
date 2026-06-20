@@ -124,6 +124,7 @@ def model_inspect(
     from_module: str | None = None,
     kind: str | None = None,
     view_type: str | None = None,
+    name_filter: str | None = None,
 ) -> ToolResult:
     """Method-discriminator superset for model-scoped reads. See ADR-0028.
 
@@ -153,6 +154,13 @@ def model_inspect(
         kind: Filter fields by ttype, e.g. 'many2one' - fields only.
         view_type: Filter views, e.g. 'form'/'tree'/'list' - views only.
             'list' is the v18+ alias for 'tree'.
+        name_filter: Substring filter on field/method names (case-insensitive).
+            Applied when method='fields' or method='methods'. Reduces payload
+            for large models (e.g. sale.order >130 fields, account.move >150).
+            Example: name_filter='invoice' returns fields whose names contain
+            'invoice'. Silently ignored for summary/views/field/method/extenders.
+            PREFER entity_lookup(kind='field', model=<model>, field=<exact_name>)
+            for exact single-field lookup - name_filter is for substring browsing.
     """
     text = _model_inspect(
         model=model,
@@ -167,6 +175,7 @@ def model_inspect(
         from_module=from_module,
         kind=kind,
         view_type=view_type,
+        name_filter=name_filter,
     )
     return ToolResult(content=[TextContent(type="text", text=text)])
 
