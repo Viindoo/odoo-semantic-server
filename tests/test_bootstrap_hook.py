@@ -118,6 +118,8 @@ def test_converge_true_admin_value_preserved_metadata_resynced(bootstrap_db):
     metadata on the next bootstrap, while the admin-tuned value_json is left
     untouched and updated_at is NOT bumped.
     """
+    import json
+
     from src.settings_registry import register_settings_idempotent
 
     # This key's catalogue requires_restart is True (PR #334).
@@ -126,17 +128,34 @@ def test_converge_true_admin_value_preserved_metadata_resynced(bootstrap_db):
 
     bootstrap_db.autocommit = False
 
+    # Step 1: Populate ALL catalogue rows so the table is in the "already bootstrapped"
+    # state.  Without this, calling register_settings_idempotent a second time would
+    # insert the 28 other catalogue rows and count them as inserted, making the
+    # inserted==0 assertion wrong.
+    register_settings_idempotent(bootstrap_db, converge_metadata=False)
+
+    # Step 2: Overwrite the target key with stale metadata + a custom admin value,
+    # simulating an existing deployment where the catalogue was updated after bootstrap.
     with bootstrap_db.cursor() as cur:
-        _seed_stale_row(cur, key, admin_value)
-        # Capture updated_at to prove a metadata re-sync does NOT bump it.
+        cur.execute(
+            """
+            UPDATE app_settings
+            SET value_json = %s::jsonb,
+                requires_restart = false,
+                description = 'stale'
+            WHERE key = %s
+            """,
+            (json.dumps({"v": admin_value}), key),
+        )
+        # Capture updated_at AFTER the manual UPDATE (before the function-under-test).
         cur.execute("SELECT updated_at FROM app_settings WHERE key = %s", (key,))
         updated_at_before = cur.fetchone()[0]
 
-    # Re-bootstrap with convergence — must re-sync metadata but preserve value.
+    # Step 3: Re-bootstrap with convergence — all 29 rows already exist, so 0 inserted.
     inserted = register_settings_idempotent(bootstrap_db, converge_metadata=True)
     bootstrap_db.autocommit = True
 
-    # The row pre-existed → it is NOT counted as inserted.
+    # All rows pre-existed → none are counted as inserted.
     assert inserted == 0, f"existing row must not be counted as inserted, got {inserted}"
 
     with bootstrap_db.cursor() as cur:
@@ -168,6 +187,8 @@ def test_converge_false_leaves_existing_row_unchanged(bootstrap_db):
     default path must NOT touch an existing row — neither its stale metadata nor
     its value. Insert count is 0.
     """
+    import json
+
     from src.settings_registry import register_settings_idempotent
 
     key = "mcp.resource_cache_ttl_seconds"
@@ -175,12 +196,28 @@ def test_converge_false_leaves_existing_row_unchanged(bootstrap_db):
 
     bootstrap_db.autocommit = False
 
+    # Step 1: Populate ALL catalogue rows so the table is in the "already bootstrapped"
+    # state.  Without this, calling register_settings_idempotent a second time would
+    # insert the 28 other catalogue rows and count them as inserted, making the
+    # inserted==0 assertion wrong.
+    register_settings_idempotent(bootstrap_db, converge_metadata=False)
+
+    # Step 2: Overwrite the target key with stale metadata + a custom admin value.
     with bootstrap_db.cursor() as cur:
-        _seed_stale_row(cur, key, admin_value)
+        cur.execute(
+            """
+            UPDATE app_settings
+            SET value_json = %s::jsonb,
+                requires_restart = false,
+                description = 'stale'
+            WHERE key = %s
+            """,
+            (json.dumps({"v": admin_value}), key),
+        )
         cur.execute("SELECT updated_at FROM app_settings WHERE key = %s", (key,))
         updated_at_before = cur.fetchone()[0]
 
-    # Default path (converge_metadata=False) — DO NOTHING.
+    # Step 3: Default path (converge_metadata=False) — DO NOTHING for all 29 existing rows.
     inserted = register_settings_idempotent(bootstrap_db)  # no converge flag
     bootstrap_db.autocommit = True
 

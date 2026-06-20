@@ -371,8 +371,10 @@ def register_settings_idempotent(conn, *, converge_metadata: bool = False) -> in
     (avoids churn on every restart).
 
     **WHY only the owner converges:**  the ONLY consumer of the DB-row metadata
-    columns is the webui admin Settings grid (``GET /api/admin/settings``),
-    which runs in the owner-DSN webui process.  The MCP server reads ZERO
+    columns is the admin settings LIST grid (``GET /api/admin/settings``),
+    which runs in the owner-DSN webui process.  (The single-key ``GET /{key}``
+    reads metadata from the in-process catalogue, not from DB rows.)
+    The MCP server reads ZERO
     metadata columns from ``app_settings`` (it reads only ``value_json``;
     a missing row falls back to this in-process registry), so it never needs
     convergence.  Convergence is therefore gated to the owner process, and
@@ -402,6 +404,9 @@ def register_settings_idempotent(conn, *, converge_metadata: bool = False) -> in
         conflict_action = (
             "DO UPDATE SET\n                    "
             + _METADATA_SET_CLAUSE
+            # RETURNING (xmax = 0) is reliable here: bootstrap runs as a single
+            # serial transaction per process start (no concurrent updater racing
+            # this upsert), so xmax = 0 unambiguously means a fresh INSERT.
             + "\n                RETURNING (xmax = 0) AS was_inserted"
         )
     else:
