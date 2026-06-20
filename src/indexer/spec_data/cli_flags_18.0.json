@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
-  "_generated_at": "2026-05-17",
-  "_note": "v18 source not available on disk (OBS-1). Derived from v17 baseline + known v18/v19 additions (db_replica, reinit, with-demo). Deprecated compat aliases (--xmlrpc-*, --longpolling-port) still present in v18. Refresh when v18 source is cloned.",
+  "_generated_at": "2026-06-21",
+  "_note": "v18 source not available on disk (OBS-1). Derived from v17 baseline + known v18/v19 additions (db_replica, reinit, with-demo). Deprecated compat aliases (--xmlrpc-*, --longpolling-port) still present in v18. Refresh when v18 source is cloned. Manual curation 2026-06-21: i18n export/import/loadlang/load flags marked deprecated (v19 subparser replaces them).",
   "commands": [
     {
       "name": "server",

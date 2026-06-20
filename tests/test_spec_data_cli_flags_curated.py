@@ -143,7 +143,7 @@ class TestFlagSchemaValid:
 
     @pytest.mark.parametrize("version", CURATED_VERSIONS)
     def test_no_duplicate_flag_names(self, version: str) -> None:
-        # WI-B: dedup by (flag_name, command_name) tuple — a flag like --config
+        # WI-B: dedup by (flag_name, command_name) tuple - a flag like --config
         # may appear under multiple commands (server, db, i18n) without being a
         # duplicate. Only a flag with the SAME name on the SAME command is a dup.
         data = _load_version(version)
@@ -224,7 +224,7 @@ class TestV19SubparserCommands:
         )
 
         # Each sub-action must have at least one flag indexed under it.
-        # (module force-demo only inherits common flags — the 3 common flags
+        # (module force-demo only inherits common flags - the 3 common flags
         # --config/--database/--data-dir are indexed under "module", not under
         # "module force-demo"; force-demo itself has 0 extra flags, so this check
         # applies only to sub-actions that have extra flags.)
@@ -261,7 +261,7 @@ class TestV19SubparserCommands:
         Commands that inherit server flags are expected to have at least their
         extra flags indexed separately (shell: 2, start: 2, populate: 3, etc.).
         module force-demo has only the 3 common flags on the parent 'module'
-        command_name, zero extra flags of its own — excluded deliberately.
+        command_name, zero extra flags of its own - excluded deliberately.
         """
         data = _load_version(self.V19)
         # Subparser parents delegate to compound sub-action names; help has no
@@ -283,7 +283,7 @@ class TestV19SubparserCommands:
         )
 
     def test_no_stale_command_v19(self) -> None:
-        """tsconfig was removed in v19 — must NOT appear as active in v19 JSON.
+        """tsconfig was removed in v19 - must NOT appear as active in v19 JSON.
 
         Acceptable: absent entirely, or present with status='removed' on its flags.
         Unacceptable: present in commands[] with no 'removed' marker.

@@ -1,7 +1,7 @@
 """CLI spec MCP tool (split out of src/mcp/tools/spec.py, issue #336).
 
 One ``@offload_neo4j`` tool and its implementation helpers:
-  - ``cli_help`` — odoo-bin CLICommand / CLIFlag spec lookup.
+  - ``cli_help`` - odoo-bin CLICommand / CLIFlag spec lookup.
 
 The ``cli_help`` tool was previously co-located in ``spec.py`` alongside the
 other spec tools (lookup_core_api / api_version_diff / find_deprecated_usage /
@@ -76,12 +76,17 @@ def _format_cli_command_summary(
         # ADR-0023 §1.3: sub-commands branch before flags branch.
         sub_connector = "├─" if has_flags else "└─"
         lines.append(f"{sub_connector} Sub-commands ({len(sub_cmds)}):")
-        last_sub_idx = len(sub_cmds) - 1
-        for i, sc in enumerate(sub_cmds):
-            sub_name_connector = "└─" if i == last_sub_idx else "├─"
-            lines.append(f"    {sub_name_connector} {sc}")
+        # ADR-0023 §1.3: indent depends on whether this branch is the last child.
+        # Non-last parent (├─) -> child indent is "│   " (pipe + 3 spaces).
+        # Last parent (└─)     -> child indent is "    " (4 spaces).
+        child_indent = "│   " if has_flags else "    "
+        # All sub-command entries use ├─; Tip is the last leaf so it gets └─.
+        for sc in sub_cmds:
+            lines.append(f"{child_indent}├─ {sc}")
+        # Tip is the last leaf under Sub-commands; uses └─ with same indent.
         lines.append(
-            f"    Tip: use cli_help('{name} <sub-command>', ...) for sub-command flags"
+            f"{child_indent}└─ Tip: use cli_help('{name} <sub-command>', ...)"
+            f" for sub-command flags"
         )
 
     if has_flags:
@@ -159,7 +164,7 @@ def _cli_help(
                 result = _format_cli_flag_detail(data, replacement, odoo_version)
             if curate_status == "pending":
                 result = (
-                    f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
+                    f"ℹ Spec data v{odoo_version} pending curation - limited results.\n"
                     + result
                 )
             return result
@@ -211,16 +216,19 @@ def _cli_help(
                 )
             if curate_status == "pending":
                 result = (
-                    f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
+                    f"ℹ Spec data v{odoo_version} pending curation - limited results.\n"
                     + result
                 )
             return result
 
-        # No command — list all CLI commands at this version.
+        # No command - list all CLI commands at this version.
+        # Filter compound names (e.g. "db init", "i18n export") so only
+        # top-level commands appear; sub-actions are reachable via cli_help(cmd).
         cmds = _srv._data_bounded(
             session,
             """
             MATCH (c:CLICommand {odoo_version: $v})
+            WHERE NOT c.name CONTAINS ' '
             RETURN c.name AS name
             ORDER BY c.name
             """,
@@ -234,11 +242,11 @@ def _cli_help(
         )
         if curate_status == "pending":
             result = (
-                f"ℹ Spec data v{odoo_version} pending curation — limited results.\n"
+                f"ℹ Spec data v{odoo_version} pending curation - limited results.\n"
                 + result
             )
         return result
-    lines = [f"cli_help(Odoo {odoo_version}) — {len(cmds)} commands"]
+    lines = [f"cli_help(Odoo {odoo_version}) - {len(cmds)} commands"]
     last_idx = len(cmds) - 1
     for i, c in enumerate(cmds):
         connector = "└─" if i == last_idx else "├─"
@@ -246,7 +254,7 @@ def _cli_help(
     result = "\n".join(lines)
     if curate_status == "pending":
         result = (
-            f"ℹ Spec data v{odoo_version} pending curation — limited results.\n" + result
+            f"ℹ Spec data v{odoo_version} pending curation - limited results.\n" + result
         )
     return result
 
@@ -265,7 +273,7 @@ def cli_help(
     odoo-bin have", "odoo-bin command for database update", "cách dùng
     odoo-bin shell", "tham số nào để cài module mới", "is --longpolling-port
     still valid in Odoo 18"
-    PREFER over: reading Odoo docs — returns version-specific CLI info from
+    PREFER over: reading Odoo docs - returns version-specific CLI info from
     indexed CLICommand catalogue, including deprecated flag replacements
     SKIP when: user wants API reference → use lookup_core_api; user wants to
     check module existence → use check_module_exists
@@ -293,8 +301,8 @@ def cli_help(
 # sys.modules['src.mcp.server'] at THIS point is the generation that is importing
 # this module (server.py imports this module from the very end of its own body,
 # and that generation registered these tools onto its `mcp`). Binding at
-# end-of-module — rather than via a top-level `from src.mcp import server`, which
-# reads the stale `src.mcp` package attribute after a pop+reimport — makes `_srv`
+# end-of-module - rather than via a top-level `from src.mcp import server`, which
+# reads the stale `src.mcp` package attribute after a pop+reimport - makes `_srv`
 # track the SAME generation as the tool objects defined above. That restores the
 # pre-refactor bare-name behaviour: the impl bodies read the hub through
 # `_srv.<name>` at call time so monkeypatch.setattr(srv, "_get_driver", ...) and
