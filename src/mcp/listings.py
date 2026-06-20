@@ -75,6 +75,7 @@ def _list_fields(
     limit: int = 200,
     start_index: int = 0,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
+    name_filter: str | None = None,
 ) -> str:
     """Layer-2 — enumerate fields on a model, grouped by module.
 
@@ -82,6 +83,11 @@ def _list_fields(
     `module` restricts to one declaring module.  When ``module`` is set,
     magic-field synthetic rows are suppressed (module=``"<builtin>"`` would
     not match any real module filter value).
+    `name_filter` is a case-insensitive substring match on field names (e.g.
+    'invoice' returns all fields whose names contain 'invoice'). Applied
+    IN-QUERY (Cypher), so pagination + "Showing X of N" totals are always
+    consistent with the filtered set. Magic fields are filtered Python-side
+    using the same substring logic (risk R5: magic fields have no Neo4j node).
     `limit` caps the Cypher query size; the render cap is LIST_PREVIEW_FIELDS_MAX.
     `start_index` is a zero-based pagination cursor (Cypher SKIP).
     `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
@@ -112,14 +118,17 @@ def _list_fields(
         try:
             rows = _list_fields_with_inherited(
                 model, odoo_version, session, profile_name,
-                module=module, kind=kind,
+                module=module, kind=kind, name_filter=name_filter,
                 skip=start_index, limit=effective_limit,
             )
 
-            # Separate count query (same traversal + DISTINCT-name dedup) so the
-            # "Showing X of N" total always matches the paginated, deduped rows.
+            # Separate count query (same traversal + DISTINCT-name dedup + filters)
+            # so the "Showing X of N" total always matches the paginated, deduped
+            # rows. name_filter MUST be passed here (risk R4: omitting it causes the
+            # total to reflect all fields, not the filtered subset).
             total = _count_fields_with_inherited(
-                model, odoo_version, session, profile_name, module=module, kind=kind
+                model, odoo_version, session, profile_name,
+                module=module, kind=kind, name_filter=name_filter,
             )
         except OrmQueryTimeout as exc:
             # List path has no _reraise_timeout (always returns a string), so the
@@ -211,6 +220,7 @@ def _list_fields(
             for fname, (ttype, _comodel) in MAGIC_FIELDS.items()
             if fname not in existing_names
             and (kind is None or kind == ttype)
+            and (name_filter is None or name_filter.lower() in fname.lower())
         ]
 
     header = f"Fields of {model} (Odoo {odoo_version})"
@@ -219,6 +229,8 @@ def _list_fields(
     # Group header matches the old "repo=None → '?', module='<builtin>'" format so that
     # existing tests checking ``"<builtin>" in out`` continue to pass.
     lines = [header]
+    if name_filter is not None:
+        lines.append(f"├─ filter: name_filter={name_filter!r}")
     if magic_prelude_rows:
         lines.append("├─ [?] <builtin>")
         builtin_tagged = [f"{r['name']} : {r['ttype']}" for r in magic_prelude_rows]
@@ -378,11 +390,16 @@ def _list_methods(
     limit: int = 200,
     start_index: int = 0,
     api_key_id: str = _ANONYMOUS_API_KEY_ID,
+    name_filter: str | None = None,
 ) -> str:
     """Layer-4 — enumerate methods on a model, grouped by module.
 
     Methods appearing in ≥2 modules for the same model are marked with `(*)`
     per ADR-0023 §5.3 to flag override-points.
+    `name_filter` is a case-insensitive substring match on method names (e.g.
+    '_compute' returns all methods whose names contain '_compute'). Applied
+    IN-QUERY (Cypher), so pagination + "Showing X of N" totals are always
+    consistent with the filtered set.
     `start_index` is a zero-based pagination cursor (Cypher SKIP).
     `api_key_id` scopes minted refs to the calling tenant (default: 'anonymous').
     """
@@ -417,13 +434,17 @@ def _list_methods(
             rows = _list_methods_with_inherited(
                 model, odoo_version, session, profile_name,
                 module=module, skip=start_index, limit=effective_limit,
+                name_filter=name_filter,
             )
             # Map convention_kind → the `kind` key the existing renderer expects.
             for _r in rows:
                 _r["kind"] = _r.get("convention_kind")
 
+            # name_filter MUST be passed here (risk R4: omitting it causes the total
+            # to reflect all methods, not the filtered subset).
             total = _count_methods_with_inherited(
-                model, odoo_version, session, profile_name, module=module
+                model, odoo_version, session, profile_name, module=module,
+                name_filter=name_filter,
             )
 
             # Override-marker (GAP-2): a method is marked (*) when it is declared
@@ -486,6 +507,8 @@ def _list_methods(
         groups[key].append((r, ref_id))
 
     lines = [header]
+    if name_filter is not None:
+        lines.append(f"├─ filter: name_filter={name_filter!r}")
     for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")
