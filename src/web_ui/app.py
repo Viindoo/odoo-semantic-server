@@ -46,7 +46,10 @@ async def _lifespan(app):
     # app_settings table (e.g. m13_010 not yet applied) must not block startup.
     try:
         from src.settings_registry import bootstrap_settings_safe
-        bootstrap_settings_safe()
+        # webui runs on the OWNER DSN — the only process that converges
+        # catalogue metadata onto existing rows (the admin Settings grid is the
+        # sole consumer of those columns). osm_reader stays INSERT-only.
+        bootstrap_settings_safe(converge_metadata=True)
     except Exception as exc:  # noqa: BLE001
         _logger.warning("Admin settings bootstrap failed (non-fatal): %s", exc)
 
