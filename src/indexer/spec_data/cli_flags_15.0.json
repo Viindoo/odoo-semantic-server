@@ -892,7 +892,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Path of the module to deploy. Source: deploy.py:64",
+      "help": "Path of the module to deploy. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -903,7 +903,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the server (default=http://localhost:8069). Source: deploy.py:65",
+      "help": "URL of the server (default=http://localhost:8069). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -914,7 +914,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Database to use if server does not use db-filter. Source: deploy.py:66",
+      "help": "Database to use if server does not use db-filter. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -925,7 +925,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "Login (default=admin). Source: deploy.py:67",
+      "help": "Login (default=admin). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -936,7 +936,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "Password (default=admin). Source: deploy.py:68",
+      "help": "Password (default=admin). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -947,7 +947,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "Verify SSL certificate. Source: deploy.py:69",
+      "help": "Verify SSL certificate. Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -958,7 +958,7 @@
       "status": "stable",
       "default": null,
       "type": null,
-      "help": "Force init even if module is already installed (will update noupdate=1 records). Source: deploy.py:70",
+      "help": "Force init even if module is already installed (will update noupdate=1 records). Source: deploy.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -969,7 +969,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "Directory where project modules are stored (default: .). Source: start.py:32",
+      "help": "Directory where project modules are stored (default: .). Source: start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -980,7 +980,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Specify the database name. Source: start.py:34",
+      "help": "Specify the database name. Source: start.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -991,7 +991,7 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "Use a custom module template, can be a template name or path (default: default). Source: scaffold.py:17-19",
+      "help": "Use a custom module template, can be a template name or path (default: default). Source: scaffold.py-19",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1002,7 +1002,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Database name. Source: cloc.py:32",
+      "help": "Database name. Source: cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1013,7 +1013,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "File or directory path. Source: cloc.py:33",
+      "help": "File or directory path. Source: cloc.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1022,9 +1022,20 @@
       "flag_name": "--verbose",
       "command_name": "cloc",
       "status": "stable",
+      "default": 0,
+      "type": "count",
+      "help": "Verbose output. Source: cloc.py",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--config",
+      "command_name": "genproxytoken",
+      "status": "stable",
       "default": null,
-      "type": null,
-      "help": "Verbose output. Source: cloc.py:34",
+      "type": "str",
+      "help": "specify alternate config file (-c shorthand). Source: genproxytoken.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1033,9 +1044,9 @@
       "flag_name": "--token-length",
       "command_name": "genproxytoken",
       "status": "stable",
-      "default": "16",
+      "default": 16,
       "type": "int",
-      "help": "Token Length (default: 16). Source: genproxytoken.py:32",
+      "help": "Token Length (default: 16). Source: genproxytoken.py",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

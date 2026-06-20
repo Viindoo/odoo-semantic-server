@@ -556,7 +556,7 @@ def _count_methods_with_inherited(
 ) -> int:
     """Count distinct method names on ``model`` including inherited (own + mixin).
 
-    Same traversal (INHERITS only — GAP-1) + name-dedup + filters as
+    Same traversal (INHERITS only - GAP-1) + name-dedup + filters as
     :func:`_list_methods_with_inherited` then ``count(DISTINCT mname)`` — keeps
     the method total consistent with the paginated rows. ``name_filter`` is
     applied identically to the list query (risk R4: omitting it causes the total
