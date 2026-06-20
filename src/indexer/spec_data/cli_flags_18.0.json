@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-06-21",
-  "_note": "v18 source not available on disk (OBS-1). Derived from v17 baseline + known v18/v19 additions (db_replica, reinit, with-demo). Deprecated compat aliases (--xmlrpc-*, --longpolling-port) still present in v18. Refresh when v18 source is cloned. Manual curation 2026-06-21: i18n export/import/loadlang/load flags marked deprecated (v19 subparser replaces them).",
+  "_note": "v18 baseline derived from v17 + db_replica additions, verified against ~/git/odoo18 source. Manual curation 2026-06-21: (1) i18n export/import/loadlang/load flags marked deprecated (v19 subparser replaces them); (2) removed 4 flags that do NOT exist in v18 odoo/tools/config.py - --db_app_name/--reinit/--with-demo (v19-only) and --longpolling-port (removed in v18, was a deprecated alias in v16/v17); (3) added upgrade_code command + its 6 flags (--script/--from/--to/--glob/--dry-run/--addons-path) from odoo/cli/upgrade_code.py.",
   "commands": [
     {
       "name": "server",
@@ -62,6 +62,11 @@
       "name": "obfuscate",
       "description": "Obfuscate sensitive data in a database",
       "file_path": "odoo/cli/obfuscate.py"
+    },
+    {
+      "name": "upgrade_code",
+      "description": "Automated code upgrade helper for Odoo migrations",
+      "file_path": "odoo/cli/upgrade_code.py"
     }
   ],
   "flags": [
@@ -227,17 +232,6 @@
       "type": "int",
       "help": "Listen port for the main HTTP service",
       "replacement_flag_name": null,
-      "env_name": null,
-      "posix_only": false
-    },
-    {
-      "flag_name": "--longpolling-port",
-      "command_name": null,
-      "status": "deprecated",
-      "default": "0",
-      "type": "int",
-      "help": "Deprecated alias to the gevent-port option",
-      "replacement_flag_name": "--gevent-port",
       "env_name": null,
       "posix_only": false
     },
@@ -946,28 +940,6 @@
       "posix_only": true
     },
     {
-      "flag_name": "--db_app_name",
-      "command_name": null,
-      "status": "stable",
-      "default": "odoo-{pid}",
-      "type": "int",
-      "help": "specify the application name in the database, {pid} is substituted by the process pid",
-      "replacement_flag_name": null,
-      "env_name": "PGAPPNAME",
-      "posix_only": false
-    },
-    {
-      "flag_name": "--reinit",
-      "command_name": null,
-      "status": "stable",
-      "default": "[]",
-      "type": "comma",
-      "help": "reinitialize one or more modules (comma-separated list), requires -d",
-      "replacement_flag_name": null,
-      "env_name": null,
-      "posix_only": false
-    },
-    {
       "flag_name": "--db_replica_port",
       "command_name": null,
       "status": "stable",
@@ -990,12 +962,67 @@
       "posix_only": false
     },
     {
-      "flag_name": "--with-demo",
-      "command_name": null,
+      "flag_name": "--script",
+      "command_name": "upgrade_code",
       "status": "stable",
       "default": null,
-      "type": "without_demo",
-      "help": "install demo data in new databases",
+      "type": "str",
+      "help": "run a single upgrade script by name (mutually exclusive with --from). Source: upgrade_code.py:184",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--from",
+      "command_name": "upgrade_code",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "run all scripts starting from this version, inclusive (mutually exclusive with --script). Source: upgrade_code.py:188",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--to",
+      "command_name": "upgrade_code",
+      "status": "stable",
+      "default": "current_version",
+      "type": "str",
+      "help": "run all scripts until this version, inclusive (default: current Odoo version). Source: upgrade_code.py:194",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--glob",
+      "command_name": "upgrade_code",
+      "status": "stable",
+      "default": "**/*",
+      "type": "str",
+      "help": "glob pattern to select files to rewrite. Source: upgrade_code.py:201",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--dry-run",
+      "command_name": "upgrade_code",
+      "status": "stable",
+      "default": "false",
+      "type": null,
+      "help": "list files that would be rewritten without making changes. Source: upgrade_code.py:205",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--addons-path",
+      "command_name": "upgrade_code",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "additional addons paths (comma-separated). Source: upgrade_code.py:209",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

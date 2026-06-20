@@ -304,3 +304,60 @@ class TestV19SubparserCommands:
                 "no flag with status='removed'. Either remove it from commands[] "
                 "or add a sentinel flag with status='removed'."
             )
+
+
+class TestV18SpecCorrectness:
+    """v18 spec must reflect the REAL odoo-bin CLI (verified against odoo18 source).
+
+    Guards the correctness fix that removed 4 flags absent from
+    odoo18/odoo/tools/config.py and added the upgrade_code command + 6 flags
+    from odoo18/odoo/cli/upgrade_code.py. The test protects the BEHAVIOR
+    "v18 spec mirrors the actual v18 CLI", not a frozen flag count.
+    """
+
+    V18 = "18.0"
+
+    # These flags do NOT exist in odoo18/odoo/tools/config.py:
+    #   --db_app_name / --reinit / --with-demo  -> v19-only additions
+    #   --longpolling-port                      -> removed in v18 (alias in v16/v17)
+    PHANTOM_FLAGS = {"--db_app_name", "--reinit", "--with-demo", "--longpolling-port"}
+
+    # upgrade_code parser flags, from odoo18/odoo/cli/upgrade_code.py argparse.
+    UPGRADE_CODE_FLAGS = {
+        "--script", "--from", "--to", "--glob", "--dry-run", "--addons-path",
+    }
+
+    def test_phantom_flags_absent_v18(self) -> None:
+        """The 4 v19-only / removed flags must NOT appear in the v18 spec."""
+        data = _load_version(self.V18)
+        present = {
+            f.get("flag_name")
+            for f in data.get("flags", [])
+            if f.get("flag_name") in self.PHANTOM_FLAGS
+        }
+        assert not present, (
+            f"cli_flags_18.0.json: flags absent from v18 source must be removed, "
+            f"but found: {sorted(present)}"
+        )
+
+    def test_upgrade_code_command_indexed_v18(self) -> None:
+        """upgrade_code command must be present in the v18 commands[]."""
+        data = _load_version(self.V18)
+        command_names = {c.get("name") for c in data.get("commands", [])}
+        assert "upgrade_code" in command_names, (
+            "cli_flags_18.0.json: 'upgrade_code' command missing from commands[] "
+            "(exists at odoo18/odoo/cli/upgrade_code.py)"
+        )
+
+    def test_upgrade_code_flags_indexed_v18(self) -> None:
+        """All 6 upgrade_code flags must be indexed under command_name='upgrade_code'."""
+        data = _load_version(self.V18)
+        uc_flags = {
+            f.get("flag_name")
+            for f in data.get("flags", [])
+            if f.get("command_name") == "upgrade_code"
+        }
+        missing = self.UPGRADE_CODE_FLAGS - uc_flags
+        assert not missing, (
+            f"cli_flags_18.0.json: upgrade_code flags missing: {sorted(missing)}"
+        )
