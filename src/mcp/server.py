@@ -3250,6 +3250,7 @@ for _tool_mod in (
     "src.mcp.tools.inspect_tools",   # Phase 3
     "src.mcp.tools.session_tools",   # Phase 3
     "src.mcp.tools.spec",            # Phase 4
+    "src.mcp.tools.cli",             # #336 (cli_help split out of spec)
     "src.mcp.tools.discovery",       # Phase 5
     "src.mcp.tools.guidance",        # A2 (split out of discovery)
     "src.mcp.tools.test_tools",      # WI-4 test-surface tools (25->31)
@@ -3274,6 +3275,7 @@ for _tool_mod in (
             pass
 del _tool_mod, _pkg_name, _sub, _pkg
 
+from src.mcp.tools import cli as _cli_tools  # noqa: E402,F401 — #336 cli_help split
 from src.mcp.tools import discovery as _discovery_tools  # noqa: E402,F401
 from src.mcp.tools import guidance as _guidance_tools  # noqa: E402,F401
 from src.mcp.tools import inspect_tools as _inspect_tools  # noqa: E402,F401
@@ -3282,6 +3284,15 @@ from src.mcp.tools import session_tools as _session_tools  # noqa: E402,F401
 from src.mcp.tools import spec as _spec_tools  # noqa: E402,F401
 from src.mcp.tools import stylesheet as _stylesheet_tools  # noqa: E402,F401
 from src.mcp.tools import test_tools as _test_tools  # noqa: E402,F401 — WI-4 test-surface
+
+# Re-exports from cli.py (#336 split): _cli_help / cli_help moved out of spec.py
+# to keep that module under TOOL_MODULE_MAX_LINES. Tests import these via
+# src.mcp.server (e.g. test_mcp_spec_tools.py spec_tools fixture), so they must
+# remain accessible under the same server namespace as before.
+from src.mcp.tools.cli import (  # noqa: E402,F401
+    _cli_help,
+    cli_help,
+)
 
 # Phase 5 / A2 re-exports: the two public discovery tools, plus the impl symbols
 # that tests import via src.mcp.server (directly, e.g. test_mcp_find_examples.py
@@ -3365,7 +3376,6 @@ from src.mcp.tools.spec import (  # noqa: E402,F401
     _LINT_V0_BANNER,
     _api_version_diff,
     _build_noqa_suppress,
-    _cli_help,
     _compile_lint_pattern,
     _find_deprecated_usage,
     _format_deprecated_usage,
@@ -3375,7 +3385,6 @@ from src.mcp.tools.spec import (  # noqa: E402,F401
     _lookup_core_api,
     _match_lint_rule_lines,
     api_version_diff,
-    cli_help,
     find_deprecated_usage,
     lint_check,
     lookup_core_api,

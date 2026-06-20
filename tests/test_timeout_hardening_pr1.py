@@ -161,7 +161,7 @@ _SYNC_TOOL_PATHS = [
         ._lint_check_xml(TIMEOUT_TEST_VERSION),
         id="lint_check-xml"),
     pytest.param(
-        lambda s: __import__("src.mcp.tools.spec", fromlist=["_cli_help"])
+        lambda s: __import__("src.mcp.tools.cli", fromlist=["_cli_help"])
         ._cli_help(None, odoo_version=TIMEOUT_TEST_VERSION),
         id="cli_help"),
     # --- PR-2 PURE guidance.py (#287) ---
