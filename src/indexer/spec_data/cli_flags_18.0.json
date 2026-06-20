@@ -695,33 +695,33 @@
     {
       "flag_name": "--language",
       "command_name": null,
-      "status": "stable",
+      "status": "deprecated",
       "default": null,
       "type": null,
       "help": "specify the language of the translation file. Use it with --i18n-export or --i18n-import",
-      "replacement_flag_name": null,
+      "replacement_flag_name": "odoo-bin i18n import --language (v19 subcommand)",
       "env_name": null,
       "posix_only": false
     },
     {
       "flag_name": "--i18n-export",
       "command_name": null,
-      "status": "stable",
+      "status": "deprecated",
       "default": null,
       "type": null,
       "help": "export all sentences to be translated to a CSV file, a PO file or a TGZ archive and exit",
-      "replacement_flag_name": null,
+      "replacement_flag_name": "odoo-bin i18n export (v19 subcommand)",
       "env_name": null,
       "posix_only": false
     },
     {
       "flag_name": "--i18n-import",
       "command_name": null,
-      "status": "stable",
+      "status": "deprecated",
       "default": null,
       "type": null,
       "help": "import a CSV or a PO file with translations and exit. The '-l' option is required.",
-      "replacement_flag_name": null,
+      "replacement_flag_name": "odoo-bin i18n import (v19 subcommand)",
       "env_name": null,
       "posix_only": false
     },
@@ -739,11 +739,11 @@
     {
       "flag_name": "--modules",
       "command_name": null,
-      "status": "stable",
+      "status": "deprecated",
       "default": null,
       "type": null,
       "help": "specify modules to export. Use in combination with --i18n-export",
-      "replacement_flag_name": null,
+      "replacement_flag_name": "odoo-bin i18n export MODULES (v19 subcommand, positional)",
       "env_name": null,
       "posix_only": false
     },

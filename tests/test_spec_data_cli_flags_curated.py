@@ -143,17 +143,20 @@ class TestFlagSchemaValid:
 
     @pytest.mark.parametrize("version", CURATED_VERSIONS)
     def test_no_duplicate_flag_names(self, version: str) -> None:
+        # WI-B: dedup by (flag_name, command_name) tuple — a flag like --config
+        # may appear under multiple commands (server, db, i18n) without being a
+        # duplicate. Only a flag with the SAME name on the SAME command is a dup.
         data = _load_version(version)
         flags = data.get("flags", [])
-        names = [f.get("flag_name") for f in flags]
-        seen: set[str] = set()
+        keys = [(f.get("flag_name"), f.get("command_name")) for f in flags]
+        seen: set[tuple] = set()
         dups = []
-        for name in names:
-            if name in seen:
-                dups.append(name)
-            seen.add(name)
+        for key in keys:
+            if key in seen:
+                dups.append(key)
+            seen.add(key)
         assert not dups, (
-            f"cli_flags_{version}.json: duplicate flag_names: {dups}"
+            f"cli_flags_{version}.json: duplicate (flag_name, command_name) pairs: {dups}"
         )
 
     @pytest.mark.parametrize("version", CURATED_VERSIONS)
@@ -166,3 +169,139 @@ class TestFlagSchemaValid:
         assert not missing, (
             f"cli_flags_{version}.json: missing essential flags: {sorted(missing)}"
         )
+
+
+class TestV19SubparserCommands:
+    """WI-D: Static guards verifying v19 subparser commands are fully indexed.
+
+    These tests are written RED first (before WI-A fills the data) and are
+    expected to turn GREEN once cli_flags_19.0.json is complete.
+    """
+
+    V19 = "19.0"
+
+    # 13 sub-actions across the 3 subparser commands.
+    EXPECTED_SUB_ACTIONS = {
+        "i18n import", "i18n export", "i18n loadlang",
+        "db init", "db load", "db dump", "db duplicate", "db rename", "db drop",
+        "module install", "module upgrade", "module uninstall", "module force-demo",
+    }
+
+    # Representative flags confirmed-by-source in audit §3 (file:line).
+    # These must exist with the EXACT (flag_name, command_name) pair.
+    REPRESENTATIVE_FLAGS = [
+        # i18n.py:75-83
+        ("--language", "i18n import"),   # required=True, confirmed
+        # i18n.py:85-99
+        ("--output", "i18n export"),
+        # db.py:54-96
+        ("--with-demo", "db init"),
+        # module.py:84-91
+        ("--outdated", "module upgrade"),
+    ]
+
+    def _flags_by_cmd(self, data: dict) -> dict[str, list[str]]:
+        """Build {command_name: [flag_name, ...]} index from JSON data."""
+        result: dict[str, list[str]] = {}
+        for f in data.get("flags", []):
+            cmd = f.get("command_name")
+            if cmd:
+                result.setdefault(cmd, []).append(f.get("flag_name"))
+        return result
+
+    def test_all_subparser_commands_indexed_v19(self) -> None:
+        """3 subparser commands must have all 13 sub-actions in commands[]
+        and each sub-action must appear as command_name on at least one flag.
+        """
+        data = _load_version(self.V19)
+        command_names = {c.get("name") for c in data.get("commands", [])}
+        flags_by_cmd = self._flags_by_cmd(data)
+
+        missing_cmds = self.EXPECTED_SUB_ACTIONS - command_names
+        assert not missing_cmds, (
+            f"cli_flags_19.0.json: missing sub-action command entries: "
+            f"{sorted(missing_cmds)}"
+        )
+
+        # Each sub-action must have at least one flag indexed under it.
+        # (module force-demo only inherits common flags — the 3 common flags
+        # --config/--database/--data-dir are indexed under "module", not under
+        # "module force-demo"; force-demo itself has 0 extra flags, so this check
+        # applies only to sub-actions that have extra flags.)
+        sub_actions_with_own_flags = self.EXPECTED_SUB_ACTIONS - {"module force-demo"}
+        missing_flags = [
+            cmd for cmd in sub_actions_with_own_flags
+            if cmd not in flags_by_cmd
+        ]
+        assert not missing_flags, (
+            f"cli_flags_19.0.json: these sub-actions have no flags indexed: "
+            f"{sorted(missing_flags)}"
+        )
+
+    def test_representative_flags_present_v19(self) -> None:
+        """Spot-check confirmed-by-source flags from audit §3."""
+        data = _load_version(self.V19)
+        keys = {
+            (f.get("flag_name"), f.get("command_name"))
+            for f in data.get("flags", [])
+        }
+        missing = [
+            f"{fn!r} on {cmd!r}" for fn, cmd in self.REPRESENTATIVE_FLAGS
+            if (fn, cmd) not in keys
+        ]
+        assert not missing, (
+            f"cli_flags_19.0.json: missing representative flags: {missing}"
+        )
+
+    def test_non_subparser_commands_have_flags_v19(self) -> None:
+        """Every non-subparser command (except help) must have >= 1 flag entry.
+
+        This catches regression where a command is listed in commands[] but has
+        no flags indexed under its command_name.
+        Commands that inherit server flags are expected to have at least their
+        extra flags indexed separately (shell: 2, start: 2, populate: 3, etc.).
+        module force-demo has only the 3 common flags on the parent 'module'
+        command_name, zero extra flags of its own — excluded deliberately.
+        """
+        data = _load_version(self.V19)
+        # Subparser parents delegate to compound sub-action names; help has no
+        # own flags; module force-demo has no extra flags beyond parent 'module'.
+        excluded = {"server", "help", "i18n", "db", "module", "module force-demo"}
+        flags_by_cmd = self._flags_by_cmd(data)
+
+        no_flags = []
+        for cmd in data.get("commands", []):
+            name = cmd.get("name", "")
+            if name in excluded:
+                continue
+            if name not in flags_by_cmd:
+                no_flags.append(name)
+
+        assert not no_flags, (
+            f"cli_flags_19.0.json: these non-subparser commands have no flags "
+            f"indexed: {sorted(no_flags)}"
+        )
+
+    def test_no_stale_command_v19(self) -> None:
+        """tsconfig was removed in v19 — must NOT appear as active in v19 JSON.
+
+        Acceptable: absent entirely, or present with status='removed' on its flags.
+        Unacceptable: present in commands[] with no 'removed' marker.
+        """
+        data = _load_version(self.V19)
+        command_names = {c.get("name") for c in data.get("commands", [])}
+        # tsconfig must be absent from the commands list (preferred), OR if listed
+        # it must have at least one flag with status='removed' to signal the removal.
+        if "tsconfig" in command_names:
+            flags_by_cmd = self._flags_by_cmd(data)
+            tsconfig_flags_statuses = [
+                f.get("status")
+                for f in data.get("flags", [])
+                if f.get("command_name") == "tsconfig"
+            ]
+            has_removed = any(s == "removed" for s in tsconfig_flags_statuses)
+            assert has_removed, (
+                "cli_flags_19.0.json: 'tsconfig' is listed in commands[] but has "
+                "no flag with status='removed'. Either remove it from commands[] "
+                "or add a sentinel flag with status='removed'."
+            )
