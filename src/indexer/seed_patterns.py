@@ -578,7 +578,10 @@ def _write_neo4j(patterns: list[PatternExample]) -> None:
         )
     writer = Neo4jWriter(uri=uri, user=user, password=password)
     try:
-        writer.setup_indexes()
+        # Patterns-only reseed writes only PatternExample nodes: setup just the
+        # 3 PatternExample indexes, not the full ~33-statement schema setup that
+        # only the full indexer (pipeline / index-core) needs on a fresh DB.
+        writer.setup_pattern_indexes()
         writer.write_pattern_examples(patterns)
     finally:
         writer.close()

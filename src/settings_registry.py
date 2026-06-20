@@ -115,6 +115,14 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
     # mcp category
     SettingDef("mcp.resource_cache_ttl_seconds", "mcp", "duration_seconds", 300,
                {"min": 30, "max": 3600},
+               # The MCP resource ``_CACHE`` singleton is frozen at MCP process
+               # start; the admin-settings PATCH runs in the SEPARATE webui
+               # process, so a new TTL cannot reach the live MCP cache without
+               # an MCP restart (cross-process live-invalidation is out of
+               # scope — see fix/startup-reseed-log-noise). Surface the honest
+               # "requires MCP restart" hint instead of a misleading
+               # propagation ETA.
+               requires_restart=True,
                description="MCP odoo:// resource cache TTL."),
 
     # billing category (M10B P1 — ADR-0039)

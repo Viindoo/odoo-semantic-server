@@ -222,10 +222,13 @@ def _resolve_cache_ttl() -> float:
 def get_cache() -> ResourceCache:
     """Return the process-wide :class:`ResourceCache` singleton.
 
-    Created lazily on first call so the TTL can pick up the live overlay
-    value (set via the admin-settings API) without requiring a process
-    restart for the first cache reader.  Re-tunes after this point require
-    explicit :func:`reset_cache`.
+    Created lazily on first call (after the Postgres pool is initialised) so
+    the overlay-backed TTL is resolved at runtime rather than at import time.
+    The TTL is read ONCE when the singleton is built and then frozen for the
+    life of the process; a later change to ``mcp.resource_cache_ttl_seconds``
+    does NOT re-tune a live cache, which is why that setting declares
+    ``requires_restart=True``.  Tests may force a re-read via
+    :func:`reset_cache`.
     """
     global _CACHE
     if _CACHE is None:
@@ -236,11 +239,13 @@ def get_cache() -> ResourceCache:
 
 
 def reset_cache() -> None:
-    """Drop the singleton so the next :func:`get_cache` re-reads the TTL.
+    """Drop the singleton so the next :func:`get_cache` rebuilds it with a
+    freshly-resolved TTL.
 
-    Intended for test teardown or after an admin tunes
-    ``mcp.resource_cache_ttl_seconds``.  Not currently auto-called on
-    setting change — operators may schedule a worker restart instead.
+    Intended for test teardown.  It is NOT auto-called when an admin tunes
+    ``mcp.resource_cache_ttl_seconds`` (the MCP server and web-UI run in
+    separate processes), so applying a new TTL in production requires an MCP
+    restart — hence that setting declares ``requires_restart=True``.
     """
     global _CACHE
     with _CACHE_INIT_LOCK:
@@ -730,6 +735,17 @@ def register_resources(mcp_instance) -> None:
         ``mcp = FastMCP(...)`` line.  All cache state lives in the
         module-level :data:`_CACHE` singleton.
 
+    Cache is resolved lazily via :func:`get_cache` INSIDE each handler at
+    request time, NOT eagerly here.  ``register_resources`` runs at module
+    import (``server.py`` module body), which is before ``main()`` starts the
+    PG pool — an eager ``get_cache()`` would call ``_resolve_cache_ttl`` →
+    ``get_overlay_only`` against an uninitialised pool, emitting the spurious
+    "overlay-only resolve failed: PostgreSQL pool is not initialized" warning.
+    Deferring to the first ``odoo://`` request (pool up by then) both removes
+    that warning and lets the overlay TTL be honoured on first use.
+    ``get_cache`` is idempotent (double-checked lock), so the per-call cost is
+    a single ``is None`` check after the singleton exists.
+
     Args:
         mcp_instance: A live ``fastmcp.FastMCP`` instance.
 
@@ -738,7 +754,6 @@ def register_resources(mcp_instance) -> None:
         appear in ``await mcp_instance.list_resource_templates()`` (fastmcp v3
         public API; the private ``_resource_manager._templates`` was removed).
     """
-    cache = get_cache()
 
     # ---- model ----------------------------------------------------------
     @mcp_instance.resource(
@@ -763,7 +778,7 @@ def register_resources(mcp_instance) -> None:
         # _resolve_model; the re-raise there is UNCOUNTED — #284) and surfaces the
         # clean English message UNCACHED; the next read re-resolves once Neo4j recovers.
         return await _serve_resource_with_metric(
-            cache, version, "model", name,
+            get_cache(), version, "model", name,
             lambda resolved: _render_model(resolved, name),
             metric_tool="model_inspect",
         )
@@ -784,7 +799,7 @@ def register_resources(mcp_instance) -> None:
         # timeout propagates out of get_or_compute BEFORE the cache put — never
         # cached. _serve_resource_with_metric records the metric once + returns clean.
         return await _serve_resource_with_metric(
-            cache, version, "field", f"{model}/{field}",
+            get_cache(), version, "field", f"{model}/{field}",
             lambda resolved: _render_field(resolved, model, field),
             metric_tool="model_inspect",
         )
@@ -802,7 +817,7 @@ def register_resources(mcp_instance) -> None:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
         return await _serve_resource_with_metric(
-            cache, version, "method", f"{model}/{method}",
+            get_cache(), version, "method", f"{model}/{method}",
             lambda resolved: _render_method(resolved, model, method),
             metric_tool="model_inspect",
         )
@@ -820,7 +835,7 @@ def register_resources(mcp_instance) -> None:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
         return await _serve_resource_with_metric(
-            cache, version, "module", name,
+            get_cache(), version, "module", name,
             lambda resolved: _render_module(resolved, name),
             metric_tool="module_inspect",
         )
@@ -838,7 +853,7 @@ def register_resources(mcp_instance) -> None:
         # async + to_thread (#284): keep the event loop free on cache miss.
         # R1: tenant-scoped key. _reraise_timeout=True → no-poison; metric once.
         return await _serve_resource_with_metric(
-            cache, version, "view", xmlid,
+            get_cache(), version, "view", xmlid,
             lambda resolved: _render_view(resolved, xmlid),
             metric_tool="entity_lookup",
         )
@@ -859,7 +874,7 @@ def register_resources(mcp_instance) -> None:
         # tx-timeout raises OrmQueryTimeout out of get_or_compute BEFORE the cache
         # put (no-poison). _serve_resource_with_metric records once + returns clean.
         return await _serve_resource_with_metric(
-            cache, version, "pattern", pattern_id,
+            get_cache(), version, "pattern", pattern_id,
             lambda resolved: _render_pattern(resolved, pattern_id),
             metric_tool="suggest_pattern",
             tenant_keyed=False,
@@ -890,7 +905,7 @@ def register_resources(mcp_instance) -> None:
         # tx-timeout raises OrmQueryTimeout out of get_or_compute BEFORE the cache
         # put (no-poison). _serve_resource_with_metric records once + returns clean.
         return await _serve_resource_with_metric(
-            cache, version, "stylesheet", f"{module}/{file_path}",
+            get_cache(), version, "stylesheet", f"{module}/{file_path}",
             lambda resolved: _render_stylesheet(resolved, module, file_path),
             metric_tool="resolve_stylesheet",
         )
@@ -907,7 +922,7 @@ def register_resources(mcp_instance) -> None:
     async def _test_class_resource(version: str, module: str, class_name: str) -> str:
         # Tenant-scoped: test classes carry profile[] (ADR-0034).
         return await _serve_resource_with_metric(
-            cache, version, "test", f"{module}/{class_name}",
+            get_cache(), version, "test", f"{module}/{class_name}",
             lambda resolved: _render_test_class(resolved, module, class_name),
             metric_tool="test_class_inspect",
         )
@@ -924,7 +939,7 @@ def register_resources(mcp_instance) -> None:
     async def _testcoverage_resource(version: str, model: str) -> str:
         # Tenant-scoped: TestMethod nodes carry profile[].
         return await _serve_resource_with_metric(
-            cache, version, "testcoverage", model,
+            get_cache(), version, "testcoverage", model,
             lambda resolved: _render_testcoverage(resolved, model),
             metric_tool="tests_covering",
         )

@@ -18,7 +18,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from neo4j import GraphDatabase
+from neo4j import GraphDatabase, NotificationMinimumSeverity
 
 from src import config
 from src.db.pg import repo_store
@@ -159,7 +159,15 @@ def _neo4j_creds() -> tuple[str, str, str]:
 def open_production_neo4j():
     """Open a Neo4j driver using config / env vars."""
     uri, user, password = _neo4j_creds()
-    return GraphDatabase.driver(uri, auth=(user, password))
+    # Write/indexer-path driver: filter expected INFORMATION notifications
+    # server-side (e.g. IndexOrConstraintAlreadyExists from IF NOT EXISTS index
+    # setup). Scoped to the write path only — the MCP READ driver keeps
+    # INFORMATION hints (see src/indexer/writer_neo4j.py for the rationale).
+    return GraphDatabase.driver(
+        uri,
+        auth=(user, password),
+        notifications_min_severity=NotificationMinimumSeverity.WARNING,
+    )
 
 
 def open_production_pg():
