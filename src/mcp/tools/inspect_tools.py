@@ -161,6 +161,12 @@ def model_inspect(
             'invoice'. Silently ignored for summary/views/field/method/extenders.
             PREFER entity_lookup(kind='field', model=<model>, field=<exact_name>)
             for exact single-field lookup - name_filter is for substring browsing.
+
+    Index freshness note: the index is a snapshot of source at index time per
+    version. When a field or method is not found, the response distinguishes
+    "model is indexed but this member was absent at index time - verify on-disk
+    source before concluding it does not exist" from "model is not indexed at
+    this version". Trigger a full reindex to refresh stale entries.
     """
     text = _model_inspect(
         model=model,
@@ -276,6 +282,12 @@ async def entity_lookup(
 
     Returns:
         Tree text identical to the underlying tool's output.
+
+    Index freshness note: the index is a snapshot of source at index time per
+    version. When kind='field' or kind='method' and the entity is not found,
+    the response distinguishes "model indexed but member absent at index time -
+    verify on-disk source before concluding it does not exist" from "model not
+    indexed at this version". Trigger a full reindex to refresh stale entries.
 
     Example:
         entity_lookup("field", model="sale.order", field="amount_total", odoo_version="17.0")

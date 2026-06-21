@@ -1487,6 +1487,69 @@ def _list_js_patches(
     return "\n".join(lines)
 
 
+def _probe_model_indexed(
+    model_name: str,
+    odoo_version: str,
+    profile_name: str | None = None,
+) -> bool:
+    """Return True iff at least one non-stub Model node for *model_name* + *odoo_version* exists.
+
+    Used on the not-found path of :func:`_resolve_field` and
+    :func:`_resolve_method` to distinguish "model is indexed but this
+    field/method is absent" from "this model/version is not in the index at
+    all".  The probe is cold-path only and runs a single bounded COUNT query
+    (mirrors the bounded model-exists probe in ``_single_bounded``).
+
+    Precondition: *odoo_version* must be a concrete resolved version string
+    (e.g. ``"17.0"``); callers must resolve ``"auto"``/``"latest"`` before
+    invoking this helper.
+
+    Any ``OrmQueryTimeout`` is treated as "unknown" (returns False) - the
+    freshness note is a best-effort hint, not a hard guarantee.
+    """
+    label = f"model index probe for '{model_name}' (Odoo {odoo_version})"
+    try:
+        with _srv._get_driver().session() as session:
+            row = _srv._single_bounded(
+                session,
+                "MATCH (m:Model {name: $mn, odoo_version: $v}) "
+                "WHERE coalesce(m.unresolved, false) = false "
+                "AND m.module <> '__unresolved__' "
+                f"AND {_srv._scope_pred('m')} "
+                "RETURN count(m) AS c",
+                label,
+                mn=model_name, v=odoo_version, **_srv._scope(profile_name),
+            )
+    except OrmQueryTimeout:
+        return False
+    return bool(row and row["c"] > 0)
+
+
+def _not_found_freshness_note(
+    model_name: str,
+    odoo_version: str,
+    profile_name: str | None,
+    *,
+    kind: str,
+) -> str:
+    """Return the ADR-0023 freshness note line for a not-found field or method.
+
+    Runs :func:`_probe_model_indexed` and returns the appropriate one-liner:
+    "model indexed but member absent" when the model IS in the index, or
+    "model not indexed at this version" otherwise.
+
+    *kind* should be ``'field'`` or ``'method'`` (inserted verbatim into the
+    note text).  *odoo_version* must be pre-resolved (concrete, not ``'auto'``).
+    """
+    if _probe_model_indexed(model_name, odoo_version, profile_name):
+        return (
+            f"└─ note: model is indexed at this version but this {kind} was not"
+            " - if you can see it in on-disk source the index may predate it;"
+            " verify against the checkout before concluding it is absent."
+        )
+    return "└─ note: model is not indexed at this version (unknown model or version)."
+
+
 # Bind the owning server module generation AFTER the helper functions are defined.
 # sys.modules['src.mcp.server'] at THIS point is the generation that is importing
 # this module (server.py imports this module from near the end of its own body).

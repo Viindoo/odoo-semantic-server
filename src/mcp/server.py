@@ -2504,9 +2504,14 @@ def _resolve_field(
         if inh is not None:
             if from_module is None or inh.get("module") == from_module:
                 return _render_inherited_field(model_name, field_name, odoo_version, inh)
+        # Freshness hint (#341): probe whether the model is indexed to give a
+        # more actionable not-found message.
+        _note = _not_found_freshness_note(
+            model_name, odoo_version, profile_name, kind="field"
+        )
         return (
             f"Field '{field_name}' not found on model"
-            f" '{model_name}' in Odoo {odoo_version}."
+            f" '{model_name}' in Odoo {odoo_version}.\n{_note}"
         )
 
     base_f = records[0]["f"]
@@ -2709,6 +2714,7 @@ def _resolve_method(
     # / entity_lookup tool path returning a clean ADR-0023 string directly. (The
     # tool-path method-detail timeout is therefore not yet counted in the metric -
     # the deferred M2 gap, PR-3 / issue #287 - matching _resolve_field's M1.)
+    _method_not_found = False
     try:
         with _get_driver().session() as session:
             odoo_version = _resolve_version(odoo_version, session)
@@ -2742,10 +2748,8 @@ def _resolve_method(
                 return _render_inherited_method(
                     model_name, method_name, odoo_version, inh, owner_chain
                 )
-            return (
-                f"Method '{method_name}' not found on model"
-                f" '{model_name}' in Odoo {odoo_version}."
-            )
+            # Probe runs outside the try/except - mirrors _resolve_field placement.
+            _method_not_found = True
     except OrmQueryTimeout as exc:
         # Consistent with _resolve_field / _resolve_model. Resource path
         # (_reraise_timeout=True): re-raise so the transient body is never cached
@@ -2759,6 +2763,16 @@ def _resolve_method(
         # parity with _resolve_field's M1 (PR-3 M2, ADR-0050).
         _metric_nonorm_query_timeout("model_inspect")
         return exc.user_message
+
+    # Freshness hint (#341) - outside try/except to mirror _resolve_field placement.
+    if _method_not_found:
+        _note = _not_found_freshness_note(
+            model_name, odoo_version, profile_name, kind="method"
+        )
+        return (
+            f"Method '{method_name}' not found on model"
+            f" '{model_name}' in Odoo {odoo_version}.\n{_note}"
+        )
 
     base_mth = records[0]["mth"]
     lines = [
@@ -3440,6 +3454,8 @@ from src.mcp.listings import (  # noqa: E402,F401
     _list_views,
     _list_views_by_module,
     _list_views_core,
+    _not_found_freshness_note,
+    _probe_model_indexed,
 )
 
 
