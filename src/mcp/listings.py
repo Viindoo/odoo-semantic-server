@@ -486,12 +486,21 @@ def _list_methods(
         } if override_rec else set()
 
     header = f"Methods of {model} (Odoo {odoo_version})"
+    # Build the breadcrumb-prefixed prelude BEFORE the zero-match check (mirrors
+    # _list_fields, which emits the filter line ahead of its total==0 branch): a
+    # name_filter matching 0 methods must still disclose the active filter so the
+    # empty result is self-explanatory, not silent. Emitting the breadcrumb only
+    # on the total>0 path (the bug) dropped it on the zero-match early return.
+    lines = [header]
+    if name_filter is not None:
+        lines.append(f"├─ filter: name_filter={name_filter!r}")
     if total == 0:
-        next_line = format_next_step([
+        lines.append("├─ (none)")
+        lines.append(format_next_step([
             f"model_inspect(model='{model}', method='fields', odoo_version='{odoo_version}')"
             " for shape",
-        ])
-        return f"{header}\n├─ (none)\n{next_line}"
+        ]))
+        return "\n".join(lines)
 
     # Mint opaque refs for each returned row (method kind).
     method_items = [{"method_name": r["name"], "model": model} for r in rows]
@@ -506,9 +515,8 @@ def _list_methods(
             order.append(key)
         groups[key].append((r, ref_id))
 
-    lines = [header]
-    if name_filter is not None:
-        lines.append(f"├─ filter: name_filter={name_filter!r}")
+    # `lines` (header + optional name_filter breadcrumb) was built before the
+    # total==0 check above; the group rows append onto it here.
     for key in order:
         repo, mod_name = key
         lines.append(f"├─ [{repo}] {mod_name}")

@@ -9,13 +9,14 @@ Covers AC-D1-1 through AC-D1-5:
   D1-4: >=12 tests across happy-path, invalid-discriminator, missing-arg, unknown-kind.
   D1-5: All existing tests still green (verified by full test run).
 
-These tests are pure unit tests - no Neo4j, no Postgres.
-The underlying _impl functions in server.py are patched with trivial stubs.
+The D1-* tests are pure unit tests - no Neo4j, no Postgres. The underlying
+_impl functions in server.py are patched with trivial stubs, so they run in the
+no-Docker fast lane (`make test`, `-m "not neo4j"`).
 
-Issue #339: name_filter tests (tagged neo4j) are appended at the end of this
-file. They share the module-level pytestmark so the whole file can be collected
-in one pass. The original unit tests do NOT need Neo4j (the marker is skipped
-when Neo4j is unavailable, per conftest skip logic).
+Issue #339: name_filter tests are appended at the end of this file. Those tests
+seed real data via Neo4jWriter and are individually tagged `@pytest.mark.neo4j`
+(NOT a module-level marker - a module-level marker would wrongly deselect the
+pure-unit D1-* tests from the fast lane).
 """
 import importlib
 import inspect
@@ -38,11 +39,10 @@ from src.mcp.inspect import (
 )
 from tests.conftest import TEST_VERSION
 
-# File-level marker: the #339 name_filter tests at the bottom of this file
-# require Neo4j. The original unit tests do not use Neo4j themselves; when Neo4j
-# is unavailable the entire file is skipped by conftest skip logic. This is the
-# same pattern as test_drilldown_refs.py and test_field_readonly_render.py.
-pytestmark = pytest.mark.neo4j
+# NO module-level pytestmark. The D1-* tests below are pure unit tests and MUST
+# stay in the `-m "not neo4j"` fast lane. Only the #339 name_filter tests at the
+# bottom of this file touch a real Neo4j driver; each carries its own
+# @pytest.mark.neo4j so the fast-lane selection stays correct.
 
 # ---------------------------------------------------------------------------
 # Helpers — stub server module
@@ -532,10 +532,10 @@ class TestListTestClassesSessionAndTimeout:
 # ---------------------------------------------------------------------------
 # name_filter tests - issue #339
 #
-# pytestmark = pytest.mark.neo4j applies globally (file-level marker set below).
-# All tests use TEST_VERSION="99.0" + clean_neo4j fixture (auto-seeded data
-# is deleted before/after each test). Seeding via Neo4jWriter for realistic
-# round-trip coverage.
+# Each test below carries its own @pytest.mark.neo4j (NOT a module-level marker)
+# so the pure-unit D1-* tests above stay in the `-m "not neo4j"` fast lane.
+# All tests use TEST_VERSION="99.0"; the nf_db fixture seeds + tears down the
+# version-99.0 nodes via Neo4jWriter for realistic round-trip coverage.
 # ---------------------------------------------------------------------------
 #
 # Red-before-green verification:
@@ -625,6 +625,7 @@ def nf_server(nf_db):
 # Test 1: name_filter filters fields - matching IN, non-matching OUT
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_fields_matching_in_nonmatching_out(nf_db, nf_server):
     """name_filter='amount' keeps amount_total+amount_tax; drops partner_id.
 
@@ -644,6 +645,7 @@ def test_name_filter_fields_matching_in_nonmatching_out(nf_db, nf_server):
 # Test 2: name_filter filters methods - matching IN, non-matching OUT
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_methods_matching_in_nonmatching_out(nf_db, nf_server):
     """name_filter='compute' keeps _compute_amount; drops action_confirm + write.
 
@@ -657,9 +659,44 @@ def test_name_filter_methods_matching_in_nonmatching_out(nf_db, nf_server):
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: methods zero-match still discloses the name_filter breadcrumb
+# (review #340 Fix A: _list_methods early-returned before emitting the filter
+#  line, so a 0-match method filter dropped it. Mirrors the fields zero-match
+#  test below; both the breadcrumb AND the '(none)' sentinel must appear.)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.neo4j
+def test_name_filter_methods_zero_match_keeps_breadcrumb(nf_db, nf_server):
+    """A method name_filter matching 0 methods keeps the filter breadcrumb.
+
+    Business rule: an empty filtered result must still disclose WHICH filter
+    produced it, so the agent is not left guessing why the method list is empty.
+    Output must contain BOTH the '(none)' sentinel AND the
+    'filter: name_filter=...' breadcrumb (parity with the fields zero-match path).
+
+    Red-before-green: against the pre-fix _list_methods (which built the
+    breadcrumb only on the total>0 path, after an early `return` for total==0),
+    the breadcrumb line is absent on this 0-match case and this test fails.
+    """
+    out = nf_server._list_methods(
+        _NF_MODEL, TEST_VERSION, name_filter="xxxxxxxxxx_nonexistent_zzz"
+    )
+
+    assert "(none)" in out, f"Expected '(none)' sentinel in output:\n{out}"
+    assert "name_filter=" in out, (
+        f"Expected the name_filter breadcrumb in zero-match output:\n{out}"
+    )
+    assert "xxxxxxxxxx_nonexistent_zzz" in out, (
+        f"Expected the filter value echoed in the breadcrumb:\n{out}"
+    )
+    assert not out.startswith("Error:"), f"Unexpected error: {out!r}"
+
+
+# ---------------------------------------------------------------------------
 # Test 3: 0-match -> '(none)' sentinel, no exception
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_zero_match_returns_none_sentinel(nf_db, nf_server):
     """0 matches -> ADR-0023 '(none)' sentinel; no exception raised.
 
@@ -677,6 +714,7 @@ def test_name_filter_zero_match_returns_none_sentinel(nf_db, nf_server):
 # Test 4: name_filter=None -> full tree (regression guard)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_none_returns_full_tree(nf_db, nf_server):
     """name_filter=None (default) returns all seeded fields - regression guard.
 
@@ -699,6 +737,7 @@ def test_name_filter_none_returns_full_tree(nf_db, nf_server):
 # Test 5: name_filter is case-insensitive
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_case_insensitive(nf_db, nf_server):
     """name_filter='AMOUNT' (uppercase) matches 'amount_total' + 'amount_tax'.
 
@@ -715,6 +754,7 @@ def test_name_filter_case_insensitive(nf_db, nf_server):
 # Test 6: name_filter silently ignored on method='summary'
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_ignored_on_summary(nf_db, nf_server):
     """name_filter silently ignored when method='summary'; output unchanged.
 
@@ -744,6 +784,7 @@ def test_name_filter_ignored_on_summary(nf_db, nf_server):
 # Test 7: "Showing X of N" count reflects count-AFTER-filter (protects R4)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_count_reflects_filtered_total(nf_db, nf_server):
     """'Showing X of N' total reflects count-after-filter, not total-without-filter.
 
@@ -789,6 +830,7 @@ def test_name_filter_count_reflects_filtered_total(nf_db, nf_server):
 # Test 8: pagination + name_filter - start_index skips AFTER filter
 # ---------------------------------------------------------------------------
 
+@pytest.mark.neo4j
 def test_name_filter_pagination_skips_after_filter(nf_db, nf_server):
     """start_index skips rows AFTER name_filter is applied (not before).
 
