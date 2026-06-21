@@ -632,6 +632,20 @@ def _parse_class(
     had_explicit_name = False  # set True when _name = "..." literal found
 
     for node in cls_node.body:
+        # Normalize Assign and AnnAssign to a common (targets, value) pair so
+        # the field-detection block below handles both declaration styles.
+        # Meta attributes (_name, _inherit, ...) remain Assign-only - AnnAssign
+        # meta is zero-occurrence across all Odoo versions (scope decision #2).
+        if isinstance(node, ast.Assign):
+            _targets = node.targets
+            _value = node.value
+        elif isinstance(node, ast.AnnAssign):
+            _targets = [node.target] if isinstance(node.target, ast.Name) else []
+            _value = node.value  # may be None for bare annotations (cr: T)
+        else:
+            _targets = []
+            _value = None
+
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if not isinstance(target, ast.Name):
@@ -653,16 +667,18 @@ def _parse_class(
                     fields_list.extend(_extract_columns_dict_fields(node.value))
                     has_columns_dict = True
 
-            # Field detection: field_name = fields.FieldType(...)  (era2 v10+)
-            if (isinstance(node.value, ast.Call)
-                    and isinstance(node.value.func, ast.Attribute)
-                    and isinstance(node.value.func.value, ast.Name)
-                    and node.value.func.value.id == 'fields'
-                    and node.value.func.attr in FIELD_TYPES
-                    and node.targets
-                    and isinstance(node.targets[0], ast.Name)):
-                call = node.value
-                field_name = node.targets[0].id
+        # Field detection: field_name = fields.FieldType(...)  (era2 v10+)
+        # Also handles: field_name: Annotation = fields.FieldType(...)  (v18+)
+        if (_value is not None
+                and isinstance(_value, ast.Call)
+                and isinstance(_value.func, ast.Attribute)
+                and isinstance(_value.func.value, ast.Name)
+                and _value.func.value.id == 'fields'
+                and _value.func.attr in FIELD_TYPES
+                and _targets
+                and isinstance(_targets[0], ast.Name)):
+                call = _value
+                field_name = _targets[0].id
                 field_type = call.func.attr.lower()
                 kwargs = {kw.arg: kw.value for kw in call.keywords if kw.arg}
 

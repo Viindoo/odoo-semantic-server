@@ -1928,3 +1928,164 @@ def test_local_base_class_transitive_chain_detected(tmp_path, v10_base_module):
     assert "cash.box.in" in names, "2-level transitive local-base widening must promote the class"
     cash = names["cash.box.in"]
     assert cash.is_transient is True, "is_transient must propagate through 2-level local base chain"
+
+
+# ---------------------------------------------------------------------------
+# AnnAssign field extraction (#341) - typed-annotation form used in v18/v19
+# AC1-AC4 per plan polished-herding-ladybug.md
+# ---------------------------------------------------------------------------
+
+def test_annassign_multiline_many2one_full_attrs(tmp_path, v18_module):
+    # AC1/AC2: commercial_partner_id declared as AnnAssign (v18 style) must be
+    # indexed with all attributes: ttype, comodel_name, compute, stored, string.
+    # Oracle: field EXISTS in res_partner.py @v18 with these exact semantics.
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+        from odoo.models import BaseModel as Partner
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            commercial_partner_id: Partner = fields.Many2one(
+                'res.partner',
+                compute='_compute_commercial_partner',
+                store=True,
+                string='Commercial Entity',
+            )
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'commercial_partner_id' in field_map, (
+        "AnnAssign field 'commercial_partner_id' must be indexed"
+    )
+    fld = field_map['commercial_partner_id']
+    assert fld.ttype == 'many2one', "ttype must be 'many2one'"
+    assert fld.comodel_name == 'res.partner', "comodel_name must be 'res.partner'"
+    assert fld.compute == '_compute_commercial_partner', "compute must be captured"
+    assert fld.stored is True, "store=True must set stored=True"
+    assert fld.string == 'Commercial Entity', "string kwarg must be captured"
+
+
+def test_annassign_single_line_many2one_comodel(tmp_path, v18_module):
+    # AC1/AC2: single-line AnnAssign with only comodel positional arg.
+    # Oracle: field with annotation-style declaration must be indexed.
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            title: object = fields.Many2one('res.partner.title')
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'title' in field_map, "AnnAssign field 'title' must be indexed"
+    fld = field_map['title']
+    assert fld.ttype == 'many2one'
+    assert fld.comodel_name == 'res.partner.title'
+
+
+def test_annassign_field_named_self_is_indexed(tmp_path, v18_module):
+    # AC3: a field whose name happens to be 'self' must NOT be silently skipped.
+    # Odoo uses 'self' as a valid field name in some edge cases; the parser must
+    # not special-case or skip Name nodes whose id=='self' during AnnAssign extraction.
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            self: object = fields.Many2one(comodel_name='res.partner')
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'self' in field_map, (
+        "AnnAssign field named 'self' must be indexed - no special-casing of the name"
+    )
+    assert field_map['self'].comodel_name == 'res.partner'
+
+
+def test_annassign_pure_annotation_no_value_not_a_field(tmp_path, v18_module):
+    # AC3: bare annotation with no value (cr: BaseCursor) must NOT become a field.
+    # Oracle: only field declarations with a fields.X(...) RHS are valid.
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            cr: object
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'cr' not in field_map, (
+        "pure annotation without value must not be indexed as a field"
+    )
+
+
+def test_annassign_binop_annotation_no_value_not_a_field(tmp_path, v18_module):
+    # AC3: annotation with BinOp type (T | None) and no value must not become a field,
+    # and must not raise any exception during parsing.
+    f = write_py(tmp_path, "res_partner.py", """
+        from __future__ import annotations
+        from odoo import models, fields
+        from typing import Optional
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            txn: object | None
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'txn' not in field_map, (
+        "AnnAssign with BinOp annotation and no value must not become a field"
+    )
+
+
+def test_annassign_non_fields_call_not_a_field(tmp_path, v18_module):
+    # AC3: AnnAssign whose value is a call but NOT fields.X(...) must not be indexed.
+    # Oracle: only calls of the form fields.<FieldType>(...) are valid field declarations.
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            x: int = some_helper()
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'x' not in field_map, (
+        "AnnAssign with a non-fields.X() value must not be indexed as a field"
+    )
+
+
+def test_annassign_mixed_assign_and_annassign_both_captured(tmp_path, v18_module):
+    # AC4: a class mixing classic Assign fields AND AnnAssign fields must index both.
+    # Oracle: v18 res_partner.py has both declaration styles in the same class body.
+    f = write_py(tmp_path, "res_partner.py", """
+        from odoo import models, fields
+        from odoo.models import BaseModel as Partner
+
+        class ResPartner(models.Model):
+            _name = 'res.partner'
+
+            name = fields.Char(string='Name')
+            commercial_partner_id: Partner = fields.Many2one('res.partner')
+    """)
+    result = parse_file(f, v18_module)
+    assert result, "model must be detected"
+    field_map = {fld.name: fld for fld in result[0].fields}
+    assert 'name' in field_map, "classic Assign field 'name' must still be indexed"
+    assert 'commercial_partner_id' in field_map, (
+        "AnnAssign field 'commercial_partner_id' must also be indexed alongside Assign fields"
+    )
+    assert field_map['name'].ttype == 'char'
+    assert field_map['commercial_partner_id'].ttype == 'many2one'

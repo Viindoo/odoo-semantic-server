@@ -9,6 +9,12 @@ All notable changes to Odoo Semantic MCP are documented here.
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
 > **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
 
+## [0.17.3] - 2026-06-21 - Annassign field extraction + not-found freshness messaging
+
+- Fix: indexer now extracts fields declared via the typed-annotation form `name: Type = fields.X(...)` (ast.AnnAssign), previously only the classic `name = fields.X(...)` form was indexed - fixes false "field not found" for v18/v19 fields such as `res.partner.commercial_partner_id` and `company_id` (#341).
+- Add: field/method not-found messages now differentiate "model is indexed but the field/method is absent" from "model is not indexed at this version", so consumers can decide whether to verify against on-disk source (#341).
+- Note: no tool/resource surface change (still 31 tools / 9 resources). Requires a `--full` reindex of the v18 and v19 profiles to populate the previously-missed fields.
+
 ## [0.17.2] - 2026-06-21 - CLI flag backfill v8-v18 + model_inspect name_filter + startup/reseed cleanup
 
 - **Backfill per-command + db-subcommand CLI flags for v8-v18 (#338):** previously every per-command flag in `cli_flags_8.0.json`..`cli_flags_18.0.json` carried `command_name=null`, so `cli_help('deploy', '13.0')` returned the command with no flags. Indexed the per-command argparse flags for `deploy`/`start`/`scaffold` (v8-v18), `cloc` (v12-v18), and `genproxytoken` (v15-v18) under their correct `command_name`, normalizing positionals to `--<name>` form. Added the `db` subcommands (`load`/`dump`/`duplicate`/`rename`/`drop`) for v16-v18 using the v19 compound-name convention (`db load --move` is v17-only); shared `db` flags are double-indexed under both `command_name=null` and `command_name="db"` per the v19 precedent. Added `--geoip-city-db` as the primary for v17-v18 and marked `--geoip-db` deprecated with `replacement_flag_name="--geoip-city-db"` in v17-v18 only (v8-v16 keep `--geoip-db` as the live primary - see the geoip Fixed bullet below), plus the two gevent memory-limit flags (`--limit-memory-soft-gevent`, `--limit-memory-hard-gevent`) for v18. Source-verified per version against the Odoo source. ~170 new flag entries; behavior-pinning tests in `test_spec_data_cli_flags_curated.py` assert per-command coverage, db-subcommand presence, and the geoip/gevent flags (red-green). No tool/resource surface change (still 31 tools / 9 resources). Closes #338.
