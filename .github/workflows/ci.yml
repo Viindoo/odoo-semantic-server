@@ -19,7 +19,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -39,7 +39,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download actionlint
         id: get_actionlint
         run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
@@ -49,7 +49,7 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -83,7 +83,7 @@ jobs:
       # this by substituting the db-name — no hardcoded "odoo_semantic" DB needed.
       PG_ADMIN_DSN: postgresql://odoo_semantic:password@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Free port 5432 in case ubuntu-latest runner has system PostgreSQL active.
       - name: Stop system PostgreSQL (free port 5432)
@@ -120,7 +120,7 @@ jobs:
       NEO4J_TEST_USER: neo4j
       NEO4J_TEST_PASSWORD: password
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Start Neo4j and wait until healthy
         run: |
@@ -155,7 +155,7 @@ jobs:
       # this by substituting the db-name — no hardcoded "odoo_semantic" DB needed.
       PG_ADMIN_DSN: postgresql://odoo_semantic:password@127.0.0.1:5432/postgres
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Stop system PostgreSQL (free port 5432)
         run: sudo systemctl stop postgresql || true
@@ -204,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
@@ -249,7 +249,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
