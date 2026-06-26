@@ -58,11 +58,29 @@ MODEL_BASE_CLASSES = {
 # scope-resolver, M7 W13). V1 entries are covered by the same mechanism.
 #
 # Numbers in trailing comment = first-affected Odoo major version.
-# Currently 19 entries; keep this list focused to limit false-positive surface (ADR-0002 §3).
+# Keep this list focused to limit false-positive surface (ADR-0002 §3).
 _DEPRECATED_API_SYMBOLS = frozenset({
     # --- Removed (no in-place replacement, full rewrite required) ---
     "name_get",              # 18: removed → use display_name computed field
     "oldname",               # 15: field option removed → use rename + migration script
+    # --- ACL rename family (issue #117): old names deprecated in 18, replaced by
+    #     check_access / has_access / _filtered_access / _has_cycle. The edge only
+    #     MERGEs when a same-version CoreSymbol with status in {deprecated,removed}
+    #     exists, so these flag usage on the versions where the alias is still
+    #     present-but-deprecated (v18) - and resolve to the underscore CoreSymbols
+    #     that bug#2 (parser_odoo_core underscore-skip) now indexes. ---
+    "check_access_rights",   # 18: deprecated → check_access
+    "check_access_rule",     # 18: deprecated → check_access
+    "_filter_access_rules",  # 18: deprecated → _filtered_access
+    "_check_recursion",      # 18: deprecated → not self._has_cycle()
+    # --- Cache/flush rename family: old names deprecated in 16, REMOVED in 17.
+    #     `flush` is a generic short name; the version-scoped + status-gated edge
+    #     MERGE (writer_neo4j_orm) bounds it to modules indexed on a version where
+    #     odoo.models.BaseModel.flush is itself deprecated/removed. Receiver type is
+    #     not tracked, so a stray `cr.flush()` on such a version can over-match - an
+    #     acceptable cost for an advisory migration scan (caller reviews each hit). ---
+    "flush",                 # 16: deprecated → flush_model / flush_recordset (removed 17)
+    "invalidate_cache",      # 16: deprecated → invalidate_model / invalidate_recordset (removed 17)
     # --- Signature-changed (kwarg/semantics breaking caller) ---
     "name_search",           # 18: operator + count semantics changed
     "safe_eval",             # 19: signature change in odoo.tools

@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v9.x for Odoo v18. v18 breaking changes: `group_operator` renamed to `aggregator`, `--longpolling-port` removed (use `--gevent-port`), `name_get()` removed, `read_group()` signature changed, `<list>` preferred over `<tree>` in v18+. Merged with live-extracted rules when odoo_source_root provided.",
+  "_note": "Curated from pylint-odoo v9.x for Odoo v18. v18 breaking changes: `group_operator` renamed to `aggregator`, `--longpolling-port` removed (use `--gevent-port`), `name_get()` removed, `read_group()` signature changed, `<list>` preferred over `<tree>` in v18+, `<chatter/>` tag replaces `oe_chatter` div (W8193), always-invisible fields need an explanatory XML comment per base.TestInvisibleField (W8205), QUnit test framework replaced by Hoot (W8213). Merged with live-extracted rules when odoo_source_root provided.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -473,6 +473,30 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "\\.execute\\s*\\([^)]*?[\"\\']\\s*%\\s|\\bexecute\\s*\\([^)]*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
+    },
+    {
+      "rule_id": "W8193",
+      "kind": "pylint-odoo",
+      "message": "`<div class=\"oe_chatter\">` chatter markup removed in v18 - use the `<chatter/>` tag.",
+      "severity": "warning",
+      "file_pattern": "**/*.xml",
+      "code_pattern": "oe_chatter"
+    },
+    {
+      "rule_id": "W8205",
+      "kind": "pylint-odoo",
+      "message": "Always-invisible view field (invisible=\"1\" / column_invisible=\"1\") must carry an explanatory XML comment from v18 - base.TestInvisibleField fails the module otherwise.",
+      "severity": "warning",
+      "file_pattern": "**/*.xml",
+      "fix_template": "Add an XML comment after an always-invisible field explaining why it is hidden, e.g. <!-- technical field, kept for onchange domain, never shown -->."
+    },
+    {
+      "rule_id": "W8213",
+      "kind": "eslint",
+      "message": "QUnit test framework replaced by Hoot in v18 - migrate `QUnit.test` / `QUnit.module` to `@odoo/hoot` (`test` / `describe`).",
+      "severity": "warning",
+      "file_pattern": "**/*.js",
+      "code_pattern": "\\bQUnit\\s*\\."
     }
   ]
 }

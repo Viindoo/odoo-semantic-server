@@ -87,6 +87,54 @@ def test_extract_skips_dunder_and_private():
     assert "odoo.x.X._internal" not in qnames
 
 
+def test_indexed_private_rename_target_methods_are_kept():
+    """issue #117 bug#2: curated underscore ORM rename targets ARE indexed.
+
+    `_compute_display_name` / `_filtered_access` / `_has_cycle` follow Odoo's
+    leading-underscore convention but are public-by-contract rename targets a
+    migration consumer looks up by name. They must surface (status='stable',
+    no deprecation marker) so lookup_core_api("_has_cycle", 18.0) resolves.
+    """
+    src = (
+        "class BaseModel:\n"
+        "    def _compute_display_name(self): pass\n"
+        "    def _filtered_access(self, operation): pass\n"
+        "    def _has_cycle(self, field_name=None): return False\n"
+        "    def _private_plumbing(self): pass\n"  # genuinely private → still skipped
+    )
+    syms = _extract_from_source(src, "odoo.models", "18.0")
+    by_name = {s.qualified_name: s for s in syms}
+    for keep in ("_compute_display_name", "_filtered_access", "_has_cycle"):
+        qn = f"odoo.models.BaseModel.{keep}"
+        assert qn in by_name, f"rename target {keep} must be indexed, got {set(by_name)}"
+        assert by_name[qn].status == "stable"
+    # A non-curated, non-deprecated private method is STILL skipped (no bloat).
+    assert "odoo.models.BaseModel._private_plumbing" not in by_name
+
+
+def test_deprecated_underscore_alias_kept_and_marked_deprecated():
+    """issue #117 bug#2: a deprecated underscore alias is indexed as deprecated.
+
+    `_check_recursion` / `_filter_access_rules` carry a body-level
+    warnings.warn(..., DeprecationWarning) in v18. They must surface with
+    status='deprecated' - the prerequisite for find_deprecated_usage to flag
+    their usage (the USES_CORE_SYMBOL edge only MERGEs to a deprecated/removed
+    CoreSymbol).
+    """
+    src = (
+        "import warnings\n"
+        "class BaseModel:\n"
+        "    def _check_recursion(self, parent=None):\n"
+        "        warnings.warn('use not self._has_cycle()', DeprecationWarning, 2)\n"
+        "        return not self._has_cycle(parent)\n"
+    )
+    syms = _extract_from_source(src, "odoo.models", "18.0")
+    by_name = {s.qualified_name: s for s in syms}
+    qn = "odoo.models.BaseModel._check_recursion"
+    assert qn in by_name, f"deprecated underscore alias must be indexed, got {set(by_name)}"
+    assert by_name[qn].status == "deprecated"
+
+
 def test_parse_odoo_core_returns_empty_for_nonexistent_root(tmp_path):
     """Missing source root → empty list, no exception."""
     out = parse_odoo_core(str(tmp_path / "no-such-dir"), "17.0")
@@ -116,13 +164,17 @@ def test_core_files_allowlist_is_curated_and_matches_documented_set():
     This test encodes the full documented set so any unreviewed addition/removal
     causes a failure.
 
-    _CORE_FILES is version-AGNOSTIC (exactly 8 entries). The resolver fan-out
-    (_resolve_core_paths) handles v19 package-dir splits automatically.
+    _CORE_FILES is version-AGNOSTIC. The resolver fan-out (_resolve_core_paths)
+    handles v19 package-dir splits automatically.
     v19-only curated files (utils.py, model_classes.py, domains.py, table_objects.py)
     are registered in _V19_CURATED_FILES (not here) — they carry a name_allowlist to
     index only their public symbols, not internal plumbing.
+
+    issue #117 bug#3: res.users / res.groups public API (has_group / has_groups)
+    lives under addons/base, so odoo/addons/base/models/res_users.py is a deliberate
+    addition to this curated set - without it has_group resolved to "not found".
     """
-    # Exact documented set of 8 version-agnostic files — any unreviewed change fails.
+    # Exact documented set of version-agnostic files - any unreviewed change fails.
     expected = (
         "odoo/tools/safe_eval.py",
         "odoo/tools/query.py",
@@ -132,10 +184,7 @@ def test_core_files_allowlist_is_curated_and_matches_documented_set():
         "odoo/api.py",
         "odoo/sql_db.py",
         "odoo/exceptions.py",
-    )
-    assert len(_CORE_FILES) == 8, (
-        f"Allow-list must have exactly 8 version-agnostic entries, got {len(_CORE_FILES)}. "
-        f"v19-specific files belong in _V19_CURATED_FILES with a name_allowlist."
+        "odoo/addons/base/models/res_users.py",
     )
     assert len(_CORE_FILES) == len(expected), (
         f"Allow-list size changed: expected {len(expected)}, got {len(_CORE_FILES)}. "
@@ -1135,6 +1184,68 @@ def test_parse_odoo_core_query_v11_emits_query_class(tmp_path):
     assert "odoo.tools.query.Query" in qnames, (
         f"v11 must emit odoo.tools.query.Query (from odoo/osv/query.py); got {qnames}"
     )
+
+
+# ---------------------------------------------------------------------------
+# issue #117 bug#3 - res_users.py version-aware path (openerp/ vs odoo/ prefix,
+# legacy addons/base/res/ vs modern addons/base/models/ subdir)
+# ---------------------------------------------------------------------------
+
+def test_resolve_core_paths_res_users_modern_models_dir(tmp_path):
+    """v12+ - res_users.py resolves under addons/base/models/."""
+    d = tmp_path / "odoo" / "addons" / "base" / "models"
+    d.mkdir(parents=True)
+    f = d / "res_users.py"
+    f.write_text("class Users:\n    def has_group(self, x): pass\n")
+    resolved = _resolve_core_paths(
+        tmp_path, "odoo/addons/base/models/res_users.py", "18.0",
+    )
+    assert resolved == [f], f"v18 res_users must resolve under models/, got {resolved}"
+
+
+def test_resolve_core_paths_res_users_legacy_res_dir(tmp_path):
+    """v10/v11 - res_users.py resolves under the legacy addons/base/res/ subdir."""
+    d = tmp_path / "odoo" / "addons" / "base" / "res"
+    d.mkdir(parents=True)
+    f = d / "res_users.py"
+    f.write_text("class Users:\n    def has_group(self, x): pass\n")
+    resolved = _resolve_core_paths(
+        tmp_path, "odoo/addons/base/models/res_users.py", "10.0",
+    )
+    assert resolved == [f], f"v10 res_users must resolve under legacy res/, got {resolved}"
+
+
+def test_resolve_core_paths_res_users_v8_openerp_prefix(tmp_path):
+    """v8/v9 - res_users.py resolves under openerp/addons/base/res/ (legacy prefix)."""
+    d = tmp_path / "openerp" / "addons" / "base" / "res"
+    d.mkdir(parents=True)
+    f = d / "res_users.py"
+    f.write_text("class Users:\n    def has_group(self, x): pass\n")
+    resolved = _resolve_core_paths(
+        tmp_path, "odoo/addons/base/models/res_users.py", "8.0",
+    )
+    assert resolved == [f], f"v8 res_users must resolve under openerp/.../res/, got {resolved}"
+
+
+def test_parse_odoo_core_res_users_emits_has_group(tmp_path):
+    """bug#3 integration: has_group (+ has_groups) surface as CoreSymbols.
+
+    Modern v18 layout, with a genuinely private helper that must stay skipped.
+    """
+    d = tmp_path / "odoo" / "addons" / "base" / "models"
+    d.mkdir(parents=True)
+    (d / "res_users.py").write_text(
+        "class Users:\n"
+        "    def has_group(self, group_ext_id): pass\n"
+        "    def has_groups(self, group_spec): pass\n"
+        "    def _private_helper(self): pass\n"
+    )
+    out = parse_odoo_core(str(tmp_path), "18.0")
+    qnames = {s.qualified_name for s in out}
+    assert "odoo.addons.base.models.res_users.Users.has_group" in qnames
+    assert "odoo.addons.base.models.res_users.Users.has_groups" in qnames
+    # genuine private stays skipped (no index bloat)
+    assert "odoo.addons.base.models.res_users.Users._private_helper" not in qnames
 
 
 # ---------------------------------------------------------------------------

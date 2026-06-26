@@ -605,6 +605,42 @@ def test_method_info_default_core_symbol_refs_is_empty():
     assert m.core_symbol_refs == []
 
 
+def test_detect_acl_and_cache_rename_family_refs(tmp_path, sale_module):
+    """issue #117 reconcile: the v18 ACL rename family + v16 cache-flush family
+    are tracked as deprecated-usage refs.
+
+    `find_deprecated_usage` needs these in core_symbol_refs (parser side) so the
+    USES_CORE_SYMBOL edge is created. The complementary half (the deprecated
+    CoreSymbol target) is produced by parser_odoo_core (bug#2 underscore-skip fix
+    for the `_`-prefixed members; public members were already indexed).
+    """
+    f = write_py(tmp_path, "ext.py", """
+        from odoo import models
+
+        class SaleOrder(models.Model):
+            _inherit = 'sale.order'
+
+            def foo(self):
+                self.check_access_rights('read')
+                self.check_access_rule('write')
+                self._check_recursion()
+                self._filter_access_rules('read')
+                self.flush()
+                self.invalidate_cache()
+    """)
+    result = parse_file(f, sale_module)
+    foo = next(m for m in result[0].methods if m.name == "foo")
+    for sym in (
+        "check_access_rights", "check_access_rule", "_check_recursion",
+        "_filter_access_rules", "flush", "invalidate_cache",
+    ):
+        assert sym in foo.core_symbol_refs, (
+            f"{sym} must be tracked as a deprecated-usage ref, got {foo.core_symbol_refs}"
+        )
+    # `check_access` (the NEW v18 replacement) must NOT be flagged as deprecated.
+    assert "check_access" not in foo.core_symbol_refs
+
+
 # --- USES_CORE_SYMBOL V1 detection (M7 final-D) ------------------------------
 
 

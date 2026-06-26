@@ -3,16 +3,18 @@
 """Extract CoreSymbol entries from Odoo upstream Python source (M4.5 WI2.2).
 
 Boil-the-Lake principle: complete top-down inventory across stable v17/v18/v19+
-core API surface — but bounded by an allow-list of 8 well-known files. We do NOT
-walk the full Odoo source (1000+ files), nor parse third-party addons here.
+core API surface - but bounded by a small curated allow-list of well-known files
+(_CORE_FILES). We do NOT walk the full Odoo source (1000+ files), nor parse
+third-party addons here.
 For v19+, a curated supplement (_V19_CURATED_FILES) indexes split-ORM public APIs
 (Domain, table_objects, utils, model_classes) via name allowlist — 4 small files,
 v19-only, emitting only public symbols.
 
-Per ADR-0002 §6 — the 8 allow-list paths cover the entire surface area surveyed
-across v17→v19 changes (~80 unique symbol changes). Allow-list is intentional:
-keeping it stable lets the indexer run in O(8 × file_size_avg) per Odoo version,
-typically <1s/version on typical hardware.
+Per ADR-0002 §6 - the curated allow-list paths cover the entire surface area
+surveyed across v17→v19 changes (~80 unique symbol changes). Allow-list is
+intentional: keeping it small and stable lets the indexer run in
+O(len(_CORE_FILES) × file_size_avg) per Odoo version, typically <1s/version on
+typical hardware.
 
 Public API:
     parse_odoo_core(odoo_source_root, odoo_version) -> list[CoreSymbolInfo]
@@ -39,8 +41,13 @@ _CORE_FILES: tuple[str, ...] = (
     "odoo/api.py",
     "odoo/sql_db.py",
     "odoo/exceptions.py",
+    # issue #117 bug#3: res.users / res.groups public API (has_group / has_groups)
+    # lives in addons/base, NOT under odoo/ - without it, lookup_core_api("has_group")
+    # returned "not found" on every version. has_groups (plural) is v18+; it simply
+    # is absent from pre-v18 source so nothing extra is emitted there.
+    "odoo/addons/base/models/res_users.py",
 )
-# _CORE_FILES is EXACTLY 8 entries and is version-AGNOSTIC (no odoo/orm/ paths here).
+# _CORE_FILES is version-AGNOSTIC (no odoo/orm/ paths here).
 # The resolver fan-out (_resolve_core_paths) handles v19 package-dir splits for
 # fields/models/api automatically. Per ADR-0002 §6, adding to _CORE_FILES is a
 # deliberate curated decision — NOT automatic for every new v19 file.
@@ -142,6 +149,26 @@ _FIELD_BASE_NAMES = {
 _EXCEPTION_BASE_NAMES = {"Exception", "Warning", "BaseException", "UserError"}
 _ORM_BASE_NAMES = {"BaseModel", "Model", "TransientModel", "AbstractModel"}
 _CURSOR_HINT_FILES = {"odoo.sql_db"}  # methods inside any class in this module = cursor_method
+
+# Curated allow-list of UNDERSCORE-prefixed methods that must be indexed despite
+# the general "skip private" rule (issue #117 bug#2). These are public-by-contract
+# ORM methods that happen to follow Odoo's leading-underscore convention AND are
+# rename targets a migration consumer looks up by name. Without them,
+# lookup_core_api("_has_cycle"/"_filtered_access"/"_compute_display_name", 18.0)
+# returns "not found" even though they exist on disk.
+#   _compute_display_name : since v12, replaces name_get (REMOVED v18)
+#   _filtered_access      : since v18, replaces _filter_access_rules (deprecated v18)
+#   _has_cycle            : since v18, replaces _check_recursion (deprecated v18)
+# The DEPRECATED old underscore aliases (_filter_access_rules / _check_recursion /
+# _flush_search ...) are caught automatically by the deprecation-marker check in
+# _extract_class_methods, so they do NOT need to be listed here. Keep this set
+# minimal and curated (ADR-0002 §6) - every entry is a documented rename target,
+# not a blanket "index all private methods" escape hatch.
+_INDEXED_PRIVATE_METHODS: frozenset[str] = frozenset({
+    "_compute_display_name",
+    "_filtered_access",
+    "_has_cycle",
+})
 
 
 # --- AST helpers ------------------------------------------------------------
@@ -279,15 +306,35 @@ def _extract_class_methods(
     odoo_version: str,
     file_path: str | None,
 ) -> list[CoreSymbolInfo]:
-    """Walk class body — emit one symbol per public method (not __dunder__ / _private)."""
+    """Walk class body - emit one symbol per public method.
+
+    Skips `__dunder__` and `_private` methods, with two curated exceptions
+    (issue #117 bug#2) so the v18 ORM rename family resolves by name:
+      - a method in `_INDEXED_PRIVATE_METHODS` (documented rename target), OR
+      - a method carrying a deprecation marker (`@deprecated` decorator or a
+        body-level `warnings.warn(..., DeprecationWarning)`), so deprecated
+        underscore aliases (e.g. `_check_recursion`, `_filter_access_rules`)
+        get a CoreSymbol node with status='deprecated' - the prerequisite for
+        find_deprecated_usage to flag their usage.
+    `__dunder__` methods are ALWAYS skipped (never a public API surface).
+    """
     out: list[CoreSymbolInfo] = []
     method_kind = _method_kind(cls_node, module_qname)
     for node in cls_node.body:
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
-        if node.name.startswith("_"):
-            # Skip both `_private` and `__dunder__`.
-            continue
+        name = node.name
+        if name.startswith("_"):
+            if name.startswith("__"):
+                # Dunder / name-mangled - never a public API surface.
+                continue
+            keep_private = (
+                name in _INDEXED_PRIVATE_METHODS
+                or _has_deprecated_decorator(node)
+                or _has_body_level_deprecation_warning(node)
+            )
+            if not keep_private:
+                continue
         qname = f"{module_qname}.{cls_node.name}.{node.name}"
         out.append(_build_function_symbol(
             node, qname, odoo_version, kind=method_kind, file_path=file_path,
@@ -423,6 +470,20 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
             p = odoo_root / "odoo" / "tools" / "query.py"
         return [p] if p.is_file() else []
 
+    # issue #117 bug#3 - res_users.py moved across directories between versions.
+    # After prefix substitution above (openerp/ for v8-v9, odoo/ for v10+):
+    #   v8-v11:  addons/base/res/res_users.py
+    #   v12+:    addons/base/models/res_users.py
+    # Try the modern `models/` location first, then the legacy `res/` one, so
+    # has_group / has_groups resolve on every indexed version (D9).
+    if logical_path.endswith("/res_users.py"):
+        base = odoo_root / (prefix_new + "addons/base")
+        for sub in ("models", "res"):
+            p = base / sub / "res_users.py"
+            if p.is_file():
+                return [p]
+        return []
+
     candidate = odoo_root / logical_path
     if candidate.is_file():
         return [candidate]
@@ -464,7 +525,7 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
 
 
 def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbolInfo]:
-    """Extract CoreSymbol from the 8 allow-list files. Missing files are silently skipped.
+    """Extract CoreSymbol from the `_CORE_FILES` allow-list. Missing files are silently skipped.
 
     Args:
         odoo_source_root: Path to the Odoo upstream checkout root (parent of ``odoo/``).
@@ -482,7 +543,7 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
 
     out: list[CoreSymbolInfo] = []
     # (logical_path, name_allowlist). None allow-list = emit all top-level symbols
-    # (the 8 stable allow-list files); a frozenset = curated v19 split-ORM files.
+    # (the stable `_CORE_FILES`); a frozenset = curated v19 split-ORM files.
     targets: list[tuple[str, frozenset[str] | None]] = [(p, None) for p in _CORE_FILES]
     targets += list(_V19_CURATED_FILES.items())
     for relpath, allow in targets:
