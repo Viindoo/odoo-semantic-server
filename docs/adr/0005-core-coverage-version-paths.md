@@ -6,12 +6,14 @@
 ## Context
 
 M4.5 introduced `index-core` to ingest Odoo upstream framework symbols as `CoreSymbol`
-nodes (per ADR-0002). The 8-file allow-list covers the primary API surface:
+nodes (per ADR-0002). The `_CORE_FILES` allow-list (9 files as of issue #117) covers the
+primary API surface (`src/indexer/parser_odoo_core.py:_CORE_FILES` is the SSOT):
 
 ```
 odoo/tools/safe_eval.py   odoo/tools/query.py   odoo/tools/sql.py
 odoo/fields.py            odoo/models.py        odoo/api.py
 odoo/sql_db.py            odoo/exceptions.py
+odoo/addons/base/models/res_users.py   # issue #117: res.users public API (has_group/has_groups)
 ```
 
 The original implementation checked `Path.is_file()` directly against the allow-list
@@ -110,9 +112,11 @@ modules are now indexed normally (commit dc3a793 / PR #165). v8/v9 stay
 
 ### Out of scope (explicit non-goals, deferred per ADR-0002 §6)
 
-- Walking the full `odoo/` source tree beyond the 8-file allow-list. Adding
+- Walking the full `odoo/` source tree beyond the `_CORE_FILES` allow-list. Adding
   `odoo/http.py`, `odoo/loglevels.py`, `odoo/release.py`, the full `odoo/tools/`
-  subtree, and addon-specific files is M6+.
+  subtree, and addon-specific files is M6+. (issue #117 added one addon file,
+  `odoo/addons/base/models/res_users.py`, for the res.users/res.groups public API —
+  a targeted exception, not a general expansion to addons.)
 - Backfilling static JSON placeholders for v8–v16 `lint_rules` and `cli_flags` — they
   remain `"curate_status": "pending"` per ADR-0002 §4.
 
@@ -182,7 +186,7 @@ When a new Odoo major version ships:
 
 ## References
 
-- ADR-0002 §6 — CoreSymbol scope: 8-file allow-list, pending curate for lint/CLI v8–v16.
+- ADR-0002 §6 — CoreSymbol scope: `_CORE_FILES` allow-list (9 files as of issue #117), pending curate for lint/CLI v8–v16.
 - `src/indexer/parser_odoo_core.py` — `_version_prefix` and `_resolve_core_paths`.
 - Upstream Odoo: `openerp/models.py` (v8/v9), `odoo/fields.py` (v10–v18),
   `odoo/orm/fields_*.py` (v19+).

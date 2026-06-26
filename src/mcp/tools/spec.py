@@ -178,7 +178,19 @@ def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
                cs.added_in AS added_in,
                cs.removed_in AS removed_in,
                cs.deprecated_in AS deprecated_in
-        ORDER BY size(cs.qualified_name) ASC
+        // Ranking (issue #117 bug#4): an exact qualified-name match always wins;
+        // otherwise, among bare-name homonyms, surface the migration-relevant
+        // deprecated/removed candidate BEFORE a stable homonym (a shorter stable
+        // qname like odoo.api.Transaction.flush was shadowing the deprecated
+        // odoo.models.BaseModel.flush); shortest qname, then the qname itself,
+        // are the final tiebreaks so LIMIT 1 is fully deterministic even when two
+        // same-status homonyms share a qname length (CLAUDE.md Neo4j gotcha:
+        // ORDER BY must always carry a deterministic tiebreak).
+        ORDER BY
+            CASE WHEN cs.qualified_name = $name THEN 0 ELSE 1 END,
+            CASE WHEN cs.status IN ['deprecated', 'removed'] THEN 0 ELSE 1 END,
+            size(cs.qualified_name) ASC,
+            cs.qualified_name ASC
         LIMIT 1
         """,
         label=f"core API symbol {name!r} (Odoo {version})",
@@ -199,6 +211,23 @@ def _api_version_diff(
     with _srv._get_driver().session() as session:
         sym_old = _fetch_core_symbol(session, symbol, from_version)
         sym_new = _fetch_core_symbol(session, symbol, to_version)
+        # Pin BOTH sides to ONE qualified name. With a bare-name input the
+        # homonym ranking can resolve to a DIFFERENT symbol per version — e.g.
+        # 'flush' is the deprecated odoo.models.BaseModel.flush at v16 but is
+        # removed at v17, so the v17 lookup falls through to an unrelated stable
+        # homonym (odoo.api.Transaction.flush) and the diff would compare two
+        # different symbols. Anchor on whichever side resolved (prefer the older)
+        # and re-fetch the counterpart by EXACT qname (tier-1 exact match), so a
+        # symbol that is deprecated-then-removed reports as removed, not "changed".
+        # (issue #117 bug#4 follow-up.)
+        anchor = sym_old or sym_new
+        if anchor is not None:
+            qn = anchor["qualified_name"]
+            if qn != symbol:  # only ambiguous for bare-name (non-qualified) input
+                if sym_old is None or sym_old["qualified_name"] != qn:
+                    sym_old = _fetch_core_symbol(session, qn, from_version)
+                if sym_new is None or sym_new["qualified_name"] != qn:
+                    sym_new = _fetch_core_symbol(session, qn, to_version)
 
     if sym_old is None and sym_new is None:
         return (

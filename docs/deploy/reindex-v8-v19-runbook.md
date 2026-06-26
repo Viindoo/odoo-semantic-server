@@ -10,7 +10,7 @@
 > - WI-1: v18/v19 generic field classes (`Field[int]`) now classify as `kind='field_type'`
 > - WI-2: v8/v9 `parser_cli` now produces `CLICommand` nodes (previously 0)
 > - WI-3: LESS parser — `:Stylesheet {language: "less"}` nodes + `:IMPORTS` edges for v8-v11
-> - WI-4: curated `odoo.tools` CoreSymbols + `_DEPRECATED_API_SYMBOLS` 14 → 19 entries
+> - WI-4: curated `odoo.tools` CoreSymbols + `_DEPRECATED_API_SYMBOLS` 14 → 25 entries (WI-4 took it to 19; issue #117 added the v18 ACL + v16/v17 cache families, +6)
 > - WI-5: lint rules ≥50/version for v10-v19 (JSON curation; picked up on next `index-core` run)
 > - WI-6: `VersionRegistry` (ADR-0032) — behavior-preserving refactor, no data migration needed
 >
@@ -89,7 +89,7 @@ Expected: `deleted_anachronisms = 239` (or 0 if already cleaned up from M10 ops)
 Re-runs `index-core` for all versions. Picks up:
 - WI-1: v18/v19 generic field classes (`Field[int]` Subscript) classified as `field_type`
 - WI-2: v8/v9 CLICommand nodes from `openerp/` paths + static commands JSON
-- WI-4: curated `odoo.tools` CoreSymbols (12 `tools_symbols_X.0.json` files) + `_DEPRECATED_API_SYMBOLS` 19 entries
+- WI-4: curated `odoo.tools` CoreSymbols (12 `tools_symbols_X.0.json` files) + `_DEPRECATED_API_SYMBOLS` 25 entries (issue #117 added the v18 ACL + v16/v17 cache families)
 - WI-5: lint rules ≥50/version for v10-v19
 
 CLI verified: `python -m src.indexer index-core --help` shows `--source SOURCE --version VERSION [--static-data-dir STATIC_DATA_DIR]`.

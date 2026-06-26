@@ -646,7 +646,7 @@ def index_core(
     """Index Odoo core API symbols + lint rules + CLI commands/flags for one version.
 
     This is the implementation backing the `index-core` CLI subcommand. It:
-    1. Parses CoreSymbol from the 8 allow-list files in `source_root`.
+    1. Parses CoreSymbol from the `_CORE_FILES` allow-list in `source_root`.
     2. Parses LintRule from pylint-odoo/ESLint/ruff + static placeholders.
     3. Parses CLICommand from `odoo/cli/*.py`.
     4. Parses CLIFlag from `odoo/tools/config.py` + static placeholders.

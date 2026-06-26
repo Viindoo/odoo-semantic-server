@@ -216,7 +216,7 @@ Xem `docs/adr/0032-parser-hooks-registry.md §v20` cho ví dụ đầy đủ.
 | `docs/adr/0032-parser-hooks-registry.md` | `VersionRegistry` design + v20 extension pattern |
 | `docs/adr/0033-odoo-tools-symbol-coverage.md` | `odoo.tools` curated symbol policy + safe_eval lifecycle |
 | `docs/adr/0025-css-scss-indexing.md` | CSS/SCSS/LESS indexing schema |
-| `docs/adr/0002-spec-schema-policy.md` | `_DEPRECATED_API_SYMBOLS` policy (19 entries v2) |
+| `docs/adr/0002-spec-schema-policy.md` | `_DEPRECATED_API_SYMBOLS` policy (25 entries; v2 + issue #117 ACL/cache families) |
 | `docs/adr/0005-core-coverage-version-paths.md` | `openerp/` vs `odoo/` path resolution |
 | `src/indexer/spec_data/bootstrap_versions.json` | Bootstrap version per Odoo major (curated) |
 | `src/indexer/version_registry.py` | `VersionRegistry` implementation |
