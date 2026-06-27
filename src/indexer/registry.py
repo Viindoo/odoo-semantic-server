@@ -244,7 +244,12 @@ def build_registry(
             action = license_policy_action(effective_license)
             if action == "skip":
                 skipped_license += 1
-                _logger.warning(
+                # By-design policy exclusion (ADR-0036), not a problem: the
+                # per-repo INFO summary below already reports `skipped_license`,
+                # so the per-module line is DEBUG to avoid duplicating it 13x
+                # per scan (zero-noise reindex). Indexer log-level policy: see
+                # the module header in parser_python.py.
+                _logger.debug(
                     "License policy: skipping module '%s' (license=%s, action=skip)."
                     " To enable, flip LICENSE_POLICY['%s'] in src/constants.py.",
                     module_name, effective_license, effective_license,

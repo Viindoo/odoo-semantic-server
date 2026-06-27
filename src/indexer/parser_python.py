@@ -10,6 +10,17 @@ from .parser_util import parse_external_source
 
 _logger = logging.getLogger("src.indexer.parser")
 
+# --- Indexer log-level policy (applies to all _logger.* calls in this package) ---
+#   ERROR   real failure: confirmed data loss, IO/DB error, no mitigation path.
+#   WARNING genuine coverage gap a human should act on (e.g. a file the parser
+#           could NOT recover at all, an installable module skipped unexpectedly).
+#   INFO    one-line per-module / per-repo run summary (NOT per file).
+#   DEBUG   expected-by-design per-item events (the Py2 text-regex fallback for
+#           v8-v10, "no ORM models in this controller/vendored file", etc.).
+# The Python-2 text-regex fallback (parse_file below) and the resulting "0 ORM
+# models" outcome for controllers/vendored files are BY DESIGN, not failures, so
+# they log at DEBUG; parse_module emits a single INFO summary instead (#285).
+
 # v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
     'Char', 'Text', 'Html', 'Integer', 'Float', 'Monetary', 'Boolean',
@@ -903,7 +914,11 @@ def _parse_era2_ast(
     return models
 
 
-def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
+def parse_file(
+    filepath: str,
+    module_info: ModuleInfo,
+    stats: dict[str, int] | None = None,
+) -> list[ModelInfo]:
     """Parse a Python file → list[ModelInfo]. Era-aware dispatch (M4.5 WI1.2).
 
     Primary path is the AST parser for ALL eras. On ``SyntaxError`` (a file that
@@ -914,6 +929,12 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
     dropping the whole file. The fallback is reached ONLY on SyntaxError, so
     syntactically-valid files are never affected (#285, ADR-0032 graceful
     degradation; era1=v8/v9 already did this — era2 now matches).
+
+    The Python-2 fallback is a BY-DESIGN success path (the dominant case for
+    v8-v10 checkouts), so per-file events are logged at DEBUG, never WARNING/
+    ERROR. ``stats`` (when supplied by :func:`parse_module`) accumulates
+    ``fallback`` and ``fallback_zero_models`` counts so the caller can emit one
+    INFO summary per module instead of one line per file (#285 zero-noise).
     """
     try:
         source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
@@ -923,20 +944,31 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[ModelInfo]:
     try:
         models = _parse_era2_ast(source, module_info, filename=filepath)
     except SyntaxError as exc:
-        # Graceful degradation: a SyntaxError means ast.parse rejected the file.
-        # Recover model identity via the text-regex extractor rather than
-        # dropping every model in the file (the #285 orphan bug). Logged so a
-        # future straggler is visible, never silent.
-        _logger.warning(
+        # Graceful degradation: a SyntaxError means ast.parse rejected the file
+        # (Python-2 idioms in v8-v10 source). The text-regex fallback recovers
+        # model identity rather than dropping the file (the #285 orphan bug).
+        # This is the designed success path for legacy checkouts, so it is DEBUG,
+        # not WARNING; parse_module surfaces an INFO summary instead.
+        if stats is not None:
+            stats["fallback"] = stats.get("fallback", 0) + 1
+        _logger.debug(
             "parse_file: ast.parse failed for %s (Odoo %s): %s — "
             "falling back to text-regex extraction",
             filepath, module_info.odoo_version, exc,
         )
         models = _parse_era1_text(source, module_info)
         if not models:
-            _logger.error(
-                "parse_file: text-regex fallback recovered 0 models from %s "
-                "(Odoo %s) — models in this file are LOST",
+            # 0 models here is EXPECTED for controllers (http.route, no ORM),
+            # vendored third-party libraries, and OpenOffice/plugin scripts:
+            # there are simply no ORM `_name` definitions to recover — nothing
+            # is lost. Verified benign across all categories (#285). DEBUG only.
+            if stats is not None:
+                stats["fallback_zero_models"] = (
+                    stats.get("fallback_zero_models", 0) + 1
+                )
+            _logger.debug(
+                "parse_file: text-regex fallback found no ORM models in %s "
+                "(Odoo %s) — expected for controllers/vendored/non-model files",
                 filepath, module_info.odoo_version,
             )
 
@@ -953,13 +985,25 @@ def parse_module(module_info: ModuleInfo) -> ParseResult:
 
     SKIP_DIRS = {'.git', 'static', 'migrations', 'tests', '__pycache__'}
 
+    stats: dict[str, int] = {}
     for py_file in sorted(module_path.rglob('*.py')):
         if py_file.name == '__manifest__.py':
             continue
         if SKIP_DIRS & set(py_file.parts):
             continue
-        models = parse_file(str(py_file), module_info)
+        models = parse_file(str(py_file), module_info, stats=stats)
         result.models.extend(models)
+
+    # One INFO summary per module (only when the Py2 fallback actually fired,
+    # i.e. v8-v10 modules), replacing the former per-file WARNING+ERROR spam.
+    fallback = stats.get("fallback", 0)
+    if fallback:
+        _logger.info(
+            "parse_module %s (Odoo %s): %d file(s) used text-regex fallback "
+            "(%d with 0 ORM models — controllers/vendored, expected)",
+            module_info.name, module_info.odoo_version,
+            fallback, stats.get("fallback_zero_models", 0),
+        )
 
     return result
 

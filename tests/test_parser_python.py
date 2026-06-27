@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_parser_python.py
+import logging
 import textwrap
 from pathlib import Path
 
@@ -2125,3 +2126,118 @@ def test_annassign_mixed_assign_and_annassign_both_captured(tmp_path, v18_module
     )
     assert field_map['name'].ttype == 'char'
     assert field_map['commercial_partner_id'].ttype == 'many2one'
+
+
+# --- WI-B: zero-noise reindex — Py2 fallback logs are DEBUG, not WARNING/ERROR ---
+# Behaviour protected: the by-design Python-2 text-regex fallback for v8-v10 is
+# an expected success path, so it must NOT raise the operator-facing log levels.
+# A controller/vendored file that recovers 0 ORM models is also expected and must
+# NOT log ERROR ("models LOST" was the misleading message we removed, #285).
+
+
+def _assert_no_warn_or_error(caplog):
+    offenders = [
+        f"{r.levelname}:{r.getMessage()}"
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+    ]
+    assert not offenders, f"unexpected WARNING/ERROR log(s): {offenders}"
+
+
+def test_py2_fallback_with_model_logs_debug_not_warning(
+    tmp_path, v10_base_module, caplog
+):
+    # A Py2-syntax file that still defines an ORM model: the fallback recovers the
+    # model. The fallback notice must be DEBUG; nothing at WARNING or above.
+    f = write_py(tmp_path, "res_users.py", """
+        from odoo import models, fields
+
+        class ResUsers(models.Model):
+            _name = 'res.users'
+            login = fields.Char()
+
+            def _legacy(self):
+                print 'py2 print statement forces SyntaxError'
+    """)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        models_found = parse_file(f, v10_base_module)
+
+    assert any(m.name == "res.users" for m in models_found), (
+        "model identity must survive the Py2 fallback (#285)"
+    )
+    _assert_no_warn_or_error(caplog)
+    assert "falling back to text-regex extraction" in caplog.text, (
+        "the fallback notice must still be emitted, at DEBUG"
+    )
+
+
+def test_py2_controller_zero_models_logs_debug_not_error(
+    tmp_path, v10_base_module, caplog
+):
+    # A controller/vendored-style file: Py2 syntax + ZERO ORM models. The old code
+    # logged this at ERROR with a misleading "models LOST" message. It must now be
+    # DEBUG (nothing is lost — there were no ORM models to begin with).
+    f = write_py(tmp_path, "controllers_main.py", """
+        from odoo import http
+
+        class WebController(http.Controller):
+            @http.route('/legacy', auth='public')
+            def legacy(self):
+                print 'py2 print statement forces SyntaxError'
+                return 'ok'
+    """)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        models_found = parse_file(f, v10_base_module)
+
+    assert models_found == [], "a controller file has no ORM models to recover"
+    _assert_no_warn_or_error(caplog)
+    assert "no ORM models" in caplog.text, (
+        "the 0-model outcome must still be visible, at DEBUG"
+    )
+    assert "LOST" not in caplog.text, (
+        "the misleading 'models LOST' wording must be gone (#285)"
+    )
+
+
+def test_parse_module_emits_single_info_fallback_summary(
+    tmp_path, v10_base_module, caplog
+):
+    # One INFO summary per module replaces the per-file WARNING/ERROR spam:
+    # 2 files use the fallback (1 with a model, 1 controller with 0 models).
+    write_py(tmp_path, "res_users.py", """
+        from odoo import models, fields
+
+        class ResUsers(models.Model):
+            _name = 'res.users'
+            login = fields.Char()
+
+            def _legacy(self):
+                print 'py2'
+    """)
+    write_py(tmp_path, "controllers_main.py", """
+        from odoo import http
+
+        class WebController(http.Controller):
+            def legacy(self):
+                print 'py2'
+    """)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        result = parse_module(v10_base_module)
+
+    assert any(m.name == "res.users" for m in result.models)
+    summaries = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and r.getMessage().startswith("parse_module base")
+    ]
+    assert len(summaries) == 1, (
+        f"expected exactly one INFO summary per module, got {len(summaries)}"
+    )
+    msg = summaries[0].getMessage()
+    assert "2 file(s) used text-regex fallback" in msg, msg
+    assert "1 with 0 ORM models" in msg, msg
+    # No WARNING/ERROR anywhere — the whole point of WI-B.
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
