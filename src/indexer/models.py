@@ -61,6 +61,17 @@ class ModuleInfo:
     application: bool = False
     category: str | None = None
     summary: str | None = None
+    # Issue #121 P2 - module identity card: human-authored display name + author.
+    # shortdesc = manifest['name'] (= ir.module.module.shortdesc), e.g.
+    #   "E-Invoice - VNIs VN-Invoice Integrator". DISTINCT from `name` (the
+    #   technical slug). author = manifest['author'] RAW, e.g.
+    #   "T.V.T Marine Automation (aka TVTMA),Viindoo". Kept ALONGSIDE
+    #   copyright_owner (normalized, lossy - ADR-0036): identity vs license policy
+    #   are two different concerns. Default None (NOT '') so "manifest did not
+    #   declare it" stays distinct from "declared empty" cross-version - author is
+    #   absent in CE core v9-v17 (artifact 04 §3), summary absent in ~70% of v8.
+    shortdesc: str | None = None
+    author: str | None = None
     external_python: list[str] = field(default_factory=list)
     external_bin: list[str] = field(default_factory=list)
     # v17+ manifest `countries` key: restricts module to these ISO country codes

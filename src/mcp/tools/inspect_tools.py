@@ -382,13 +382,20 @@ def profile_inspect(
     SKIP when: you need a single model's fields/methods - use model_inspect.
 
     Args:
-        method: 'summary' | 'repos' | 'modules'.
-            summary - ancestor chain, children, repos, module count (needs name=).
-            repos   - distinct repos in the ancestor chain, deduped by (url, branch).
-            modules - paginated modules scoped to the profile; repo= URL-substring
+        method: 'summary' | 'repos' | 'modules' | 'coverage'.
+            summary  - ancestor chain, children, repos, module count (needs name=).
+            repos    - distinct repos in the ancestor chain, deduped by (url, branch).
+            modules  - paginated modules scoped to the profile; repo= URL-substring
               filter; start_index/limit pagination (default 50/page, max 50).
-        name: Profile name (e.g. 'viindoo_internal_17'). Required for 'summary';
-            optional for 'repos'/'modules' (None = all caller-visible profiles).
+            coverage - module count by category for this profile, with a
+              superset-diff (indexed_elsewhere = modules of that category visible
+              to you but NOT in this profile) as a "may be incomplete" signal
+              (needs name=). Absence from the list != absence from the product -
+              the static index cannot prove a domain is absent; cross-check live
+              ir.module.module to confirm.
+        name: Profile name (e.g. 'viindoo_internal_17'). Required for 'summary'
+            and 'coverage'; optional for 'repos'/'modules' (None = all
+            caller-visible profiles).
         repo: Filter by repo URL substring ('repos'/'modules' only).
         start_index: Zero-based pagination cursor for 'modules'.
         limit: Rows per page for 'modules' (default 50, max 50).

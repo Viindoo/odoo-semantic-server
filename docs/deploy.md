@@ -830,6 +830,18 @@ sudo systemd-run --uid=odoo-semantic --gid=odoo-semantic --pipe --wait \
 > Auto-reseed pattern catalogue cũng wire vào pipeline (sha256 sentinel — cheap khi unchanged).
 > See `docs/adr/0007-incremental-indexer.md` cho design decisions.
 
+> **Ops - backfill `--full` sau feature release thêm index-time property (ADR-0053, issue #121):**
+> Khi một release thêm property mới TÍNH TẠI INDEX-TIME (ví dụ `shortdesc`/`author` =
+> module identity card, hoặc `edition` được reclassify OPL-1+Viindoo -> `viindoo`), incremental
+> reindex CHỈ chạm module có git-diff nên các module manifest không đổi sẽ giữ `NULL`/edition cũ
+> cho tới khi có một lượt `--full`. Sau khi deploy code, chạy MỘT lượt `--full` off-peak để
+> backfill (tối thiểu profile chứa tvtmaaddons, vd `standard_viindoo_17`); ghi (`coalesce` ON
+> MATCH) đảm bảo lượt reindex sau thiếu key sẽ KHÔNG xoá dữ liệu cũ. Tool degrade gracefully
+> trước backfill (thiếu property = ẩn dòng, không lỗi). Label-text + `profile_inspect(method='coverage')`
+> là read-time, sống ngay sau deploy (không cần reindex). Verify bằng
+> `check_module_exists('l10n_vn_viin_accounting_vninvoice', 17.0)` -> phải show Display name +
+> Edition "Viindoo Commercial".
+
 ### 3.6b TTL cleanup timer (nightly session/audit hygiene)
 
 `osm-ttl-cleanup.service` + `osm-ttl-cleanup.timer` chạy **hằng đêm** để xóa các row

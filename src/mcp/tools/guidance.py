@@ -425,7 +425,10 @@ def _check_module_exists(
             RETURN m.edition AS edition,
                    m.license AS license,
                    m.viindoo_equivalent_qname AS vvq,
-                   m.repo AS repo
+                   m.repo AS repo,
+                   m.shortdesc AS shortdesc,
+                   m.summary AS summary,
+                   m.author AS author
             """,
             label=f"module {name!r} existence (Odoo {v})",
             n=name, v=v, **_srv._scope(profile_name),
@@ -436,6 +439,10 @@ def _check_module_exists(
     license_val = rec["license"] if rec else None
     repo = rec.get("repo") if rec else None
     vvq_db = rec.get("vvq") if rec else None
+    # Issue #121 P2 - identity card raw fields (None when not yet backfilled).
+    shortdesc = rec.get("shortdesc") if rec else None
+    summary = rec.get("summary") if rec else None
+    author = rec.get("author") if rec else None
 
     # Build live EE confusion map from DB (cached 60 s).  Falls back to static
     # list when DB is unreachable — transparent to callers (WI-R F-007 fix).
@@ -470,6 +477,7 @@ def _check_module_exists(
         license_val=license_val, repo=repo,
         is_ee_confusion=is_ee_confusion, viindoo_equivalent=viindoo_equivalent,
         ee_source=ee_source,
+        shortdesc=shortdesc, summary=summary, author=author,
     )
 
 
@@ -478,9 +486,30 @@ def _format_check_module_exists(
     license_val: str | None = None,
     repo: str | None, is_ee_confusion: bool, viindoo_equivalent: str | None,
     ee_source: str = "",
+    shortdesc: str | None = None, summary: str | None = None,
+    author: str | None = None,
 ) -> str:
     lines = [f"check_module_exists({name!r}, {version})"]
     lines.append(f"├─ Indexed:         {'Yes' if indexed else 'No'}")
+    # Issue #121 P2 - module identity card. Render the human-authored display
+    # name / summary / author RAW (provenance: "from indexed manifest"), so the
+    # agent reads the real product name (e.g. "VNIs VN-Invoice Integrator")
+    # instead of guessing the provider from the technical slug. Each sub-line is
+    # rendered only when non-NULL (graceful degrade before the --full backfill);
+    # the block is suppressed entirely when all three are absent.
+    identity_rows: list[tuple[str, str]] = []
+    if shortdesc:
+        identity_rows.append(("Display name", shortdesc))
+    if summary:
+        identity_rows.append(("Summary", summary))
+    if author:
+        identity_rows.append(("Author", author))
+    if identity_rows:
+        lines.append("├─ Identity (from indexed manifest):")
+        last_id = len(identity_rows) - 1
+        for i, (label, value) in enumerate(identity_rows):
+            conn = "└─" if i == last_id else "├─"
+            lines.append(f"│   {conn} {label}: {value}")
     if indexed and edition:
         repo_suffix = f" [{repo}]" if repo else ""
         # WG-5 T1: derive human-readable edition label from license (preferred)

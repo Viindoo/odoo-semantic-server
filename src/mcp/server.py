@@ -125,43 +125,38 @@ logger = logging.getLogger(__name__)
 _ANONYMOUS_API_KEY_ID = "anonymous"
 
 
-# Render-only edition label - WG-5 T1.
-# Maps raw license string → human-readable label for MCP output.
-# License facts (Odoo S.A., https://www.odoo.com/documentation/19.0/legal/licenses.html):
-#   OEEL-1 = Odoo Enterprise Edition License - Odoo S.A.'s OWN Enterprise add-ons.
-#   OPL-1  = Odoo Proprietary License - Odoo S.A.'s license for THIRD-PARTY / proprietary
-#            Odoo apps; Viindoo's tvtmaaddons are published under OPL-1. OPL-1 is NOT
-#            Odoo Enterprise.
-# OPL-1 is intentionally NOT mapped here so it falls through to the indexed `edition`
-# enum (e.g. "viindoo" → "Viindoo Enterprise (EE)"); mapping it to "Odoo Enterprise (EE)"
-# mislabeled third-party OPL-1 addons authored by Viindoo (#263, regression from PR #165).
+# Render-only edition labels - WG-5 T1 / issue #121 P5 (verbose 3-tier wording
+# carrying the free / paid / not-resold semantics a pre-sales agent needs).
+# ASCII hyphen only (ETHOS #0). License facts (Odoo S.A. licenses page):
+#   OEEL-1 = Odoo Enterprise Edition License (Odoo S.A.'s OWN EE add-ons).
+#   OPL-1  = Odoo Proprietary License for THIRD-PARTY apps; Viindoo's tvtmaaddons
+#            use OPL-1. OPL-1 is NOT Odoo Enterprise, so it is deliberately NOT
+#            mapped here - it falls through to the indexed `edition` enum (a
+#            'viindoo' module reads "Viindoo Commercial ...", never an "Odoo
+#            Enterprise" label - #263, regression from PR #165).
 _LICENSE_TO_EDITION_LABEL: dict[str, str] = {
-    "lgpl-3":   "Community (CE)",
-    "lgpl-3.0": "Community (CE)",
-    "agpl-3":   "Community (CE)",
-    "agpl-3.0": "Community (CE)",
-    "gpl-3":    "Community (CE)",
-    "gpl-3.0":  "Community (CE)",
-    "oeel-1":   "Odoo Enterprise (EE)",
+    "lgpl-3":   "Community (CE) - free",
+    "lgpl-3.0": "Community (CE) - free",
+    "agpl-3":   "Community (CE) - free",
+    "agpl-3.0": "Community (CE) - free",
+    "gpl-3":    "Community (CE) - free",
+    "gpl-3.0":  "Community (CE) - free",
+    "oeel-1":   "Odoo Enterprise (EE) - Odoo S.A. licensed, not resold by Viindoo",
 }
 _EDITION_ENUM_TO_LABEL: dict[str, str] = {
-    "community":  "Community (CE)",
-    "enterprise": "Odoo Enterprise (EE)",
-    "viindoo":    "Viindoo Enterprise (EE)",
+    "community":  "Community (CE) - free, bundled with Odoo CE",
+    "enterprise": "Odoo Enterprise (EE) - Odoo S.A. licensed, not resold by Viindoo",
+    "viindoo":    "Viindoo Commercial - paid Viindoo subscription app",
     "oca":        "OCA / Community-compatible",
-    "custom":     "Custom",
+    "custom":     "Custom / third-party",
 }
 
 
-# Edition enums that are DEFINITIVE first-party signals: when the indexer has
-# stamped one of these, it identifies the author/edition more authoritatively
-# than any license string, so it must NOT be overridden by a license mapping
-# (#263 / N3). OPL-1 is Odoo S.A.'s third-party proprietary license, under which
-# Viindoo publishes its addons (it is NOT Odoo Enterprise, and OEEL-1 is Odoo
-# S.A.'s own Enterprise license - not a Viindoo license). A first-party Viindoo
-# module (`edition='viindoo'`) must read "Viindoo Enterprise (EE)" - never
-# "Odoo Enterprise (EE)" - even on the defensive edge where its license string
-# would otherwise map elsewhere.
+# Edition enums that are DEFINITIVE first-party signals: a stamped enum here
+# identifies the author more authoritatively than any license string, so a
+# license mapping must NOT override it (#263 / N3). A first-party Viindoo module
+# (`edition='viindoo'`) must read a Viindoo-branded label, never an "Odoo
+# Enterprise" one (issue #121 P5 sharpened the wording; the #263 invariant holds).
 _FIRST_PARTY_EDITIONS: frozenset[str] = frozenset({"viindoo"})
 
 
@@ -172,14 +167,15 @@ def _edition_label(edition: str | None, license: str | None = None) -> str:
       1. A DEFINITIVE first-party ``edition`` enum (``_FIRST_PARTY_EDITIONS``)
          wins outright - license can never override a known first-party author
          (#263 / N3: even if a module's license string would otherwise map to
-         Odoo Enterprise, a ``viindoo`` edition still reads "Viindoo Enterprise").
+         Odoo Enterprise, a ``viindoo`` edition still reads "Viindoo Commercial").
       2. Otherwise ``license`` (SPDX string) - more specific than a generic
          ``edition`` enum (e.g. disambiguates raw ``'enterprise'`` via OEEL-1).
       3. Otherwise the ``edition`` enum mapping, then the raw value, then CE.
 
     Used by check_module_exists, describe_module, and model_inspect summary
-    to show 'Community (CE)' / 'Odoo Enterprise (EE)' / 'Viindoo Enterprise (EE)'
-    instead of raw 'community'/'enterprise'/'viindoo'.
+    to show the verbose 3-tier labels (e.g. 'Community (CE) - free, ...' /
+    'Odoo Enterprise (EE) - ... not resold by Viindoo' / 'Viindoo Commercial -
+    paid Viindoo subscription app') instead of raw 'community'/'enterprise'/'viindoo'.
     """
     if edition and edition in _FIRST_PARTY_EDITIONS:
         return _EDITION_ENUM_TO_LABEL.get(edition, edition)

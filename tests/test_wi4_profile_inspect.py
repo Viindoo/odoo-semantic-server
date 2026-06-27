@@ -164,7 +164,10 @@ def test_invalid_method_returns_error():
         f"Expected 'Error: unknown method ...' but got: {result!r}"
     )
     assert "profile_inspect" in result
-    assert "summary" in result and "repos" in result and "modules" in result
+    assert (
+        "summary" in result and "repos" in result
+        and "modules" in result and "coverage" in result
+    )
 
 
 # ---------------------------------------------------------------------------

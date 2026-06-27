@@ -1705,10 +1705,12 @@ W6_EDITION_LABEL_VERSION = "88.0"
 
 def test_describe_module_edition_label_opl1_firstparty(neo4j_driver):
     """describe_module: OPL-1 is the Odoo Proprietary License for third-party /
-    proprietary apps (ADR-0036) — NOT Odoo Enterprise (that is OEEL-1). A Viindoo
-    OPL-1 module (edition='viindoo') must render as 'Viindoo Enterprise (EE)', NOT
-    'Odoo Enterprise (EE)'. Regression guard for #263 (PR #165 mislabeled
-    tvtmaaddons as Odoo Enterprise)."""
+    proprietary apps (ADR-0036) - NOT Odoo Enterprise (that is OEEL-1). A Viindoo
+    OPL-1 module (edition='viindoo') must render a Viindoo-branded Edition label,
+    NEVER an 'Odoo Enterprise' one. Regression guard for #263 (PR #165 mislabeled
+    tvtmaaddons as Odoo Enterprise); semantic so the issue #121 P5 wording
+    ('Viindoo Commercial - paid ...') does not falsely fail, but a regression
+    re-introducing 'Odoo Enterprise' still reds."""
     _cleanup_version(neo4j_driver, W6_EDITION_LABEL_VERSION)
     try:
         with neo4j_driver.session() as session:
@@ -1720,8 +1722,8 @@ def test_describe_module_edition_label_opl1_firstparty(neo4j_driver):
             )
         srv = _import_server_module()
         out = srv._describe_module("viin_firstparty_test", W6_EDITION_LABEL_VERSION)
-        assert "Viindoo Enterprise (EE)" in out, (
-            f"Expected 'Viindoo Enterprise (EE)' in Edition line, got:\n{out}"
+        assert "Viindoo" in out, (
+            f"Expected a Viindoo-branded Edition label, got:\n{out}"
         )
         assert "Odoo Enterprise (EE)" not in out, (
             f"OPL-1 first-party module must NOT be labeled Odoo Enterprise, got:\n{out}"
@@ -1772,8 +1774,8 @@ def test_check_module_exists_firstparty_viindoo_not_ee_confusion(neo4j_driver):
         assert "Is EE confusion: No" in out, (
             f"First-party Viindoo OPL-1 module must NOT be EE confusion, got:\n{out}"
         )
-        assert "Viindoo Enterprise (EE)" in out, (
-            f"Expected Viindoo edition label, got:\n{out}"
+        assert "Viindoo" in out, (
+            f"Expected a Viindoo-branded edition label, got:\n{out}"
         )
         assert "GPL" not in out and "Odoo Enterprise" not in out, (
             f"No false Odoo-Enterprise/GPL warning expected, got:\n{out}"
