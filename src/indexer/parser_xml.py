@@ -19,6 +19,29 @@ from .version_registry import VersionRegistry
 _logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Report-action declaration constants (issue #345 report-type gate)
+# ---------------------------------------------------------------------------
+# Accept BOTH report-action model names: v8-v10 used `ir.actions.report.xml`,
+# renamed to `ir.actions.report` at v11 (eraA/eraB surveys). Accepting both at
+# every version is the simplest correct behaviour (the era never produces the
+# other name, so there is no ambiguity).
+_REPORT_ACTION_MODEL_NAMES = frozenset({
+    "ir.actions.report",
+    "ir.actions.report.xml",
+})
+
+# Legacy/non-qweb markers. Record form uses these as <field name="..."> children;
+# the <report> shorthand uses the shorter attribute spellings. Presence of any
+# marks an RML/XSL/SXW/custom-parser report (never a qweb-template report).
+_REPORT_LEGACY_MARKER_FIELDS = frozenset({
+    "report_rml", "report_xml", "report_xsl", "report_sxw", "parser",
+})
+_REPORT_LEGACY_MARKER_ATTRS = ("rml", "xml", "xsl", "sxw", "parser")
+# Odoo's safe_eval reads auto="False" (Python bool literal) as the custom-parser
+# signal; treat the common string spellings as False.
+_REPORT_AUTO_FALSE_VALUES = frozenset({"false", "0"})
+
+# ---------------------------------------------------------------------------
 # RelaxNG validation (v15+ only) — WI-E, M11
 # ---------------------------------------------------------------------------
 # RNG files are read directly from the indexed Odoo core source tree at index
@@ -369,16 +392,21 @@ def _parse_record(
 def _parse_report_record(
     record: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
 ) -> ReportInfo | None:
-    """Parse a ``<record model="ir.actions.report">`` element into a ReportInfo.
+    """Parse a ``<record model="ir.actions.report*">`` element into a ReportInfo.
 
-    The v14+ declaration form. Fields are ``<field name="...">`` children:
-    ``name`` (human label), ``model`` (business model), ``report_type``,
-    ``report_name`` (template QWeb xmlid), ``report_file``, ``paperformat_id``.
+    Accepts BOTH the v11+ model name ``ir.actions.report`` AND the v8-v10 name
+    ``ir.actions.report.xml`` (bug 1: the legacy name was previously rejected, so
+    every record-form report in v8-v10 was silently dropped). Fields are
+    ``<field name="...">`` children: ``name`` (human label), ``model`` (business
+    model), ``report_type``, ``report_name`` (template QWeb xmlid), ``report_file``,
+    ``paperformat_id``, plus the legacy RML/parser fields (``report_rml``,
+    ``report_xml``, ``report_xsl``, ``report_sxw``, ``parser``) that mark a
+    non-qweb report.
 
-    Returns None when the record is not an ``ir.actions.report``, has no ``id``,
-    or carries no usable ``model`` (a report with no target model is unindexable).
+    Returns None when the record is not a report action, has no ``id``, or carries
+    no usable ``model`` (a report with no target model is unindexable).
     """
-    if record.get("model") != "ir.actions.report":
+    if record.get("model") not in _REPORT_ACTION_MODEL_NAMES:
         return None
 
     xml_id = record.get("id", "").strip()
@@ -391,6 +419,7 @@ def _parse_report_record(
     report_name: str | None = None
     report_file: str | None = None
     paperformat: str | None = None
+    has_legacy_marker = False
 
     for child in record:
         tag = child.tag
@@ -411,6 +440,13 @@ def _parse_report_record(
         elif fname == "paperformat_id":
             # paperformat is a ref= (no text body) in the record form.
             paperformat = (child.get("ref", "").strip() or text) or None
+        elif fname in _REPORT_LEGACY_MARKER_FIELDS and text:
+            # report_rml / report_xml / report_xsl / report_sxw / parser - any of
+            # these present marks an RML/XSL/SXW/custom-parser (non-qweb) report.
+            has_legacy_marker = True
+        elif fname == "auto" and text.lower() in _REPORT_AUTO_FALSE_VALUES:
+            # auto="False" = custom Python parser report (non-qweb).
+            has_legacy_marker = True
 
     if not model:
         return None
@@ -429,6 +465,7 @@ def _parse_report_record(
         paperformat=qualify_xmlid(paperformat, module.name) if paperformat else None,
         source_file=file_path,
         line=src_line,
+        has_legacy_marker=has_legacy_marker,
     )
 
 
@@ -437,12 +474,16 @@ def _parse_report_shorthand(
 ) -> ReportInfo | None:
     """Parse a v8-v13 ``<report .../>`` shorthand element into a ReportInfo.
 
-    The legacy declaration form (removed by v14). Everything is attributes:
-    ``id``, ``string`` (human label -> name), ``model`` (business model),
-    ``report_type``, ``name`` (the template QWeb xmlid -> report_name), ``file``
-    (-> report_file), optional ``paperformat``.
+    The legacy declaration form (dominant v8-v13, removed from core by v14, but the
+    tag handler stays valid so third-party modules still use it - kept enabled for
+    ALL versions). Everything is attributes: ``id``, ``string`` (human label ->
+    name), ``model`` (business model), ``report_type``, ``name`` (the template QWeb
+    xmlid -> report_name), ``file`` (-> report_file), optional ``paperformat``,
+    plus the legacy RML/XSL/SXW/parser markers ``rml=``/``xml=``/``xsl=``/``sxw=``/
+    ``parser=`` and ``auto="False"`` that mark a non-qweb report.
 
-    Confirmed against the v12/v13 Odoo core clones (sale/account report XML).
+    Confirmed against the v12/v13 Odoo core clones (sale/account report XML) and the
+    v8 RML/XSL examples (mrp_operations rml=, account xml=/xsl=).
 
     Returns None when there is no ``id`` or no ``model``.
     """
@@ -462,6 +503,13 @@ def _parse_report_shorthand(
     report_file = (report.get("file") or "").strip() or None
     paperformat = (report.get("paperformat") or "").strip() or None
 
+    # Legacy/non-qweb markers (eraA survey §4): any of rml=/xml=/xsl=/sxw=/parser=
+    # set, or auto="False", makes this an RML/XSL/custom-parser report - never a
+    # qweb-template report, regardless of (the usually absent) report_type.
+    has_legacy_marker = any(
+        (report.get(attr) or "").strip() for attr in _REPORT_LEGACY_MARKER_ATTRS
+    ) or (report.get("auto") or "").strip().lower() in _REPORT_AUTO_FALSE_VALUES
+
     src_line: int | None = getattr(report, "sourceline", None) or None
 
     return ReportInfo(
@@ -476,6 +524,7 @@ def _parse_report_shorthand(
         paperformat=qualify_xmlid(paperformat, module.name) if paperformat else None,
         source_file=file_path,
         line=src_line,
+        has_legacy_marker=has_legacy_marker,
     )
 
 

@@ -88,3 +88,73 @@ def less_active(odoo_version: str) -> bool:
 def scss_active(odoo_version: str) -> bool:
     """True when the SCSS parser should run for *odoo_version* (v12+)."""
     return bool(STYLESHEET_SCSS_REGISTRY.resolve_version(odoo_version, default=False))
+
+
+# --- Report-type era gate (issue #345 follow-up; ADR-0052) ----------------
+# An `ir.actions.report` action's `report_type` decides whether a report binds a
+# QWeb template (USES_TEMPLATE) at all. The DEFAULT report_type when the XML omits
+# it differs by era (Odoo's own model `default=`):
+#   - v8-v10:  default "pdf"  -> RML/legacy reports; NON-qweb. The selection also
+#              admits sxw/webkit/controller (all non-qweb). report_name is a
+#              LocalService name, NOT a clean template xmlid (eraA survey §5).
+#   - v11+:    default "qweb-pdf" -> qweb. RML and the non-qweb report_type values
+#              were removed at v11; report_name == QWeb template xmlid uniformly.
+# The rename `ir.actions.report.xml` -> `ir.actions.report` and the RML removal
+# both land at v11 (one jump). A genuine qweb report is `report_type` empty/absent
+# (-> era default) or starting with "qweb-", AND carrying no legacy file marker
+# (rml/xml/xsl/sxw/parser attr-or-field, or auto="False").
+_REPORT_TYPE_DEFAULT_REGISTRY: VersionRegistry[str] = VersionRegistry([
+    (8, 10, "pdf"),       # legacy RML era: absent report_type means RML (non-qweb)
+    (11, None, "qweb-pdf"),  # modern era: absent report_type means qweb-pdf
+])
+
+# WARN-on-unresolved USES_TEMPLATE is gated to v11+ qweb reports: even genuine
+# v8-v10 qweb reports carry a report_name that is frequently a LocalService name,
+# NOT the indexed template xmlid (eraA survey §5: the v10 mrp qweb-pdf trio
+# report_name != template xmlid; DB ground-truth confirms 0 recoverable binds).
+# So a v8-v10 qweb USES_TEMPLATE miss is an expected gap -> DEBUG, never WARNING.
+# REPORTS_ON WARN is NOT version-gated (it keys on the qweb predicate only).
+_REPORT_TEMPLATE_WARN_REGISTRY: VersionRegistry[bool] = VersionRegistry([
+    (11, None, True),  # only v11+ qweb template misses are real coverage gaps
+])
+
+
+def report_default_type(odoo_version: str) -> str:
+    """Return the default `report_type` when the report XML omits it.
+
+    v8-v10 -> "pdf" (RML, non-qweb); v11+ -> "qweb-pdf". Unparseable versions are
+    treated as modern ("qweb-pdf") so a stray version never misclassifies a real
+    qweb report as legacy.
+    """
+    return _REPORT_TYPE_DEFAULT_REGISTRY.resolve_version(
+        odoo_version, default="qweb-pdf"
+    )  # type: ignore[return-value]
+
+
+def is_qweb_report(report_info, odoo_version: str) -> bool:
+    """True when *report_info* is a genuine QWeb-template + business-model report.
+
+    Mirrors Odoo's own `_lookup_report` runtime gate (v10 ir_actions.py:187): a
+    report is qweb iff its effective `report_type` starts with "qweb-" AND it
+    carries no legacy file marker (rml/xml/xsl/sxw/parser or auto="False").
+
+    The effective report_type falls back to the era default when the XML omitted
+    it (`report_default_type`), so a v8-v10 RML shorthand with no `report_type=`
+    attribute resolves to "pdf" (non-qweb), while a v11+ record with no
+    report_type resolves to "qweb-pdf" (qweb).
+    """
+    if getattr(report_info, "has_legacy_marker", False):
+        return False
+    rt = (getattr(report_info, "report_type", "") or "").strip()
+    if not rt:
+        rt = report_default_type(odoo_version)
+    return rt.startswith("qweb-")
+
+
+def report_template_warn_active(odoo_version: str) -> bool:
+    """True when an unresolved USES_TEMPLATE miss should WARN (v11+ only).
+
+    v8-v10 qweb reports point report_name at a LocalService name, not the indexed
+    template xmlid (eraA survey §5), so their misses are expected -> DEBUG.
+    """
+    return bool(_REPORT_TEMPLATE_WARN_REGISTRY.resolve_version(odoo_version, default=False))

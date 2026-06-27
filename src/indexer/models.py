@@ -278,6 +278,14 @@ class ReportInfo:
     paperformat: str | None = None   # paperformat_id ref (xmlid), when present
     source_file: str | None = None   # source XML file path
     line: int | None = None          # 1-based source line (best-effort from lxml)
+    # issue #345 report-type gate: True when any legacy/non-qweb marker is set -
+    # an RML/XSL/SXW file ref (rml=/xml=/xsl=/sxw= attr or report_rml/report_xml/
+    # report_xsl/report_sxw field), a custom-parser (parser= attr/field), or
+    # auto="False" (custom Python parser). These mark a NON-qweb report regardless
+    # of report_type, so the writer must NOT attempt the USES_TEMPLATE bind and
+    # logs any unresolved edge at DEBUG, not WARNING. No Neo4j schema change (the
+    # writer reads this flag only to choose WARN vs DEBUG).
+    has_legacy_marker: bool = False
 
 
 @dataclass
