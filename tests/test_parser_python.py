@@ -340,6 +340,70 @@ def test_parse_skips_syntax_error_files(tmp_path, sale_module):
     assert result == []
 
 
+def test_fallback_zero_models_controller_logs_debug_not_warning(
+    tmp_path, v8_module, caplog
+):
+    """#285 safety net: a file that fails ast.parse and recovers 0 models but has
+    NO model-definition tokens (controller/vendored) is an EXPECTED benign gap →
+    DEBUG, never WARNING. Red-before-green: drop the token check and this WARNs.
+    """
+    import logging
+
+    # Py2 `print` statement → SyntaxError → text-regex fallback; the body is a
+    # controller (http.route) with no _name/_inherit/_columns tokens.
+    bad = tmp_path / "controllers.py"
+    bad.write_text(
+        "print 'loading'\n\n"
+        "class MyController(http.Controller):\n"
+        "    @http.route('/x')\n"
+        "    def index(self):\n"
+        "        return 'ok'\n"
+    )
+    stats: dict[str, int] = {}
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        result = parse_file(str(bad), v8_module, stats=stats)
+
+    assert result == []
+    assert stats.get("fallback_zero_models", 0) == 1
+    assert stats.get("fallback_zero_models_with_tokens", 0) == 0
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not warnings, [r.getMessage() for r in warnings]
+    assert any(
+        r.levelno == logging.DEBUG and "found no ORM models" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_fallback_zero_models_with_model_tokens_logs_warning(
+    tmp_path, v8_module, caplog
+):
+    """#285 safety net: a file that fails ast.parse, has `_name=` at class-body
+    indentation, yet recovers 0 models is a PROBABLE LOSS → WARNING. The class
+    header here has no base-parens, so the era1 fallback (which requires
+    `class X(...):`) recovers nothing despite the model token being present.
+    Red-before-green: downgrade this branch to DEBUG and the assert fails.
+    """
+    import logging
+
+    bad = tmp_path / "model.py"
+    bad.write_text(
+        "print 'loading'\n\n"
+        "class Broken:\n"           # no base-parens → era1 class regex misses it
+        "    _name = 'x.model'\n"
+        "    _columns = {}\n"
+    )
+    stats: dict[str, int] = {}
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        result = parse_file(str(bad), v8_module, stats=stats)
+
+    assert result == []
+    assert stats.get("fallback_zero_models_with_tokens", 0) == 1
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert any("probable model loss" in m and "model.py" in m for m in warnings), warnings
+
+
 def test_parse_skips_non_model_classes(tmp_path, sale_module):
     f = write_py(tmp_path, "utils.py", """
         class MyHelper:

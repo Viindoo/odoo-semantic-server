@@ -251,6 +251,7 @@ def list_reports(
     title substring) must be given. Renders an ADR-0023 §1 tree: one row per report
     with its report_type, target model, and the QWeb template it uses.
     """
+    from src.constants import LIST_PREVIEW_MAX_ITEMS
     from src.mcp import server as srv
 
     if not model and not name:
@@ -276,6 +277,11 @@ def list_reports(
             params["name"] = name
         where_clause = " AND ".join(where)
 
+        # ADR-0023 list convention (mirror _find_deprecated_usage / entity_lookup):
+        # fetch cap+1 so a full page reveals whether more rows exist, then trim and
+        # append a truncation banner — never a silent hard cap.
+        cap_plus_one = LIST_PREVIEW_MAX_ITEMS + 1
+        params["cap_plus_one"] = cap_plus_one
         rows = srv._data_bounded(
             session,
             f"""
@@ -287,11 +293,15 @@ def list_reports(
                    rp.paperformat AS paperformat,
                    coalesce(mod.repo_url, mod.repo) AS repo, mod.name AS module
             ORDER BY rp.xmlid ASC
-            LIMIT 50
+            LIMIT $cap_plus_one
             """,
             f"report list (model={model!r}, name={name!r}, Odoo {odoo_version})",
             **params,
         )
+
+    overflow = len(rows) > LIST_PREVIEW_MAX_ITEMS
+    if overflow:
+        rows = rows[:LIST_PREVIEW_MAX_ITEMS]
 
     scope = []
     if model:
@@ -311,7 +321,9 @@ def list_reports(
         )
 
     lines = [header, f"├─ Reports ({len(rows)}):"]
-    last = len(rows) - 1
+    # When overflow, the truncation banner is the tree's last sibling, so no
+    # report row may close the tree with "└─".
+    last = -1 if overflow else len(rows) - 1
     for i, r in enumerate(rows):
         conn = "└─" if i == last else "├─"
         # integration LOW-1: ADR-0023 §1.3 wants 4-char indent — the non-last
@@ -331,4 +343,10 @@ def list_reports(
             lines.append(f"{sub}└─ Paperformat: {pf}")
         else:
             lines.append(f"{sub}└─ Template: {tmpl or '(none)'}")
+    if overflow:
+        cap = len(rows)  # == LIST_PREVIEW_MAX_ITEMS after the trim above
+        lines.append(
+            f"└─ ... showing first {cap} reports (more than {cap} total)"
+            " — narrow with model=<model_name> and/or name=<xmlid_or_title>"
+        )
     return "\n".join(lines)

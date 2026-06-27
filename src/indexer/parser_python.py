@@ -21,6 +21,17 @@ _logger = logging.getLogger("src.indexer.parser")
 # models" outcome for controllers/vendored files are BY DESIGN, not failures, so
 # they log at DEBUG; parse_module emits a single INFO summary instead (#285).
 
+# #285 safety-net probe: model-definition tokens at class-body indentation
+# (`_name =` / `_inherit =` / `_columns =`). Requires leading whitespace so an
+# unindented module-level mention or a left-margin comment does NOT match — only a
+# class-body assignment, which is what an unrecovered model would carry. Used to
+# decide WARNING (tokens present but 0 models recovered = probable loss) vs DEBUG
+# (no tokens = controller/vendored, expected) when the text-regex fallback returns
+# empty.
+_MODEL_DEF_TOKEN_RE = re.compile(
+    r"^[ \t]+(_name|_inherit|_columns)\s*=", re.MULTILINE
+)
+
 # v10+ class-level field declarations: name = fields.Char(...)
 FIELD_TYPES = {
     'Char', 'Text', 'Html', 'Integer', 'Float', 'Monetary', 'Boolean',
@@ -976,19 +987,34 @@ def parse_file(
         )
         models = _parse_era1_text(source, module_info)
         if not models:
-            # 0 models here is EXPECTED for controllers (http.route, no ORM),
-            # vendored third-party libraries, and OpenOffice/plugin scripts:
-            # there are simply no ORM `_name` definitions to recover — nothing
-            # is lost. Verified benign across all categories (#285). DEBUG only.
+            # #285 no-silent-drop safety net, refined to kill the 82 benign false
+            # alarms: a fallback that recovers 0 models is EXPECTED for controllers
+            # (http.route, no ORM), vendored third-party libraries, and plugin
+            # scripts — nothing is lost. But a file that DOES define a model (carries
+            # `_name=`/`_inherit=`/`_columns=` at class-body indentation) yet recovers
+            # 0 models is a GENUINE probable loss worth a WARNING. Distinguish the two
+            # by probing the raw source for model-definition tokens.
             if stats is not None:
                 stats["fallback_zero_models"] = (
                     stats.get("fallback_zero_models", 0) + 1
                 )
-            _logger.debug(
-                "parse_file: text-regex fallback found no ORM models in %s "
-                "(Odoo %s) — expected for controllers/vendored/non-model files",
-                filepath, module_info.odoo_version,
-            )
+            if _MODEL_DEF_TOKEN_RE.search(source):
+                if stats is not None:
+                    stats["fallback_zero_models_with_tokens"] = (
+                        stats.get("fallback_zero_models_with_tokens", 0) + 1
+                    )
+                _logger.warning(
+                    "parse_file: text-regex fallback recovered 0 models from %s "
+                    "(Odoo %s) despite model-definition tokens "
+                    "(_name/_inherit/_columns) in the source — probable model loss",
+                    filepath, module_info.odoo_version,
+                )
+            else:
+                _logger.debug(
+                    "parse_file: text-regex fallback found no ORM models in %s "
+                    "(Odoo %s) — expected for controllers/vendored/non-model files",
+                    filepath, module_info.odoo_version,
+                )
 
     # A3: stamp real source file path on every returned ModelInfo
     for m in models:
@@ -1014,13 +1040,21 @@ def parse_module(module_info: ModuleInfo) -> ParseResult:
 
     # One INFO summary per module (only when the Py2 fallback actually fired,
     # i.e. v8-v10 modules), replacing the former per-file WARNING+ERROR spam.
+    # The "0 ORM models" count is split: the benign expected slice (no model
+    # tokens — controllers/vendored) vs the probable-loss slice (model tokens
+    # present but nothing recovered), so the summary never labels a genuine-loss
+    # file as "expected". The probable-loss files also each emit a WARNING above.
     fallback = stats.get("fallback", 0)
     if fallback:
+        zero = stats.get("fallback_zero_models", 0)
+        zero_with_tokens = stats.get("fallback_zero_models_with_tokens", 0)
+        zero_expected = zero - zero_with_tokens
         _logger.info(
             "parse_module %s (Odoo %s): %d file(s) used text-regex fallback "
-            "(%d with 0 ORM models — controllers/vendored, expected)",
+            "(%d with 0 ORM models: %d expected controllers/vendored, "
+            "%d with model tokens but 0 recovered — probable loss, see WARNINGs)",
             module_info.name, module_info.odoo_version,
-            fallback, stats.get("fallback_zero_models", 0),
+            fallback, zero, zero_expected, zero_with_tokens,
         )
 
     return result

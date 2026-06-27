@@ -333,8 +333,12 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
         # (C1 schema); pick ONE deterministically. Prefer the definition node
         # (is_definition=true), else the highest field_count, with a stable
         # name tiebreak — LIMIT 1 keeps this single-row (no .single() multi-row).
+        # Zero-silent-loss (consistent with USES_TEMPLATE below): RETURN + .single()
+        # so a Report on an unindexed business model is surfaced — DEBUG when the
+        # model's module is out of scope (expected gap), WARNING when it is a real
+        # coverage gap (the model's module IS indexed but the model node is missing).
         if rep.model:
-            tx.run(f"""
+            on_model = tx.run(f"""
                 MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
                 MATCH (m:Model {{name: $model_name, odoo_version: $ver}})
                 WITH rp, m
@@ -342,7 +346,20 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                          coalesce(m.field_count, 0) DESC, m.module ASC
                 LIMIT 1
                 MERGE (rp)-[:{REL_REPORTS_ON}]->(m)
-            """, xmlid=rep.xmlid, ver=rep.odoo_version, model_name=rep.model)
+                RETURN 1 AS ok
+            """, xmlid=rep.xmlid, ver=rep.odoo_version,
+                 model_name=rep.model).single()
+            if on_model is None:
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, rep.model, rep.odoo_version)
+                    else _logger.warning
+                )
+                _log(
+                    "unresolved REPORTS_ON: %s -> %s (version %s) — "
+                    "business model not indexed",
+                    rep.xmlid, rep.model, rep.odoo_version,
+                )
 
         # USES_TEMPLATE -> QWebTmpl. The report_name is the template xmlid.
         # Single-row ({xmlid, odoo_version} is unique); skip silently when the

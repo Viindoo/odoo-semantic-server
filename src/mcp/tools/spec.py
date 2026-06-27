@@ -378,10 +378,10 @@ def _find_deprecated_usage(
                         **_srv._scope(profile_name)}
 
         # Profile-scope guard shared by both legs (ADR-0034 read-side filter).
-        scope_guard = (
-            "($own IS NULL OR (size(mth.profile) > 0\n"
-            "     AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))"
-        )
+        # SSOT: use the canonical _scope_pred helper (same fragment list_reports
+        # uses as _scope_pred('rp')) instead of an inline copy — keeps this
+        # security-critical tenant choke-point in one place (no per-site drift).
+        scope_guard = _srv._scope_pred("mth")
 
         # Leg 1 — call-based hits via USES_CORE_SYMBOL edge.
         kind_clause = ""

@@ -135,6 +135,57 @@ def test_uses_template_edge(writer, clean_neo4j):
     ) == 1
 
 
+def test_reports_on_unresolved_indexed_module_warns(writer, clean_neo4j, caplog):
+    """REPORTS_ON on a model whose module IS indexed but the model node is missing
+    is a genuine coverage gap → WARNING (zero-silent-loss, consistent w/ USES_TEMPLATE).
+
+    Index module 'sale' (so the module node exists with a profile) but do NOT write
+    the 'sale.order' Model node; a report on 'sale.order' must surface a WARNING.
+    Red-before-green: remove the RETURN/.single() guard and no log is emitted.
+    """
+    import logging
+
+    # Module 'sale' exists (carries a profile) but the model 'sale.order' is absent.
+    # Write a DIFFERENT model in module 'sale' so the Module node is real+profiled.
+    writer.write_results([_model_result("sale", "sale.other")], profiles=["test_repo"])
+    res = ViewParseResult(module=_mod("sale"), reports=[
+        _report("sale.action_report_saleorder", "sale.order", "sale", None),
+    ])
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("unresolved REPORTS_ON" in m and "sale.order" in m for m in msgs), msgs
+
+
+def test_reports_on_out_of_scope_model_is_debug_not_warning(writer, clean_neo4j, caplog):
+    """REPORTS_ON on a model whose base module is NOT indexed in any profile is an
+    expected gap → DEBUG, never WARNING (Enterprise/absent-version modules stay quiet).
+
+    The report lives in 'my_addon' (so only 'my_addon' is MERGEd as a Module), and
+    reports on 'account.move' whose base module 'account' is NOT indexed in any
+    profile → _base_module_out_of_scope is True → DEBUG. No WARNING must be emitted.
+    """
+    import logging
+
+    res = ViewParseResult(module=_mod("my_addon"), reports=[
+        _report("my_addon.action_report_invoice", "account.move", "my_addon", None),
+    ])
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "REPORTS_ON" in r.getMessage()
+    ]
+    assert not warnings, warnings
+    debugs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
+    ]
+    assert any("account.move" in m for m in debugs), debugs
+
+
 def test_report_removed_by_module_scoped_delete(writer, clean_neo4j):
     """integration MED-2: Report was added to the delete_modules_scoped child
     cascade (writer_neo4j.py). A re-index/repo-delete of the owning module must
@@ -187,3 +238,36 @@ def test_entity_lookup_report_returns_it(writer, clean_neo4j):
     assert "sale.action_report_saleorder" in out
     assert "qweb-pdf" in out
     assert "sale.report_saleorder" in out
+
+
+def test_entity_lookup_report_overflow_banner(writer, clean_neo4j):
+    """ADR-0023 list convention: list_reports caps at LIST_PREVIEW_MAX_ITEMS and
+    discloses overflow with a truncation banner instead of a silent hard cap.
+    Write cap+1 reports on the same model; output shows exactly cap rows + banner.
+    Red-before-green: revert to a silent `LIMIT 50` and the banner disappears.
+    """
+    from src.constants import LIST_PREVIEW_MAX_ITEMS
+    from src.mcp.inspect import _entity_lookup
+
+    cap = LIST_PREVIEW_MAX_ITEMS
+    writer.write_results([_model_result("sale", "sale.order")], profiles=["test_repo"])
+    reports = [
+        _report(f"sale.action_report_{i:03d}", "sale.order", "sale", None)
+        for i in range(cap + 1)
+    ]
+    writer.write_view_results(
+        [ViewParseResult(module=_mod("sale"), reports=reports)],
+        profiles=["test_repo"],
+    )
+
+    out = _entity_lookup("report", model="sale.order", odoo_version=TEST_VERSION)
+    # Exactly cap report xmlids rendered (the 000..cap-1 slice, ORDER BY xmlid ASC).
+    rendered = [
+        f"sale.action_report_{i:03d}"
+        for i in range(cap + 1)
+        if f"sale.action_report_{i:03d}" in out
+    ]
+    assert len(rendered) == cap, rendered
+    assert f"sale.action_report_{cap:03d}" not in out  # the (cap+1)-th is trimmed
+    assert f"showing first {cap} reports" in out
+    assert "narrow with" in out

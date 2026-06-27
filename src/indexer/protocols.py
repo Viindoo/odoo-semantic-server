@@ -176,6 +176,16 @@ class IndexWriterProtocol(Protocol):
         """DETACH DELETE childless dep-stub Module nodes for odoo_version."""
         ...
 
+    def gc_orphan_asset_bundles(self, odoo_version: str) -> int:
+        """DETACH DELETE orphaned :AssetBundle nodes for odoo_version (WI-D).
+
+        Called once per version on --full after all live contributions are
+        re-written. Deletes only AssetBundle nodes with zero inbound
+        CONTRIBUTES_TO and no INCLUDES_BUNDLE/EXTENDS_ASSET_BUNDLE edge.
+        Idempotent (a second run returns 0).
+        """
+        ...
+
     def reconcile_same_name_inherits(self, odoo_version: str) -> int:
         """MERGE missing extender-to-definition INHERITS edges (ADR-0048, #273).
 

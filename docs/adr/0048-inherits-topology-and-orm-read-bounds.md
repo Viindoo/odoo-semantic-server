@@ -143,6 +143,11 @@ rewrite, neither fan-out is harmful to query performance (each hop only deduplic
 by module). Anchoring W2/W4 to definition-only is a separate design decision deferred to a future
 ADR.
 
+> **SUPERSEDED by the D5 amendment below (zero-warning indexer wave, PR #345).** The deferred
+> decision is now MADE: W2 (cross-name INHERITS) and W4 (DELEGATES_TO) collapse to a single
+> prefer-definition target. See "D5 amendment — cross-name INHERITS (W2) + DELEGATES_TO (W4) now
+> collapse to a single prefer-definition target" at the end of this file.
+
 ### D6 — K×D accepted when D > 1
 
 If multiple repos independently define the same (model_name, odoo_version) — e.g., a community
@@ -606,3 +611,54 @@ A static test (`tests/test_compose_neo4j_backstop.py`) asserts:
 
 **Bare-metal / systemd deployments** (no Docker Compose) still require the manual `neo4j.conf`
 step documented in the original Ops Notes above. The IaC fix covers Compose-managed instances only.
+
+## Amendment - D5 decision MADE: cross-name INHERITS (W2) + DELEGATES_TO (W4) now collapse to a single prefer-definition target (zero-warning indexer wave, PR #345)
+
+D5 originally LEFT W2 (cross-name mixin fan-out to all K_parent copies) and W4 (DELEGATES_TO fan-out
+to all K_target copies) unchanged, calling "anchoring W2/W4 to definition-only ... a separate design
+decision deferred to a future ADR." This amendment records that the deferred decision is now MADE in
+the zero-warning indexer wave.
+
+**Decision:** when an extender's cross-name parent (W2, e.g. `mail.thread`) or a delegated target
+(W4) resolves to multiple same-name Model nodes (the C1 K-per-module schema), the writer now collapses
+to exactly ONE target via:
+
+```cypher
+WHERE NOT coalesce(parent.unresolved, false)
+WITH m, parent
+ORDER BY coalesce(parent.is_definition, false) DESC,
+         coalesce(parent.field_count, 0) DESC, parent.module ASC
+LIMIT 1
+```
+
+(Implemented in `src/indexer/writer_neo4j_orm.py` for both the cross-name INHERITS branch and the
+DELEGATES_TO branch.)
+
+**Why now, and why this exact form:**
+
+1. **Kills the `.single()` multi-row warning.** With D > 1 (a fork + upstream both indexed, D6), the
+   prior fan-out wrote K×D edges and a `.single()` read over the parent set raised a multi-row
+   warning. `LIMIT 1` makes the lookup single-row by construction — silencing the warning AND removing
+   the spurious extra K-edges that added no reachability (the same class of redundant edge the D2
+   same-name dedup already eliminated for W1).
+
+2. **PREFER, not REQUIRE, `is_definition`.** A hard `WHERE parent.is_definition = true` filter was
+   tried and REJECTED: a mixin / AbstractModel parent (e.g. `mail.thread`) has NO `is_definition=true`
+   node — it is injected via `_inherit`, never self-declared with an explicit `_name` outside its own
+   inherit list — so a hard filter returned 0 rows and DROPPED the edge, making the parent disappear
+   (`purchase.order` losing `mail.thread`; `sale.order.message_ids` becoming unresolvable). The
+   ordering form drops only placeholders (`NOT unresolved`), then ranks `is_definition DESC` first so
+   the canonical definition wins WHEN ONE EXISTS, and falls through to the best non-definition node
+   (the mixin) otherwise. It therefore NEVER drops a legitimate parent while still collapsing to one
+   target. `field_count` is not a stored property here (coalesces to 0), so the effective tiebreak
+   after `is_definition` is `module ASC` — deterministic.
+
+3. **Relationship to D6 (K×D accepted when D > 1).** D6 described W1 (same-name extender → definition)
+   where K×D is the accepted, deterministic outcome. This amendment narrows W2/W4 (cross-name and
+   delegate edges) to a SINGLE prefer-definition target — the two are not in conflict: D6 still governs
+   same-name INHERITS; W2/W4 now anchor to one canonical target as D5 deferred.
+
+**Read-side impact:** none beyond fewer redundant edges. The ADR-0048 per-hop name-dedup ORM read
+already deduplicates by name at each hop, so collapsing the write-side fan-out to one target does not
+change resolvability — it removes write-time noise and the `.single()` warning. CI is green; this
+amendment is the docs/governance reconciliation for the already-landed, already-correct writer Cypher.
