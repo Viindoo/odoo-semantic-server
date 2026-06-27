@@ -18,7 +18,7 @@ _MODEL_METHODS = frozenset({
 _MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qweb", "js",
                               "dependencies", "tests"})
 _ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern", "report"})
-_PROFILE_METHODS = frozenset({"summary", "repos", "modules"})
+_PROFILE_METHODS = frozenset({"summary", "repos", "modules", "coverage"})
 
 # H1 (#260): hard server-side cap for profile_inspect(method='modules').
 # The docstring discloses "default 50, max 50"; the cap MUST be enforced so a
@@ -561,10 +561,11 @@ def _profile_inspect(
     ----------
     name:
         Profile name to inspect (e.g. ``'viindoo_internal_17'``).
-        Required for ``method='summary'``. Optional for ``method='repos'``
-        and ``method='modules'`` (``None`` = all caller-visible profiles).
+        Required for ``method='summary'`` and ``method='coverage'``. Optional for
+        ``method='repos'`` and ``method='modules'`` (``None`` = all caller-visible
+        profiles).
     method:
-        ``summary`` | ``repos`` | ``modules``.
+        ``summary`` | ``repos`` | ``modules`` | ``coverage``.
     odoo_version:
         Odoo version string. ``'auto'`` resolves to the session pin.
     repo:
@@ -603,6 +604,12 @@ def _profile_inspect(
         return _profile_modules(
             name, odoo_version, repo,
             start_index=start_index, limit=limit, srv=srv,
+        )
+
+    if method == "coverage":
+        return _profile_coverage(
+            name, odoo_version, srv,
+            start_index=start_index, limit=limit,
         )
 
     # Unreachable
@@ -941,4 +948,157 @@ def _profile_modules(
     footer = srv.hints_for("profile_inspect", name=name or "", ver=odoo_version)
     if footer:
         lines.append(footer)
+    return "\n".join(lines)
+
+
+def _profile_coverage(
+    name: str | None,
+    odoo_version: str,
+    srv,
+    *,
+    start_index: int,
+    limit: int,
+) -> str:
+    """Render indexed module coverage by category, with a superset-diff (#121 P1).
+
+    Rec.4 ("absence-in-index != absence-in-product"): a category breakdown alone
+    only shows what IS indexed. To hint at what may be MISSING from this profile
+    we add a data-driven (no curated SSOT) superset-diff: for each category we
+    compare ``in_profile`` (modules stamped with THIS profile) against the count
+    of modules of that category visible to the caller across the whole index
+    (``indexed_elsewhere`` = in-scope total minus in_profile). A non-zero
+    ``indexed_elsewhere`` is a "may be incomplete" signal - a real one derived
+    purely from Neo4j, never from a hand-maintained brand/domain table.
+
+    Choke-point (M4, ADR-0034): both aggregations use ``**srv._scope(None)`` +
+    ``profile_name=name`` exactly like ``_profile_summary`` - NOT ``_scope(name)``,
+    which would narrow ``own=[name]`` and wrongly drop modules stamped with the
+    full ancestor chain (e.g. [child, parent_shared]). Profile membership is
+    applied separately via ``$profile_name IN m.profile``. The caller-can-see
+    check is done up front via ``_effective_allowed(name)``. Both queries are flat
+    aggregations (ADR-0048 no-VLP) bounded by ``_data_bounded`` (ADR-0050).
+    """
+    if not name:
+        return (
+            "Error: profile_inspect(method='coverage') requires name='<profile_name>'."
+        )
+
+    # RBAC: caller must be allowed to see this profile at all.
+    allowed = srv._effective_allowed(name)
+    if allowed is not None and name not in allowed:
+        return (
+            f"profile_inspect(name={name!r}, method='coverage')\n"
+            f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
+            "   Use list_available_profiles() to see accessible profiles."
+        )
+
+    effective_limit = min(limit, _PROFILE_MODULES_CAP)
+
+    with srv._get_driver().session() as neo_session:
+        odoo_version = srv._resolve_version(odoo_version, neo_session)
+
+        # (1) per-category count WITHIN this profile.
+        in_profile_rows = srv._data_bounded(
+            neo_session,
+            f"""
+            MATCH (m:Module)
+            WHERE m.odoo_version = $v
+              AND {srv._scope_pred('m')}
+              AND $profile_name IN m.profile
+            RETURN coalesce(m.category, '(uncategorized)') AS category,
+                   count(m) AS cnt
+            ORDER BY cnt DESC, category ASC
+            """,
+            f"coverage (in-profile) for '{name}' (Odoo {odoo_version})",
+            v=odoo_version,
+            profile_name=name,
+            **srv._scope(None),
+        )
+
+        # (2) per-category count across the WHOLE in-scope index (any profile).
+        scope_rows = srv._data_bounded(
+            neo_session,
+            f"""
+            MATCH (m:Module)
+            WHERE m.odoo_version = $v
+              AND {srv._scope_pred('m')}
+            RETURN coalesce(m.category, '(uncategorized)') AS category,
+                   count(m) AS cnt
+            ORDER BY cnt DESC, category ASC
+            """,
+            f"coverage (in-scope total) for '{name}' (Odoo {odoo_version})",
+            v=odoo_version,
+            **srv._scope(None),
+        )
+
+    in_profile = {r["category"]: r["cnt"] for r in in_profile_rows}
+    in_scope = {r["category"]: r["cnt"] for r in scope_rows}
+
+    if not in_profile:
+        return (
+            f"profile_inspect(name={name!r}, method='coverage',"
+            f" odoo_version={odoo_version!r})\n"
+            "└─ No modules indexed in this profile. Verify the profile name, or call "
+            "list_available_profiles to see indexed scope."
+        )
+
+    # Merge every category seen in either aggregation. indexed_elsewhere is the
+    # in-scope total minus this profile's count (modules of that category visible
+    # to the caller but NOT carried by this profile) - clamped at 0 defensively.
+    categories = sorted(set(in_profile) | set(in_scope))
+    merged: list[tuple[str, int, int]] = []
+    for cat in categories:
+        here = in_profile.get(cat, 0)
+        total = in_scope.get(cat, here)
+        elsewhere = max(total - here, 0)
+        merged.append((cat, here, elsewhere))
+
+    # Surface the "may be incomplete" signal first: highest indexed_elsewhere,
+    # then largest in-profile presence, then alphabetical (deterministic).
+    merged.sort(key=lambda t: (-t[2], -t[1], t[0]))
+
+    total_categories = len(merged)
+    page = merged[start_index:start_index + effective_limit]
+    page_end = start_index + len(page)
+
+    lines = [
+        f"profile_inspect(name={name!r}, method='coverage',"
+        f" odoo_version={odoo_version!r})",
+        "├─ Indexed module coverage by category"
+        f" (version {odoo_version}, inheritance-inclusive):",
+        "│  in_profile = modules in this profile; indexed_elsewhere = modules of"
+        " that category visible to you but NOT in this profile (a 'may be"
+        " missing' signal).",
+    ]
+    last_idx = len(page) - 1
+    for i, (cat, here, elsewhere) in enumerate(page):
+        conn = "│  └─" if (i == last_idx and page_end >= total_categories) else "│  ├─"
+        flag = "  [may be incomplete]" if elsewhere > 0 else ""
+        lines.append(
+            f"{conn} {cat}: in_profile={here}, indexed_elsewhere={elsewhere}{flag}"
+        )
+    if page_end < total_categories:
+        next_start = start_index + effective_limit
+        lines.append(
+            f"│  └─ ... and {total_categories - page_end} more categories"
+            f" (use start_index={next_start} to page)"
+        )
+
+    # Caveat (Rec.4 + M1): route explicitly to live-verify. ASCII '!=' (M2), NOT
+    # the Unicode not-equal U+2260. This is the load-bearing "absence" message.
+    lines.append(
+        "├─ NOTE: this reflects what is INDEXED in this profile, not what the"
+        " product ships. Absence from this list != absence from the product. To"
+        " CONFIRM a domain is absent, cross-check live ir.module.module - the"
+        " static index cannot prove product absence."
+    )
+
+    footer = srv.hints_for("profile_inspect", name=name, ver=odoo_version)
+    if footer:
+        lines.append(footer)
+    else:
+        lines.append(
+            f"└─ Next: profile_inspect(name={name!r}, method='modules',"
+            f" odoo_version={odoo_version!r}) for the full module list"
+        )
     return "\n".join(lines)

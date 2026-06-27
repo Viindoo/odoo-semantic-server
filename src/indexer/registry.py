@@ -13,6 +13,7 @@ from .parser_python import (
     _derive_copyright_owner,
     _detect_module_edition,
     _detect_viindoo_equivalent,
+    _normalize_author,
     _resolve_effective_license,
 )
 from .parser_util import parse_external_source
@@ -282,6 +283,10 @@ def build_registry(
             _application: bool = bool(manifest.get('application', False))
             _category: str | None = manifest.get('category') or None
             _summary: str | None = manifest.get('summary') or None
+            # Issue #121 P2 - identity card raw fields. shortdesc = the human
+            # display name (manifest 'name'); author coerced str|list -> str|None.
+            _shortdesc: str | None = manifest.get('name') or None
+            _author: str | None = _normalize_author(manifest)
 
             _ext_deps = manifest.get('external_dependencies') or {}
             _external_python: list[str] = list(_ext_deps.get('python') or [])
@@ -310,6 +315,9 @@ def build_registry(
                 application=_application,
                 category=_category,
                 summary=_summary,
+                # Issue #121 P2 - identity card
+                shortdesc=_shortdesc,
+                author=_author,
                 external_python=_external_python,
                 external_bin=_external_bin,
                 countries=_countries,

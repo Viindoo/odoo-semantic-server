@@ -40,56 +40,78 @@ def _import_server_module():
 def test_edition_label_opl1_firstparty_is_viindoo_not_odoo_ee():
     """OPL-1 is the Odoo Proprietary License for third-party/proprietary apps
     (ADR-0036); it is NOT Odoo Enterprise (that is OEEL-1). A Viindoo OPL-1 module
-    (edition='viindoo') must render as 'Viindoo Enterprise (EE)', NOT
-    'Odoo Enterprise (EE)'. Regression guard for #263 (PR #165 mislabel)."""
+    (edition='viindoo') must render a Viindoo-branded label, NEVER an
+    'Odoo Enterprise' one. Regression guard for #263 (PR #165 mislabel); the
+    issue #121 P5 wording change ('Viindoo Commercial - paid ...') must keep this
+    invariant.
+
+    Semantic (not exact-string) so a wording tweak does not falsely fail, but the
+    #263 invariant ("Odoo Enterprise" must not appear) and the P5 paid signal
+    still red on a regression.
+    """
     srv = _import_server_module()
-    assert srv._edition_label("viindoo", "OPL-1") == "Viindoo Enterprise (EE)"
+    label = srv._edition_label("viindoo", "OPL-1")
+    assert "Viindoo" in label
+    assert "Odoo Enterprise" not in label  # #263 invariant
+    assert "paid" in label.lower()         # #121 P5 commercial/paid signal
 
 
 def test_edition_label_lgpl3_is_community_ce():
-    """LGPL-3 license → 'Community (CE)'."""
+    """LGPL-3 license -> a Community (CE) label conveying 'free' (#121 P5)."""
     srv = _import_server_module()
-    assert srv._edition_label("community", "LGPL-3") == "Community (CE)"
+    label = srv._edition_label("community", "LGPL-3")
+    assert "Community (CE)" in label
+    assert "free" in label.lower()
 
 
 def test_edition_label_oeel1_is_odoo_ee():
-    """OEEL-1 is Odoo S.A.'s Enterprise license (ADR-0036) → 'Odoo Enterprise (EE)'.
-    Regression guard for #263 (label was swapped with OPL-1 in PR #165)."""
+    """OEEL-1 is Odoo S.A.'s Enterprise license (ADR-0036) -> an 'Odoo Enterprise
+    (EE)' label conveying 'not resold by Viindoo' (#121 P5). Regression guard for
+    #263 (label was swapped with OPL-1 in PR #165)."""
     srv = _import_server_module()
-    assert srv._edition_label("enterprise", "OEEL-1") == "Odoo Enterprise (EE)"
+    label = srv._edition_label("enterprise", "OEEL-1")
+    assert "Odoo Enterprise (EE)" in label
+    assert "not resold" in label.lower()
 
 
 def test_edition_label_firstparty_edition_overrides_license():
     """N3: a DEFINITIVE first-party edition ('viindoo') wins over a license string.
 
     Before the fix, the license-first order labeled edition='viindoo' +
-    license='OEEL-1' as 'Odoo Enterprise (EE)' — calling a first-party Viindoo
-    module "Odoo Enterprise", the exact mislabel #263 set out to kill. The
-    first-party edition signal must take priority so the label stays
-    'Viindoo Enterprise (EE)' regardless of the license string.
+    license='OEEL-1' as 'Odoo Enterprise' - calling a first-party Viindoo module
+    "Odoo Enterprise", the exact mislabel #263 set out to kill. The first-party
+    edition signal must take priority so the label stays Viindoo-branded
+    regardless of the license string.
 
-    Fail-able: revert to license-first ordering and this asserts
-    'Viindoo Enterprise (EE)' != 'Odoo Enterprise (EE)'.
+    Fail-able: revert to license-first ordering and a 'viindoo' edition would pick
+    up the OEEL-1 'Odoo Enterprise' label, tripping the "not in" assert below.
     """
     srv = _import_server_module()
-    assert srv._edition_label("viindoo", "OEEL-1") == "Viindoo Enterprise (EE)"
+    viindoo_label = srv._edition_label("viindoo", "OEEL-1")
+    assert "Viindoo" in viindoo_label
+    assert "Odoo Enterprise" not in viindoo_label
     # A non-first-party edition still defers to the license (existing behaviour).
-    assert srv._edition_label("enterprise", "OEEL-1") == "Odoo Enterprise (EE)"
+    ee_label = srv._edition_label("enterprise", "OEEL-1")
+    assert "Odoo Enterprise (EE)" in ee_label
+    assert "not resold" in ee_label.lower()
 
 
 def test_edition_label_fallback_to_enum_when_no_license():
-    """No license → fall back to edition enum mapping."""
+    """No license -> fall back to edition enum mapping (verbose 3-tier wording)."""
     srv = _import_server_module()
-    assert srv._edition_label("community", None) == "Community (CE)"
-    assert srv._edition_label("enterprise", None) == "Odoo Enterprise (EE)"
-    assert srv._edition_label("viindoo", None) == "Viindoo Enterprise (EE)"
-    assert srv._edition_label("oca", None) == "OCA / Community-compatible"
+    community = srv._edition_label("community", None)
+    assert "Community (CE)" in community and "free" in community.lower()
+    enterprise = srv._edition_label("enterprise", None)
+    assert "Odoo Enterprise (EE)" in enterprise and "not resold" in enterprise.lower()
+    viindoo = srv._edition_label("viindoo", None)
+    assert "Viindoo" in viindoo and "Odoo Enterprise" not in viindoo
+    assert srv._edition_label("oca", None).startswith("OCA")
 
 
 def test_edition_label_none_edition_defaults_to_ce():
-    """None edition + None license → 'Community (CE)'."""
+    """None edition + None license -> a Community (CE) label."""
     srv = _import_server_module()
-    assert srv._edition_label(None, None) == "Community (CE)"
+    assert "Community (CE)" in srv._edition_label(None, None)
 
 
 # --- ADR-0023 §2 English-only static-template language policy ---------------

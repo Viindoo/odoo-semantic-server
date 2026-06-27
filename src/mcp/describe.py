@@ -82,6 +82,8 @@ def _describe_module(
                    m.application AS application,
                    m.category AS category,
                    m.summary AS summary,
+                   m.shortdesc AS shortdesc,
+                   m.author AS author,
                    m.external_python AS external_python,
                    m.external_bin AS external_bin
             """,
@@ -175,6 +177,13 @@ def _describe_module(
 
     lines = [f"{name} (Odoo {odoo_version})"]
 
+    # Issue #121 P2 - the human-authored display name IS the module's identity
+    # (e.g. "E-Invoice - Misa meInvoice Integrator"), so surface it at the very
+    # top, right under the technical-name header. Rendered only when non-NULL
+    # (graceful degrade before the --full backfill).
+    if mod_rec.get("shortdesc"):
+        lines.append(f"├─ Display name: {mod_rec['shortdesc']}")
+
     # B1/ADR-0037: render repo identity + repo-relative path so agents can locate
     # the module in their OWN checkout. Prefer the portable git URL (Repo URL);
     # the server checkout dirname (Repo:) is host-specific, shown only as a
@@ -238,6 +247,9 @@ def _describe_module(
     if mod_rec.get("vvq"):
         edition_str += f" (Viindoo equivalent: {mod_rec['vvq']})"
     manifest_rows.append(("Edition", edition_str))
+    # Issue #121 P2 - raw manifest author (identity signal), only when non-NULL.
+    if mod_rec.get("author"):
+        manifest_rows.append(("Author", mod_rec["author"]))
     manifest_rows.append(("Version", mod_rec.get("version_raw") or "—"))
     if mod_rec.get("summary"):
         manifest_rows.append(("Summary", mod_rec["summary"]))

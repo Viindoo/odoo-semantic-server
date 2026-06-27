@@ -404,7 +404,7 @@ def _detect_module_edition(
     """Detect edition of a module from manifest + name + path heuristics.
 
     Returns one of: 'viindoo' | 'oca' | 'community' | 'custom' | 'enterprise'.
-    Order matters — earlier rules win (Viindoo > Enterprise > OCA > CE path > custom).
+    Order matters - earlier rules win (Viindoo > Enterprise > OCA > CE path > custom).
     """
     # Viindoo: name prefix convention (viin_* and to_* are public product names)
     if module_name.startswith(("viin_", "to_")):
@@ -413,6 +413,16 @@ def _detect_module_edition(
     license_v = (manifest.get("license") or "").upper()
     if license_v == "OEEL-1":
         return "enterprise"
+    # Issue #121 P5: Viindoo commercial addons that do NOT match the viin_/to_
+    # prefix (e.g. l10n_vn_viin_accounting_meinvoice) are OPL-1 AND authored by
+    # Viindoo/TVTMA. OPL-1 is Odoo S.A.'s THIRD-PARTY proprietary license - it is
+    # NOT Odoo Enterprise (OEEL-1, checked above wins) - so this maps to 'viindoo',
+    # never 'enterprise' (ADR-0036 invariant). Third-party OPL-1 modules whose
+    # author is NOT Viindoo/TVTMA still fall through to 'custom' (no over-claim).
+    if license_v == "OPL-1":
+        author = _normalize_author(manifest) or ""
+        if "Viindoo" in author or "TVTMA" in author:
+            return "viindoo"
     # OCA license string
     if "OCA" in license_v:
         return "oca"
@@ -455,26 +465,39 @@ def _resolve_effective_license(manifest: dict, major: int) -> str:
     return default_license_for_missing(major)
 
 
+def _normalize_author(manifest: dict) -> str | None:
+    """Coerce manifest['author'] (str OR list[str]) to a single string or None.
+
+    Odoo manifests allow `author` as str OR list[str] (e.g. CE l10n_* modules
+    ship ['Odoo S.A.', 'Vauxoo']); literal_eval preserves the native type, so we
+    coerce here in ONE place (DRY/SSOT). A list/tuple is joined with ', ';
+    anything else is stringified. Returns None when absent/empty so callers can
+    distinguish "manifest did not declare author" from "declared empty" (issue
+    #121 P2 identity card uses None; CE core v9-v17 has no author key).
+    """
+    raw = manifest.get("author")
+    if isinstance(raw, (list, tuple)):
+        s = ", ".join(str(a) for a in raw).strip()
+    else:
+        s = str(raw or "").strip()
+    return s or None
+
+
 def _derive_copyright_owner(manifest: dict, license_value: str) -> str | None:
     """Derive a copyright_owner string from manifest + license (ADR-0036 D1).
 
     Derivation order (first match wins):
-    1. OEEL-1 → 'Odoo S.A.' (always — contractually Odoo S.A. owns OEEL)
-    2. Manifest 'author' contains 'Odoo S.A.' → 'Odoo S.A.'
-    3. Manifest 'author' contains 'Viindoo' or 'TVTMA' → 'Viindoo'
-    4. Manifest 'author' present otherwise → author[:100]
-    5. CE copyleft (LGPL/AGPL/GPL) with no author → 'Odoo S.A.' (CE default)
-    6. Otherwise → None
+    1. OEEL-1 -> 'Odoo S.A.' (always - contractually Odoo S.A. owns OEEL)
+    2. Manifest 'author' contains 'Odoo S.A.' -> 'Odoo S.A.'
+    3. Manifest 'author' contains 'Viindoo' or 'TVTMA' -> 'Viindoo'
+    4. Manifest 'author' present otherwise -> author[:100]
+    5. CE copyleft (LGPL/AGPL/GPL) with no author -> 'Odoo S.A.' (CE default)
+    6. Otherwise -> None
     """
     if license_value == "OEEL-1":
         return "Odoo S.A."
-    raw_author = manifest.get("author") or ""
-    # Odoo manifests allow `author` as str OR list[str] (e.g. CE l10n_* modules:
-    # ['Odoo S.A.', 'Vauxoo']). literal_eval preserves the native type, so coerce.
-    if isinstance(raw_author, (list, tuple)):
-        author = ", ".join(str(a) for a in raw_author).strip()
-    else:
-        author = str(raw_author).strip()
+    # Reuse the shared str|list coercion (issue #121: was inline here).
+    author = _normalize_author(manifest) or ""
     if "Odoo S.A." in author:
         return "Odoo S.A."
     if "Viindoo" in author or "TVTMA" in author:
