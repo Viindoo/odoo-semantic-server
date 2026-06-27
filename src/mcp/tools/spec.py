@@ -338,6 +338,26 @@ _DEPRECATED_DECORATORS: dict[str, dict] = {
 }
 
 
+def _removed_decorators_for_version(odoo_version: str) -> list[str]:
+    """Return the decorators removed as of *odoo_version*, sorted.
+
+    graph LOW-1 / integration MED-1: ``odoo_version`` is a resolved explicit arg
+    that ``normalize_version_arg`` does NOT validate as ``\\d+\\.\\d+``, so a
+    non-numeric label (e.g. ``"saas-17.4"``) would raise an uncaught ``ValueError``
+    and 500 the tool (ADR-0023 clean-text break). Mirror the defensive belt in
+    ``guidance.py`` — fail-closed: on a non-numeric version return an EMPTY list
+    (skip the decorator leg; the call-based leg still runs).
+    """
+    try:
+        ver = float(odoo_version)
+    except (TypeError, ValueError):
+        return []
+    return sorted(
+        d for d, meta in _DEPRECATED_DECORATORS.items()
+        if ver >= meta["removed_in"]
+    )
+
+
 def _find_deprecated_usage(
     odoo_version: str = "auto", kind: str | None = None,
     profile_name: str | None = None,
@@ -384,10 +404,7 @@ def _find_deprecated_usage(
         # decided once in Python (numeric, not lexical — Neo4j 5.x gotcha) so only
         # decorators removed as of the queried version enter the allow-list.
         if not kind:
-            removed_decorators = sorted(
-                d for d, meta in _DEPRECATED_DECORATORS.items()
-                if float(odoo_version) >= meta["removed_in"]
-            )
+            removed_decorators = _removed_decorators_for_version(odoo_version)
             if removed_decorators:
                 params["removed_decorators"] = removed_decorators
                 # Pick the first matching decorator per method as the reported

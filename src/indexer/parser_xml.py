@@ -143,10 +143,6 @@ _VIEW_TYPES = {
 # meaningful state, but empty strings are skipped.
 _DIRECT_COND_ATTRS = ("invisible", "required", "readonly", "column_invisible")
 
-# GAP-1 - the keys that may appear inside a legacy `attrs="{...}"` dict (v8-v16).
-# Same four semantic targets as the v17+ direct attrs.
-_ATTRS_DICT_KEYS = ("invisible", "required", "readonly", "column_invisible")
-
 
 def _extract_attrs_dict_conditions(
     element_tag: str, field_name: str | None, attrs_raw: str
@@ -167,14 +163,17 @@ def _extract_attrs_dict_conditions(
     out: list[ViewConditionInfo] = []
     try:
         parsed = ast.literal_eval(attrs_raw)
-    except (ValueError, SyntaxError):
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        # parser LOW-3: literal_eval can raise more than ValueError/SyntaxError —
+        # TypeError on some malformed nodes, MemoryError/RecursionError on
+        # pathological input. Catch them all so a single bad attrs value can never
+        # abort a full re-index; we fall back to the graceful single raw entry.
         parsed = None
     if isinstance(parsed, dict):
         for key, domain in parsed.items():
-            if key not in _ATTRS_DICT_KEYS:
-                # Unknown attrs key (e.g. a custom widget key) - still record it
-                # under its own name so nothing is lost.
-                pass
+            # Every key is recorded under its own attrs.<key> name (the well-known
+            # invisible/required/readonly/column_invisible AND any custom widget
+            # key), so nothing is ever silently dropped.
             out.append(ViewConditionInfo(
                 element=element_tag,
                 attr=f"attrs.{key}",
@@ -239,8 +238,15 @@ def _extract_conditions(arch_el: "_lxml_etree._Element") -> list[ViewConditionIn
             val = val.strip()
             if not val:
                 continue
+            # parser LOW-2: in v8-v16 a direct attr can carry a *domain* literal
+            # (pre-attrs style, e.g. invisible="[('count','=',1)]"), not a v17
+            # Python expression. A leading '[' marks that legacy domain form, so
+            # label it legacy=True; a bare expression (invisible="1", "True",
+            # "state == 'draft'") is the modern v17+ form (legacy=False).
+            is_legacy_domain = val.startswith("[")
             conditions.append(ViewConditionInfo(
-                element=tag, attr=attr, expr=val, field=fname, legacy=False,
+                element=tag, attr=attr, expr=val, field=fname,
+                legacy=is_legacy_domain,
             ))
     return conditions
 
@@ -263,6 +269,7 @@ def _parse_record(
 
     name = ""
     model = ""
+    type_field = ""
     inherit_xmlid = None
     view_type = "form"
     mode = "primary"
@@ -277,6 +284,8 @@ def _parse_record(
         fname = child.get("name", "")
         if fname == "name":
             name = (child.text or "").strip()
+        elif fname == "type":
+            type_field = (child.text or "").strip()
         elif fname == "model":
             model = (child.text or "").strip()
         elif fname == "inherit_id":
@@ -314,6 +323,16 @@ def _parse_record(
             conditions = _extract_conditions(child)
 
     if not model:
+        return None
+
+    # parser MED-2: a <record model="ir.ui.view"> with <field name="type">qweb
+    # is authoritatively a QWeb template — parser_qweb._parse_qweb_record owns it
+    # and emits a QWebInfo. A few such records ALSO carry a <field name="model">
+    # (e.g. sale_timesheet:timesheet_plan, website:view_view_qweb), which would
+    # otherwise make this path ALSO emit a ViewInfo with a bogus "form" view_type
+    # (the arch root of a qweb body is not a real view-type element). Skip here so
+    # the record is classified exactly once, as QWeb.
+    if type_field == "qweb":
         return None
 
     # A3 — best-effort source line from lxml .sourceline attribute (always int on lxml
@@ -532,6 +551,10 @@ def parse_module(
             continue
         result.views.extend(parse_file(str(xml_file), module_info))
         # GAP-2/GAP-5: ir.actions.report records + v8-v13 <report> shorthand.
+        # TODO(follow-up, parser LOW-1): parse_file and parse_reports_file each
+        # do their own lxml.etree.parse() of the SAME file, doubling XML parse
+        # cost on a full re-index. Parse once and pass the tree to both (no
+        # correctness impact; pure perf). Deferred — out of scope for this review.
         result.reports.extend(parse_reports_file(str(xml_file), module_info))
 
     # RelaxNG validation — v15+ gate via VersionRegistry

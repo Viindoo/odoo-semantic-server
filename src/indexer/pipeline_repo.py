@@ -534,6 +534,16 @@ def _index_repo(
         # of the pending placeholders so they will be absent from the graph.
         writer.gc_unresolved_placeholders(odoo_version)
 
+        # AssetBundle orphan GC (graph MED-1 / integration LOW): AssetBundle is
+        # version-global so it is NOT in the per-module delete cascade; reclaim
+        # genuinely-unreferenced bundles here. Gated to --full only: on an
+        # incremental run a bundle's sole contributor module may simply be absent
+        # from the diff (not re-written), so it would look orphaned but is live.
+        # On --full every live contribution is re-written first, so survivors are
+        # real orphans.
+        if full_reindex:
+            writer.gc_orphan_asset_bundles(odoo_version)
+
         # Test-node GC (WI-1, MISSED-2): remove TestClass/TestMethod nodes whose
         # owning module no longer exists on disk (module-level) OR whose test FILE
         # was deleted inside a still-present module (file-level, M6). Risk-gated

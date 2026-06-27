@@ -158,6 +158,74 @@ def test_legacy_extender_resolves_via_extends_asset_bundle(writer, clean_neo4j):
     ) == 0
 
 
+def test_includes_bundle_forward_reference_converges(writer, clean_neo4j):
+    """integration MED-1: a CONTRIBUTES_TO `('include', other)` MERGE-creates the
+    target AssetBundle as a profile-less forward reference when it is not yet
+    written; the later REAL write of that bundle must CONVERGE on the same node
+    (one node, profile now populated, INCLUDES_BUNDLE edge intact) — not create a
+    duplicate. This is the load-bearing ADR-0034 forward-ref claim in the writer
+    docstring.
+    """
+    driver = clean_neo4j
+
+    # 1) Write the INCLUDING bundle FIRST, before web._assets_helpers exists.
+    #    The INCLUDES_BUNDLE MERGE-target creates web._assets_helpers as a
+    #    profile-less forward reference.
+    writer.write_asset_results([
+        AssetParseResult(module=_mod("web"), contributions=[
+            _contrib("web", "web.assets_common",
+                     [["include", "web._assets_helpers"]],
+                     includes=["web._assets_helpers"]),
+        ]),
+    ], profiles=["test_repo"])
+
+    # Forward-ref node exists but is profile-less (fail-closed until real write).
+    with driver.session() as s:
+        row = s.run(
+            "MATCH (b:AssetBundle {name:'web._assets_helpers', odoo_version:$v})"
+            " RETURN b.profile AS profile, count(b) AS n",
+            v=TEST_VERSION,
+        ).single()
+    assert row["n"] == 1, "forward-ref must create exactly one placeholder node"
+    assert not row["profile"], (
+        "forward-ref target must be profile-less (ADR-0034 fail-closed) until its "
+        f"real write converges, got profile={row['profile']!r}"
+    )
+
+    # 2) Now write the REAL web._assets_helpers bundle (its owning module).
+    writer.write_asset_results([
+        AssetParseResult(module=_mod("web"), contributions=[
+            _contrib("web", "web._assets_helpers", ["web/static/src/h.scss"]),
+        ]),
+    ], profiles=["test_repo"])
+
+    # Convergence: still exactly ONE node (no duplicate), now profile-populated.
+    with driver.session() as s:
+        row = s.run(
+            "MATCH (b:AssetBundle {name:'web._assets_helpers', odoo_version:$v})"
+            " RETURN b.profile AS profile, count(b) AS n",
+            v=TEST_VERSION,
+        ).single()
+    assert row["n"] == 1, (
+        "the real write must CONVERGE on the forward-ref node, not create a "
+        "duplicate AssetBundle"
+    )
+    assert "test_repo" in (row["profile"] or []), (
+        "after the real write the node must carry the owning profile, got "
+        f"profile={row['profile']!r}"
+    )
+
+    # The INCLUDES_BUNDLE edge from the including bundle still resolves to the
+    # (now-converged) target.
+    assert _count(
+        driver,
+        "MATCH (:AssetBundle {name:'web.assets_common', odoo_version:$v})"
+        "-[:INCLUDES_BUNDLE]->"
+        "(:AssetBundle {name:'web._assets_helpers', odoo_version:$v})"
+        " RETURN count(*) AS n",
+    ) == 1
+
+
 def test_multiple_modules_contribute_definer_is_first(writer, clean_neo4j):
     """Two modules contributing the same bundle: both get CONTRIBUTES_TO; the
     first writer owns the `module` (definer) prop, later writers don't overwrite."""

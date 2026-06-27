@@ -50,6 +50,35 @@ def test_parse_cli_command_class_subclass_of_command():
     assert "Run Odoo" in (cmd.description or "")
 
 
+def test_parse_cli_explicit_name_plain_assignment_wins():
+    """`name = 'upgrade_code'` overrides the lowercased class name."""
+    src = (
+        "class UpgradeCode(Command):\n"
+        "    name = 'upgrade_code'\n"
+        "    def run(self, args):\n"
+        "        pass\n"
+    )
+    cmds = _parse_cli_module(src, "18.0", "/odoo/cli/upgrade_code.py")
+    assert [c.name for c in cmds] == ["upgrade_code"]
+
+
+def test_parse_cli_explicit_name_annotated_assignment_wins():
+    """parser LOW-4: `name: str = 'db'` (ast.AnnAssign) must also win over the
+    lowercased class name — previously only ast.Assign was handled, so the
+    annotated form fell through to a mangled class-name fallback."""
+    src = (
+        "class DatabaseManager(Command):\n"
+        "    name: str = 'db'\n"
+        "    def run(self, args):\n"
+        "        pass\n"
+    )
+    cmds = _parse_cli_module(src, "18.0", "/odoo/cli/db.py")
+    assert [c.name for c in cmds] == ["db"], (
+        "annotated `name: str = 'db'` must be picked up, not the lowercased "
+        "class name 'databasemanager'"
+    )
+
+
 def test_parse_cli_skips_non_command_classes():
     """Only Command subclasses become CLICommandInfo."""
     src = (

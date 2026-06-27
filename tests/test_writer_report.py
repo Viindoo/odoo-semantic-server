@@ -135,6 +135,41 @@ def test_uses_template_edge(writer, clean_neo4j):
     ) == 1
 
 
+def test_report_removed_by_module_scoped_delete(writer, clean_neo4j):
+    """integration MED-2: Report was added to the delete_modules_scoped child
+    cascade (writer_neo4j.py). A re-index/repo-delete of the owning module must
+    remove its Report node — otherwise a stale Report orphans on --full reindex.
+    Red-before-green: drop 'Report' from the cascade label list and this fails.
+    """
+    driver = clean_neo4j
+    # Write the owning module FIRST via write_results so the Module node carries
+    # repo='test_repo' (write_view_results does not set Module.repo, and
+    # delete_modules_scoped collects victims by Module {repo, version}).
+    writer.write_results([_model_result("sale", "sale.order")], profiles=["test_repo"])
+    res = ViewParseResult(module=_mod("sale"), reports=[
+        _report("sale.action_report_saleorder", "sale.order", "sale", None),
+    ])
+    writer.write_view_results([res], profiles=["test_repo"])
+
+    # Sanity: the Report exists before the delete.
+    assert _count(
+        driver,
+        "MATCH (rp:Report {xmlid:'sale.action_report_saleorder', odoo_version:$v}) "
+        "RETURN count(rp) AS n",
+    ) == 1
+
+    # The owning module's repo basename is 'test_repo' (see _mod), version TEST_VERSION.
+    writer.delete_modules_scoped("test_repo", TEST_VERSION)
+
+    # The Report node must be gone (it carries module='sale', so it is matched by
+    # the module-scoped cascade now that 'Report' is in the child-label list).
+    assert _count(
+        driver,
+        "MATCH (rp:Report {xmlid:'sale.action_report_saleorder', odoo_version:$v}) "
+        "RETURN count(rp) AS n",
+    ) == 0
+
+
 def test_entity_lookup_report_returns_it(writer, clean_neo4j):
     """entity_lookup(kind='report', model=...) surfaces the indexed report."""
     from src.mcp.inspect import _entity_lookup

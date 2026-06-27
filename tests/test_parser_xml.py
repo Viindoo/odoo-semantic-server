@@ -166,6 +166,37 @@ def test_parse_skips_invalid_xml(tmp_path, sale_module):
     assert result == []
 
 
+def test_qweb_record_with_model_not_emitted_as_view(tmp_path, sale_module):
+    """parser MED-2: a <record model="ir.ui.view"> with BOTH a
+    <field name="type">qweb</field> AND a <field name="model"> must NOT be
+    emitted as a ViewInfo — it is authoritatively a QWeb template (owned by
+    parser_qweb). Real cases: sale_timesheet:timesheet_plan,
+    website:view_view_qweb. Without the type=qweb skip this path emitted a bogus
+    "form" view for what is really a QWeb body.
+    """
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="timesheet_plan" model="ir.ui.view">
+                <field name="name">QWeb body</field>
+                <field name="type">qweb</field>
+                <field name="model">project.project</field>
+                <field name="arch" type="xml">
+                    <t t-name="timesheet_plan"><div/></t>
+                </field>
+            </record>
+        </odoo>
+    """)
+    # parser_xml must NOT emit a (bogus form) ViewInfo for the qweb record.
+    assert parse_file(f, sale_module) == []
+
+    # parser_qweb is the single owner: it DOES emit exactly one QWebInfo.
+    from src.indexer.parser_qweb import parse_file as qweb_parse_file
+    qweb = qweb_parse_file(f, sale_module)
+    assert len(qweb) == 1, qweb
+    assert qweb[0].xmlid == "sale.timesheet_plan"
+
+
 def test_parse_multiple_views_in_one_file(tmp_path, sale_module):
     f = write_xml(tmp_path, "views.xml", """
         <?xml version="1.0"?>
@@ -508,6 +539,39 @@ def test_v17_direct_invisible_and_column_invisible_captured(tmp_path, sale_modul
     col = by_attr[("company_id", "column_invisible")]
     assert col.legacy is False
     assert col.expr == "1"
+
+
+def test_legacy_domain_in_direct_attr_flagged_legacy(tmp_path, sale_module):
+    """parser LOW-2: a pre-v17 direct attr carrying a *domain* literal
+    (e.g. invisible="[('count','=',1)]") is a LEGACY domain, not a v17 Python
+    expression, so its `legacy` flag must be True. A bare expression
+    (invisible="state == 'draft'") stays legacy=False.
+    """
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_form" model="ir.ui.view">
+                <field name="name">sale.order.form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <form>
+                        <field name="line_count" invisible="[('count', '=', 1)]"/>
+                        <field name="state" invisible="state == 'draft'"/>
+                    </form>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    by_attr = {(c.field, c.attr): c for c in result[0].conditions}
+    domain_cond = by_attr[("line_count", "invisible")]
+    assert domain_cond.legacy is True, (
+        "a direct-attr domain literal ('[...]') is a legacy domain form"
+    )
+    expr_cond = by_attr[("state", "invisible")]
+    assert expr_cond.legacy is False, (
+        "a bare v17+ expression in a direct attr stays legacy=False"
+    )
 
 
 def test_conditions_empty_when_no_conditional_attrs(tmp_path, sale_module):

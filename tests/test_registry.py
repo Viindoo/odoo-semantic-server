@@ -115,34 +115,39 @@ def _write_raw_manifest(module_dir: Path, body: str) -> None:
 
 # --- WI-G: manifest correctness fixes (osm-audit-manifest) ---
 
-def test_build_registry_skips_active_false_module(tmp_path):
-    """`active: False` (with installable: True) is skipped (osm-audit-manifest GAP-1).
+def test_build_registry_indexes_installable_active_false_module(tmp_path):
+    """`active: False` with `installable: True` MUST be indexed (parser MED-1).
 
-    Behaviour contract: v8-v14 deprecated/placeholder modules declaring
-    ``active: False`` must NOT be indexed even though ``installable`` is True,
-    so they don't pollute model_inspect/check_module_exists.
+    Behaviour contract: `active` is a legacy auto-install hint, NOT an
+    index-exclusion signal — `installable: True` is what gates indexing. A
+    real-world example is v10-v14 `account_test` (installable:True, active:False),
+    which ships the queryable model `accounting.assert.test`. Skipping it on
+    `active: False` silently dropped an installable module + its model from the
+    index, so the skip was reverted.
     """
     repo = make_git_repo(tmp_path / "repo_14.0", "14.0")
     _write_raw_manifest(
-        repo / "deprecated_mod",
-        "{'name': 'Deprecated', 'version': '14.0.1.0.0', 'depends': [], "
-        "'installable': True, 'active': False}\n",
+        repo / "account_test_like",
+        "{'name': 'Accounting Consistency Tests', 'version': '14.0.1.0.0', "
+        "'depends': [], 'installable': True, 'active': False}\n",
     )
     make_manifest(repo / "live_mod", "Live", "14.0.1.0.0", [])
     registry = build_registry([(str(repo), "14.0")])
-    assert "deprecated_mod" not in registry.get("14.0", {})
+    assert "account_test_like" in registry.get("14.0", {}), (
+        "an installable module must be indexed even when active: False"
+    )
     assert "live_mod" in registry.get("14.0", {})
 
 
-def test_build_registry_active_false_counted_in_skip_summary(tmp_path, caplog):
-    """An `active: False` module increments the not-installable skip count."""
+def test_build_registry_active_false_not_counted_as_skip(tmp_path, caplog):
+    """An installable `active: False` module is registered, NOT skipped."""
     import logging
 
     repo = make_git_repo(tmp_path / "repo_14.0", "14.0")
     _write_raw_manifest(
-        repo / "deprecated_mod",
-        "{'name': 'Deprecated', 'version': '14.0.1.0.0', 'depends': [], "
-        "'installable': True, 'active': False}\n",
+        repo / "account_test_like",
+        "{'name': 'Accounting Consistency Tests', 'version': '14.0.1.0.0', "
+        "'depends': [], 'installable': True, 'active': False}\n",
     )
     make_manifest(repo / "live_mod", "Live", "14.0.1.0.0", [])
     with caplog.at_level(logging.INFO, logger="src.indexer.registry"):
@@ -151,7 +156,8 @@ def test_build_registry_active_false_counted_in_skip_summary(tmp_path, caplog):
         r.getMessage() for r in caplog.records
         if r.getMessage().startswith("registry scan")
     )
-    assert "1 not-installable" in summary, summary
+    assert "0 not-installable" in summary, summary
+    assert "2 registered" in summary, summary
 
 
 def test_build_registry_reads_countries_key(tmp_path):

@@ -17,12 +17,24 @@
 #   2. `.single()` saw K > 1 rows and emitted
 #      `UserWarning: Expected a result with a single record, but found multiple`.
 #
-# Fix: add `AND coalesce(parent.is_definition, false) = true` (resp. for `d`) to
-# the parent MATCH WHERE clause, mirroring the self-extend path. Result: the MATCH
-# returns exactly 0-or-1 rows — one edge to the definition node, no warning.
+# Fix (WI-A): add `AND coalesce(parent.is_definition, false) = true` (resp. for
+# `d`) to the parent MATCH WHERE clause, mirroring the self-extend path.
 #
-# These tests build a real K-copy same-name mesh (one definition + K-1 extenders)
-# and assert exactly ONE edge to the DEFINITION node.
+# Fix (graph HIGH-1 review): the is_definition filter alone does NOT guarantee a
+# single row. ADR-0048 explicitly accepts D>1 — a fork + its upstream can each
+# declare `_name='x'` with an explicit name and no self-inherit, producing TWO
+# is_definition=true nodes for the same (name, version). Calling `.single()` over
+# that D=2 set re-emits the very "Expected a single record, found multiple"
+# UserWarning this wave eliminates, and fans out K×D edges. So the writer now
+# collapses to ONE deterministic target before MERGE
+# (`ORDER BY coalesce(parent.field_count, 0) DESC, parent.module ASC LIMIT 1`),
+# mirroring the REPORTS_ON / PATCHES fix in writer_neo4j_ui.py. Since field_count
+# is not a stored Model property (always coalesces to 0), the effective tiebreak
+# is `module ASC` → the alphabetically-first definition module wins.
+#
+# These tests build a real same-name mesh (definitions + extenders) and assert
+# exactly ONE edge to the deterministically-chosen DEFINITION node, including the
+# D=2 two-definition case that the is_definition filter alone does not cover.
 #
 # NOTE: neo4j-marked — runs in CI / against a throwaway container ONLY. Do NOT run
 # locally with the default DSN (clean_neo4j drops the TEST_VERSION namespace).
@@ -98,6 +110,19 @@ def _build_parent_mesh(writer, parent_name: str, k: int = 4) -> list[str]:
         extender_modules.append(mod)
         writer.write_results([_result(mod, parent_name, inherit=[parent_name])])
     return extender_modules
+
+
+def _build_two_definition_mesh(
+    writer, parent_name: str, mod_a: str, mod_b: str,
+) -> None:
+    """Index TWO is_definition=true copies of *parent_name* (the ADR-0048 D>1
+    case: a fork + its upstream both declare `_name=parent_name` with an explicit
+    name and no self-inherit). Both get is_definition=true, so the is_definition
+    filter alone returns BOTH rows — exactly the multi-row case the deterministic
+    LIMIT-1 collapse must handle.
+    """
+    writer.write_results([_result(mod_a, parent_name, had_explicit_name=True)])
+    writer.write_results([_result(mod_b, parent_name, had_explicit_name=True)])
 
 
 # ---------------------------------------------------------------------------
@@ -258,4 +283,115 @@ def test_delegates_to_emits_no_single_multirow_warning(writer, neo4j_driver):
     assert multi_row == [], (
         "DELEGATES_TO writer emitted a .single() multi-row warning: "
         f"{[str(w.message) for w in multi_row]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 5 (graph HIGH-1): D=2 — TWO is_definition=true copies. The is_definition
+# filter alone returns both rows; the deterministic LIMIT-1 collapse must pick
+# exactly ONE (alphabetically-first module) and emit no multi-row warning.
+# ---------------------------------------------------------------------------
+
+def test_crossname_inherits_d2_collapses_to_one_definition_no_warning(
+    writer, neo4j_driver,
+):
+    """ADR-0048 D>1: when a fork + upstream both declare `_name='account.move'`
+    with explicit names (both is_definition=true), the cross-name INHERITS writer
+    must (a) emit exactly ONE edge to the deterministically-chosen definition
+    (alphabetically-first module: 'aaa_fork' < 'zzz_upstream'), and (b) emit NO
+    `.single()` multi-row UserWarning.
+
+    Red-before-green: with the is_definition filter but WITHOUT the LIMIT-1
+    collapse, the MATCH returns 2 rows → 2 edges + the multi-row warning.
+    """
+    _build_two_definition_mesh(
+        writer, "account.move", mod_a="aaa_fork", mod_b="zzz_upstream",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        writer.write_results([
+            _result("sale", "sale.order", inherit=["account.move"]),
+        ])
+
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            """
+            MATCH (child:Model {name: 'sale.order', module: 'sale',
+                                odoo_version: $v})
+                  -[:INHERITS]->
+                  (parent:Model {name: 'account.move', odoo_version: $v})
+            RETURN parent.module AS parent_mod,
+                   coalesce(parent.is_definition, false) AS is_def
+            """,
+            v=TEST_VERSION,
+        ).data()
+
+    assert len(rows) == 1, (
+        f"Expected exactly 1 INHERITS edge even with D=2 definitions, got "
+        f"{len(rows)}: {rows}. The is_definition filter alone returns both "
+        "definition rows; the LIMIT-1 collapse must pick exactly one."
+    )
+    assert rows[0]["is_def"] is True
+    assert rows[0]["parent_mod"] == "aaa_fork", (
+        "D=2 collapse must pick the deterministic winner (field_count DESC then "
+        f"module ASC → 'aaa_fork'), got {rows[0]['parent_mod']!r}."
+    )
+
+    multi_row = [
+        w for w in caught
+        if "single record" in str(w.message)
+        or "found multiple" in str(w.message)
+    ]
+    assert multi_row == [], (
+        "cross-name INHERITS writer emitted a .single() multi-row warning on the "
+        f"D=2 definition case: {[str(w.message) for w in multi_row]}"
+    )
+
+
+def test_delegates_to_d2_collapses_to_one_definition_no_warning(
+    writer, neo4j_driver,
+):
+    """ADR-0048 D>1 for DELEGATES_TO: two is_definition=true copies of
+    res.partner → exactly ONE delegate edge to the alphabetically-first module,
+    no multi-row warning."""
+    _build_two_definition_mesh(
+        writer, "res.partner", mod_a="aaa_fork", mod_b="zzz_upstream",
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        writer.write_results([
+            _result("base", "res.users",
+                    inherits={"res.partner": "partner_id"}),
+        ])
+
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            """
+            MATCH (m:Model {name: 'res.users', module: 'base',
+                            odoo_version: $v})
+                  -[:DELEGATES_TO]->
+                  (d:Model {name: 'res.partner', odoo_version: $v})
+            RETURN d.module AS d_mod,
+                   coalesce(d.is_definition, false) AS is_def
+            """,
+            v=TEST_VERSION,
+        ).data()
+
+    assert len(rows) == 1, (
+        f"Expected exactly 1 DELEGATES_TO edge even with D=2 definitions, got "
+        f"{len(rows)}: {rows}."
+    )
+    assert rows[0]["is_def"] is True
+    assert rows[0]["d_mod"] == "aaa_fork"
+
+    multi_row = [
+        w for w in caught
+        if "single record" in str(w.message)
+        or "found multiple" in str(w.message)
+    ]
+    assert multi_row == [], (
+        "DELEGATES_TO writer emitted a .single() multi-row warning on the D=2 "
+        f"definition case: {[str(w.message) for w in multi_row]}"
     )

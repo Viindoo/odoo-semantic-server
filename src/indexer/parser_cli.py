@@ -72,13 +72,25 @@ def _command_name_attr(class_node: ast.ClassDef) -> str | None:
     Odoo CLI command classes may declare an explicit command name via a class
     attribute (`name = 'upgrade_code'`); this is the authoritative name and must
     win over the lowercased class name.
+
+    Handles both the plain assignment (`name = 'db'`) and the annotated form
+    (`name: str = 'db'`, ast.AnnAssign) — parser LOW-4, mirroring the AnnAssign
+    handling in parser_python._parse_class.
     """
     for stmt in class_node.body:
-        if not isinstance(stmt, ast.Assign):
-            continue
-        for target in stmt.targets:
-            if (isinstance(target, ast.Name)
-                    and target.id == "name"
+        # Plain assignment: name = '...'  (one or more targets)
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if (isinstance(target, ast.Name)
+                        and target.id == "name"
+                        and isinstance(stmt.value, ast.Constant)
+                        and isinstance(stmt.value.value, str)):
+                    return stmt.value.value
+        # Annotated assignment: name: str = '...'  (single target, optional value)
+        elif isinstance(stmt, ast.AnnAssign):
+            if (isinstance(stmt.target, ast.Name)
+                    and stmt.target.id == "name"
+                    and stmt.value is not None
                     and isinstance(stmt.value, ast.Constant)
                     and isinstance(stmt.value.value, str)):
                 return stmt.value.value

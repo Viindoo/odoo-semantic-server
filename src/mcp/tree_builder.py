@@ -314,7 +314,9 @@ def list_reports(
     last = len(rows) - 1
     for i, r in enumerate(rows):
         conn = "└─" if i == last else "├─"
-        sub = "    " if i == last else "│  "
+        # integration LOW-1: ADR-0023 §1.3 wants 4-char indent — the non-last
+        # vertical-continuation prefix is "│   " (pipe + 3 spaces), not "│  ".
+        sub = "    " if i == last else "│   "
         repo = f"[{r['repo']}] " if r.get("repo") else ""
         lines.append(f"{conn} {r['xmlid']}  ({r.get('report_type') or '?'})")
         title = r.get("name")

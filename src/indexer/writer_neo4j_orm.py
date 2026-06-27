@@ -165,11 +165,24 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 """, name=model.name, mod=model.module, v=model.odoo_version,
                      order=idx)
             else:
+                # D>1 collapse (graph HIGH-1, ADR-0048): is_definition is NOT
+                # unique per (name, version) — a fork + its upstream can each
+                # declare `_name='x'` with an explicit name and no self-inherit,
+                # giving multiple is_definition=true nodes. Calling `.single()`
+                # over that multi-row set re-emits the "Expected a single record,
+                # found multiple" UserWarning this wave eliminates. Collapse to
+                # ONE deterministic target before MERGE (mirrors the REPORTS_ON /
+                # PATCHES fix in writer_neo4j_ui.py): rank by field_count DESC,
+                # then module ASC for a stable tiebreak. Cross-name INHERITS now
+                # points at the single canonical definition (K×1, not K×D).
                 rec = tx.run(f"""
                     MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
                     MATCH (parent:Model {{name: $parent_name, odoo_version: $v}})
                     WHERE NOT coalesce(parent.unresolved, false)
                       AND coalesce(parent.is_definition, false) = true
+                    WITH m, parent
+                    ORDER BY coalesce(parent.field_count, 0) DESC, parent.module ASC
+                    LIMIT 1
                     MERGE (m)-[r:{REL_INHERITS}]->(parent)
                     SET r.order = $order
                     RETURN 1 AS ok
@@ -205,11 +218,19 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                          order=idx)
 
         for delegated_model, via_field in model.inherits.items():
+            # D>1 collapse (graph HIGH-1, ADR-0048): same rationale as the
+            # cross-name INHERITS branch above — is_definition is not unique per
+            # (name, version), so collapse to one deterministic delegate target
+            # (field_count DESC, module ASC) before `.single()` to avoid the
+            # multi-row UserWarning when a fork + upstream both define $delegated.
             rec = tx.run("""
                 MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                 MATCH (d:Model {name: $delegated, odoo_version: $v})
                 WHERE NOT coalesce(d.unresolved, false)
                   AND coalesce(d.is_definition, false) = true
+                WITH m, d
+                ORDER BY coalesce(d.field_count, 0) DESC, d.module ASC
+                LIMIT 1
                 MERGE (m)-[:DELEGATES_TO {via_field: $via_field}]->(d)
                 RETURN 1 AS ok
             """, name=model.name, mod=model.module, v=model.odoo_version,

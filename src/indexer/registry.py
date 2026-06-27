@@ -215,13 +215,14 @@ def build_registry(
             if not manifest.get('installable', True):
                 skipped_not_installable += 1
                 continue
-            # `active: False` (v8-v14, removed v15) marks a deprecated/placeholder
-            # module that should not be auto-installed; these often coexist with
-            # `installable: True`. Treat them like not-installable so they don't
-            # pollute model_inspect/check_module_exists (osm-audit-manifest GAP-1).
-            if not manifest.get('active', True):
-                skipped_not_installable += 1
-                continue
+            # NOTE: do NOT skip on `active: False`. `active` (legacy, pre-
+            # `auto_install`) is an auto-activate-on-fresh-DB hint — it is NOT an
+            # index-exclusion signal. `installable: True` is what gates indexing.
+            # The only v10-v14 module carrying `active: False` is `account_test`
+            # (installable:True), which ships the real, queryable model
+            # `accounting.assert.test` + views + a report — exactly what OSM is
+            # meant to index. Skipping it dropped that module/model from the index
+            # (parser MED-1 review).
 
             version_raw = manifest.get('version', '')
             odoo_version = resolve_odoo_version(version_raw, repo_path)
