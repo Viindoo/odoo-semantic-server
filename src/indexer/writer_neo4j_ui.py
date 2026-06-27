@@ -55,13 +55,20 @@ def _base_module_out_of_scope(tx, inherit_xmlid: str, odoo_version: str) -> bool
       reference is correct behaviour, so a WARNING would be noise.
 
     - Genuine coverage gap (-> False -> caller logs WARNING): the base module IS
-      indexed (has a non-empty profile) but the specific view/template it should
-      contain is missing — a real indexer/parser gap worth surfacing.
+      indexed but the specific view/template it should contain is missing — a real
+      indexer/parser gap worth surfacing.
 
     The base module name is the segment before the first ``.`` in the xmlid
-    (e.g. ``certificate.foo`` -> ``certificate``). A module row with
-    ``profile IS NULL`` or an empty profile list means it was never indexed under
-    an owning profile. A missing module row also counts as out-of-scope.
+    (e.g. ``certificate.foo`` -> ``certificate``). "Out of scope" means the module
+    has NO indexed node at all: either no ``:Module`` row exists, OR the only row
+    is a profile-less forward-reference stub created by a ``DEPENDS_ON`` MERGE
+    (which sets NO ``profile`` property at all -> ``profile IS NULL``). A real
+    indexed module is ALWAYS written with ``ON CREATE SET mod.profile = $profiles``
+    by the model/view/qweb write paths, so its ``profile`` property is present
+    (possibly an EMPTY list when indexed with no profiles, e.g. a profileless test
+    run) -> NOT out of scope -> keep WARNING. Testing ``size(profile) = 0`` would
+    wrongly classify such a genuinely-indexed-but-profileless module as out of
+    scope and silently downgrade a real coverage gap to DEBUG.
 
     Read-only single-row check on the current transaction state — cheap, no
     placeholder side effects.
@@ -72,7 +79,7 @@ def _base_module_out_of_scope(tx, inherit_xmlid: str, odoo_version: str) -> bool
     rec = tx.run(
         """
         MATCH (m:Module {name: $base_module, odoo_version: $ver})
-        RETURN m.profile IS NULL OR size(m.profile) = 0 AS out_of_scope
+        RETURN m.profile IS NULL AS out_of_scope
         """,
         base_module=base_module, ver=odoo_version,
     ).single()

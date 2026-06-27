@@ -17,24 +17,37 @@
 #   2. `.single()` saw K > 1 rows and emitted
 #      `UserWarning: Expected a result with a single record, but found multiple`.
 #
-# Fix (WI-A): add `AND coalesce(parent.is_definition, false) = true` (resp. for
-# `d`) to the parent MATCH WHERE clause, mirroring the self-extend path.
+# Fix (WI-A, first cut): add `AND coalesce(parent.is_definition, false) = true`
+# (resp. for `d`) to the parent MATCH WHERE clause, mirroring the self-extend path.
 #
 # Fix (graph HIGH-1 review): the is_definition filter alone does NOT guarantee a
 # single row. ADR-0048 explicitly accepts D>1 — a fork + its upstream can each
 # declare `_name='x'` with an explicit name and no self-inherit, producing TWO
 # is_definition=true nodes for the same (name, version). Calling `.single()` over
 # that D=2 set re-emits the very "Expected a single record, found multiple"
-# UserWarning this wave eliminates, and fans out K×D edges. So the writer now
-# collapses to ONE deterministic target before MERGE
-# (`ORDER BY coalesce(parent.field_count, 0) DESC, parent.module ASC LIMIT 1`),
-# mirroring the REPORTS_ON / PATCHES fix in writer_neo4j_ui.py. Since field_count
-# is not a stored Model property (always coalesces to 0), the effective tiebreak
-# is `module ASC` → the alphabetically-first definition module wins.
+# UserWarning this wave eliminates, and fans out K×D edges. So the writer
+# collapses to ONE deterministic target before MERGE.
+#
+# Fix (mixin-resolve, current): the HARD `is_definition=true` WHERE filter was
+# TOO STRICT. A mixin / AbstractModel parent (mail.thread, indexed with
+# had_explicit_name=False → is_definition=false) has NO is_definition=true node,
+# so the filter returned 0 rows and DROPPED the edge — the parent vanished
+# (purchase.order losing mail.thread; sale.order.message_ids unresolvable) and a
+# spurious "unresolved INHERITS/DELEGATES_TO" warning fired. The writer now
+# replaces the hard filter with a PREFERENCE ORDERING that still collapses to one
+# row but never drops a legitimate parent: drop only placeholders
+# (`WHERE NOT coalesce(parent.unresolved, false)`), then
+# `ORDER BY coalesce(parent.is_definition, false) DESC,
+#          coalesce(parent.field_count, 0) DESC, parent.module ASC LIMIT 1`.
+# is_definition DESC targets the canonical definition WHEN ONE EXISTS, and falls
+# through to the best non-definition node (the mixin) when none does. Since
+# field_count is not a stored Model property (always coalesces to 0), the
+# effective tiebreak after is_definition is `module ASC`.
 #
 # These tests build a real same-name mesh (definitions + extenders) and assert
-# exactly ONE edge to the deterministically-chosen DEFINITION node, including the
-# D=2 two-definition case that the is_definition filter alone does not cover.
+# exactly ONE edge to the deterministically-chosen target: the DEFINITION node
+# when one exists (incl. the D=2 two-definition case), and the real non-definition
+# node for a mixin/abstract parent that has no definition node.
 #
 # NOTE: neo4j-marked — runs in CI / against a throwaway container ONLY. Do NOT run
 # locally with the default DSN (clean_neo4j drops the TEST_VERSION namespace).
@@ -346,6 +359,118 @@ def test_crossname_inherits_d2_collapses_to_one_definition_no_warning(
     assert multi_row == [], (
         "cross-name INHERITS writer emitted a .single() multi-row warning on the "
         f"D=2 definition case: {[str(w.message) for w in multi_row]}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 (mixin-resolve regression): a cross-name parent that has NO
+# is_definition=true node (an AbstractModel / mixin such as mail.thread, indexed
+# with had_explicit_name=False so is_definition=false) MUST still receive exactly
+# ONE INHERITS edge. A HARD `is_definition=true` filter returned 0 rows and
+# DROPPED the edge — making the parent disappear and emitting a spurious
+# "unresolved INHERITS" warning (CI failures: purchase.order losing mail.thread,
+# sale.order.message_ids unresolvable). The prefer-definition ORDER BY must fall
+# through to the best non-definition node when no definition exists.
+# ---------------------------------------------------------------------------
+
+def test_crossname_inherits_mixin_parent_without_definition_still_links(
+    writer, neo4j_driver, caplog,
+):
+    """A mixin parent (no is_definition node) keeps exactly ONE INHERITS edge and
+    emits no 'unresolved INHERITS' warning.
+
+    Red-before-green: with the hard is_definition=true filter the MATCH returns 0
+    rows → the edge is dropped, the parent is replaced by an __unresolved__
+    placeholder, and a WARNING is logged.
+    """
+    import logging
+
+    # mail.thread is a mixin: had_explicit_name=False → is_definition=false.
+    writer.write_results([_result("mail", "mail.thread", had_explicit_name=False)])
+
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_results([
+            _result("sale", "sale.order", inherit=["mail.thread"]),
+        ])
+
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            """
+            MATCH (child:Model {name: 'sale.order', module: 'sale',
+                                odoo_version: $v})
+                  -[:INHERITS]->
+                  (parent:Model {name: 'mail.thread', odoo_version: $v})
+            WHERE NOT coalesce(parent.unresolved, false)
+            RETURN parent.module AS parent_mod,
+                   coalesce(parent.is_definition, false) AS is_def
+            """,
+            v=TEST_VERSION,
+        ).data()
+
+    assert len(rows) == 1, (
+        f"Expected exactly 1 INHERITS edge to the mixin parent (no definition "
+        f"node), got {len(rows)}: {rows}. A hard is_definition=true filter would "
+        "drop the edge entirely."
+    )
+    assert rows[0]["is_def"] is False, (
+        "The mixin parent has no is_definition node; the edge must target the "
+        f"real (non-definition) mail.thread node, got is_def={rows[0]['is_def']}."
+    )
+    assert rows[0]["parent_mod"] == "mail"
+
+    # The parent resolved → no unresolved placeholder and no warning.
+    unresolved_warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and "unresolved INHERITS" in r.getMessage()
+    ]
+    assert unresolved_warnings == [], (
+        "Mixin parent resolved to a real node — no 'unresolved INHERITS' warning "
+        f"may be emitted: {[r.getMessage() for r in unresolved_warnings]}"
+    )
+
+
+def test_delegates_to_mixin_parent_without_definition_still_links(
+    writer, neo4j_driver, caplog,
+):
+    """DELEGATES_TO counterpart: a delegated mixin/abstract parent with no
+    is_definition node still gets exactly ONE delegate edge and no warning."""
+    import logging
+
+    writer.write_results([_result("mail", "mail.thread", had_explicit_name=False)])
+
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_results([
+            _result("sale", "sale.order",
+                    inherits={"mail.thread": "thread_id"}),
+        ])
+
+    with neo4j_driver.session() as session:
+        rows = session.run(
+            """
+            MATCH (m:Model {name: 'sale.order', module: 'sale', odoo_version: $v})
+                  -[:DELEGATES_TO]->
+                  (d:Model {name: 'mail.thread', odoo_version: $v})
+            WHERE NOT coalesce(d.unresolved, false)
+            RETURN d.module AS d_mod,
+                   coalesce(d.is_definition, false) AS is_def
+            """,
+            v=TEST_VERSION,
+        ).data()
+
+    assert len(rows) == 1, (
+        f"Expected exactly 1 DELEGATES_TO edge to the mixin delegate (no "
+        f"definition node), got {len(rows)}: {rows}."
+    )
+    assert rows[0]["is_def"] is False
+    assert rows[0]["d_mod"] == "mail"
+
+    unresolved_warnings = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING and "unresolved DELEGATES_TO" in r.getMessage()
+    ]
+    assert unresolved_warnings == [], (
+        "Mixin delegate resolved to a real node — no 'unresolved DELEGATES_TO' "
+        f"warning may be emitted: {[r.getMessage() for r in unresolved_warnings]}"
     )
 
 
