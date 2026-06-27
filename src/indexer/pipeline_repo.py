@@ -315,6 +315,7 @@ def _index_repo(
     total_modules = 0
     total_views = 0
     total_qweb = 0
+    total_reports = 0
     total_asset_bundles = 0
     total_embeddings = 0
     total_js_patches = 0
@@ -366,6 +367,7 @@ def _index_repo(
             # RelaxNG validation; None when no Odoo source RNG dir is available.
             xml_result = parser_xml.parse_module(info, rng_root=rng_root)
             total_views += len(xml_result.views)
+            total_reports += len(xml_result.reports)
 
             # QWeb templates
             qweb_result = parser_qweb.parse_module(info)
@@ -385,6 +387,13 @@ def _index_repo(
                 module=info,
                 views=xml_result.views,
                 qweb=qweb_result.qweb,
+                # GAP-2/GAP-5: report actions parsed alongside views in parser_xml.
+                # Written by write_view_results AFTER models (write_results) and
+                # templates (this same qweb pass) exist, so REPORTS_ON/USES_TEMPLATE
+                # resolve. write order in _index_repo: write_results -> ... ->
+                # write_view_results, and within _write_view_parse_result the qweb
+                # loop runs before the report loop.
+                reports=xml_result.reports,
                 lint_violations=xml_result.lint_violations,
             )
             view_results.append(merged)
@@ -637,6 +646,7 @@ def _index_repo(
         "modules": total_modules,
         "views": total_views,
         "qweb": total_qweb,
+        "reports": total_reports,
         "asset_bundles": total_asset_bundles,
         "embeddings": total_embeddings,
         "embed_calls": total_embed_calls,

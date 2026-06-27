@@ -8,6 +8,7 @@ from ._xmlid import qualify_xmlid
 from .models import (
     LintViolationInfo,
     ModuleInfo,
+    ReportInfo,
     ViewConditionInfo,
     ViewInfo,
     ViewParseResult,
@@ -346,6 +347,119 @@ def _parse_record(
     )
 
 
+def _parse_report_record(
+    record: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
+) -> ReportInfo | None:
+    """Parse a ``<record model="ir.actions.report">`` element into a ReportInfo.
+
+    The v14+ declaration form. Fields are ``<field name="...">`` children:
+    ``name`` (human label), ``model`` (business model), ``report_type``,
+    ``report_name`` (template QWeb xmlid), ``report_file``, ``paperformat_id``.
+
+    Returns None when the record is not an ``ir.actions.report``, has no ``id``,
+    or carries no usable ``model`` (a report with no target model is unindexable).
+    """
+    if record.get("model") != "ir.actions.report":
+        return None
+
+    xml_id = record.get("id", "").strip()
+    if not xml_id:
+        return None
+
+    name = ""
+    model = ""
+    report_type = ""
+    report_name: str | None = None
+    report_file: str | None = None
+    paperformat: str | None = None
+
+    for child in record:
+        tag = child.tag
+        if not isinstance(tag, str) or tag != "field":
+            continue
+        fname = child.get("name", "")
+        text = (child.text or "").strip()
+        if fname == "name":
+            name = text
+        elif fname == "model":
+            model = text
+        elif fname == "report_type":
+            report_type = text
+        elif fname == "report_name":
+            report_name = text or None
+        elif fname == "report_file":
+            report_file = text or None
+        elif fname == "paperformat_id":
+            # paperformat is a ref= (no text body) in the record form.
+            paperformat = (child.get("ref", "").strip() or text) or None
+
+    if not model:
+        return None
+
+    src_line: int | None = getattr(record, "sourceline", None) or None
+
+    return ReportInfo(
+        xmlid=qualify_xmlid(xml_id, module.name),
+        name=name,
+        model=model,
+        report_type=report_type,
+        module=module.name,
+        odoo_version=module.odoo_version,
+        report_name=qualify_xmlid(report_name, module.name) if report_name else None,
+        report_file=report_file,
+        paperformat=qualify_xmlid(paperformat, module.name) if paperformat else None,
+        source_file=file_path,
+        line=src_line,
+    )
+
+
+def _parse_report_shorthand(
+    report: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
+) -> ReportInfo | None:
+    """Parse a v8-v13 ``<report .../>`` shorthand element into a ReportInfo.
+
+    The legacy declaration form (removed by v14). Everything is attributes:
+    ``id``, ``string`` (human label -> name), ``model`` (business model),
+    ``report_type``, ``name`` (the template QWeb xmlid -> report_name), ``file``
+    (-> report_file), optional ``paperformat``.
+
+    Confirmed against the v12/v13 Odoo core clones (sale/account report XML).
+
+    Returns None when there is no ``id`` or no ``model``.
+    """
+    xml_id = (report.get("id") or "").strip()
+    if not xml_id:
+        return None
+
+    model = (report.get("model") or "").strip()
+    if not model:
+        return None
+
+    # In the shorthand, `string` is the human label and `name` is the TEMPLATE
+    # xmlid (the same value the record form stores under `report_name`).
+    name = (report.get("string") or "").strip()
+    report_name = (report.get("name") or "").strip() or None
+    report_type = (report.get("report_type") or "").strip()
+    report_file = (report.get("file") or "").strip() or None
+    paperformat = (report.get("paperformat") or "").strip() or None
+
+    src_line: int | None = getattr(report, "sourceline", None) or None
+
+    return ReportInfo(
+        xmlid=qualify_xmlid(xml_id, module.name),
+        name=name,
+        model=model,
+        report_type=report_type,
+        module=module.name,
+        odoo_version=module.odoo_version,
+        report_name=qualify_xmlid(report_name, module.name) if report_name else None,
+        report_file=report_file,
+        paperformat=qualify_xmlid(paperformat, module.name) if paperformat else None,
+        source_file=file_path,
+        line=src_line,
+    )
+
+
 def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
     """Parse an XML file, return list of ViewInfo found.
 
@@ -363,6 +477,33 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
         if view:
             views.append(view)
     return views
+
+
+def parse_reports_file(filepath: str, module: ModuleInfo) -> list[ReportInfo]:
+    """Parse an XML file, return all report actions found (GAP-2/GAP-5).
+
+    Recognises BOTH declaration forms:
+      1. v14+ ``<record model="ir.actions.report">`` records;
+      2. v8-v13 ``<report .../>`` shorthand tags (never visited by
+         ``root.iter("record")`` — handled via a separate ``root.iter("report")``).
+
+    Uses lxml.etree.parse() for .sourceline provenance. Empty list on parse error.
+    """
+    try:
+        tree = _lxml_etree.parse(filepath)
+    except (_lxml_etree.XMLSyntaxError, OSError):
+        return []
+    root = tree.getroot()
+    reports: list[ReportInfo] = []
+    for record in root.iter("record"):
+        rep = _parse_report_record(record, module, file_path=filepath)
+        if rep:
+            reports.append(rep)
+    for shorthand in root.iter("report"):
+        rep = _parse_report_shorthand(shorthand, module, file_path=filepath)
+        if rep:
+            reports.append(rep)
+    return reports
 
 
 def parse_module(
@@ -390,6 +531,8 @@ def parse_module(
         if SKIP_DIRS & set(xml_file.parts):
             continue
         result.views.extend(parse_file(str(xml_file), module_info))
+        # GAP-2/GAP-5: ir.actions.report records + v8-v13 <report> shorthand.
+        result.reports.extend(parse_reports_file(str(xml_file), module_info))
 
     # RelaxNG validation — v15+ gate via VersionRegistry
     should_validate = _RELAXNG_GATE.resolve_version(module_info.odoo_version, default=False)

@@ -247,6 +247,40 @@ class ViewInfo:
 
 
 @dataclass
+class ReportInfo:
+    """Info for a single Odoo report action (osm-audit-views GAP-2/GAP-5).
+
+    Covers BOTH declaration forms, normalized to one shape:
+
+      * v14+ ``<record model="ir.actions.report">`` — fields are <field> children:
+        ``name`` (human label), ``model`` (the business model the report runs on),
+        ``report_type`` (``qweb-pdf``/``qweb-html``/``qweb-text``),
+        ``report_name`` (the template QWeb xmlid), ``report_file``, ``paperformat_id``.
+      * v8-v13 ``<report .../>`` shorthand tag — attributes: ``id``, ``string``
+        (human label -> name), ``model``, ``report_type``, ``name`` (the template
+        QWeb xmlid -> report_name), ``file`` (-> report_file), optional
+        ``paperformat`` / ``print_report_name``.
+
+    ``report_name`` is the QWeb template xmlid the report renders (links to a
+    :QWebTmpl node via USES_TEMPLATE). ``model`` is the business model the report
+    targets (links to a :Model node via REPORTS_ON).
+
+    Composite Neo4j key: (xmlid, odoo_version) — same shape as View/QWebTmpl.
+    """
+    xmlid: str                       # "module.report_action_id"
+    name: str                        # human-readable report title
+    model: str                       # business model, e.g. "sale.order"
+    report_type: str                 # qweb-pdf | qweb-html | qweb-text | ...
+    module: str
+    odoo_version: str
+    report_name: str | None = None   # template QWeb xmlid, e.g. "sale.report_saleorder"
+    report_file: str | None = None   # template file ref (often == report_name)
+    paperformat: str | None = None   # paperformat_id ref (xmlid), when present
+    source_file: str | None = None   # source XML file path
+    line: int | None = None          # 1-based source line (best-effort from lxml)
+
+
+@dataclass
 class QWebInfo:
     """Info for a single QWeb template."""
     xmlid: str           # "module.template_id"
@@ -327,6 +361,10 @@ class ViewParseResult:
     module: ModuleInfo
     views: list[ViewInfo] = field(default_factory=list)
     qweb: list[QWebInfo] = field(default_factory=list)
+    # GAP-2/GAP-5: ir.actions.report records + v8-v13 <report> shorthand.
+    # Placed AFTER qweb so existing positional ViewParseResult(...) constructors
+    # in tests stay valid.
+    reports: list["ReportInfo"] = field(default_factory=list)
     lint_violations: list["LintViolationInfo"] = field(default_factory=list)
 
 

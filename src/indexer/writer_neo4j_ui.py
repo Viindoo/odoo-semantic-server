@@ -24,7 +24,9 @@ from src.constants import (
     REL_DEFINED_IN,
     REL_IMPORTS,
     REL_INHERITS_VIEW,
+    REL_REPORTS_ON,
     REL_TARGETS_MODEL,
+    REL_USES_TEMPLATE,
 )
 
 from .models import (
@@ -287,6 +289,78 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     ON CREATE SET r.unresolved = true
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                      inherit_xmlid=qweb.inherit_xmlid)
+
+    # GAP-2/GAP-5 - ir.actions.report records + v8-v13 <report> shorthand.
+    # :Report node (composite MERGE key {xmlid, odoo_version}, same shape as
+    # View/QWebTmpl). Two edges, both single-row deterministic (NO .single()
+    # multi-row pattern WI-A removed):
+    #   Report -[:REPORTS_ON]-> Model  (the business model the report runs on)
+    #   Report -[:USES_TEMPLATE]-> QWebTmpl  (the report's QWeb template)
+    for rep in result.reports:
+        tx.run(f"""
+            MERGE (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+            ON CREATE SET rp.profile = $profiles
+            ON MATCH  SET rp.profile =
+                {_profile_union_set("rp")}
+            SET rp.name = $name, rp.model = $model, rp.module = $module,
+                rp.report_type = $report_type, rp.report_name = $report_name,
+                rp.report_file = $report_file, rp.paperformat = $paperformat,
+                rp.unresolved = false
+        """, xmlid=rep.xmlid, ver=rep.odoo_version,
+             name=rep.name, model=rep.model, module=rep.module,
+             report_type=rep.report_type, report_name=rep.report_name,
+             report_file=rep.report_file, paperformat=rep.paperformat,
+             profiles=profiles)
+
+        tx.run(f"""
+            MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+            MERGE (mod:Module {{name: $module, odoo_version: $ver}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                {_profile_union_set("mod")}
+            MERGE (rp)-[:{REL_DEFINED_IN}]->(mod)
+        """, xmlid=rep.xmlid, ver=rep.odoo_version, module=rep.module,
+             profiles=profiles)
+
+        # REPORTS_ON -> Model. A model name maps to K per-module Model nodes
+        # (C1 schema); pick ONE deterministically. Prefer the definition node
+        # (is_definition=true), else the highest field_count, with a stable
+        # name tiebreak — LIMIT 1 keeps this single-row (no .single() multi-row).
+        if rep.model:
+            tx.run(f"""
+                MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+                MATCH (m:Model {{name: $model_name, odoo_version: $ver}})
+                WITH rp, m
+                ORDER BY coalesce(m.is_definition, false) DESC,
+                         coalesce(m.field_count, 0) DESC, m.module ASC
+                LIMIT 1
+                MERGE (rp)-[:{REL_REPORTS_ON}]->(m)
+            """, xmlid=rep.xmlid, ver=rep.odoo_version, model_name=rep.model)
+
+        # USES_TEMPLATE -> QWebTmpl. The report_name is the template xmlid.
+        # Single-row ({xmlid, odoo_version} is unique); skip silently when the
+        # template is not (yet) indexed — DEBUG-not-WARNING when the template's
+        # module is out of scope (WI-C helper), keeping reindex zero-noise.
+        if rep.report_name:
+            tmpl = tx.run(f"""
+                MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+                MATCH (t:QWebTmpl {{xmlid: $tmpl_xmlid, odoo_version: $ver}})
+                WHERE NOT coalesce(t.unresolved, false)
+                MERGE (rp)-[:{REL_USES_TEMPLATE}]->(t)
+                RETURN 1 AS ok
+            """, xmlid=rep.xmlid, ver=rep.odoo_version,
+                 tmpl_xmlid=rep.report_name).single()
+            if tmpl is None:
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, rep.report_name, rep.odoo_version)
+                    else _logger.warning
+                )
+                _log(
+                    "unresolved USES_TEMPLATE: %s -> %s (version %s) — "
+                    "report template not indexed",
+                    rep.xmlid, rep.report_name, rep.odoo_version,
+                )
 
 
 def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str]) -> None:

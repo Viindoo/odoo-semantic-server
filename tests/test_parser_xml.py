@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.indexer.models import ModuleInfo
-from src.indexer.parser_xml import parse_file, parse_module
+from src.indexer.parser_xml import parse_file, parse_module, parse_reports_file
 
 
 @pytest.fixture
@@ -593,3 +593,157 @@ def test_ee_view_type_hierarchy_captured(tmp_path, sale_module):
         f"Expected 'hierarchy', got {result[0].view_type!r} - "
         "EE hierarchy view must not default to 'form'"
     )
+
+
+# ---------------------------------------------------------------------------
+# GAP-2/GAP-5 — ir.actions.report records + v8-v13 <report> shorthand
+# ---------------------------------------------------------------------------
+
+
+def test_parse_report_record_v14_form(tmp_path, sale_module):
+    """v14+ <record model="ir.actions.report"> → ReportInfo with all fields."""
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="action_report_saleorder" model="ir.actions.report">
+                <field name="name">Quotation / Order</field>
+                <field name="model">sale.order</field>
+                <field name="report_type">qweb-pdf</field>
+                <field name="report_name">sale.report_saleorder</field>
+                <field name="report_file">sale.report_saleorder</field>
+                <field name="paperformat_id" ref="base.paperformat_euro"/>
+            </record>
+        </odoo>
+    """)
+    reports = parse_reports_file(f, sale_module)
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep.xmlid == "sale.action_report_saleorder"
+    assert rep.name == "Quotation / Order"
+    assert rep.model == "sale.order"
+    assert rep.report_type == "qweb-pdf"
+    assert rep.report_name == "sale.report_saleorder"
+    assert rep.report_file == "sale.report_saleorder"
+    assert rep.paperformat == "base.paperformat_euro"
+    assert rep.module == "sale"
+    assert rep.source_file == f
+
+
+def test_parse_report_shorthand_v12_form(tmp_path, sale_module):
+    """v8-v13 <report .../> shorthand → ReportInfo (string→name, name→report_name)."""
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <report
+                id="action_report_saleorder"
+                string="Quotation / Order"
+                model="sale.order"
+                report_type="qweb-pdf"
+                name="sale.report_saleorder"
+                file="sale.report_saleorder"/>
+        </odoo>
+    """)
+    reports = parse_reports_file(f, sale_module)
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep.xmlid == "sale.action_report_saleorder"
+    # In the shorthand, `string` is the human label; `name` is the template xmlid.
+    assert rep.name == "Quotation / Order"
+    assert rep.model == "sale.order"
+    assert rep.report_type == "qweb-pdf"
+    assert rep.report_name == "sale.report_saleorder"
+    assert rep.report_file == "sale.report_saleorder"
+
+
+def test_parse_report_shorthand_openerp_root(tmp_path):
+    """Shorthand <report> under an <openerp> root is captured (v8-v9 era)."""
+    legacy_mod = ModuleInfo(
+        name="sale", odoo_version="9.0", repo="odoo_9.0",
+        path=str(tmp_path), depends=["base"], version_raw="9.0.1.0.0",
+    )
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <openerp>
+            <data>
+                <report id="report_quote" string="Quote" model="sale.order"
+                        report_type="qweb-pdf" name="sale.report_quote"/>
+            </data>
+        </openerp>
+    """)
+    reports = parse_reports_file(f, legacy_mod)
+    assert len(reports) == 1
+    assert reports[0].xmlid == "sale.report_quote"
+    assert reports[0].model == "sale.order"
+
+
+def test_report_record_openerp_root(tmp_path, sale_module):
+    """ir.actions.report record under an <openerp> root is captured."""
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <openerp>
+            <data>
+                <record id="rep_a" model="ir.actions.report">
+                    <field name="name">A</field>
+                    <field name="model">sale.order</field>
+                    <field name="report_type">qweb-pdf</field>
+                    <field name="report_name">sale.tmpl_a</field>
+                </record>
+            </data>
+        </openerp>
+    """)
+    reports = parse_reports_file(f, sale_module)
+    assert len(reports) == 1
+    assert reports[0].xmlid == "sale.rep_a"
+    assert reports[0].report_name == "sale.tmpl_a"
+
+
+def test_non_report_record_ignored(tmp_path, sale_module):
+    """A plain ir.ui.view record yields zero reports; report parse ignores it."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_form" model="ir.ui.view">
+                <field name="name">f</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml"><form/></field>
+            </record>
+            <record id="some_action" model="ir.actions.act_window">
+                <field name="name">act</field>
+            </record>
+        </odoo>
+    """)
+    assert parse_reports_file(f, sale_module) == []
+    # And the view parser still returns the view (no cross-contamination).
+    assert len(parse_file(f, sale_module)) == 1
+
+
+def test_report_record_without_model_skipped(tmp_path, sale_module):
+    """A report record with no model is unindexable → skipped."""
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="rep_nomodel" model="ir.actions.report">
+                <field name="name">No model</field>
+                <field name="report_type">qweb-pdf</field>
+            </record>
+        </odoo>
+    """)
+    assert parse_reports_file(f, sale_module) == []
+
+
+def test_parse_module_collects_reports(tmp_path, sale_module):
+    """parse_module surfaces reports on the ViewParseResult.reports list."""
+    write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="rep_a" model="ir.actions.report">
+                <field name="name">A</field>
+                <field name="model">sale.order</field>
+                <field name="report_type">qweb-pdf</field>
+                <field name="report_name">sale.tmpl_a</field>
+            </record>
+        </odoo>
+    """)
+    result = parse_module(sale_module)
+    assert len(result.reports) == 1
+    assert result.reports[0].xmlid == "sale.rep_a"

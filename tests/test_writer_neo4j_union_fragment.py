@@ -134,10 +134,10 @@ def test_no_residual_literal_fragments():
 
 
 def test_all_call_sites_use_helper():
-    """Two-sided drift guard: exactly 18 ``_profile_union_set(...)`` call-sites.
+    """Two-sided drift guard: exactly 20 ``_profile_union_set(...)`` call-sites.
 
     The literal-fragment guard above proves no raw fragment was *left behind*;
-    this proves the migration was *complete and stayed complete* — that all 18
+    this proves the migration was *complete and stayed complete* — that all 20
     union-set sites route through the helper. If a future edit drops a call-site
     (e.g. swaps one for a specialised inline variant) without reinstating the raw
     fragment, the count below catches it even though the literal guard would not.
@@ -154,6 +154,13 @@ def test_all_call_sites_use_helper():
     node. The behavioural invariant is unchanged — every union-set site routes
     through the helper — so this guard sums the count across the whole writer
     module family.
+
+    GAP-2 note (WI-F): the count rose 18 -> 20 when the :Report writer was added to
+    ``_write_view_parse_result`` (ir.actions.report + v8-v13 <report> shorthand):
+    2 new ON-MATCH union sites — the :Report node and the :Module of its DEFINED_IN
+    edge, both stamped with the same ADR-0034 single-owner union. The REPORTS_ON /
+    USES_TEMPLATE edges MATCH already-owned nodes (no profile stamp), so they add
+    no union site. Invariant unchanged.
     """
     indexer_dir = pathlib.Path(__file__).parent.parent / "src" / "indexer"
     writer_files = sorted(indexer_dir.glob("writer_neo4j*.py"))
@@ -164,8 +171,8 @@ def test_all_call_sites_use_helper():
         for path in writer_files
     }
     call_sites = sum(per_file.values())
-    assert call_sites == 18, (
-        f"Expected exactly 18 '{{_profile_union_set(' call-sites across the "
+    assert call_sites == 20, (
+        f"Expected exactly 20 '{{_profile_union_set(' call-sites across the "
         f"writer_neo4j module family, found {call_sites} (per-file: {per_file}). "
         f"A change in call-site count means a union-set site was added or removed — "
         f"re-verify the writer and update this expectation only if the change is "

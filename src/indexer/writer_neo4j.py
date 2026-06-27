@@ -124,6 +124,11 @@ class Neo4jWriter:
                 " ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
+                # GAP-2/GAP-5 report layer: composite key (xmlid, odoo_version)
+                # backs the Report MERGE; the (model, odoo_version) index backs the
+                # entity_lookup(kind='report', model=...) lookup by business model.
+                "CREATE INDEX IF NOT EXISTS FOR (n:Report) ON (n.xmlid, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Report) ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:JSPatch)"
                 " ON (n.target, n.patch_name, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:OWLComp)"
@@ -478,7 +483,7 @@ class Neo4jWriter:
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
         """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.
 
-        Child nodes (Model/Field/Method/View/QWebTmpl/JSPatch/OWLComp) are
+        Child nodes (Model/Field/Method/View/QWebTmpl/Report/JSPatch/OWLComp) are
         scoped by (module_name, odoo_version) — they're deleted ONLY if their
         Module parent is being deleted in this call, to avoid orphan cleanup of
         nodes that belong to other repos in the same version.
@@ -531,7 +536,7 @@ class Neo4jWriter:
                 MATCH (child)
                 WHERE child.module IN $names AND child.odoo_version = $version
                   AND (child:Model OR child:Field OR child:Method OR child:View
-                       OR child:QWebTmpl OR child:JSPatch OR child:OWLComp)
+                       OR child:QWebTmpl OR child:Report OR child:JSPatch OR child:OWLComp)
                 CALL (child) {{
                     DETACH DELETE child
                 }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS

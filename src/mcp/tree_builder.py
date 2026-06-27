@@ -225,3 +225,108 @@ def format_view_conditions(
             f"{c.get('expr', '')!r}{tag}"
         )
     return lines
+
+
+# ---------------------------------------------------------------------------
+# entity_lookup(kind='report') — Report (ir.actions.report) listing (GAP-2/GAP-5)
+# ---------------------------------------------------------------------------
+#
+# Implemented HERE (not in server.py) because server.py is at its 3700-line
+# god-file ceiling (test_no_god_file). Uses the same srv.* read helpers every
+# other inspect path uses (_get_driver / _resolve_version / _data_bounded /
+# _scope / _scope_pred). Routed through srv._data_bounded so a tx-timeout becomes
+# OrmQueryTimeout (clean English, no Cypher leaked) — the raise propagates to the
+# entity_lookup async handler which records the metric + returns the clean string.
+
+def list_reports(
+    *,
+    model: str | None,
+    name: str | None,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
+    """List :Report nodes (ir.actions.report) matching a model and/or name.
+
+    At least one of *model* (business model the report runs on) or *name* (xmlid /
+    title substring) must be given. Renders an ADR-0023 §1 tree: one row per report
+    with its report_type, target model, and the QWeb template it uses.
+    """
+    from src.mcp import server as srv
+
+    if not model and not name:
+        return (
+            "Error: entity_lookup(kind='report') requires model='<model_name>' "
+            "(reports on a model) and/or name='<report_xmlid_or_title>'."
+        )
+
+    with srv._get_driver().session() as session:
+        odoo_version = srv._resolve_version(odoo_version, session)
+
+        where = [srv._scope_pred("rp"), "rp.module <> '__unresolved__'"]
+        params: dict = {"v": odoo_version, **srv._scope(profile_name)}
+        if model:
+            where.append("rp.model = $model")
+            params["model"] = model
+        if name:
+            # Case-insensitive substring match on either the xmlid or the title.
+            where.append(
+                "(toLower(rp.xmlid) CONTAINS toLower($name) "
+                "OR toLower(rp.name) CONTAINS toLower($name))"
+            )
+            params["name"] = name
+        where_clause = " AND ".join(where)
+
+        rows = srv._data_bounded(
+            session,
+            f"""
+            MATCH (rp:Report {{odoo_version: $v}})
+            WHERE {where_clause}
+            OPTIONAL MATCH (rp)-[:DEFINED_IN]->(mod:Module)
+            RETURN rp.xmlid AS xmlid, rp.name AS name, rp.model AS model,
+                   rp.report_type AS report_type, rp.report_name AS report_name,
+                   rp.paperformat AS paperformat,
+                   coalesce(mod.repo_url, mod.repo) AS repo, mod.name AS module
+            ORDER BY rp.xmlid ASC
+            LIMIT 50
+            """,
+            f"report list (model={model!r}, name={name!r}, Odoo {odoo_version})",
+            **params,
+        )
+
+    scope = []
+    if model:
+        scope.append(f"model={model!r}")
+    if name:
+        scope.append(f"name={name!r}")
+    header = (
+        f"entity_lookup(kind='report', {', '.join(scope)}, "
+        f"odoo_version={odoo_version!r})"
+    )
+    if not rows:
+        return (
+            f"{header}\n"
+            "└─ No reports found. Verify the model name / report xmlid, or the "
+            "version (reports are indexed from ir.actions.report records and the "
+            "v8-v13 <report> shorthand)."
+        )
+
+    lines = [header, f"├─ Reports ({len(rows)}):"]
+    last = len(rows) - 1
+    for i, r in enumerate(rows):
+        conn = "└─" if i == last else "├─"
+        sub = "    " if i == last else "│  "
+        repo = f"[{r['repo']}] " if r.get("repo") else ""
+        lines.append(f"{conn} {r['xmlid']}  ({r.get('report_type') or '?'})")
+        title = r.get("name")
+        if title:
+            lines.append(f"{sub}├─ Title:    {title}")
+        lines.append(f"{sub}├─ Model:    {r.get('model') or '?'}")
+        lines.append(f"{sub}├─ Module:   {repo}{r.get('module') or '?'}")
+        tmpl = r.get("report_name")
+        pf = r.get("paperformat")
+        if pf:
+            lines.append(f"{sub}├─ Template: {tmpl or '(none)'}")
+            lines.append(f"{sub}└─ Paperformat: {pf}")
+        else:
+            lines.append(f"{sub}└─ Template: {tmpl or '(none)'}")
+    return "\n".join(lines)

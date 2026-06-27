@@ -270,13 +270,16 @@ async def entity_lookup(
     module_inspect, or describe_module directly for a cleaner trace.
 
     Args:
-        kind: One of model | field | method | view | module | pattern.
+        kind: One of model | field | method | view | module | pattern | report.
         profile_name: Optional profile filter.
-        model: Required for kind in {model, field, method}.
+        model: Required for kind in {model, field, method}. For kind='report' it
+            filters reports that run on this business model.
         field: Required for kind='field'.
         method_name: Required for kind='method'.
-        xmlid: Required for kind='view'.
-        name: Required for kind in {module, pattern}.
+        xmlid: Required for kind='view'. For kind='report' it is an alias for
+            name (a specific report xmlid).
+        name: Required for kind in {module, pattern}. For kind='report' it is an
+            optional xmlid/title substring filter (pass model and/or name).
         from_module: Optional module filter - restrict results to rows declared
             in this module only (kind='model' and kind='field').
 
