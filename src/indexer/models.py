@@ -223,6 +223,42 @@ class QWebInfo:
 
 
 @dataclass
+class AssetBundleContribution:
+    """A single Module -> AssetBundle contribution (WI-D, ADR-0052).
+
+    Captures one bundle that *module* contributes entries to, plus the ordered
+    list of entries it contributes. An *entry* is the manifest grammar form,
+    normalized to JSON-serializable shapes:
+      - str: a file path or glob (leading '/' stripped — ADR-0037-style portable).
+      - list[str]: a tuple operation, e.g. ['include', 'web._assets_helpers'],
+        ['remove', 'web/.../foo.js'], ['replace', ref, new], ['before', ref, new],
+        ['after', ref, new], ['prepend', path].
+    `includes` is the subset of bundle names referenced via ('include', name) —
+    used to write INCLUDES_BUNDLE edges (AssetBundle -> AssetBundle).
+    """
+    module: str
+    odoo_version: str
+    bundle_name: str          # full dotted name, e.g. 'web.assets_backend'
+    entries: list = field(default_factory=list)        # ordered str | list[str]
+    includes: list[str] = field(default_factory=list)  # ('include', X) targets
+
+
+@dataclass
+class AssetParseResult:
+    """Output of parser_assets.parse_assets() for one module (WI-D, ADR-0052).
+
+    Era B (v15+): `contributions` = the module's manifest `'assets'` dict, one
+    AssetBundleContribution per bundle. Era A (v8-14): empty — legacy XML
+    `<template>` bundle definitions/extensions are already captured by
+    parser_qweb (definitions -> QWebTmpl base nodes; extenders -> QWebInfo with
+    inherit_xmlid), so the era-A handler emits no separate contributions and the
+    writer resolves legacy extenders against either a QWebTmpl OR an AssetBundle.
+    """
+    module: "ModuleInfo"
+    contributions: list[AssetBundleContribution] = field(default_factory=list)
+
+
+@dataclass
 class JSChunk:
     """A chunk of JavaScript code from a module, for embedding."""
     module: str

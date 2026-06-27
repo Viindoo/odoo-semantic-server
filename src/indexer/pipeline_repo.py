@@ -34,6 +34,7 @@ from pathlib import Path
 
 from src.indexer import incremental as _incremental
 from src.indexer import (
+    parser_assets,
     parser_css,
     parser_js,
     parser_js_test,
@@ -44,7 +45,7 @@ from src.indexer import (
     parser_test,
     parser_xml,
 )
-from src.indexer.models import StylesheetInfo, ViewParseResult
+from src.indexer.models import AssetParseResult, StylesheetInfo, ViewParseResult
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.version_registry import less_active, scss_active
 
@@ -300,6 +301,9 @@ def _index_repo(
 
     py_results = []
     view_results: list[ViewParseResult] = []
+    # WI-D: asset-bundle parse results (one per module; era-B v15+ populates,
+    # era-A v8-14 yields empty since parser_qweb owns legacy <template> bundles).
+    asset_results: list[AssetParseResult] = []
     js_graph_results = []
     # WI-1: test surface parse results (one per module)
     test_results = []
@@ -311,6 +315,7 @@ def _index_repo(
     total_modules = 0
     total_views = 0
     total_qweb = 0
+    total_asset_bundles = 0
     total_embeddings = 0
     total_js_patches = 0
     total_owl_comps = 0
@@ -365,6 +370,13 @@ def _index_repo(
             # QWeb templates
             qweb_result = parser_qweb.parse_module(info)
             total_qweb += len(qweb_result.qweb)
+
+            # WI-D asset bundles (ADR-0052): version-aware dispatch. Era B (v15+)
+            # parses the __manifest__.py 'assets' dict; era A (v8-14) returns empty
+            # (legacy XML <template> bundles already captured by parser_qweb above).
+            asset_result = parser_assets.parse_assets(info)
+            asset_results.append(asset_result)
+            total_asset_bundles += len(asset_result.contributions)
 
             # Merge both view parsers into one ViewParseResult per module.
             # writer.write_view_results handles both .views and .qweb in one call.
@@ -450,6 +462,11 @@ def _index_repo(
     # used for the pgvector write above, so the two stores cannot diverge. See
     # _owning_profiles() for the full rationale + the F-2/F-6 non-empty guard.
     writer.write_results(py_results, profiles=_profiles_arr)
+    # WI-D: write :AssetBundle nodes BEFORE views/qweb so the legacy
+    # <template inherit_id="web.assets_backend"> extenders (written in the qweb
+    # pass) resolve against the AssetBundle base nodes via EXTENDS_ASSET_BUNDLE
+    # instead of emitting an unresolved warning (the ~13 A2 warnings, ADR-0052).
+    writer.write_asset_results(asset_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
     # WI-1: write test surface nodes (TestClass/TestMethod) alongside model nodes.
     # test_results collected per-module inside the main loop (see below) then written here.
@@ -620,6 +637,7 @@ def _index_repo(
         "modules": total_modules,
         "views": total_views,
         "qweb": total_qweb,
+        "asset_bundles": total_asset_bundles,
         "embeddings": total_embeddings,
         "embed_calls": total_embed_calls,
         "js_patches": total_js_patches,

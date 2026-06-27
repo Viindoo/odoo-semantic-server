@@ -28,6 +28,7 @@ from src.constants import (
 )
 
 from .models import (
+    AssetParseResult,
     JSGraphResult,
     StylesheetInfo,
     ViewParseResult,
@@ -210,6 +211,27 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                  inherit_xmlid=qweb.inherit_xmlid).single()
             if rec is None:
+                # WI-D: the base may be an AssetBundle, not a QWebTmpl/View. In
+                # v15+ Odoo declares asset bundles (web.assets_backend, ...) in the
+                # __manifest__.py 'assets' dict — indexed here as :AssetBundle nodes
+                # (keyed on `name`, NOT `xmlid`). A legacy module that still uses the
+                # XML extension form <template inherit_id="web.assets_backend"> would
+                # otherwise leave an unresolved EXTENDS_TMPL warning (the ~13 A2
+                # warnings). Resolve it by linking the extender to the AssetBundle via
+                # a dedicated EXTENDS_ASSET_BUNDLE edge (reuse the same cross-label
+                # base-lookup spirit as the QWebTmpl OR View match above). name is the
+                # composite key's identifying part; (name, odoo_version) is unique, so
+                # this stays a single-row .single() lookup.
+                ab = tx.run("""
+                    MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+                    MATCH (b:AssetBundle {name: $inherit_xmlid, odoo_version: $ver})
+                    MERGE (ext)-[r:EXTENDS_ASSET_BUNDLE]->(b)
+                    ON MATCH SET r.unresolved = false
+                    RETURN 1 AS ok
+                """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
+                     inherit_xmlid=qweb.inherit_xmlid).single()
+                if ab is not None:
+                    continue  # resolved against an AssetBundle — no warning/placeholder
                 # Category-B downgrade — same rationale as INHERITS_VIEW above.
                 _log = (
                     _logger.debug
@@ -238,6 +260,67 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     ON CREATE SET r.unresolved = true
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                      inherit_xmlid=qweb.inherit_xmlid)
+
+
+def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str]) -> None:
+    """Write :AssetBundle nodes + CONTRIBUTES_TO / INCLUDES_BUNDLE edges (WI-D).
+
+    Graph shape (ADR-0052, survey eraBC §5):
+      - (:AssetBundle {name, odoo_version})   composite MERGE key (same shape as
+        Module/Model/View). Props: is_private (name CONTAINS '._'), module (the
+        first/defining module — set ON CREATE only so it stays the definer when a
+        later module also contributes), profile (ADR-0034 union).
+      - (:Module)-[:CONTRIBUTES_TO {entries}]->(:AssetBundle)  one per module that
+        lists this bundle in its manifest 'assets' dict; entries = JSON-serialized
+        ordered entry list (str path | [op, ...]).
+      - (:AssetBundle)-[:INCLUDES_BUNDLE]->(:AssetBundle)  for each ('include', X)
+        composition reference (X may live in any module — MERGE the target so a
+        forward reference is never orphaned, mirroring the placeholder convention).
+
+    Single-row lookups only — every MERGE is keyed on (name, odoo_version), so no
+    .single() multi-row pattern is reintroduced (the issue WI-A fixed). Reuses the
+    ADR-0034 profile-union SSOT for the contributing Module and the AssetBundle.
+    """
+    import json
+
+    from .writer_neo4j import _profile_union_set
+
+    for c in result.contributions:
+        is_private = "._" in c.bundle_name
+        # MERGE the AssetBundle node + the contributing Module + CONTRIBUTES_TO edge.
+        # module (definer) is set ON CREATE only so the first contributor owns the
+        # `module` prop; later contributors still get a CONTRIBUTES_TO edge but do
+        # not overwrite the definer.
+        tx.run(f"""
+            MERGE (b:AssetBundle {{name: $name, odoo_version: $ver}})
+            ON CREATE SET b.profile = $profiles, b.module = $module,
+                          b.is_private = $is_private
+            ON MATCH  SET b.profile =
+                {_profile_union_set("b")},
+                          b.is_private = $is_private
+            WITH b
+            MERGE (mod:Module {{name: $module, odoo_version: $ver}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                {_profile_union_set("mod")}
+            MERGE (mod)-[r:CONTRIBUTES_TO]->(b)
+            SET r.entries = $entries
+        """, name=c.bundle_name, ver=c.odoo_version, module=c.module,
+             is_private=is_private, entries=json.dumps(c.entries),
+             profiles=profiles)
+
+        # INCLUDES_BUNDLE edges — ('include', X) composition. MERGE the target so a
+        # not-yet-written referenced bundle is created (profile-less, ADR-0034
+        # SCOPE-CHOKE: it is a REFERENCED node not owned by this run; a later real
+        # write under its own owner converges on the same (name, odoo_version) key).
+        for target in c.includes:
+            tx.run("""
+                MATCH (src:AssetBundle {name: $src_name, odoo_version: $ver})
+                MERGE (tgt:AssetBundle {name: $tgt_name, odoo_version: $ver})
+                ON CREATE SET tgt.is_private = $tgt_private
+                MERGE (src)-[:INCLUDES_BUNDLE]->(tgt)
+            """, src_name=c.bundle_name, tgt_name=target, ver=c.odoo_version,
+                 tgt_private=("._" in target))
 
 
 def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> None:

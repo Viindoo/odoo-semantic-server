@@ -128,6 +128,12 @@ class Neo4jWriter:
                 " ON (n.target, n.patch_name, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:OWLComp)"
                 " ON (n.name, n.module, n.odoo_version)",
+                # WI-D asset-bundle layer (ADR-0052): composite key (name, odoo_version).
+                # Backs the EXTENDS_ASSET_BUNDLE base-lookup (resolves v15+ legacy
+                # <template inherit_id="web.assets_backend"> extenders) + CONTRIBUTES_TO
+                # / INCLUDES_BUNDLE writes — all (name, odoo_version)-keyed.
+                "CREATE INDEX IF NOT EXISTS FOR (n:AssetBundle)"
+                " ON (n.name, n.odoo_version)",
                 # M4.5 spec layer (per ADR-0002):
                 "CREATE INDEX IF NOT EXISTS FOR (n:CoreSymbol)"
                 " ON (n.qualified_name, n.odoo_version)",
@@ -232,6 +238,24 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for result in results:
                 session.execute_write(_write_js_graph_result, result, _profiles)
+
+    def write_asset_results(
+        self,
+        results: list,
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist :AssetBundle nodes + CONTRIBUTES_TO/INCLUDES_BUNDLE edges (WI-D).
+
+        MUST be called BEFORE write_view_results so the legacy
+        ``<template inherit_id="web.assets_backend">`` extenders (written in the
+        view/qweb pass) can resolve against the AssetBundle base nodes via the
+        EXTENDS_ASSET_BUNDLE fallback. *profiles* written as node property
+        (ADR-0034 single-owner provenance, same as every other writer).
+        """
+        _profiles = profiles if profiles is not None else []
+        with self.driver.session() as session:
+            for result in results:
+                session.execute_write(_write_asset_parse_result, result, _profiles)
 
     # --- M4.5 spec layer (CoreSymbol + diff edges) -------------------------
 
@@ -1399,6 +1423,7 @@ from .writer_neo4j_spec import (  # noqa: E402,I001
     _write_replaced_by_edges,
 )
 from .writer_neo4j_ui import (  # noqa: E402,I001
+    _write_asset_parse_result,
     _write_js_graph_result,
     _write_stylesheets_batch,
     _write_view_parse_result,

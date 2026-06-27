@@ -134,10 +134,10 @@ def test_no_residual_literal_fragments():
 
 
 def test_all_call_sites_use_helper():
-    """Two-sided drift guard: exactly 16 ``_profile_union_set(...)`` call-sites.
+    """Two-sided drift guard: exactly 18 ``_profile_union_set(...)`` call-sites.
 
     The literal-fragment guard above proves no raw fragment was *left behind*;
-    this proves the migration was *complete and stayed complete* — that all 16
+    this proves the migration was *complete and stayed complete* — that all 18
     union-set sites route through the helper. If a future edit drops a call-site
     (e.g. swaps one for a specialised inline variant) without reinstating the raw
     fragment, the count below catches it even though the literal guard would not.
@@ -146,9 +146,14 @@ def test_all_call_sites_use_helper():
     from ``writer_neo4j.py`` into the node-grouped siblings
     ``writer_neo4j_orm.py`` / ``writer_neo4j_ui.py`` / ``writer_neo4j_spec.py``
     (the ``_profile_union_set`` helper itself stays the SSOT in ``writer_neo4j``).
-    The behavioural invariant is unchanged — exactly 16 union-set sites all route
-    through the helper — so this guard now sums the count across the whole writer
-    module family rather than a single file.
+
+    WI-D note: the count rose 16 -> 18 when ``_write_asset_parse_result`` was added
+    to ``writer_neo4j_ui.py`` (ADR-0052): 2 new ON-MATCH union sites — the
+    :AssetBundle node and the contributing :Module of its CONTRIBUTES_TO edge,
+    both stamped with the ADR-0034 single-owner profile union like every other
+    node. The behavioural invariant is unchanged — every union-set site routes
+    through the helper — so this guard sums the count across the whole writer
+    module family.
     """
     indexer_dir = pathlib.Path(__file__).parent.parent / "src" / "indexer"
     writer_files = sorted(indexer_dir.glob("writer_neo4j*.py"))
@@ -159,8 +164,8 @@ def test_all_call_sites_use_helper():
         for path in writer_files
     }
     call_sites = sum(per_file.values())
-    assert call_sites == 16, (
-        f"Expected exactly 16 '{{_profile_union_set(' call-sites across the "
+    assert call_sites == 18, (
+        f"Expected exactly 18 '{{_profile_union_set(' call-sites across the "
         f"writer_neo4j module family, found {call_sites} (per-file: {per_file}). "
         f"A change in call-site count means a union-set site was added or removed — "
         f"re-verify the writer and update this expectation only if the change is "

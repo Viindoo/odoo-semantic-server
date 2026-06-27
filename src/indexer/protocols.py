@@ -67,6 +67,16 @@ class IndexWriterProtocol(Protocol):
     def write_view_results(self, results: list[ViewParseResult]) -> None: ...
     def write_js_graph_results(self, results: list[JSGraphResult]) -> None: ...
 
+    def write_asset_results(
+        self, results: list, profiles: list[str] | None = None,
+    ) -> None:
+        """Persist :AssetBundle nodes + CONTRIBUTES_TO/INCLUDES_BUNDLE (WI-D).
+
+        Must run BEFORE write_view_results so legacy XML asset-bundle extenders
+        resolve against the AssetBundle base nodes (EXTENDS_ASSET_BUNDLE).
+        """
+        ...
+
     # --- Test-surface writers (WI-1/WI-3) ------------------------------------
     def write_test_results(
         self, results: list, profiles: list[str] | None = None,
