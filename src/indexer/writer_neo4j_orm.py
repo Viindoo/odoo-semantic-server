@@ -166,6 +166,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
                     MATCH (parent:Model {{name: $parent_name, odoo_version: $v}})
                     WHERE NOT coalesce(parent.unresolved, false)
+                      AND coalesce(parent.is_definition, false) = true
                     MERGE (m)-[r:{REL_INHERITS}]->(parent)
                     SET r.order = $order
                     RETURN 1 AS ok
@@ -205,6 +206,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                 MATCH (d:Model {name: $delegated, odoo_version: $v})
                 WHERE NOT coalesce(d.unresolved, false)
+                  AND coalesce(d.is_definition, false) = true
                 MERGE (m)-[:DELEGATES_TO {via_field: $via_field}]->(d)
                 RETURN 1 AS ok
             """, name=model.name, mod=model.module, v=model.odoo_version,

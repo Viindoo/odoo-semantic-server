@@ -242,6 +242,7 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
                               module: $mod, odoo_version: $v})
             MATCH (c:OWLComp {name: $target, odoo_version: $v})
             WHERE NOT coalesce(c.unresolved, false)
+            WITH j, c ORDER BY c.module ASC LIMIT 1
             MERGE (j)-[:PATCHES]->(c)
             RETURN 1
         """, target=patch.target, pn=patch.patch_name,
