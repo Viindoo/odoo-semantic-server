@@ -419,3 +419,177 @@ def test_arch_snippet_bounded_to_2000_chars(tmp_path, sale_module):
     snippet = result[0].arch_snippet
     assert snippet is not None
     assert len(snippet) <= 2000
+
+
+# --- GAP-1: conditional-visibility extraction (attrs/states v8-16, direct v17+) ---
+
+
+def test_legacy_attrs_invisible_captured(tmp_path, sale_module):
+    """v8-v16 form: attrs="{'invisible': [...]}" must surface as a captured condition."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_form" model="ir.ui.view">
+                <field name="name">sale.order.form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <form>
+                        <field name="commitment_date"
+                               attrs="{'invisible': [('state', '=', 'draft')]}"/>
+                    </form>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    conds = result[0].conditions
+    # exactly one condition, on the commitment_date field, attrs.invisible, legacy
+    assert len(conds) == 1
+    c = conds[0]
+    assert c.element == "field"
+    assert c.field == "commitment_date"
+    assert c.attr == "attrs.invisible"
+    assert c.legacy is True
+    # raw domain preserved (no evaluation); the field+operator must be present
+    assert "state" in c.expr and "draft" in c.expr
+
+
+def test_legacy_states_captured(tmp_path, sale_module):
+    """v8-v16 states="draft,sent" must surface as a captured condition."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_form" model="ir.ui.view">
+                <field name="name">sale.order.form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <form>
+                        <button name="action_confirm" states="draft,sent"/>
+                    </form>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    conds = result[0].conditions
+    states = [c for c in conds if c.attr == "states"]
+    assert len(states) == 1
+    assert states[0].element == "button"
+    assert states[0].expr == "draft,sent"
+    assert states[0].legacy is True
+
+
+def test_v17_direct_invisible_and_column_invisible_captured(tmp_path, sale_module):
+    """v17+ direct invisible="expr" + column_invisible="1" captured with provenance."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_list" model="ir.ui.view">
+                <field name="name">sale.order.list</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <list>
+                        <field name="commitment_date" invisible="state == 'draft'"/>
+                        <field name="company_id" column_invisible="1"/>
+                    </list>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    conds = result[0].conditions
+    by_attr = {(c.field, c.attr): c for c in conds}
+    # direct invisible expression on commitment_date - non-legacy
+    inv = by_attr[("commitment_date", "invisible")]
+    assert inv.legacy is False
+    assert inv.expr == "state == 'draft'"
+    # column_invisible on company_id - captured, non-legacy
+    col = by_attr[("company_id", "column_invisible")]
+    assert col.legacy is False
+    assert col.expr == "1"
+
+
+def test_conditions_empty_when_no_conditional_attrs(tmp_path, sale_module):
+    """A plain view with no attrs/states/direct-expr attributes -> conditions == []."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_form" model="ir.ui.view">
+                <field name="name">sale.order.form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <form><field name="partner_id"/></form>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert result[0].conditions == []
+
+
+def test_conditions_captured_in_xpath_inserted_field(tmp_path, sale_module):
+    """Conditions on a field inserted via <xpath> in an extension view are captured."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_form_inherit" model="ir.ui.view">
+                <field name="name">sale.order.form.inherit</field>
+                <field name="model">sale.order</field>
+                <field name="inherit_id" ref="sale.view_sale_order_form"/>
+                <field name="arch" type="xml">
+                    <data>
+                        <xpath expr="//field[@name='partner_id']" position="after">
+                            <field name="x_extra" invisible="state == 'done'"/>
+                        </xpath>
+                    </data>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    conds = result[0].conditions
+    assert any(
+        c.field == "x_extra" and c.attr == "invisible" and not c.legacy
+        for c in conds
+    )
+
+
+# --- GAP-9: EE view types must not silently default to "form" ---
+
+
+def test_ee_view_type_map_captured(tmp_path, sale_module):
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_order_map" model="ir.ui.view">
+                <field name="name">sale.order.map</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml">
+                    <map res_partner="partner_id"><field name="name"/></map>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert result[0].view_type == "map"
+
+
+def test_ee_view_type_hierarchy_captured(tmp_path, sale_module):
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_emp_hierarchy" model="ir.ui.view">
+                <field name="name">hr.employee.hierarchy</field>
+                <field name="model">hr.employee</field>
+                <field name="arch" type="xml">
+                    <hierarchy><field name="name"/></hierarchy>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert result[0].view_type == "hierarchy", (
+        f"Expected 'hierarchy', got {result[0].view_type!r} - "
+        "EE hierarchy view must not default to 'form'"
+    )

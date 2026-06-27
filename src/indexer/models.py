@@ -186,6 +186,38 @@ class XPathInfo:
 
 
 @dataclass
+class ViewConditionInfo:
+    """One conditional-visibility expression extracted from a view's arch (GAP-1).
+
+    Captures BOTH legacy (v8-v16) and modern (v17+) conditional-attribute forms
+    in a single uniform shape so AI agents can answer "what makes this field
+    invisible/required/readonly" at any version:
+
+      * Legacy form (v8-v16): an element carries ``attrs="{'invisible': [...]}"``
+        (a dict whose keys are ``invisible``/``required``/``readonly``/``column_invisible``
+        and whose values are Odoo domains) and/or ``states="draft,sent"``. We emit
+        one ViewConditionInfo per *attr* key (``attr='attrs.invisible'``,
+        ``attr='states'``, ...), ``expr`` = the raw value string. ``legacy=True``.
+
+      * Modern form (v17+): an element carries a direct expression attribute
+        ``invisible="state == 'draft'"`` / ``required="..."`` / ``readonly="..."``
+        / ``column_invisible="1"``. We emit one ViewConditionInfo per attribute,
+        ``attr`` = the attribute name, ``expr`` = the expression value. ``legacy=False``.
+
+    We deliberately do NOT evaluate the domain/expression - ``expr`` is the raw
+    string. ``element`` is the local tag of the carrying node (e.g. ``field``,
+    ``button``, ``page``); ``field`` is its ``name=`` when present (only meaningful
+    for ``<field>``), else None.
+    """
+    element: str                 # local tag carrying the attribute, e.g. 'field'
+    attr: str                    # 'invisible'|'required'|'readonly'|'column_invisible'
+                                 # |'attrs.invisible'|...|'states'
+    expr: str                    # raw expression / domain / states value
+    field: str | None = None     # the field's name= when element == 'field', else None
+    legacy: bool = False         # True for attrs=/states= (v8-v16); False for v17+ direct
+
+
+@dataclass
 class ViewInfo:
     """Info for a single Odoo ir.ui.view record."""
     xmlid: str           # "module.xml_id", e.g., "sale.view_sale_order_form"
@@ -206,6 +238,12 @@ class ViewInfo:
     # None for inherit-only (extension) views.  Stored on the Neo4j View node so AI
     # agents can inspect view structure without fetching the full arch body.
     arch_snippet: str | None = None
+    # GAP-1 - conditional-visibility expressions extracted from arch (both the
+    # legacy attrs=/states= form for v8-v16 AND the v17+ direct-expression form
+    # invisible=/required=/readonly=/column_invisible=). Empty when the arch has
+    # no conditional attributes. Walked over the FULL arch tree (not just the root)
+    # so xpath-inserted fields in extension views are captured too.
+    conditions: list[ViewConditionInfo] = field(default_factory=list)
 
 
 @dataclass
@@ -220,6 +258,14 @@ class QWebInfo:
     # A3 — provenance: 1-based source line of the <template> element
     # (best-effort from lxml .sourceline; None if unavailable)
     line: int | None = None
+    # GAP-11 - website QWeb `key=` attribute (the canonical public xmlid that
+    # multi-website page dispatch + extenders inherit by). None when absent (most
+    # non-website templates). Captured from the <template key="..."> attribute.
+    key: str | None = None
+    # GAP-12 - `mode=` attribute on an inheriting template: "primary" creates a
+    # NEW primary view from the inherited one (a fresh copy), "extension" (default)
+    # patches in place. None when absent.
+    mode: str | None = None
 
 
 @dataclass

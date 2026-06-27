@@ -214,3 +214,55 @@ def test_translation_format_interpolation_in_static_v18(tmp_path):
     )
     rule_ids = {r.rule_id for r in rules}
     assert "W8201" in rule_ids, f"W8201 missing from v18 catalogue; got: {sorted(rule_ids)}"
+
+
+def test_v17_attrs_removal_lint_rule_matches_attrs_usage(tmp_path):
+    """GAP-1: the v17 catalogue MUST flag `attrs=` view XML as removed-in-v17.
+
+    Behavioral contract: a real attrs="..." occurrence in view XML must be matched
+    by the rule's code_pattern (so find_deprecated_usage/lint_check surfaces it),
+    and the rule must carry a migrate-to-direct-expression message.
+    """
+    import re
+
+    real_json = Path(__file__).parent.parent / "src/indexer/spec_data/lint_rules_17.0.json"
+    (tmp_path / "lint_rules_17.0.json").write_text(real_json.read_text())
+    rules = parse_lint_rules_for_version(
+        "17.0", odoo_source_root=None, static_data_dir=str(tmp_path),
+    )
+    by_id = {r.rule_id: r for r in rules}
+
+    # attrs= rule present, XML-scoped, with a code_pattern that matches real usage.
+    attrs_rule = by_id.get("W8168")
+    assert attrs_rule is not None, "v17 attrs-removal lint rule (W8168) missing"
+    assert attrs_rule.file_pattern == "**/*.xml"
+    assert attrs_rule.code_pattern, "W8168 must carry a code_pattern"
+    sample = """<field name="x" attrs="{'invisible': [('state','=','draft')]}"/>"""
+    assert re.search(attrs_rule.code_pattern, sample), (
+        "W8168 code_pattern must match a real attrs= occurrence"
+    )
+    # Message must steer the migration to direct expressions, not just say "removed".
+    assert "v17" in attrs_rule.message
+    assert "invisible" in attrs_rule.message or "domain" in attrs_rule.message
+
+
+def test_v17_states_removal_lint_rule_matches_states_usage(tmp_path):
+    """GAP-1: the v17 catalogue MUST flag `states=` view XML as removed-in-v17."""
+    import re
+
+    real_json = Path(__file__).parent.parent / "src/indexer/spec_data/lint_rules_17.0.json"
+    (tmp_path / "lint_rules_17.0.json").write_text(real_json.read_text())
+    rules = parse_lint_rules_for_version(
+        "17.0", odoo_source_root=None, static_data_dir=str(tmp_path),
+    )
+    by_id = {r.rule_id: r for r in rules}
+
+    states_rule = by_id.get("W8169")
+    assert states_rule is not None, "v17 states-removal lint rule (W8169) missing"
+    assert states_rule.file_pattern == "**/*.xml"
+    assert states_rule.code_pattern, "W8169 must carry a code_pattern"
+    sample = """<button name="confirm" states="draft,sent"/>"""
+    assert re.search(states_rule.code_pattern, sample), (
+        "W8169 code_pattern must match a real states= occurrence"
+    )
+    assert "v17" in states_rule.message

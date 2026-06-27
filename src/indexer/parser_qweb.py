@@ -21,6 +21,13 @@ def _parse_template(
 
     inherit_xmlid = qualify_xmlid(elem.get("inherit_id"), module.name)
 
+    # GAP-11 - website QWeb `key=` (canonical public xmlid for multi-website
+    # dispatch / inheritance). GAP-12 - `mode=` ("primary" forks a new primary
+    # view from the inherited one; default "extension" patches in place). Both are
+    # plain attributes on <template>; None when absent.
+    key = (elem.get("key") or "").strip() or None
+    mode = (elem.get("mode") or "").strip() or None
+
     # A3 — best-effort source line from lxml .sourceline (always int on lxml
     # elements; defensive getattr in case of future callers with non-lxml elements).
     src_line: int | None = getattr(elem, "sourceline", None) or None
@@ -33,6 +40,8 @@ def _parse_template(
         content=_lxml_etree.tostring(elem, encoding="unicode"),
         file_path=file_path,
         line=src_line,
+        key=key,
+        mode=mode,
     )
 
 
@@ -102,6 +111,9 @@ def _parse_qweb_record(
         content=_lxml_etree.tostring(record, encoding="unicode") if has_arch else None,
         file_path=file_path,
         line=src_line,
+        # GAP-11 - preserve the website `key` field value (already captured above
+        # for the xmlid). None when this record had no <field name="key">.
+        key=(key or None),
     )
 
 

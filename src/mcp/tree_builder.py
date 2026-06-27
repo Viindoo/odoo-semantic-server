@@ -184,3 +184,44 @@ def render_list_block(rows: list[str], *, prefix: str = "│   ") -> list[str]:
         connector = "└─" if i == last_idx else "├─"
         result.append(f"{prefix}{connector} {row}")
     return result
+
+
+def format_view_conditions(
+    conditions_raw: str | None, connector: str, sub_indent: str
+) -> list[str]:
+    """Render a View node's conditional-visibility blob into tree lines (GAP-1).
+
+    *conditions_raw* is the JSON string stored on ``View.conditions`` by
+    ``writer_neo4j_ui`` - a list of ``{element, attr, expr, field, legacy}`` maps
+    covering both the legacy ``attrs=``/``states=`` form (v8-v16) and the v17+
+    direct ``invisible=``/``required=``/``readonly=``/``column_invisible=`` form.
+
+    Returns the rendered lines (header + one line per condition) using the caller's
+    ``connector`` (the tree ASCII branch glyph) and ``sub_indent``. Returns ``[]``
+    when there are no conditions or the blob is missing/malformed (so the caller
+    appends nothing) - keeps the empty-section-silently-skipped contract
+    (ADR-0023 §1.6).
+    """
+    if not conditions_raw:
+        return []
+    import json
+
+    try:
+        conds = json.loads(conditions_raw)
+    except (ValueError, TypeError):
+        return []
+    if not conds:
+        return []
+
+    lines = [f"{connector} Conditional visibility ({len(conds)}):"]
+    last_c = len(conds) - 1
+    for j, c in enumerate(conds):
+        cconn = "└─" if j == last_c else "├─"
+        fld = c.get("field")
+        target = f"{c.get('element', '?')}[{fld}]" if fld else c.get("element", "?")
+        tag = " (legacy attrs/states)" if c.get("legacy") else ""
+        lines.append(
+            f"{sub_indent}{cconn} {target} {c.get('attr', '?')}="
+            f"{c.get('expr', '')!r}{tag}"
+        )
+    return lines

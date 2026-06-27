@@ -81,9 +81,27 @@ def _base_module_out_of_scope(tx, inherit_xmlid: str, odoo_version: str) -> bool
 
 
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
+    import json
+
     from .writer_neo4j import _profile_union_set
 
     for view in result.views:
+        # GAP-1 - conditional-visibility expressions serialized as a JSON blob on
+        # the View node (no new node type - a property is enough for AI-agent
+        # readout via model_inspect/view-resource). Each entry:
+        # {element, attr, expr, field, legacy}. Empty list -> "[]" (never None,
+        # so the property is always present and queryable). Neo4j has no native
+        # map-list type, hence JSON-string.
+        conditions_json = json.dumps([
+            {
+                "element": c.element,
+                "attr": c.attr,
+                "expr": c.expr,
+                "field": c.field,
+                "legacy": c.legacy,
+            }
+            for c in view.conditions
+        ])
         tx.run(f"""
             MERGE (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             ON CREATE SET v.profile = $profiles
@@ -94,6 +112,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 v.xpaths_exprs = $xpaths_exprs,
                 v.xpaths_positions = $xpaths_positions,
                 v.arch_snippet = $arch_snippet,
+                v.conditions = $conditions,
                 v.unresolved = false
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
@@ -101,6 +120,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
              xpaths_exprs=[x.expr for x in view.xpaths],
              xpaths_positions=[x.position for x in view.xpaths],
              arch_snippet=view.arch_snippet,
+             conditions=conditions_json,
              profiles=profiles)
 
         tx.run(f"""
@@ -173,14 +193,21 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                      inherit_xmlid=view.inherit_xmlid)
 
     for qweb in result.qweb:
+        # GAP-11/GAP-12 - website `key=` + inheriting `mode=` written as plain
+        # properties (None-safe: absent attributes stay null). `coalesce` on MATCH
+        # preserves an already-set value when a later parse of the same template
+        # omits the attribute (defensive against partial re-index ordering).
         tx.run(f"""
             MERGE (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
             ON CREATE SET t.profile = $profiles
             ON MATCH  SET t.profile =
                 {_profile_union_set("t")}
             SET t.module = $module,
+                t.key = coalesce($key, t.key),
+                t.mode = coalesce($mode, t.mode),
                 t.unresolved = false
-        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module, profiles=profiles)
+        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
+             key=qweb.key, mode=qweb.mode, profiles=profiles)
 
         tx.run(f"""
             MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})

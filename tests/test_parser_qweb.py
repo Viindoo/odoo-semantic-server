@@ -295,3 +295,47 @@ def test_parse_module_skips_static_dir(tmp_path):
     )
     result = parse_module(module)
     assert result.qweb == []
+
+
+# --- GAP-11/GAP-12: website key= + inheriting mode= captured ---
+
+
+def test_parse_template_key_and_mode_captured(tmp_path, sale_module):
+    """Website QWeb key= and inheriting mode='primary' must be captured."""
+    f = write_xml(
+        tmp_path,
+        "templates.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <template id="custom_homepage"
+                      inherit_id="website.homepage"
+                      key="website.custom_homepage"
+                      mode="primary">
+                <xpath expr="//div" position="inside"><span>x</span></xpath>
+            </template>
+        </odoo>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    q = result[0]
+    assert q.key == "website.custom_homepage"
+    assert q.mode == "primary"
+
+
+def test_parse_template_key_mode_none_when_absent(tmp_path, sale_module):
+    """A plain template with no key=/mode= leaves both fields None."""
+    f = write_xml(
+        tmp_path,
+        "templates.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <template id="plain_tmpl"><div/></template>
+        </odoo>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert result[0].key is None
+    assert result[0].mode is None

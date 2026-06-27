@@ -5,7 +5,14 @@ from pathlib import Path
 from lxml import etree as _lxml_etree
 
 from ._xmlid import qualify_xmlid
-from .models import LintViolationInfo, ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
+from .models import (
+    LintViolationInfo,
+    ModuleInfo,
+    ViewConditionInfo,
+    ViewInfo,
+    ViewParseResult,
+    XPathInfo,
+)
 from .version_registry import VersionRegistry
 
 _logger = logging.getLogger(__name__)
@@ -122,7 +129,119 @@ def _validate_arch_relaxng(
 _VIEW_TYPES = {
     "form", "tree", "list", "kanban", "search",
     "pivot", "graph", "calendar", "gantt", "activity", "map",
+    # EE-only view types (GAP-9). Without these, an EE arch whose root tag is one
+    # of these would silently default to "form". `gantt`/`activity`/`map` are
+    # already above; `hierarchy`/`cohort` are EE additions (v17+).
+    "hierarchy", "cohort",
 }
+
+# GAP-1 - the four conditional-visibility attributes that, in v17+, carry a
+# direct Python-like expression (no `attrs` dict). `column_invisible` is the
+# list/tree-column variant. We extract each as a ViewConditionInfo(legacy=False).
+# Trivial constant values are kept (e.g. column_invisible="1") because they are
+# meaningful state, but empty strings are skipped.
+_DIRECT_COND_ATTRS = ("invisible", "required", "readonly", "column_invisible")
+
+# GAP-1 - the keys that may appear inside a legacy `attrs="{...}"` dict (v8-v16).
+# Same four semantic targets as the v17+ direct attrs.
+_ATTRS_DICT_KEYS = ("invisible", "required", "readonly", "column_invisible")
+
+
+def _extract_attrs_dict_conditions(
+    element_tag: str, field_name: str | None, attrs_raw: str
+) -> list[ViewConditionInfo]:
+    """Parse a legacy ``attrs="{...}"`` value into ViewConditionInfo entries.
+
+    The value is a Python-dict literal mapping condition keys
+    (``invisible``/``required``/``readonly``/``column_invisible``) to Odoo domains,
+    e.g. ``{'invisible': [('state', '=', 'draft')], 'required': [('x', '!=', False)]}``.
+
+    We parse it with ``ast.literal_eval`` (safe - no code execution). On any parse
+    failure (malformed, contains non-literal nodes), we fall back to emitting ONE
+    entry with ``attr='attrs'`` and the raw string, so the data is never silently
+    dropped - the raw expression is still captured for the AI agent.
+    """
+    import ast
+
+    out: list[ViewConditionInfo] = []
+    try:
+        parsed = ast.literal_eval(attrs_raw)
+    except (ValueError, SyntaxError):
+        parsed = None
+    if isinstance(parsed, dict):
+        for key, domain in parsed.items():
+            if key not in _ATTRS_DICT_KEYS:
+                # Unknown attrs key (e.g. a custom widget key) - still record it
+                # under its own name so nothing is lost.
+                pass
+            out.append(ViewConditionInfo(
+                element=element_tag,
+                attr=f"attrs.{key}",
+                expr=repr(domain),
+                field=field_name,
+                legacy=True,
+            ))
+    else:
+        # Could not parse to a dict - keep the raw string verbatim.
+        out.append(ViewConditionInfo(
+            element=element_tag,
+            attr="attrs",
+            expr=attrs_raw,
+            field=field_name,
+            legacy=True,
+        ))
+    return out
+
+
+def _extract_conditions(arch_el: "_lxml_etree._Element") -> list[ViewConditionInfo]:
+    """Walk an arch tree and extract all conditional-visibility expressions (GAP-1).
+
+    Captures BOTH forms in one pass over every element in the arch:
+      * legacy (v8-v16): ``attrs="{...}"`` (dict of domains) + ``states="a,b"``;
+      * modern (v17+): direct ``invisible=``/``required=``/``readonly=``/
+        ``column_invisible=`` expression attributes.
+
+    Walks the FULL subtree (``arch_el.iter()``) - not just the root element - so
+    that fields nested arbitrarily deep, and fields inserted via ``<xpath>`` in
+    an extension view, are all captured. lxml Comment/PI nodes (non-str ``.tag``)
+    are skipped. Returns entries in document order.
+    """
+    conditions: list[ViewConditionInfo] = []
+    for el in arch_el.iter():
+        tag = el.tag
+        if not isinstance(tag, str):
+            continue  # skip lxml Comment/ProcessingInstruction nodes
+        fname = el.get("name") if tag == "field" else None
+
+        # Legacy attrs="{...}" (v8-v16)
+        attrs_raw = el.get("attrs")
+        if attrs_raw and attrs_raw.strip():
+            conditions.extend(
+                _extract_attrs_dict_conditions(tag, fname, attrs_raw.strip())
+            )
+
+        # Legacy states="draft,sent" (v8-v16)
+        states_raw = el.get("states")
+        if states_raw and states_raw.strip():
+            conditions.append(ViewConditionInfo(
+                element=tag, attr="states", expr=states_raw.strip(),
+                field=fname, legacy=True,
+            ))
+
+        # Modern direct-expression attrs (v17+): invisible/required/readonly/
+        # column_invisible. These also exist pre-v17 on some elements (e.g.
+        # column_invisible is v14+), so capturing them at all versions is correct.
+        for attr in _DIRECT_COND_ATTRS:
+            val = el.get(attr)
+            if val is None:
+                continue
+            val = val.strip()
+            if not val:
+                continue
+            conditions.append(ViewConditionInfo(
+                element=tag, attr=attr, expr=val, field=fname, legacy=False,
+            ))
+    return conditions
 
 
 def _parse_record(
@@ -148,6 +267,7 @@ def _parse_record(
     mode = "primary"
     xpaths: list[XPathInfo] = []
     arch: str | None = None
+    conditions: list[ViewConditionInfo] = []
 
     for child in record:
         tag = child.tag
@@ -186,6 +306,11 @@ def _parse_record(
                 position = xpath_el.get("position", "inside").strip()
                 if expr:
                     xpaths.append(XPathInfo(expr=expr, position=position))
+            # GAP-1 - conditional-visibility extraction over the whole arch
+            # subtree (catches nested + xpath-inserted fields, both legacy
+            # attrs=/states= and v17+ direct invisible=/required=/readonly=/
+            # column_invisible= forms).
+            conditions = _extract_conditions(child)
 
     if not model:
         return None
@@ -217,6 +342,7 @@ def _parse_record(
         file_path=file_path,
         line=src_line,
         arch_snippet=_arch_snippet,
+        conditions=conditions,
     )
 
 

@@ -305,6 +305,52 @@ def test_write_view_xpaths_stored(writer, neo4j_driver):
     assert list(rec["v"]["xpaths_positions"]) == ["after", "attributes"]
 
 
+def test_write_view_conditions_stored(writer, neo4j_driver):
+    """GAP-1: View node must carry the conditions JSON blob (attrs/states + v17+)."""
+    import json as _json
+
+    from src.indexer.models import ViewConditionInfo
+
+    view = ViewInfo(
+        xmlid="sale.view_sale_order_form_cond",
+        name="cond view",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+        conditions=[
+            ViewConditionInfo(
+                element="field", attr="invisible", expr="state == 'draft'",
+                field="commitment_date", legacy=False,
+            ),
+            ViewConditionInfo(
+                element="button", attr="states", expr="draft,sent",
+                field=None, legacy=True,
+            ),
+        ],
+    )
+    result = make_view_parse_result("sale", views=[view])
+    writer.write_view_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (v:View {xmlid: $x, odoo_version: $v}) RETURN v.conditions AS c",
+            x="sale.view_sale_order_form_cond", v=TEST_VERSION,
+        ).single()
+    assert rec is not None
+    decoded = _json.loads(rec["c"])
+    assert len(decoded) == 2
+    inv = next(c for c in decoded if c["attr"] == "invisible")
+    assert inv["field"] == "commitment_date"
+    assert inv["expr"] == "state == 'draft'"
+    assert inv["legacy"] is False
+    states = next(c for c in decoded if c["attr"] == "states")
+    assert states["element"] == "button"
+    assert states["legacy"] is True
+
+
 def test_write_inherits_view_edge(writer, neo4j_driver):
     base_view = ViewInfo(
         xmlid="sale.view_sale_order_form",
