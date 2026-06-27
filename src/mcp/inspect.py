@@ -20,9 +20,10 @@ _MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qw
 _ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern", "report"})
 _PROFILE_METHODS = frozenset({"summary", "repos", "modules", "coverage"})
 
-# H1 (#260): hard server-side cap for profile_inspect(method='modules').
+# H1 (#260): hard server-side cap for profile_inspect(method='modules') AND
+# method='coverage' (issue #121 - the coverage category page reuses this cap).
 # The docstring discloses "default 50, max 50"; the cap MUST be enforced so a
-# caller-supplied limit cannot exceed it (ADR-0023 §3 — "caps never raised").
+# caller-supplied limit cannot exceed it (ADR-0023 §3 - "caps never raised").
 # Mirrors the min(limit, cap) clamp every _list_* path in server.py applies.
 _PROFILE_MODULES_CAP = 50
 
@@ -574,9 +575,11 @@ def _profile_inspect(
     api_key_id:
         Tenant key for RBAC (default: ``'anonymous'``).
     start_index:
-        Pagination cursor for ``method='modules'`` (zero-based SKIP).
+        Pagination cursor (zero-based SKIP) for ``method='modules'`` (over
+        modules) and ``method='coverage'`` (over categories).
     limit:
-        Max rows per page for ``method='modules'`` (default 50).
+        Max rows per page for ``method='modules'`` and ``method='coverage'``
+        (default 50, capped at 50).
 
     Returns
     -------
@@ -1066,13 +1069,13 @@ def _profile_coverage(
         f" odoo_version={odoo_version!r})",
         "├─ Indexed module coverage by category"
         f" (version {odoo_version}, inheritance-inclusive):",
-        "│  in_profile = modules in this profile; indexed_elsewhere = modules of"
+        "│   in_profile = modules in this profile; indexed_elsewhere = modules of"
         " that category visible to you but NOT in this profile (a 'may be"
         " missing' signal).",
     ]
     last_idx = len(page) - 1
     for i, (cat, here, elsewhere) in enumerate(page):
-        conn = "│  └─" if (i == last_idx and page_end >= total_categories) else "│  ├─"
+        conn = "│   └─" if (i == last_idx and page_end >= total_categories) else "│   ├─"
         flag = "  [may be incomplete]" if elsewhere > 0 else ""
         lines.append(
             f"{conn} {cat}: in_profile={here}, indexed_elsewhere={elsewhere}{flag}"
@@ -1080,7 +1083,7 @@ def _profile_coverage(
     if page_end < total_categories:
         next_start = start_index + effective_limit
         lines.append(
-            f"│  └─ ... and {total_categories - page_end} more categories"
+            f"│   └─ ... and {total_categories - page_end} more categories"
             f" (use start_index={next_start} to page)"
         )
 

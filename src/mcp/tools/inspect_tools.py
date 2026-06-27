@@ -397,8 +397,9 @@ def profile_inspect(
             and 'coverage'; optional for 'repos'/'modules' (None = all
             caller-visible profiles).
         repo: Filter by repo URL substring ('repos'/'modules' only).
-        start_index: Zero-based pagination cursor for 'modules'.
-        limit: Rows per page for 'modules' (default 50, max 50).
+        start_index: Zero-based pagination cursor for 'modules' (over modules)
+            and 'coverage' (over categories).
+        limit: Rows per page for 'modules' and 'coverage' (default 50, max 50).
 
     Example:
         profile_inspect(method='summary', name='viindoo_internal_17',
