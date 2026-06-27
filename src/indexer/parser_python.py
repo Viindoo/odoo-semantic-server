@@ -404,7 +404,9 @@ def _detect_module_edition(
     """Detect edition of a module from manifest + name + path heuristics.
 
     Returns one of: 'viindoo' | 'oca' | 'community' | 'custom' | 'enterprise'.
-    Order matters - earlier rules win (Viindoo > Enterprise > OCA > CE path > custom).
+    Order matters - earlier rules win (issue #121 P5 inserts the OPL-1+author tier):
+    Viindoo name-prefix (viin_/to_) > Enterprise (OEEL-1) > Viindoo OPL-1 (author
+    contains Viindoo/TVTMA) > OCA > CE path > custom.
     """
     # Viindoo: name prefix convention (viin_* and to_* are public product names)
     if module_name.startswith(("viin_", "to_")):

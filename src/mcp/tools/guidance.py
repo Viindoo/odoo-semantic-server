@@ -449,9 +449,11 @@ def _check_module_exists(
     confusion = _ee_confusion_live()
 
     # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
-    # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition (it falls to 'custom'),
-    # so it never trips the EE-confusion gate below — the indexed `edition` enum is the
-    # sole signal (ADR-0036; #263 regression fix removed the prior license-based check).
+    # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition: an OPL-1 module
+    # authored by Viindoo/TVTMA maps to 'viindoo' (issue #121 P5), any other OPL-1
+    # module maps to 'custom' - either way NOT 'enterprise', so it never trips the
+    # EE-confusion gate below. The indexed `edition` enum is the sole signal
+    # (ADR-0036; #263 regression fix removed the prior license-based check).
     is_ee_confusion = False
     ee_source = ""  # track source for output messaging
     viindoo_equivalent = None
