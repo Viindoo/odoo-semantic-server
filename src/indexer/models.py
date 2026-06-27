@@ -252,10 +252,13 @@ class ReportInfo:
 
     Covers BOTH declaration forms, normalized to one shape:
 
-      * v14+ ``<record model="ir.actions.report">`` — fields are <field> children:
+      * ``<record model="ir.actions.report(.xml)">`` - fields are <field> children:
         ``name`` (human label), ``model`` (the business model the report runs on),
-        ``report_type`` (``qweb-pdf``/``qweb-html``/``qweb-text``),
+        ``report_type`` (``qweb-pdf``/``qweb-html``/``qweb-text`` for v11+; may be
+        ``pdf``/``sxw``/``webkit``/``controller`` for v8-v10 legacy),
         ``report_name`` (the template QWeb xmlid), ``report_file``, ``paperformat_id``.
+        The record form exists since v8; only the model NAME changed at v11
+        (``ir.actions.report.xml`` for v8-v10, ``ir.actions.report`` for v11+).
       * v8-v13 ``<report .../>`` shorthand tag — attributes: ``id``, ``string``
         (human label -> name), ``model``, ``report_type``, ``name`` (the template
         QWeb xmlid -> report_name), ``file`` (-> report_file), optional
@@ -270,7 +273,9 @@ class ReportInfo:
     xmlid: str                       # "module.report_action_id"
     name: str                        # human-readable report title
     model: str                       # business model, e.g. "sale.order"
-    report_type: str                 # qweb-pdf | qweb-html | qweb-text | ...
+    report_type: str                 # raw report_type, any era: qweb-* for v11+;
+    #                                  may be pdf/sxw/webkit/controller or empty for
+    #                                  v8-v10 legacy
     module: str
     odoo_version: str
     report_name: str | None = None   # template QWeb xmlid, e.g. "sale.report_saleorder"

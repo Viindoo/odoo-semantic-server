@@ -40,13 +40,15 @@ The report-type gate (issue #345 follow-up) adds two more to `version_registry.p
 the boundary is the v11 RML removal + `ir.actions.report.xml` -> `ir.actions.report`
 rename) and `_REPORT_TEMPLATE_WARN_REGISTRY` (v11+) - exposed via the
 `report_default_type()` / `is_qweb_report()` / `report_template_warn_active()`
-helpers. `is_qweb_report` is the single dispatcher predicate the Neo4j UI writer
-calls to decide whether a report binds a QWeb template and whether an unresolved
-edge logs at WARNING or DEBUG. Its boundary (v11) is again feature-specific and
-distinct from every other registry's - exactly why a per-feature registry, not a
-shared era, is correct.
+helpers. The report feature exposes a small aggregate of dispatchers -
+`is_qweb_report` (decide whether a report binds a QWeb template) and
+`report_template_warn_active` (decide whether an unresolved v11+ template edge
+logs at WARNING or DEBUG) - and the Neo4j UI writer calls ONLY these helpers,
+never the registries or the eras directly. Their boundary (v11) is again
+feature-specific and distinct from every other registry's - exactly why a
+per-feature registry, not a shared era, is correct.
 
-The recurring pattern across all six is clear, but it had never been written down as
+The recurring pattern across all eight is clear, but it had never been written down as
 a CONVENTION. Two anti-patterns it must rule out:
 
 1. **A shared global "era" enum.** Tempting to define one `Era = {ERA1: v8-9, ERA2: v10+}`

@@ -113,7 +113,10 @@ _REPORT_TYPE_DEFAULT_REGISTRY: VersionRegistry[str] = VersionRegistry([
 # NOT the indexed template xmlid (eraA survey §5: the v10 mrp qweb-pdf trio
 # report_name != template xmlid; DB ground-truth confirms 0 recoverable binds).
 # So a v8-v10 qweb USES_TEMPLATE miss is an expected gap -> DEBUG, never WARNING.
-# REPORTS_ON WARN is NOT version-gated (it keys on the qweb predicate only).
+# REPORTS_ON WARN keys on `is_qweb_report`, which is ITSELF version-aware via the era
+# default (a v8-v10 report with no report_type defaults to "pdf" -> non-qweb -> DEBUG).
+# This registry is a SEPARATE explicit version gate for the ADDITIONAL v11+
+# USES_TEMPLATE template-warn only.
 _REPORT_TEMPLATE_WARN_REGISTRY: VersionRegistry[bool] = VersionRegistry([
     (11, None, True),  # only v11+ qweb template misses are real coverage gaps
 ])
