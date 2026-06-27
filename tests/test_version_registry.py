@@ -260,3 +260,101 @@ class TestStylesheetEraGate:
 
         assert less_active("unknown") is False
         assert scss_active("unknown") is False
+
+
+# ---------------------------------------------------------------------------
+# Report-type era gate (issue #345): v8-v10 default "pdf" (RML/non-qweb);
+# v11+ default "qweb-pdf" (qweb). is_qweb_report mirrors Odoo _lookup_report.
+# ---------------------------------------------------------------------------
+
+class _FakeReport:
+    """Minimal stand-in for ReportInfo - the predicate reads only two attrs."""
+
+    def __init__(self, report_type="", has_legacy_marker=False):
+        self.report_type = report_type
+        self.has_legacy_marker = has_legacy_marker
+
+
+class TestReportDefaultType:
+    def test_legacy_era_defaults_to_pdf(self):
+        from src.indexer.version_registry import report_default_type
+
+        assert report_default_type("8.0") == "pdf"
+        assert report_default_type("9.0") == "pdf"
+        assert report_default_type("10.0") == "pdf"
+
+    def test_modern_era_defaults_to_qweb_pdf(self):
+        from src.indexer.version_registry import report_default_type
+
+        assert report_default_type("11.0") == "qweb-pdf"
+        assert report_default_type("14.0") == "qweb-pdf"
+        assert report_default_type("19.0") == "qweb-pdf"
+
+    def test_unparseable_defaults_to_modern_qweb(self):
+        # A stray version must not misclassify a real qweb report as legacy.
+        from src.indexer.version_registry import report_default_type
+
+        assert report_default_type("unknown") == "qweb-pdf"
+
+
+class TestIsQwebReport:
+    def test_v8_absent_report_type_is_non_qweb(self):
+        # v8 default is "pdf" (RML) -> NOT a qweb report. Red-before-green: if the
+        # default ever flipped to qweb, this RML report would wrongly bind.
+        from src.indexer.version_registry import is_qweb_report
+
+        assert is_qweb_report(_FakeReport(report_type=""), "8.0") is False
+
+    def test_v10_explicit_rml_marker_is_non_qweb(self):
+        # A v10 report whose XML carries an rml=/parser= marker is non-qweb even if
+        # report_type were somehow "qweb-*". The marker dominates.
+        from src.indexer.version_registry import is_qweb_report
+
+        assert is_qweb_report(
+            _FakeReport(report_type="qweb-pdf", has_legacy_marker=True), "10.0"
+        ) is False
+        # And a plain v10 RML report (no type, no marker) is non-qweb via default.
+        assert is_qweb_report(_FakeReport(report_type=""), "10.0") is False
+
+    def test_v10_explicit_qweb_pdf_is_qweb(self):
+        from src.indexer.version_registry import is_qweb_report
+
+        assert is_qweb_report(_FakeReport(report_type="qweb-pdf"), "10.0") is True
+
+    def test_v11_absent_report_type_is_qweb(self):
+        # v11+ default is "qweb-pdf" -> an absent report_type is a qweb report.
+        from src.indexer.version_registry import is_qweb_report
+
+        assert is_qweb_report(_FakeReport(report_type=""), "11.0") is True
+
+    def test_v16_qweb_pdf_is_qweb(self):
+        from src.indexer.version_registry import is_qweb_report
+
+        assert is_qweb_report(_FakeReport(report_type="qweb-pdf"), "16.0") is True
+        assert is_qweb_report(_FakeReport(report_type="qweb-text"), "16.0") is True
+        assert is_qweb_report(_FakeReport(report_type="qweb-html"), "16.0") is True
+
+    def test_non_qweb_report_types_are_non_qweb(self):
+        # The v8-v10 non-qweb selection values never bind a template.
+        from src.indexer.version_registry import is_qweb_report
+
+        for rt in ("pdf", "sxw", "webkit", "controller"):
+            assert is_qweb_report(_FakeReport(report_type=rt), "10.0") is False
+
+
+class TestReportTemplateWarnActive:
+    def test_v8_to_v10_template_miss_is_not_warned(self):
+        # v8-v10 qweb report_name is a LocalService name, not the indexed template
+        # xmlid (eraA survey §5) -> a miss is expected, must NOT warn.
+        from src.indexer.version_registry import report_template_warn_active
+
+        assert report_template_warn_active("8.0") is False
+        assert report_template_warn_active("9.0") is False
+        assert report_template_warn_active("10.0") is False
+
+    def test_v11_plus_template_miss_warns(self):
+        from src.indexer.version_registry import report_template_warn_active
+
+        assert report_template_warn_active("11.0") is True
+        assert report_template_warn_active("16.0") is True
+        assert report_template_warn_active("19.0") is True

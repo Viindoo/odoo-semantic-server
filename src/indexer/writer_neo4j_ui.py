@@ -36,6 +36,7 @@ from .models import (
     ViewParseResult,
     to_repo_relative,
 )
+from .version_registry import is_qweb_report, report_template_warn_active
 
 # Pinned logger name (see module docstring) — not __name__.
 _logger = logging.getLogger("src.indexer.writer_neo4j")
@@ -329,14 +330,25 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
         """, xmlid=rep.xmlid, ver=rep.odoo_version, module=rep.module,
              profiles=profiles)
 
+        # issue #345 report-type gate: classify the report ONCE. Only a genuine
+        # qweb report (effective report_type starts with "qweb-" AND no legacy
+        # rml/xml/xsl/sxw/parser/auto="False" marker) is expected to bind a
+        # business model + QWeb template; everything else (legacy RML/XSL/SXW/
+        # custom-parser reports of v8-v10) carries a `model` that is a parser/
+        # transient name and a `report_name` that is a LocalService name, so a
+        # miss is an EXPECTED gap, not a coverage bug. The Report node + REPORTS_ON
+        # attempt always happen (never drop the node); the gate only chooses WARN
+        # vs DEBUG on a miss, and whether to attempt the USES_TEMPLATE bind at all.
+        qweb = is_qweb_report(rep, rep.odoo_version)
+
         # REPORTS_ON -> Model. A model name maps to K per-module Model nodes
         # (C1 schema); pick ONE deterministically. Prefer the definition node
         # (is_definition=true), else the highest field_count, with a stable
         # name tiebreak — LIMIT 1 keeps this single-row (no .single() multi-row).
-        # Zero-silent-loss (consistent with USES_TEMPLATE below): RETURN + .single()
-        # so a Report on an unindexed business model is surfaced — DEBUG when the
-        # model's module is out of scope (expected gap), WARNING when it is a real
-        # coverage gap (the model's module IS indexed but the model node is missing).
+        # Always attempt the bind when `model` is present (node never dropped).
+        # On a miss: WARNING only for a genuine qweb report whose module IS indexed;
+        # DEBUG when the report is non-qweb (legacy bogus/parser model) OR the
+        # model's module is out of scope (expected gap).
         if rep.model:
             on_model = tx.run(f"""
                 MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
@@ -350,11 +362,11 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             """, xmlid=rep.xmlid, ver=rep.odoo_version,
                  model_name=rep.model).single()
             if on_model is None:
-                _log = (
-                    _logger.debug
-                    if _base_module_out_of_scope(tx, rep.model, rep.odoo_version)
-                    else _logger.warning
+                _warn = (
+                    qweb
+                    and not _base_module_out_of_scope(tx, rep.model, rep.odoo_version)
                 )
+                _log = _logger.warning if _warn else _logger.debug
                 _log(
                     "unresolved REPORTS_ON: %s -> %s (version %s) — "
                     "business model not indexed",
@@ -362,10 +374,14 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 )
 
         # USES_TEMPLATE -> QWebTmpl. The report_name is the template xmlid.
-        # Single-row ({xmlid, odoo_version} is unique); skip silently when the
-        # template is not (yet) indexed — DEBUG-not-WARNING when the template's
-        # module is out of scope (WI-C helper), keeping reindex zero-noise.
-        if rep.report_name:
+        # Attempt the bind ONLY for a genuine qweb report - a legacy RML/XSL/
+        # custom-parser report_name is a LocalService name, never a template, so
+        # there is nothing to bind. Single-row ({xmlid, odoo_version} is unique).
+        # On a miss: WARNING only for a qweb report at v11+ whose module IS indexed.
+        # v8-v10 qweb reports point report_name at a LocalService name rather than
+        # the indexed template xmlid (eraA survey §5), so their misses are expected
+        # (-> DEBUG), gated by `report_template_warn_active`.
+        if qweb and rep.report_name:
             tmpl = tx.run(f"""
                 MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
                 MATCH (t:QWebTmpl {{xmlid: $tmpl_xmlid, odoo_version: $ver}})
@@ -375,11 +391,13 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             """, xmlid=rep.xmlid, ver=rep.odoo_version,
                  tmpl_xmlid=rep.report_name).single()
             if tmpl is None:
-                _log = (
-                    _logger.debug
-                    if _base_module_out_of_scope(tx, rep.report_name, rep.odoo_version)
-                    else _logger.warning
+                _warn = (
+                    report_template_warn_active(rep.odoo_version)
+                    and not _base_module_out_of_scope(
+                        tx, rep.report_name, rep.odoo_version
+                    )
                 )
+                _log = _logger.warning if _warn else _logger.debug
                 _log(
                     "unresolved USES_TEMPLATE: %s -> %s (version %s) — "
                     "report template not indexed",

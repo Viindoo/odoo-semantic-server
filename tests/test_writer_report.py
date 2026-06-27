@@ -56,11 +56,14 @@ def _model_result(module: str, model_name: str) -> ParseResult:
     ])
 
 
-def _report(xmlid: str, model: str, module: str, report_name: str | None) -> ReportInfo:
+def _report(
+    xmlid: str, model: str, module: str, report_name: str | None,
+    report_type: str = "qweb-pdf", has_legacy_marker: bool = False,
+) -> ReportInfo:
     return ReportInfo(
         xmlid=xmlid, name="Quotation / Order", model=model,
-        report_type="qweb-pdf", module=module, odoo_version=TEST_VERSION,
-        report_name=report_name,
+        report_type=report_type, module=module, odoo_version=TEST_VERSION,
+        report_name=report_name, has_legacy_marker=has_legacy_marker,
     )
 
 
@@ -184,6 +187,49 @@ def test_reports_on_out_of_scope_model_is_debug_not_warning(writer, clean_neo4j,
         if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
     ]
     assert any("account.move" in m for m in debugs), debugs
+
+
+def test_reports_on_legacy_report_indexed_module_is_debug_not_warning(
+    writer, clean_neo4j, caplog
+):
+    """issue #345 gate: a NON-qweb (legacy RML/XSL) report on a FULLY INDEXED
+    module whose target Model node is absent must log the unresolved REPORTS_ON
+    miss at DEBUG, not WARNING.
+
+    This is the core behavior change of the report-type gate. It is the exact
+    mirror of test_reports_on_unresolved_indexed_module_warns (module 'sale' IS
+    indexed with a profile, 'sale.order' Model node is NOT written), differing
+    only in has_legacy_marker=True: is_qweb_report -> False so the otherwise-WARN
+    miss is downgraded to DEBUG. A legacy report's `model` is a parser/transient
+    name, so the miss is an EXPECTED gap, never a coverage bug.
+
+    Red-before-green: drop has_legacy_marker from the gate (treat every report as
+    qweb) and this miss WARNs instead, failing the no-WARNING assertion.
+    """
+    import logging
+
+    # Module 'sale' exists (carries a profile) but the model 'sale.order' is absent.
+    writer.write_results([_model_result("sale", "sale.other")], profiles=["test_repo"])
+    res = ViewParseResult(module=_mod("sale"), reports=[
+        # Legacy RML report: non-qweb report_type AND a legacy file marker.
+        _report(
+            "sale.action_report_saleorder", "sale.order", "sale", None,
+            report_type="pdf", has_legacy_marker=True,
+        ),
+    ])
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "REPORTS_ON" in r.getMessage()
+    ]
+    assert not warnings, warnings
+    debugs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
+    ]
+    assert any("sale.order" in m for m in debugs), debugs
 
 
 def test_report_removed_by_module_scoped_delete(writer, clean_neo4j):

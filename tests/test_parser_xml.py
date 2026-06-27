@@ -795,6 +795,143 @@ def test_report_record_without_model_skipped(tmp_path, sale_module):
     assert parse_reports_file(f, sale_module) == []
 
 
+# ---------------------------------------------------------------------------
+# issue #345 report-type gate - bug 1 (accept ir.actions.report.xml) +
+# bug 2 (capture legacy rml=/xml=/xsl=/sxw=/parser=/auto="False" markers).
+# ---------------------------------------------------------------------------
+
+
+def _v10_module(tmp_path) -> ModuleInfo:
+    return ModuleInfo(
+        name="mrp", odoo_version="10.0", repo="odoo_10.0",
+        path=str(tmp_path), depends=["base"], version_raw="10.0.1.0.0",
+    )
+
+
+def test_bug1_v10_record_form_report_xml_model_is_parsed(tmp_path):
+    """A v10 <record model="ir.actions.report.xml"> is now parsed into a ReportInfo.
+
+    Previously the record parser hard-coded `model != "ir.actions.report"` and
+    dropped every v8-v10 record-form report. Red-before-green: restore that single
+    equality check and this report vanishes (len == 0).
+    """
+    mod = _v10_module(tmp_path)
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="webkit_demo_report" model="ir.actions.report.xml">
+                <field name="name">Report on reports</field>
+                <field name="model">ir.actions.report.xml</field>
+                <field name="report_type">webkit</field>
+            </record>
+        </odoo>
+    """)
+    reports = parse_reports_file(f, mod)
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep.xmlid == "mrp.webkit_demo_report"
+    assert rep.report_type == "webkit"
+
+
+def test_bug2_shorthand_rml_marker_is_non_qweb(tmp_path):
+    """A v8 RML shorthand (rml=, no report_type) is captured AND flagged non-qweb.
+
+    The legacy marker drives the writer's WARN-vs-DEBUG gate. Red-before-green:
+    without capturing rml=, has_legacy_marker stays False and the gate would treat
+    this RML report as qweb (re-introducing the false-positive WARNING #345 fixes).
+    """
+    from src.indexer.version_registry import is_qweb_report
+
+    mod = ModuleInfo(
+        name="mrp_operations", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0.0",
+    )
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <openerp>
+            <data>
+                <report id="report_wc_barcode" string="Work Centers Barcode"
+                        model="mrp.workcenter" name="mrp.wc.barcode"
+                        rml="mrp_operations/report/mrp_wc_barcode.rml" header="False"/>
+            </data>
+        </openerp>
+    """)
+    reports = parse_reports_file(f, mod)
+    assert len(reports) == 1
+    rep = reports[0]
+    assert rep.has_legacy_marker is True
+    assert is_qweb_report(rep, rep.odoo_version) is False
+
+
+def test_bug2_shorthand_auto_false_is_non_qweb(tmp_path):
+    """A v8 custom-parser shorthand (auto="False") is flagged non-qweb."""
+    from src.indexer.version_registry import is_qweb_report
+
+    mod = ModuleInfo(
+        name="account", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0.0",
+    )
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <openerp>
+            <data>
+                <report auto="False" id="account_intracom" menu="False"
+                        model="account.move.line" name="account.intracom"
+                        string="IntraCom"/>
+            </data>
+        </openerp>
+    """)
+    rep = parse_reports_file(f, mod)[0]
+    assert rep.has_legacy_marker is True
+    assert is_qweb_report(rep, rep.odoo_version) is False
+
+
+def test_bug2_qweb_shorthand_has_no_legacy_marker(tmp_path):
+    """A genuine qweb shorthand (report_type="qweb-pdf", no rml/xsl) is NOT flagged.
+
+    Guards the gate from over-classifying: a real qweb report must still bind.
+    """
+    from src.indexer.version_registry import is_qweb_report
+
+    mod = ModuleInfo(
+        name="sale", odoo_version="8.0", repo="odoo_8.0",
+        path=str(tmp_path), depends=["base"], version_raw="8.0.1.0.0",
+    )
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <openerp>
+            <data>
+                <report id="report_sale_order" string="Quotation / Order"
+                        model="sale.order" report_type="qweb-pdf"
+                        file="sale.report_saleorder" name="sale.report_saleorder"/>
+            </data>
+        </openerp>
+    """)
+    rep = parse_reports_file(f, mod)[0]
+    assert rep.has_legacy_marker is False
+    assert is_qweb_report(rep, rep.odoo_version) is True
+
+
+def test_bug2_record_form_report_rml_field_is_non_qweb(tmp_path):
+    """A v10 record-form report with a <field name="report_rml"> is flagged non-qweb."""
+    from src.indexer.version_registry import is_qweb_report
+
+    mod = _v10_module(tmp_path)
+    f = write_xml(tmp_path, "report.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="rep_rml" model="ir.actions.report.xml">
+                <field name="name">Legacy RML</field>
+                <field name="model">mrp.workcenter</field>
+                <field name="report_rml">mrp/report/wc.rml</field>
+            </record>
+        </odoo>
+    """)
+    rep = parse_reports_file(f, mod)[0]
+    assert rep.has_legacy_marker is True
+    assert is_qweb_report(rep, rep.odoo_version) is False
+
+
 def test_parse_module_collects_reports(tmp_path, sale_module):
     """parse_module surfaces reports on the ViewParseResult.reports list."""
     write_xml(tmp_path, "report.xml", """
