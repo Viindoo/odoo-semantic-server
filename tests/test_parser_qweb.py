@@ -143,6 +143,135 @@ def test_parse_module_scans_xml_files(tmp_path):
     assert any(q.xmlid == "sale.portal_tmpl" for q in result.qweb)
 
 
+def test_parse_qweb_view_record_odoo_root(tmp_path, sale_module):
+    """A1: <record model="ir.ui.view" type=qweb> with a `key` xmlid + arch body
+    must be indexed as a QWebTmpl (keyed on `key`), not dropped.
+
+    This is the v8-v14 website / test_website declaration form that has no
+    <field name="model"> child, so parser_xml drops it; parser_qweb must catch it.
+    """
+    f = write_xml(
+        tmp_path,
+        "website_data.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="aboutus" model="ir.ui.view">
+                <field name="name">About us</field>
+                <field name="type">qweb</field>
+                <field name="key">website.aboutus</field>
+                <field name="arch" type="xml">
+                    <t name="About us" t-name="website.aboutus"><div>About</div></t>
+                </field>
+            </record>
+        </odoo>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    q = result[0]
+    # Keyed on the `key` field (the public xmlid extenders inherit by), not the id.
+    assert q.xmlid == "website.aboutus"
+    assert q.module == "sale"
+    assert q.odoo_version == "17.0"
+    assert q.inherit_xmlid is None
+    assert q.content is not None  # arch body captured for embedding
+
+
+def test_parse_qweb_view_record_openerp_root(tmp_path, sale_module):
+    """A1: same as above but under the legacy <openerp> root (v8-v9)."""
+    f = write_xml(
+        tmp_path,
+        "website_data.xml",
+        """
+        <?xml version="1.0"?>
+        <openerp>
+            <data>
+                <record id="contactus" model="ir.ui.view">
+                    <field name="name">Contact us</field>
+                    <field name="type">qweb</field>
+                    <field name="key">website.contactus</field>
+                    <field name="arch" type="xml">
+                        <t t-name="website.contactus"><div>Contact</div></t>
+                    </field>
+                </record>
+            </data>
+        </openerp>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].xmlid == "website.contactus"
+
+
+def test_parse_qweb_view_record_with_inherit(tmp_path, sale_module):
+    """A1: a qweb-type ir.ui.view record carrying inherit_id resolves its parent
+    via inherit_xmlid (the same shape <template inherit_id=...> produces)."""
+    f = write_xml(
+        tmp_path,
+        "data.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="test_view" model="ir.ui.view">
+                <field name="type">qweb</field>
+                <field name="key">test_website.test_view</field>
+                <field name="inherit_id" ref="website.aboutus"/>
+                <field name="arch" type="xml">
+                    <xpath expr="//div" position="inside"><span/></xpath>
+                </field>
+            </record>
+        </odoo>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    q = result[0]
+    assert q.xmlid == "test_website.test_view"
+    assert q.inherit_xmlid == "website.aboutus"
+
+
+def test_parse_qweb_view_record_falls_back_to_id(tmp_path, sale_module):
+    """A1: when the qweb record has no `key`, fall back to the record id as xmlid."""
+    f = write_xml(
+        tmp_path,
+        "data.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="snippet_x" model="ir.ui.view">
+                <field name="type">qweb</field>
+                <field name="arch" type="xml"><t t-name="x"/></field>
+            </record>
+        </odoo>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert len(result) == 1
+    assert result[0].xmlid == "sale.snippet_x"
+
+
+def test_parse_non_qweb_view_record_ignored_by_qweb_parser(tmp_path, sale_module):
+    """A1 guard: a standard form-view record (type!=qweb) must NOT be emitted as a
+    QWebTmpl here — parser_xml owns those. Prevents double-indexing."""
+    f = write_xml(
+        tmp_path,
+        "views.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_form" model="ir.ui.view">
+                <field name="name">form</field>
+                <field name="model">sale.order</field>
+                <field name="arch" type="xml"><form/></field>
+            </record>
+        </odoo>
+    """,
+    )
+    result = parse_file(f, sale_module)
+    assert result == []
+
+
 def test_parse_module_skips_static_dir(tmp_path):
     module = ModuleInfo(
         name="sale",

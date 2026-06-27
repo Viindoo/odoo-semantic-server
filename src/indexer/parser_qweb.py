@@ -36,11 +36,86 @@ def _parse_template(
     )
 
 
+def _parse_qweb_record(
+    record: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
+) -> QWebInfo | None:
+    """Extract QWebInfo from a ``<record model="ir.ui.view">`` QWeb-type view.
+
+    In Odoo v8-v14 (and test_website through v19), website-style QWeb templates
+    are declared as ``ir.ui.view`` records carrying ``<field name="type">qweb</field>``
+    plus a ``<field name="key">module.name</field>`` (the public xmlid) and a
+    ``<field name="arch">`` body — NOT as a top-level ``<template>`` element and
+    WITHOUT a ``<field name="model">`` child. ``parser_xml._parse_record`` drops
+    these (no model field), and they are never matched by ``root.iter("template")``.
+
+    This routes such records to the SAME QWebTmpl shape that ``_parse_template``
+    emits, so the EXTENDS_TMPL resolver in ``writer_neo4j_ui`` can find them as a
+    base. The QWebTmpl xmlid is keyed on the ``key`` field (the canonical public
+    xmlid extenders inherit by), falling back to the record ``id`` when ``key`` is
+    absent. ``inherit_id`` (if present) becomes ``inherit_xmlid``.
+
+    Returns None when the record is not an ``ir.ui.view`` of type ``qweb``, or
+    when no usable xmlid (key/id) can be derived.
+    """
+    if record.get("model") != "ir.ui.view":
+        return None
+
+    view_type = ""
+    key = ""
+    inherit_ref = ""
+    has_arch = False
+    for child in record:
+        tag = child.tag
+        if not isinstance(tag, str) or tag != "field":
+            continue
+        fname = child.get("name", "")
+        if fname == "type":
+            view_type = (child.text or "").strip()
+        elif fname == "key":
+            key = (child.text or "").strip()
+        elif fname == "inherit_id":
+            inherit_ref = child.get("ref", "").strip()
+        elif fname == "arch":
+            has_arch = True
+
+    if view_type != "qweb":
+        return None
+
+    # Prefer the public `key` (what extenders inherit by); fall back to record id.
+    raw_xmlid = key or record.get("id", "").strip()
+    if not raw_xmlid:
+        return None
+
+    inherit_xmlid = (
+        qualify_xmlid(inherit_ref, module.name) if inherit_ref else None
+    )
+
+    src_line: int | None = getattr(record, "sourceline", None) or None
+
+    return QWebInfo(
+        # `key` is already a fully-qualified "module.name"; qualify_xmlid is a
+        # no-op on an already-dotted id, so this is safe for both key and bare id.
+        xmlid=qualify_xmlid(raw_xmlid, module.name),
+        module=module.name,
+        odoo_version=module.odoo_version,
+        inherit_xmlid=inherit_xmlid,
+        content=_lxml_etree.tostring(record, encoding="unicode") if has_arch else None,
+        file_path=file_path,
+        line=src_line,
+    )
+
+
 def parse_file(filepath: str, module: ModuleInfo) -> list[QWebInfo]:
-    """Parse a single XML file and extract all <template> elements.
+    """Parse a single XML file and extract all QWeb templates.
+
+    Two declaration syntaxes are recognised, both yielding QWebInfo:
+      1. top-level ``<template id="...">`` elements (the modern v8+ form);
+      2. ``<record model="ir.ui.view">`` records carrying
+         ``<field name="type">qweb</field>`` (the v8-v14 website / test_website
+         form that has a ``key`` xmlid + ``arch`` body but no ``model`` field —
+         see ``_parse_qweb_record``).
 
     Uses lxml.etree.parse() so that elements carry .sourceline for A3 provenance.
-    Returns a list of QWebInfo objects found in the file.
     Returns empty list if XML is malformed.
     """
     try:
@@ -52,6 +127,10 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[QWebInfo]:
     qweb = []
     for tmpl in root.iter("template"):
         q = _parse_template(tmpl, module, file_path=filepath)
+        if q:
+            qweb.append(q)
+    for record in root.iter("record"):
+        q = _parse_qweb_record(record, module, file_path=filepath)
         if q:
             qweb.append(q)
     return qweb

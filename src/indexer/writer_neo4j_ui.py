@@ -38,6 +38,47 @@ from .models import (
 _logger = logging.getLogger("src.indexer.writer_neo4j")
 
 
+def _base_module_out_of_scope(tx, inherit_xmlid: str, odoo_version: str) -> bool:
+    """Return True when the base xmlid's module is NOT indexed in any profile.
+
+    Distinguishes a genuine coverage gap from an expected-by-design unresolvable
+    reference (the category-B fix in the zero-warning wave):
+
+    - Expected gap (-> True -> caller logs DEBUG): the base module exists in the
+      graph only as a profile-less stub created by a DEPENDS_ON edge, or does not
+      exist at all. This happens for OEEL-1 license-skipped modules (e.g.
+      ``certificate``), modules absent from the target version (upgrade gap), and
+      Enterprise modules not cloned into any indexed profile. The unresolved
+      reference is correct behaviour, so a WARNING would be noise.
+
+    - Genuine coverage gap (-> False -> caller logs WARNING): the base module IS
+      indexed (has a non-empty profile) but the specific view/template it should
+      contain is missing — a real indexer/parser gap worth surfacing.
+
+    The base module name is the segment before the first ``.`` in the xmlid
+    (e.g. ``certificate.foo`` -> ``certificate``). A module row with
+    ``profile IS NULL`` or an empty profile list means it was never indexed under
+    an owning profile. A missing module row also counts as out-of-scope.
+
+    Read-only single-row check on the current transaction state — cheap, no
+    placeholder side effects.
+    """
+    base_module = inherit_xmlid.split(".", 1)[0]
+    if not base_module:
+        return False
+    rec = tx.run(
+        """
+        MATCH (m:Module {name: $base_module, odoo_version: $ver})
+        RETURN m.profile IS NULL OR size(m.profile) = 0 AS out_of_scope
+        """,
+        base_module=base_module, ver=odoo_version,
+    ).single()
+    # No module row at all -> never indexed -> out of scope (expected gap).
+    if rec is None:
+        return True
+    return bool(rec["out_of_scope"])
+
+
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
     from .writer_neo4j import _profile_union_set
 
@@ -90,7 +131,17 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             """, xmlid=view.xmlid, ver=view.odoo_version,
                  inherit_xmlid=view.inherit_xmlid).single()
             if rec is None:
-                _logger.warning(
+                # Category-B downgrade (see _base_module_out_of_scope): when the
+                # base module is not indexed in any profile (license-skip, absent
+                # version, or Enterprise-not-indexed) the gap is EXPECTED — log at
+                # DEBUG. Keep WARNING only when the base module IS indexed but the
+                # specific view is missing (a genuine coverage gap).
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, view.inherit_xmlid, view.odoo_version)
+                    else _logger.warning
+                )
+                _log(
                     "unresolved INHERITS_VIEW: %s → %s (version %s) — parent view not indexed",
                     view.xmlid, view.inherit_xmlid, view.odoo_version,
                 )
@@ -141,17 +192,31 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
              profiles=profiles)
 
         if qweb.inherit_xmlid:
+            # A3 cross-type EXTENDS_TMPL: a <template inherit_id="..."> may target a
+            # base that was indexed as a plain :View node (a standard ir.ui.view
+            # form/list record), not a :QWebTmpl — e.g.
+            # viin_brand_account.account_tour_upload_bill extending the
+            # account.account_tour_upload_bill form view. Match either label.
+            # xmlid+odoo_version is unique across both labels, so this stays a
+            # single-row lookup (.single() is safe — no multi-row risk).
             rec = tx.run("""
                 MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-                MATCH (base:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
-                WHERE NOT coalesce(base.unresolved, false)
+                MATCH (base {xmlid: $inherit_xmlid, odoo_version: $ver})
+                WHERE (base:QWebTmpl OR base:View)
+                  AND NOT coalesce(base.unresolved, false)
                 MERGE (ext)-[r:EXTENDS_TMPL]->(base)
                 ON MATCH SET r.unresolved = false
                 RETURN 1 AS ok
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                  inherit_xmlid=qweb.inherit_xmlid).single()
             if rec is None:
-                _logger.warning(
+                # Category-B downgrade — same rationale as INHERITS_VIEW above.
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, qweb.inherit_xmlid, qweb.odoo_version)
+                    else _logger.warning
+                )
+                _log(
                     "unresolved EXTENDS_TMPL: %s → %s (version %s) — base template not indexed",
                     qweb.xmlid, qweb.inherit_xmlid, qweb.odoo_version,
                 )
