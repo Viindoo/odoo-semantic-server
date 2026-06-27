@@ -2326,8 +2326,8 @@ def _render_inherited_field(
     if _eff_ro is not None:
         lines.append(f"├─ Readonly: {'Yes' if _eff_ro else 'No'}")
         lines.append(
-            "│   └─ note: readonly reflects the Python field definition only "
-            "(view-level/states/attrs readonly not captured)"
+            "│   └─ note: Python definition only; view-level conditional "
+            "readonly/invisible/required is in the view detail (Conditional visibility)"
         )
     # Provenance branch - distinguish INHERITS mixin vs _inherits delegation.
     # GAP-5: delegation gives the child the owner's FIELDS ONLY, stored in the
@@ -2540,8 +2540,8 @@ def _resolve_field(
     if _eff_ro is not None:
         lines.append(f"├─ Readonly: {'Yes' if _eff_ro else 'No'}")
         lines.append(
-            "│   └─ note: readonly reflects the Python field definition only "
-            "(view-level/states/attrs readonly not captured)"
+            "│   └─ note: Python definition only; view-level conditional "
+            "readonly/invisible/required is in the view detail (Conditional visibility)"
         )
     lines.append("├─ Declared in:")
     last_idx = len(records) - 1
@@ -2829,17 +2829,11 @@ def _resolve_view(
     *,
     _reraise_timeout: bool = False,
 ) -> str:
-    # The three view queries are routed through `_single_bounded` / `_data_bounded`
-    # so a tx-timeout on a dense view-inheritance chain becomes OrmQueryTimeout
-    # (clean English, no Cypher leaked) instead of escaping as a raw ClientError.
-    # There is no internal catch here: the raise propagates out so the owning
-    # entity_lookup handler (now @offload_neo4j) records the metric + returns the
-    # clean string (tool path), or the view resource handler records + returns it
-    # UNCACHED (resource path). The `_reraise_timeout` parameter exists for
-    # signature parity with _resolve_model/_resolve_field/_resolve_method (the
-    # resource render passes it); because nothing here converts the timeout to a
-    # string, both paths already propagate identically.
-    _ = _reraise_timeout  # parity-only flag; the timeout always propagates here.
+    # The three view queries are routed through `_single_bounded`/`_data_bounded`
+    # so a tx-timeout becomes OrmQueryTimeout (clean English, no Cypher leaked).
+    # No internal catch: the raise propagates to the owning entity_lookup handler
+    # (@offload_neo4j) / view resource handler. `_reraise_timeout` is parity-only.
+    _ = _reraise_timeout  # parity-only; the timeout always propagates here.
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
 
@@ -2918,6 +2912,9 @@ def _resolve_view(
         own_positions = list(v_props.get("xpaths_positions") or [])
         if own_exprs:
             branches.append(("xpaths", list(zip(own_exprs, own_positions))))
+    _cond_raw = v_props.get("conditions")  # GAP-1 visibility blob (see render below)
+    if _cond_raw and _cond_raw not in ("[]", ""):
+        branches.append(("conditions", _cond_raw))
     if extensions:
         branches.append(("extensions", extensions))
     # Wave 5: append Next-step footer per ADR-0023 §4. Suggest model_inspect views
@@ -2959,6 +2956,9 @@ def _resolve_view(
             for j, (expr, pos) in enumerate(pairs):
                 xconn = "└─" if j == last_x else "├─"
                 lines.append(f"{sub_indent}{xconn} {expr} [{pos}]")
+        elif kind == "conditions":
+            from src.mcp.tree_builder import format_view_conditions
+            lines.extend(format_view_conditions(payload, connector, sub_indent))
         elif kind == "extensions":
             exts = payload  # type: ignore[assignment]
             lines.append(f"{connector} Extended by ({len(exts)} modules):")

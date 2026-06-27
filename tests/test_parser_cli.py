@@ -50,6 +50,35 @@ def test_parse_cli_command_class_subclass_of_command():
     assert "Run Odoo" in (cmd.description or "")
 
 
+def test_parse_cli_explicit_name_plain_assignment_wins():
+    """`name = 'upgrade_code'` overrides the lowercased class name."""
+    src = (
+        "class UpgradeCode(Command):\n"
+        "    name = 'upgrade_code'\n"
+        "    def run(self, args):\n"
+        "        pass\n"
+    )
+    cmds = _parse_cli_module(src, "18.0", "/odoo/cli/upgrade_code.py")
+    assert [c.name for c in cmds] == ["upgrade_code"]
+
+
+def test_parse_cli_explicit_name_annotated_assignment_wins():
+    """parser LOW-4: `name: str = 'db'` (ast.AnnAssign) must also win over the
+    lowercased class name — previously only ast.Assign was handled, so the
+    annotated form fell through to a mangled class-name fallback."""
+    src = (
+        "class DatabaseManager(Command):\n"
+        "    name: str = 'db'\n"
+        "    def run(self, args):\n"
+        "        pass\n"
+    )
+    cmds = _parse_cli_module(src, "18.0", "/odoo/cli/db.py")
+    assert [c.name for c in cmds] == ["db"], (
+        "annotated `name: str = 'db'` must be picked up, not the lowercased "
+        "class name 'databasemanager'"
+    )
+
+
 def test_parse_cli_skips_non_command_classes():
     """Only Command subclasses become CLICommandInfo."""
     src = (
@@ -354,3 +383,37 @@ def test_parse_cli_flags_smoke_real_v9_picks_up_config_flag():
     flags = parse_cli_flags(ODOO9_SRC, "9.0")
     flag_names = {f.flag_name for f in flags}
     assert "--config" in flag_names, f"expected --config in v9 flags, got {flag_names}"
+
+
+# --- WI-G: prefer `name = '...'` class attribute over lowercased classname ---
+# (osm-audit-manifest GAP-2)
+
+def test_parse_cli_prefers_name_attribute_over_classname():
+    """`class UpgradeCode(Command): name='upgrade_code'` → name is 'upgrade_code'.
+
+    Behaviour contract: the explicit class attribute is the authoritative CLI
+    command name; lowercasing the class name would mangle it to 'upgradecode'.
+    """
+    src = (
+        "from . import Command\n"
+        "class UpgradeCode(Command):\n"
+        "    name = 'upgrade_code'\n"
+        "    def run(self, args):\n"
+        "        pass\n"
+    )
+    cmds = _parse_cli_module(src, "18.0", "/odoo/cli/upgrade_code.py")
+    assert len(cmds) == 1
+    assert cmds[0].name == "upgrade_code"
+
+
+def test_parse_cli_falls_back_to_lower_classname_without_name_attr():
+    """No `name =` attribute → fall back to lowercased class name (convention)."""
+    src = (
+        "from . import Command\n"
+        "class Server(Command):\n"
+        "    def run(self, args):\n"
+        "        pass\n"
+    )
+    cmds = _parse_cli_module(src, "17.0", "/odoo/cli/server.py")
+    assert len(cmds) == 1
+    assert cmds[0].name == "server"

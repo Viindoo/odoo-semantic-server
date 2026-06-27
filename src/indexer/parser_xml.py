@@ -5,7 +5,15 @@ from pathlib import Path
 from lxml import etree as _lxml_etree
 
 from ._xmlid import qualify_xmlid
-from .models import LintViolationInfo, ModuleInfo, ViewInfo, ViewParseResult, XPathInfo
+from .models import (
+    LintViolationInfo,
+    ModuleInfo,
+    ReportInfo,
+    ViewConditionInfo,
+    ViewInfo,
+    ViewParseResult,
+    XPathInfo,
+)
 from .version_registry import VersionRegistry
 
 _logger = logging.getLogger(__name__)
@@ -122,7 +130,125 @@ def _validate_arch_relaxng(
 _VIEW_TYPES = {
     "form", "tree", "list", "kanban", "search",
     "pivot", "graph", "calendar", "gantt", "activity", "map",
+    # EE-only view types (GAP-9). Without these, an EE arch whose root tag is one
+    # of these would silently default to "form". `gantt`/`activity`/`map` are
+    # already above; `hierarchy`/`cohort` are EE additions (v17+).
+    "hierarchy", "cohort",
 }
+
+# GAP-1 - the four conditional-visibility attributes that, in v17+, carry a
+# direct Python-like expression (no `attrs` dict). `column_invisible` is the
+# list/tree-column variant. We extract each as a ViewConditionInfo(legacy=False).
+# Trivial constant values are kept (e.g. column_invisible="1") because they are
+# meaningful state, but empty strings are skipped.
+_DIRECT_COND_ATTRS = ("invisible", "required", "readonly", "column_invisible")
+
+
+def _extract_attrs_dict_conditions(
+    element_tag: str, field_name: str | None, attrs_raw: str
+) -> list[ViewConditionInfo]:
+    """Parse a legacy ``attrs="{...}"`` value into ViewConditionInfo entries.
+
+    The value is a Python-dict literal mapping condition keys
+    (``invisible``/``required``/``readonly``/``column_invisible``) to Odoo domains,
+    e.g. ``{'invisible': [('state', '=', 'draft')], 'required': [('x', '!=', False)]}``.
+
+    We parse it with ``ast.literal_eval`` (safe - no code execution). On any parse
+    failure (malformed, contains non-literal nodes), we fall back to emitting ONE
+    entry with ``attr='attrs'`` and the raw string, so the data is never silently
+    dropped - the raw expression is still captured for the AI agent.
+    """
+    import ast
+
+    out: list[ViewConditionInfo] = []
+    try:
+        parsed = ast.literal_eval(attrs_raw)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        # parser LOW-3: literal_eval can raise more than ValueError/SyntaxError —
+        # TypeError on some malformed nodes, MemoryError/RecursionError on
+        # pathological input. Catch them all so a single bad attrs value can never
+        # abort a full re-index; we fall back to the graceful single raw entry.
+        parsed = None
+    if isinstance(parsed, dict):
+        for key, domain in parsed.items():
+            # Every key is recorded under its own attrs.<key> name (the well-known
+            # invisible/required/readonly/column_invisible AND any custom widget
+            # key), so nothing is ever silently dropped.
+            out.append(ViewConditionInfo(
+                element=element_tag,
+                attr=f"attrs.{key}",
+                expr=repr(domain),
+                field=field_name,
+                legacy=True,
+            ))
+    else:
+        # Could not parse to a dict - keep the raw string verbatim.
+        out.append(ViewConditionInfo(
+            element=element_tag,
+            attr="attrs",
+            expr=attrs_raw,
+            field=field_name,
+            legacy=True,
+        ))
+    return out
+
+
+def _extract_conditions(arch_el: "_lxml_etree._Element") -> list[ViewConditionInfo]:
+    """Walk an arch tree and extract all conditional-visibility expressions (GAP-1).
+
+    Captures BOTH forms in one pass over every element in the arch:
+      * legacy (v8-v16): ``attrs="{...}"`` (dict of domains) + ``states="a,b"``;
+      * modern (v17+): direct ``invisible=``/``required=``/``readonly=``/
+        ``column_invisible=`` expression attributes.
+
+    Walks the FULL subtree (``arch_el.iter()``) - not just the root element - so
+    that fields nested arbitrarily deep, and fields inserted via ``<xpath>`` in
+    an extension view, are all captured. lxml Comment/PI nodes (non-str ``.tag``)
+    are skipped. Returns entries in document order.
+    """
+    conditions: list[ViewConditionInfo] = []
+    for el in arch_el.iter():
+        tag = el.tag
+        if not isinstance(tag, str):
+            continue  # skip lxml Comment/ProcessingInstruction nodes
+        fname = el.get("name") if tag == "field" else None
+
+        # Legacy attrs="{...}" (v8-v16)
+        attrs_raw = el.get("attrs")
+        if attrs_raw and attrs_raw.strip():
+            conditions.extend(
+                _extract_attrs_dict_conditions(tag, fname, attrs_raw.strip())
+            )
+
+        # Legacy states="draft,sent" (v8-v16)
+        states_raw = el.get("states")
+        if states_raw and states_raw.strip():
+            conditions.append(ViewConditionInfo(
+                element=tag, attr="states", expr=states_raw.strip(),
+                field=fname, legacy=True,
+            ))
+
+        # Modern direct-expression attrs (v17+): invisible/required/readonly/
+        # column_invisible. These also exist pre-v17 on some elements (e.g.
+        # column_invisible is v14+), so capturing them at all versions is correct.
+        for attr in _DIRECT_COND_ATTRS:
+            val = el.get(attr)
+            if val is None:
+                continue
+            val = val.strip()
+            if not val:
+                continue
+            # parser LOW-2: in v8-v16 a direct attr can carry a *domain* literal
+            # (pre-attrs style, e.g. invisible="[('count','=',1)]"), not a v17
+            # Python expression. A leading '[' marks that legacy domain form, so
+            # label it legacy=True; a bare expression (invisible="1", "True",
+            # "state == 'draft'") is the modern v17+ form (legacy=False).
+            is_legacy_domain = val.startswith("[")
+            conditions.append(ViewConditionInfo(
+                element=tag, attr=attr, expr=val, field=fname,
+                legacy=is_legacy_domain,
+            ))
+    return conditions
 
 
 def _parse_record(
@@ -143,11 +269,13 @@ def _parse_record(
 
     name = ""
     model = ""
+    type_field = ""
     inherit_xmlid = None
     view_type = "form"
     mode = "primary"
     xpaths: list[XPathInfo] = []
     arch: str | None = None
+    conditions: list[ViewConditionInfo] = []
 
     for child in record:
         tag = child.tag
@@ -156,6 +284,8 @@ def _parse_record(
         fname = child.get("name", "")
         if fname == "name":
             name = (child.text or "").strip()
+        elif fname == "type":
+            type_field = (child.text or "").strip()
         elif fname == "model":
             model = (child.text or "").strip()
         elif fname == "inherit_id":
@@ -186,8 +316,23 @@ def _parse_record(
                 position = xpath_el.get("position", "inside").strip()
                 if expr:
                     xpaths.append(XPathInfo(expr=expr, position=position))
+            # GAP-1 - conditional-visibility extraction over the whole arch
+            # subtree (catches nested + xpath-inserted fields, both legacy
+            # attrs=/states= and v17+ direct invisible=/required=/readonly=/
+            # column_invisible= forms).
+            conditions = _extract_conditions(child)
 
     if not model:
+        return None
+
+    # parser MED-2: a <record model="ir.ui.view"> with <field name="type">qweb
+    # is authoritatively a QWeb template — parser_qweb._parse_qweb_record owns it
+    # and emits a QWebInfo. A few such records ALSO carry a <field name="model">
+    # (e.g. sale_timesheet:timesheet_plan, website:view_view_qweb), which would
+    # otherwise make this path ALSO emit a ViewInfo with a bogus "form" view_type
+    # (the arch root of a qweb body is not a real view-type element). Skip here so
+    # the record is classified exactly once, as QWeb.
+    if type_field == "qweb":
         return None
 
     # A3 — best-effort source line from lxml .sourceline attribute (always int on lxml
@@ -217,6 +362,120 @@ def _parse_record(
         file_path=file_path,
         line=src_line,
         arch_snippet=_arch_snippet,
+        conditions=conditions,
+    )
+
+
+def _parse_report_record(
+    record: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
+) -> ReportInfo | None:
+    """Parse a ``<record model="ir.actions.report">`` element into a ReportInfo.
+
+    The v14+ declaration form. Fields are ``<field name="...">`` children:
+    ``name`` (human label), ``model`` (business model), ``report_type``,
+    ``report_name`` (template QWeb xmlid), ``report_file``, ``paperformat_id``.
+
+    Returns None when the record is not an ``ir.actions.report``, has no ``id``,
+    or carries no usable ``model`` (a report with no target model is unindexable).
+    """
+    if record.get("model") != "ir.actions.report":
+        return None
+
+    xml_id = record.get("id", "").strip()
+    if not xml_id:
+        return None
+
+    name = ""
+    model = ""
+    report_type = ""
+    report_name: str | None = None
+    report_file: str | None = None
+    paperformat: str | None = None
+
+    for child in record:
+        tag = child.tag
+        if not isinstance(tag, str) or tag != "field":
+            continue
+        fname = child.get("name", "")
+        text = (child.text or "").strip()
+        if fname == "name":
+            name = text
+        elif fname == "model":
+            model = text
+        elif fname == "report_type":
+            report_type = text
+        elif fname == "report_name":
+            report_name = text or None
+        elif fname == "report_file":
+            report_file = text or None
+        elif fname == "paperformat_id":
+            # paperformat is a ref= (no text body) in the record form.
+            paperformat = (child.get("ref", "").strip() or text) or None
+
+    if not model:
+        return None
+
+    src_line: int | None = getattr(record, "sourceline", None) or None
+
+    return ReportInfo(
+        xmlid=qualify_xmlid(xml_id, module.name),
+        name=name,
+        model=model,
+        report_type=report_type,
+        module=module.name,
+        odoo_version=module.odoo_version,
+        report_name=qualify_xmlid(report_name, module.name) if report_name else None,
+        report_file=report_file,
+        paperformat=qualify_xmlid(paperformat, module.name) if paperformat else None,
+        source_file=file_path,
+        line=src_line,
+    )
+
+
+def _parse_report_shorthand(
+    report: "_lxml_etree._Element", module: ModuleInfo, file_path: str | None = None
+) -> ReportInfo | None:
+    """Parse a v8-v13 ``<report .../>`` shorthand element into a ReportInfo.
+
+    The legacy declaration form (removed by v14). Everything is attributes:
+    ``id``, ``string`` (human label -> name), ``model`` (business model),
+    ``report_type``, ``name`` (the template QWeb xmlid -> report_name), ``file``
+    (-> report_file), optional ``paperformat``.
+
+    Confirmed against the v12/v13 Odoo core clones (sale/account report XML).
+
+    Returns None when there is no ``id`` or no ``model``.
+    """
+    xml_id = (report.get("id") or "").strip()
+    if not xml_id:
+        return None
+
+    model = (report.get("model") or "").strip()
+    if not model:
+        return None
+
+    # In the shorthand, `string` is the human label and `name` is the TEMPLATE
+    # xmlid (the same value the record form stores under `report_name`).
+    name = (report.get("string") or "").strip()
+    report_name = (report.get("name") or "").strip() or None
+    report_type = (report.get("report_type") or "").strip()
+    report_file = (report.get("file") or "").strip() or None
+    paperformat = (report.get("paperformat") or "").strip() or None
+
+    src_line: int | None = getattr(report, "sourceline", None) or None
+
+    return ReportInfo(
+        xmlid=qualify_xmlid(xml_id, module.name),
+        name=name,
+        model=model,
+        report_type=report_type,
+        module=module.name,
+        odoo_version=module.odoo_version,
+        report_name=qualify_xmlid(report_name, module.name) if report_name else None,
+        report_file=report_file,
+        paperformat=qualify_xmlid(paperformat, module.name) if paperformat else None,
+        source_file=file_path,
+        line=src_line,
     )
 
 
@@ -237,6 +496,33 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
         if view:
             views.append(view)
     return views
+
+
+def parse_reports_file(filepath: str, module: ModuleInfo) -> list[ReportInfo]:
+    """Parse an XML file, return all report actions found (GAP-2/GAP-5).
+
+    Recognises BOTH declaration forms:
+      1. v14+ ``<record model="ir.actions.report">`` records;
+      2. v8-v13 ``<report .../>`` shorthand tags (never visited by
+         ``root.iter("record")`` — handled via a separate ``root.iter("report")``).
+
+    Uses lxml.etree.parse() for .sourceline provenance. Empty list on parse error.
+    """
+    try:
+        tree = _lxml_etree.parse(filepath)
+    except (_lxml_etree.XMLSyntaxError, OSError):
+        return []
+    root = tree.getroot()
+    reports: list[ReportInfo] = []
+    for record in root.iter("record"):
+        rep = _parse_report_record(record, module, file_path=filepath)
+        if rep:
+            reports.append(rep)
+    for shorthand in root.iter("report"):
+        rep = _parse_report_shorthand(shorthand, module, file_path=filepath)
+        if rep:
+            reports.append(rep)
+    return reports
 
 
 def parse_module(
@@ -264,6 +550,12 @@ def parse_module(
         if SKIP_DIRS & set(xml_file.parts):
             continue
         result.views.extend(parse_file(str(xml_file), module_info))
+        # GAP-2/GAP-5: ir.actions.report records + v8-v13 <report> shorthand.
+        # TODO(follow-up, parser LOW-1): parse_file and parse_reports_file each
+        # do their own lxml.etree.parse() of the SAME file, doubling XML parse
+        # cost on a full re-index. Parse once and pass the tree to both (no
+        # correctness impact; pure perf). Deferred — out of scope for this review.
+        result.reports.extend(parse_reports_file(str(xml_file), module_info))
 
     # RelaxNG validation — v15+ gate via VersionRegistry
     should_validate = _RELAXNG_GATE.resolve_version(module_info.odoo_version, default=False)

@@ -17,7 +17,7 @@ _MODEL_METHODS = frozenset({
 })
 _MODULE_METHODS = frozenset({"summary", "fields", "methods", "views", "owl", "qweb", "js",
                               "dependencies", "tests"})
-_ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern"})
+_ENTITY_KINDS = frozenset({"model", "field", "method", "view", "module", "pattern", "report"})
 _PROFILE_METHODS = frozenset({"summary", "repos", "modules"})
 
 # H1 (#260): hard server-side cap for profile_inspect(method='modules').
@@ -439,7 +439,7 @@ def _entity_lookup(
     ----------
     kind:
         Entity type: ``model``, ``field``, ``method``, ``view``, ``module``,
-        ``pattern``.
+        ``pattern``, ``report``.
     odoo_version:
         Odoo version string. ``"auto"`` resolves to latest indexed.
     profile_name:
@@ -453,10 +453,12 @@ def _entity_lookup(
         Required for ``kind='method'``. Method name (avoids Python keyword
         clash with ``method`` discriminator used in other routers).
     xmlid:
-        Required for ``kind='view'``. View XML ID.
+        Required for ``kind='view'``. View XML ID. Also accepted for
+        ``kind='report'`` as an alias for ``name`` (a specific report xmlid).
     name:
         Required for ``kind`` in ``{'module', 'pattern'}``. Technical module
-        name or pattern intent string.
+        name or pattern intent string. For ``kind='report'`` it is an optional
+        xmlid/title substring filter (give ``model`` and/or ``name``).
     api_key_id:
         Tenant key for ref minting (default: ``'anonymous'``).
     from_module:
@@ -502,6 +504,20 @@ def _entity_lookup(
         if not xmlid:
             return "Error: entity_lookup(kind='view') requires xmlid='<xml.id>'."
         return srv._resolve_view(xmlid, odoo_version, profile_name)
+
+    if kind == "report":
+        # GAP-2/GAP-5: ir.actions.report (+ v8-v13 <report> shorthand) listing.
+        # Accepts model= (reports on a business model) and/or name= (report
+        # xmlid/title substring). Rendered in tree_builder (server.py is at its
+        # god-file ceiling). xmlid is also accepted as an alias for name so the
+        # caller can pass a specific report xmlid via the familiar `xmlid=` arg.
+        from src.mcp.tree_builder import list_reports
+        return list_reports(
+            model=model,
+            name=name or xmlid,
+            odoo_version=odoo_version,
+            profile_name=profile_name,
+        )
 
     if kind == "module":
         if not name:

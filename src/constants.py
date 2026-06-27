@@ -34,6 +34,9 @@ REL_CHECKS: str = "CHECKS"
 REL_USES_CORE_SYMBOL: str = "USES_CORE_SYMBOL"
 REL_OF_COMMAND: str = "OF_COMMAND"
 REL_TARGETS_MODEL: str = "TARGETS_MODEL"
+# Report (ir.actions.report) layer — GAP-2/GAP-5.
+REL_REPORTS_ON: str = "REPORTS_ON"        # Report -> Model (business model the report runs on)
+REL_USES_TEMPLATE: str = "USES_TEMPLATE"  # Report -> QWebTmpl (the report's QWeb template)
 REL_IMPORTS: str = "IMPORTS"
 REL_HAS_VIOLATION: str = "HAS_VIOLATION"
 # A2d — method-to-field provenance edges

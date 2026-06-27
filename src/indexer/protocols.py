@@ -67,6 +67,16 @@ class IndexWriterProtocol(Protocol):
     def write_view_results(self, results: list[ViewParseResult]) -> None: ...
     def write_js_graph_results(self, results: list[JSGraphResult]) -> None: ...
 
+    def write_asset_results(
+        self, results: list, profiles: list[str] | None = None,
+    ) -> None:
+        """Persist :AssetBundle nodes + CONTRIBUTES_TO/INCLUDES_BUNDLE (WI-D).
+
+        Must run BEFORE write_view_results so legacy XML asset-bundle extenders
+        resolve against the AssetBundle base nodes (EXTENDS_ASSET_BUNDLE).
+        """
+        ...
+
     # --- Test-surface writers (WI-1/WI-3) ------------------------------------
     def write_test_results(
         self, results: list, profiles: list[str] | None = None,
@@ -164,6 +174,16 @@ class IndexWriterProtocol(Protocol):
 
     def gc_null_repo_dep_stubs(self, odoo_version: str) -> int:
         """DETACH DELETE childless dep-stub Module nodes for odoo_version."""
+        ...
+
+    def gc_orphan_asset_bundles(self, odoo_version: str) -> int:
+        """DETACH DELETE orphaned :AssetBundle nodes for odoo_version (WI-D).
+
+        Called once per version on --full after all live contributions are
+        re-written. Deletes only AssetBundle nodes with zero inbound
+        CONTRIBUTES_TO and no INCLUDES_BUNDLE/EXTENDS_ASSET_BUNDLE edge.
+        Idempotent (a second run returns 0).
+        """
         ...
 
     def reconcile_same_name_inherits(self, odoo_version: str) -> int:

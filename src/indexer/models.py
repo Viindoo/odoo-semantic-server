@@ -63,6 +63,9 @@ class ModuleInfo:
     summary: str | None = None
     external_python: list[str] = field(default_factory=list)
     external_bin: list[str] = field(default_factory=list)
+    # v17+ manifest `countries` key: restricts module to these ISO country codes
+    # for install-UI filtering (e.g. l10n_* modules). Empty = no restriction.
+    countries: list[str] = field(default_factory=list)
     # A2c — repo provenance
     repo_url: str | None = None
     repo_id: int | None = None
@@ -183,6 +186,38 @@ class XPathInfo:
 
 
 @dataclass
+class ViewConditionInfo:
+    """One conditional-visibility expression extracted from a view's arch (GAP-1).
+
+    Captures BOTH legacy (v8-v16) and modern (v17+) conditional-attribute forms
+    in a single uniform shape so AI agents can answer "what makes this field
+    invisible/required/readonly" at any version:
+
+      * Legacy form (v8-v16): an element carries ``attrs="{'invisible': [...]}"``
+        (a dict whose keys are ``invisible``/``required``/``readonly``/``column_invisible``
+        and whose values are Odoo domains) and/or ``states="draft,sent"``. We emit
+        one ViewConditionInfo per *attr* key (``attr='attrs.invisible'``,
+        ``attr='states'``, ...), ``expr`` = the raw value string. ``legacy=True``.
+
+      * Modern form (v17+): an element carries a direct expression attribute
+        ``invisible="state == 'draft'"`` / ``required="..."`` / ``readonly="..."``
+        / ``column_invisible="1"``. We emit one ViewConditionInfo per attribute,
+        ``attr`` = the attribute name, ``expr`` = the expression value. ``legacy=False``.
+
+    We deliberately do NOT evaluate the domain/expression - ``expr`` is the raw
+    string. ``element`` is the local tag of the carrying node (e.g. ``field``,
+    ``button``, ``page``); ``field`` is its ``name=`` when present (only meaningful
+    for ``<field>``), else None.
+    """
+    element: str                 # local tag carrying the attribute, e.g. 'field'
+    attr: str                    # 'invisible'|'required'|'readonly'|'column_invisible'
+                                 # |'attrs.invisible'|...|'states'
+    expr: str                    # raw expression / domain / states value
+    field: str | None = None     # the field's name= when element == 'field', else None
+    legacy: bool = False         # True for attrs=/states= (v8-v16); False for v17+ direct
+
+
+@dataclass
 class ViewInfo:
     """Info for a single Odoo ir.ui.view record."""
     xmlid: str           # "module.xml_id", e.g., "sale.view_sale_order_form"
@@ -203,6 +238,46 @@ class ViewInfo:
     # None for inherit-only (extension) views.  Stored on the Neo4j View node so AI
     # agents can inspect view structure without fetching the full arch body.
     arch_snippet: str | None = None
+    # GAP-1 - conditional-visibility expressions extracted from arch (both the
+    # legacy attrs=/states= form for v8-v16 AND the v17+ direct-expression form
+    # invisible=/required=/readonly=/column_invisible=). Empty when the arch has
+    # no conditional attributes. Walked over the FULL arch tree (not just the root)
+    # so xpath-inserted fields in extension views are captured too.
+    conditions: list[ViewConditionInfo] = field(default_factory=list)
+
+
+@dataclass
+class ReportInfo:
+    """Info for a single Odoo report action (osm-audit-views GAP-2/GAP-5).
+
+    Covers BOTH declaration forms, normalized to one shape:
+
+      * v14+ ``<record model="ir.actions.report">`` — fields are <field> children:
+        ``name`` (human label), ``model`` (the business model the report runs on),
+        ``report_type`` (``qweb-pdf``/``qweb-html``/``qweb-text``),
+        ``report_name`` (the template QWeb xmlid), ``report_file``, ``paperformat_id``.
+      * v8-v13 ``<report .../>`` shorthand tag — attributes: ``id``, ``string``
+        (human label -> name), ``model``, ``report_type``, ``name`` (the template
+        QWeb xmlid -> report_name), ``file`` (-> report_file), optional
+        ``paperformat`` / ``print_report_name``.
+
+    ``report_name`` is the QWeb template xmlid the report renders (links to a
+    :QWebTmpl node via USES_TEMPLATE). ``model`` is the business model the report
+    targets (links to a :Model node via REPORTS_ON).
+
+    Composite Neo4j key: (xmlid, odoo_version) — same shape as View/QWebTmpl.
+    """
+    xmlid: str                       # "module.report_action_id"
+    name: str                        # human-readable report title
+    model: str                       # business model, e.g. "sale.order"
+    report_type: str                 # qweb-pdf | qweb-html | qweb-text | ...
+    module: str
+    odoo_version: str
+    report_name: str | None = None   # template QWeb xmlid, e.g. "sale.report_saleorder"
+    report_file: str | None = None   # template file ref (often == report_name)
+    paperformat: str | None = None   # paperformat_id ref (xmlid), when present
+    source_file: str | None = None   # source XML file path
+    line: int | None = None          # 1-based source line (best-effort from lxml)
 
 
 @dataclass
@@ -217,6 +292,50 @@ class QWebInfo:
     # A3 — provenance: 1-based source line of the <template> element
     # (best-effort from lxml .sourceline; None if unavailable)
     line: int | None = None
+    # GAP-11 - website QWeb `key=` attribute (the canonical public xmlid that
+    # multi-website page dispatch + extenders inherit by). None when absent (most
+    # non-website templates). Captured from the <template key="..."> attribute.
+    key: str | None = None
+    # GAP-12 - `mode=` attribute on an inheriting template: "primary" creates a
+    # NEW primary view from the inherited one (a fresh copy), "extension" (default)
+    # patches in place. None when absent.
+    mode: str | None = None
+
+
+@dataclass
+class AssetBundleContribution:
+    """A single Module -> AssetBundle contribution (WI-D, ADR-0052).
+
+    Captures one bundle that *module* contributes entries to, plus the ordered
+    list of entries it contributes. An *entry* is the manifest grammar form,
+    normalized to JSON-serializable shapes:
+      - str: a file path or glob (leading '/' stripped — ADR-0037-style portable).
+      - list[str]: a tuple operation, e.g. ['include', 'web._assets_helpers'],
+        ['remove', 'web/.../foo.js'], ['replace', ref, new], ['before', ref, new],
+        ['after', ref, new], ['prepend', path].
+    `includes` is the subset of bundle names referenced via ('include', name) —
+    used to write INCLUDES_BUNDLE edges (AssetBundle -> AssetBundle).
+    """
+    module: str
+    odoo_version: str
+    bundle_name: str          # full dotted name, e.g. 'web.assets_backend'
+    entries: list = field(default_factory=list)        # ordered str | list[str]
+    includes: list[str] = field(default_factory=list)  # ('include', X) targets
+
+
+@dataclass
+class AssetParseResult:
+    """Output of parser_assets.parse_assets() for one module (WI-D, ADR-0052).
+
+    Era B (v15+): `contributions` = the module's manifest `'assets'` dict, one
+    AssetBundleContribution per bundle. Era A (v8-14): empty — legacy XML
+    `<template>` bundle definitions/extensions are already captured by
+    parser_qweb (definitions -> QWebTmpl base nodes; extenders -> QWebInfo with
+    inherit_xmlid), so the era-A handler emits no separate contributions and the
+    writer resolves legacy extenders against either a QWebTmpl OR an AssetBundle.
+    """
+    module: "ModuleInfo"
+    contributions: list[AssetBundleContribution] = field(default_factory=list)
 
 
 @dataclass
@@ -242,6 +361,10 @@ class ViewParseResult:
     module: ModuleInfo
     views: list[ViewInfo] = field(default_factory=list)
     qweb: list[QWebInfo] = field(default_factory=list)
+    # GAP-2/GAP-5: ir.actions.report records + v8-v13 <report> shorthand.
+    # Placed AFTER qweb so existing positional ViewParseResult(...) constructors
+    # in tests stay valid.
+    reports: list["ReportInfo"] = field(default_factory=list)
     lint_violations: list["LintViolationInfo"] = field(default_factory=list)
 
 

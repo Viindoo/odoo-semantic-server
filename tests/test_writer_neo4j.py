@@ -305,6 +305,52 @@ def test_write_view_xpaths_stored(writer, neo4j_driver):
     assert list(rec["v"]["xpaths_positions"]) == ["after", "attributes"]
 
 
+def test_write_view_conditions_stored(writer, neo4j_driver):
+    """GAP-1: View node must carry the conditions JSON blob (attrs/states + v17+)."""
+    import json as _json
+
+    from src.indexer.models import ViewConditionInfo
+
+    view = ViewInfo(
+        xmlid="sale.view_sale_order_form_cond",
+        name="cond view",
+        model="sale.order",
+        module="sale",
+        odoo_version=TEST_VERSION,
+        view_type="form",
+        mode="primary",
+        inherit_xmlid=None,
+        conditions=[
+            ViewConditionInfo(
+                element="field", attr="invisible", expr="state == 'draft'",
+                field="commitment_date", legacy=False,
+            ),
+            ViewConditionInfo(
+                element="button", attr="states", expr="draft,sent",
+                field=None, legacy=True,
+            ),
+        ],
+    )
+    result = make_view_parse_result("sale", views=[view])
+    writer.write_view_results([result])
+
+    with neo4j_driver.session() as session:
+        rec = session.run(
+            "MATCH (v:View {xmlid: $x, odoo_version: $v}) RETURN v.conditions AS c",
+            x="sale.view_sale_order_form_cond", v=TEST_VERSION,
+        ).single()
+    assert rec is not None
+    decoded = _json.loads(rec["c"])
+    assert len(decoded) == 2
+    inv = next(c for c in decoded if c["attr"] == "invisible")
+    assert inv["field"] == "commitment_date"
+    assert inv["expr"] == "state == 'draft'"
+    assert inv["legacy"] is False
+    states = next(c for c in decoded if c["attr"] == "states")
+    assert states["element"] == "button"
+    assert states["legacy"] is True
+
+
 def test_write_inherits_view_edge(writer, neo4j_driver):
     base_view = ViewInfo(
         xmlid="sale.view_sale_order_form",
@@ -342,11 +388,16 @@ def test_write_inherits_view_unresolved(writer, neo4j_driver, caplog):
         odoo_version=TEST_VERSION, view_type="form",
         mode="extension", inherit_xmlid="sale.view_sale_order_form",  # NOT seeded
     )
-    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+    # Base module 'sale' is not indexed in this run -> category-B (out of scope) ->
+    # the diagnostic is logged at DEBUG, not WARNING. The placeholder node and the
+    # unresolved edge are still created (the structural invariant).
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
         writer.write_view_results([make_view_parse_result("viin_sale", views=[ext_view])])
 
     assert "unresolved INHERITS_VIEW" in caplog.text
     assert "viin_sale.view_sale_order_form_inherit" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "unresolved INHERITS_VIEW" in r.getMessage()]
 
     with neo4j_driver.session() as session:
         rec = session.run("""
@@ -407,10 +458,14 @@ def test_write_extends_tmpl_unresolved(writer, neo4j_driver, caplog):
         xmlid="viin_sale.portal_tmpl_orphan", module="viin_sale",
         odoo_version=TEST_VERSION, inherit_xmlid="missing.portal_tmpl",
     )
-    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+    # Base module 'missing' is not indexed -> category-B (out of scope) -> DEBUG.
+    # Placeholder node + unresolved edge are still created (structural invariant).
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
         writer.write_view_results([make_view_parse_result("viin_sale", qweb=[ext_q])])
 
     assert "unresolved EXTENDS_TMPL" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "unresolved EXTENDS_TMPL" in r.getMessage()]
 
     with neo4j_driver.session() as session:
         rec = session.run("""
@@ -422,6 +477,104 @@ def test_write_extends_tmpl_unresolved(writer, neo4j_driver, caplog):
              base="missing.portal_tmpl", v=TEST_VERSION).single()
     assert rec is not None, "Placeholder node + unresolved edge must be created"
     assert rec["flag"] is True
+
+
+def test_extends_tmpl_resolves_view_base_cross_type(writer, neo4j_driver):
+    """A3: a <template inherit_id="..."> whose base is indexed as a :View node
+    (a standard ir.ui.view form/list record), not a :QWebTmpl, must still resolve
+    its EXTENDS_TMPL edge to that View — no placeholder, no warning."""
+    base_view = ViewInfo(
+        xmlid="account.account_tour_upload_bill",
+        name="upload bill tour", model="account.tour.upload.bill",
+        module="account", odoo_version=TEST_VERSION, view_type="form",
+        mode="primary", inherit_xmlid=None,
+    )
+    ext_q = QWebInfo(
+        xmlid="viin_brand_account.account_tour_upload_bill",
+        module="viin_brand_account", odoo_version=TEST_VERSION,
+        inherit_xmlid="account.account_tour_upload_bill",
+    )
+    writer.write_view_results([
+        make_view_parse_result("account", views=[base_view]),
+        make_view_parse_result("viin_brand_account", qweb=[ext_q]),
+    ])
+
+    with neo4j_driver.session() as session:
+        rec = session.run("""
+            MATCH (ext:QWebTmpl {xmlid: $ext, odoo_version: $v})
+                  -[r:EXTENDS_TMPL]->
+                  (base:View {xmlid: $base, odoo_version: $v})
+            RETURN coalesce(r.unresolved, false) AS unresolved
+        """, ext="viin_brand_account.account_tour_upload_bill",
+             base="account.account_tour_upload_bill", v=TEST_VERSION).single()
+    assert rec is not None, "EXTENDS_TMPL must resolve to the cross-type View base"
+    assert rec["unresolved"] is False
+
+
+def test_extends_tmpl_unresolved_base_module_absent_is_debug(writer, neo4j_driver, caplog):
+    """Category-B: when the base xmlid's module is NOT indexed in any profile
+    (never written, or only a profile-less DEPENDS_ON stub), the unresolved
+    EXTENDS_TMPL is expected-by-design and must be logged at DEBUG, not WARNING."""
+    import logging
+    ext_q = QWebInfo(
+        xmlid="l10n_es_edi_facturae.certificate_certificate_view_form",
+        module="l10n_es_edi_facturae", odoo_version=TEST_VERSION,
+        inherit_xmlid="certificate.certificate_certificate_view_form",  # module never indexed
+    )
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([make_view_parse_result("l10n_es_edi_facturae", qweb=[ext_q])])
+
+    # The message exists, but only at DEBUG — no WARNING-level record.
+    assert "unresolved EXTENDS_TMPL" in caplog.text
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "unresolved EXTENDS_TMPL" in r.getMessage()]
+    assert warnings == [], "out-of-profile base module must NOT emit a WARNING"
+
+
+def test_extends_tmpl_unresolved_base_module_present_view_missing_is_warning(
+    writer, neo4j_driver, caplog
+):
+    """Category-B counterpart: when the base MODULE IS indexed (has a profile) but
+    the specific template is missing, that is a genuine coverage gap — keep WARNING."""
+    import logging
+    # Seed the base module with a real, profiled view so the module row carries a
+    # non-empty profile, but NOT the template the extender references.
+    seed_view = ViewInfo(
+        xmlid="web.some_real_view", name="real", model="res.users",
+        module="web", odoo_version=TEST_VERSION, view_type="form",
+        mode="primary", inherit_xmlid=None,
+    )
+    ext_q = QWebInfo(
+        xmlid="crm.assets_backend", module="crm", odoo_version=TEST_VERSION,
+        inherit_xmlid="web.assets_backend",  # module 'web' IS indexed; this tmpl is missing
+    )
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([
+            make_view_parse_result("web", views=[seed_view]),
+            make_view_parse_result("crm", qweb=[ext_q]),
+        ])
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "unresolved EXTENDS_TMPL" in r.getMessage()]
+    assert warnings, "indexed base module with a missing template must keep WARNING"
+
+
+def test_inherits_view_unresolved_base_module_absent_is_debug(writer, neo4j_driver, caplog):
+    """Category-B for INHERITS_VIEW: base view's module never indexed -> DEBUG."""
+    import logging
+    ext_view = ViewInfo(
+        xmlid="to_account_budget.res_config_settings_view_form",
+        name="ext", model="res.config.settings", module="to_account_budget",
+        odoo_version=TEST_VERSION, view_type="form", mode="extension",
+        inherit_xmlid="to_enterprise_marks_account.res_config_settings_view_form",
+    )
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([make_view_parse_result("to_account_budget", views=[ext_view])])
+
+    assert "unresolved INHERITS_VIEW" in caplog.text
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING
+                and "unresolved INHERITS_VIEW" in r.getMessage()]
+    assert warnings == [], "out-of-profile base module must NOT emit a WARNING"
 
 
 def test_view_xpaths_arrays_length_invariant(writer, neo4j_driver):

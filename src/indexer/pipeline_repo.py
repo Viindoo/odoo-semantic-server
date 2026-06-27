@@ -34,6 +34,7 @@ from pathlib import Path
 
 from src.indexer import incremental as _incremental
 from src.indexer import (
+    parser_assets,
     parser_css,
     parser_js,
     parser_js_test,
@@ -44,8 +45,9 @@ from src.indexer import (
     parser_test,
     parser_xml,
 )
-from src.indexer.models import StylesheetInfo, ViewParseResult
+from src.indexer.models import AssetParseResult, StylesheetInfo, ViewParseResult
 from src.indexer.protocols import IndexWriterProtocol
+from src.indexer.version_registry import less_active, scss_active
 
 # Log under the parent "src.indexer.pipeline" name (NOT __name__) so every
 # per-repo, admin-facing log line (the M7 C5 "Indexer run" summary, the W2-4
@@ -299,6 +301,9 @@ def _index_repo(
 
     py_results = []
     view_results: list[ViewParseResult] = []
+    # WI-D: asset-bundle parse results (one per module; era-B v15+ populates,
+    # era-A v8-14 yields empty since parser_qweb owns legacy <template> bundles).
+    asset_results: list[AssetParseResult] = []
     js_graph_results = []
     # WI-1: test surface parse results (one per module)
     test_results = []
@@ -310,6 +315,8 @@ def _index_repo(
     total_modules = 0
     total_views = 0
     total_qweb = 0
+    total_reports = 0
+    total_asset_bundles = 0
     total_embeddings = 0
     total_js_patches = 0
     total_owl_comps = 0
@@ -360,10 +367,18 @@ def _index_repo(
             # RelaxNG validation; None when no Odoo source RNG dir is available.
             xml_result = parser_xml.parse_module(info, rng_root=rng_root)
             total_views += len(xml_result.views)
+            total_reports += len(xml_result.reports)
 
             # QWeb templates
             qweb_result = parser_qweb.parse_module(info)
             total_qweb += len(qweb_result.qweb)
+
+            # WI-D asset bundles (ADR-0052): version-aware dispatch. Era B (v15+)
+            # parses the __manifest__.py 'assets' dict; era A (v8-14) returns empty
+            # (legacy XML <template> bundles already captured by parser_qweb above).
+            asset_result = parser_assets.parse_assets(info)
+            asset_results.append(asset_result)
+            total_asset_bundles += len(asset_result.contributions)
 
             # Merge both view parsers into one ViewParseResult per module.
             # writer.write_view_results handles both .views and .qweb in one call.
@@ -372,6 +387,13 @@ def _index_repo(
                 module=info,
                 views=xml_result.views,
                 qweb=qweb_result.qweb,
+                # GAP-2/GAP-5: report actions parsed alongside views in parser_xml.
+                # Written by write_view_results AFTER models (write_results) and
+                # templates (this same qweb pass) exist, so REPORTS_ON/USES_TEMPLATE
+                # resolve. write order in _index_repo: write_results -> ... ->
+                # write_view_results, and within _write_view_parse_result the qweb
+                # loop runs before the report loop.
+                reports=xml_result.reports,
                 lint_violations=xml_result.lint_violations,
             )
             view_results.append(merged)
@@ -383,9 +405,19 @@ def _index_repo(
             total_owl_comps += len(js_graph.components)
 
             # CSS/SCSS/LESS parsing — stylesheet nodes + embeddings (WI-A1, ADR-0025; RP WI-3)
+            # Era gate (osm-audit-views GAP-3): LESS is the v9-v11 stylesheet
+            # language, SCSS is v12+. Plain CSS spans every era (always parsed).
+            # Gating off-era parsers is harmless (they no-op without files) but
+            # enforces + documents the boundary via the version registry (ADR-0032).
             css_chunks_mod, css_infos = parser_css.parse_module(info)
-            scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
-            less_chunks_mod, less_infos = parser_less.parse_module(info)
+            if scss_active(version):
+                scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
+            else:
+                scss_chunks_mod, scss_infos = [], []
+            if less_active(version):
+                less_chunks_mod, less_infos = parser_less.parse_module(info)
+            else:
+                less_chunks_mod, less_infos = [], []
             all_stylesheet_infos.extend(css_infos)
             all_stylesheet_infos.extend(scss_infos)
             all_stylesheet_infos.extend(less_infos)
@@ -439,6 +471,11 @@ def _index_repo(
     # used for the pgvector write above, so the two stores cannot diverge. See
     # _owning_profiles() for the full rationale + the F-2/F-6 non-empty guard.
     writer.write_results(py_results, profiles=_profiles_arr)
+    # WI-D: write :AssetBundle nodes BEFORE views/qweb so the legacy
+    # <template inherit_id="web.assets_backend"> extenders (written in the qweb
+    # pass) resolve against the AssetBundle base nodes via EXTENDS_ASSET_BUNDLE
+    # instead of emitting an unresolved warning (the ~13 A2 warnings, ADR-0052).
+    writer.write_asset_results(asset_results, profiles=_profiles_arr)
     writer.write_view_results(view_results, profiles=_profiles_arr)
     # WI-1: write test surface nodes (TestClass/TestMethod) alongside model nodes.
     # test_results collected per-module inside the main loop (see below) then written here.
@@ -496,6 +533,16 @@ def _index_repo(
         # maximises the chance that newly indexed parents already resolved some
         # of the pending placeholders so they will be absent from the graph.
         writer.gc_unresolved_placeholders(odoo_version)
+
+        # AssetBundle orphan GC (graph MED-1 / integration LOW): AssetBundle is
+        # version-global so it is NOT in the per-module delete cascade; reclaim
+        # genuinely-unreferenced bundles here. Gated to --full only: on an
+        # incremental run a bundle's sole contributor module may simply be absent
+        # from the diff (not re-written), so it would look orphaned but is live.
+        # On --full every live contribution is re-written first, so survivors are
+        # real orphans.
+        if full_reindex:
+            writer.gc_orphan_asset_bundles(odoo_version)
 
         # Test-node GC (WI-1, MISSED-2): remove TestClass/TestMethod nodes whose
         # owning module no longer exists on disk (module-level) OR whose test FILE
@@ -609,6 +656,8 @@ def _index_repo(
         "modules": total_modules,
         "views": total_views,
         "qweb": total_qweb,
+        "reports": total_reports,
+        "asset_bundles": total_asset_bundles,
         "embeddings": total_embeddings,
         "embed_calls": total_embed_calls,
         "js_patches": total_js_patches,

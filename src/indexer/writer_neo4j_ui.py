@@ -24,10 +24,13 @@ from src.constants import (
     REL_DEFINED_IN,
     REL_IMPORTS,
     REL_INHERITS_VIEW,
+    REL_REPORTS_ON,
     REL_TARGETS_MODEL,
+    REL_USES_TEMPLATE,
 )
 
 from .models import (
+    AssetParseResult,
     JSGraphResult,
     StylesheetInfo,
     ViewParseResult,
@@ -38,10 +41,76 @@ from .models import (
 _logger = logging.getLogger("src.indexer.writer_neo4j")
 
 
+def _base_module_out_of_scope(tx, inherit_xmlid: str, odoo_version: str) -> bool:
+    """Return True when the base xmlid's module is NOT indexed in any profile.
+
+    Distinguishes a genuine coverage gap from an expected-by-design unresolvable
+    reference (the category-B fix in the zero-warning wave):
+
+    - Expected gap (-> True -> caller logs DEBUG): the base module exists in the
+      graph only as a profile-less stub created by a DEPENDS_ON edge, or does not
+      exist at all. This happens for OEEL-1 license-skipped modules (e.g.
+      ``certificate``), modules absent from the target version (upgrade gap), and
+      Enterprise modules not cloned into any indexed profile. The unresolved
+      reference is correct behaviour, so a WARNING would be noise.
+
+    - Genuine coverage gap (-> False -> caller logs WARNING): the base module IS
+      indexed but the specific view/template it should contain is missing — a real
+      indexer/parser gap worth surfacing.
+
+    The base module name is the segment before the first ``.`` in the xmlid
+    (e.g. ``certificate.foo`` -> ``certificate``). "Out of scope" means the module
+    has NO indexed node at all: either no ``:Module`` row exists, OR the only row
+    is a profile-less forward-reference stub created by a ``DEPENDS_ON`` MERGE
+    (which sets NO ``profile`` property at all -> ``profile IS NULL``). A real
+    indexed module is ALWAYS written with ``ON CREATE SET mod.profile = $profiles``
+    by the model/view/qweb write paths, so its ``profile`` property is present
+    (possibly an EMPTY list when indexed with no profiles, e.g. a profileless test
+    run) -> NOT out of scope -> keep WARNING. Testing ``size(profile) = 0`` would
+    wrongly classify such a genuinely-indexed-but-profileless module as out of
+    scope and silently downgrade a real coverage gap to DEBUG.
+
+    Read-only single-row check on the current transaction state — cheap, no
+    placeholder side effects.
+    """
+    base_module = inherit_xmlid.split(".", 1)[0]
+    if not base_module:
+        return False
+    rec = tx.run(
+        """
+        MATCH (m:Module {name: $base_module, odoo_version: $ver})
+        RETURN m.profile IS NULL AS out_of_scope
+        """,
+        base_module=base_module, ver=odoo_version,
+    ).single()
+    # No module row at all -> never indexed -> out of scope (expected gap).
+    if rec is None:
+        return True
+    return bool(rec["out_of_scope"])
+
+
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
+    import json
+
     from .writer_neo4j import _profile_union_set
 
     for view in result.views:
+        # GAP-1 - conditional-visibility expressions serialized as a JSON blob on
+        # the View node (no new node type - a property is enough for AI-agent
+        # readout via model_inspect/view-resource). Each entry:
+        # {element, attr, expr, field, legacy}. Empty list -> "[]" (never None,
+        # so the property is always present and queryable). Neo4j has no native
+        # map-list type, hence JSON-string.
+        conditions_json = json.dumps([
+            {
+                "element": c.element,
+                "attr": c.attr,
+                "expr": c.expr,
+                "field": c.field,
+                "legacy": c.legacy,
+            }
+            for c in view.conditions
+        ])
         tx.run(f"""
             MERGE (v:View {{xmlid: $xmlid, odoo_version: $ver}})
             ON CREATE SET v.profile = $profiles
@@ -52,6 +121,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 v.xpaths_exprs = $xpaths_exprs,
                 v.xpaths_positions = $xpaths_positions,
                 v.arch_snippet = $arch_snippet,
+                v.conditions = $conditions,
                 v.unresolved = false
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
@@ -59,6 +129,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
              xpaths_exprs=[x.expr for x in view.xpaths],
              xpaths_positions=[x.position for x in view.xpaths],
              arch_snippet=view.arch_snippet,
+             conditions=conditions_json,
              profiles=profiles)
 
         tx.run(f"""
@@ -90,7 +161,17 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             """, xmlid=view.xmlid, ver=view.odoo_version,
                  inherit_xmlid=view.inherit_xmlid).single()
             if rec is None:
-                _logger.warning(
+                # Category-B downgrade (see _base_module_out_of_scope): when the
+                # base module is not indexed in any profile (license-skip, absent
+                # version, or Enterprise-not-indexed) the gap is EXPECTED — log at
+                # DEBUG. Keep WARNING only when the base module IS indexed but the
+                # specific view is missing (a genuine coverage gap).
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, view.inherit_xmlid, view.odoo_version)
+                    else _logger.warning
+                )
+                _log(
                     "unresolved INHERITS_VIEW: %s → %s (version %s) — parent view not indexed",
                     view.xmlid, view.inherit_xmlid, view.odoo_version,
                 )
@@ -121,14 +202,21 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                      inherit_xmlid=view.inherit_xmlid)
 
     for qweb in result.qweb:
+        # GAP-11/GAP-12 - website `key=` + inheriting `mode=` written as plain
+        # properties (None-safe: absent attributes stay null). `coalesce` on MATCH
+        # preserves an already-set value when a later parse of the same template
+        # omits the attribute (defensive against partial re-index ordering).
         tx.run(f"""
             MERGE (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
             ON CREATE SET t.profile = $profiles
             ON MATCH  SET t.profile =
                 {_profile_union_set("t")}
             SET t.module = $module,
+                t.key = coalesce($key, t.key),
+                t.mode = coalesce($mode, t.mode),
                 t.unresolved = false
-        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module, profiles=profiles)
+        """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
+             key=qweb.key, mode=qweb.mode, profiles=profiles)
 
         tx.run(f"""
             MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
@@ -141,17 +229,52 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
              profiles=profiles)
 
         if qweb.inherit_xmlid:
+            # A3 cross-type EXTENDS_TMPL: a <template inherit_id="..."> may target a
+            # base that was indexed as a plain :View node (a standard ir.ui.view
+            # form/list record), not a :QWebTmpl — e.g.
+            # viin_brand_account.account_tour_upload_bill extending the
+            # account.account_tour_upload_bill form view. Match either label.
+            # xmlid+odoo_version is unique across both labels, so this stays a
+            # single-row lookup (.single() is safe — no multi-row risk).
             rec = tx.run("""
                 MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-                MATCH (base:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
-                WHERE NOT coalesce(base.unresolved, false)
+                MATCH (base {xmlid: $inherit_xmlid, odoo_version: $ver})
+                WHERE (base:QWebTmpl OR base:View)
+                  AND NOT coalesce(base.unresolved, false)
                 MERGE (ext)-[r:EXTENDS_TMPL]->(base)
                 ON MATCH SET r.unresolved = false
                 RETURN 1 AS ok
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                  inherit_xmlid=qweb.inherit_xmlid).single()
             if rec is None:
-                _logger.warning(
+                # WI-D: the base may be an AssetBundle, not a QWebTmpl/View. In
+                # v15+ Odoo declares asset bundles (web.assets_backend, ...) in the
+                # __manifest__.py 'assets' dict — indexed here as :AssetBundle nodes
+                # (keyed on `name`, NOT `xmlid`). A legacy module that still uses the
+                # XML extension form <template inherit_id="web.assets_backend"> would
+                # otherwise leave an unresolved EXTENDS_TMPL warning (the ~13 A2
+                # warnings). Resolve it by linking the extender to the AssetBundle via
+                # a dedicated EXTENDS_ASSET_BUNDLE edge (reuse the same cross-label
+                # base-lookup spirit as the QWebTmpl OR View match above). name is the
+                # composite key's identifying part; (name, odoo_version) is unique, so
+                # this stays a single-row .single() lookup.
+                ab = tx.run("""
+                    MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
+                    MATCH (b:AssetBundle {name: $inherit_xmlid, odoo_version: $ver})
+                    MERGE (ext)-[r:EXTENDS_ASSET_BUNDLE]->(b)
+                    ON MATCH SET r.unresolved = false
+                    RETURN 1 AS ok
+                """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
+                     inherit_xmlid=qweb.inherit_xmlid).single()
+                if ab is not None:
+                    continue  # resolved against an AssetBundle — no warning/placeholder
+                # Category-B downgrade — same rationale as INHERITS_VIEW above.
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, qweb.inherit_xmlid, qweb.odoo_version)
+                    else _logger.warning
+                )
+                _log(
                     "unresolved EXTENDS_TMPL: %s → %s (version %s) — base template not indexed",
                     qweb.xmlid, qweb.inherit_xmlid, qweb.odoo_version,
                 )
@@ -173,6 +296,156 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                     ON CREATE SET r.unresolved = true
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                      inherit_xmlid=qweb.inherit_xmlid)
+
+    # GAP-2/GAP-5 - ir.actions.report records + v8-v13 <report> shorthand.
+    # :Report node (composite MERGE key {xmlid, odoo_version}, same shape as
+    # View/QWebTmpl). Two edges, both single-row deterministic (NO .single()
+    # multi-row pattern WI-A removed):
+    #   Report -[:REPORTS_ON]-> Model  (the business model the report runs on)
+    #   Report -[:USES_TEMPLATE]-> QWebTmpl  (the report's QWeb template)
+    for rep in result.reports:
+        tx.run(f"""
+            MERGE (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+            ON CREATE SET rp.profile = $profiles
+            ON MATCH  SET rp.profile =
+                {_profile_union_set("rp")}
+            SET rp.name = $name, rp.model = $model, rp.module = $module,
+                rp.report_type = $report_type, rp.report_name = $report_name,
+                rp.report_file = $report_file, rp.paperformat = $paperformat,
+                rp.unresolved = false
+        """, xmlid=rep.xmlid, ver=rep.odoo_version,
+             name=rep.name, model=rep.model, module=rep.module,
+             report_type=rep.report_type, report_name=rep.report_name,
+             report_file=rep.report_file, paperformat=rep.paperformat,
+             profiles=profiles)
+
+        tx.run(f"""
+            MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+            MERGE (mod:Module {{name: $module, odoo_version: $ver}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                {_profile_union_set("mod")}
+            MERGE (rp)-[:{REL_DEFINED_IN}]->(mod)
+        """, xmlid=rep.xmlid, ver=rep.odoo_version, module=rep.module,
+             profiles=profiles)
+
+        # REPORTS_ON -> Model. A model name maps to K per-module Model nodes
+        # (C1 schema); pick ONE deterministically. Prefer the definition node
+        # (is_definition=true), else the highest field_count, with a stable
+        # name tiebreak — LIMIT 1 keeps this single-row (no .single() multi-row).
+        # Zero-silent-loss (consistent with USES_TEMPLATE below): RETURN + .single()
+        # so a Report on an unindexed business model is surfaced — DEBUG when the
+        # model's module is out of scope (expected gap), WARNING when it is a real
+        # coverage gap (the model's module IS indexed but the model node is missing).
+        if rep.model:
+            on_model = tx.run(f"""
+                MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+                MATCH (m:Model {{name: $model_name, odoo_version: $ver}})
+                WITH rp, m
+                ORDER BY coalesce(m.is_definition, false) DESC,
+                         coalesce(m.field_count, 0) DESC, m.module ASC
+                LIMIT 1
+                MERGE (rp)-[:{REL_REPORTS_ON}]->(m)
+                RETURN 1 AS ok
+            """, xmlid=rep.xmlid, ver=rep.odoo_version,
+                 model_name=rep.model).single()
+            if on_model is None:
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, rep.model, rep.odoo_version)
+                    else _logger.warning
+                )
+                _log(
+                    "unresolved REPORTS_ON: %s -> %s (version %s) — "
+                    "business model not indexed",
+                    rep.xmlid, rep.model, rep.odoo_version,
+                )
+
+        # USES_TEMPLATE -> QWebTmpl. The report_name is the template xmlid.
+        # Single-row ({xmlid, odoo_version} is unique); skip silently when the
+        # template is not (yet) indexed — DEBUG-not-WARNING when the template's
+        # module is out of scope (WI-C helper), keeping reindex zero-noise.
+        if rep.report_name:
+            tmpl = tx.run(f"""
+                MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+                MATCH (t:QWebTmpl {{xmlid: $tmpl_xmlid, odoo_version: $ver}})
+                WHERE NOT coalesce(t.unresolved, false)
+                MERGE (rp)-[:{REL_USES_TEMPLATE}]->(t)
+                RETURN 1 AS ok
+            """, xmlid=rep.xmlid, ver=rep.odoo_version,
+                 tmpl_xmlid=rep.report_name).single()
+            if tmpl is None:
+                _log = (
+                    _logger.debug
+                    if _base_module_out_of_scope(tx, rep.report_name, rep.odoo_version)
+                    else _logger.warning
+                )
+                _log(
+                    "unresolved USES_TEMPLATE: %s -> %s (version %s) — "
+                    "report template not indexed",
+                    rep.xmlid, rep.report_name, rep.odoo_version,
+                )
+
+
+def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str]) -> None:
+    """Write :AssetBundle nodes + CONTRIBUTES_TO / INCLUDES_BUNDLE edges (WI-D).
+
+    Graph shape (ADR-0052, survey eraBC §5):
+      - (:AssetBundle {name, odoo_version})   composite MERGE key (same shape as
+        Module/Model/View). Props: is_private (name CONTAINS '._'), module (the
+        first/defining module — set ON CREATE only so it stays the definer when a
+        later module also contributes), profile (ADR-0034 union).
+      - (:Module)-[:CONTRIBUTES_TO {entries}]->(:AssetBundle)  one per module that
+        lists this bundle in its manifest 'assets' dict; entries = JSON-serialized
+        ordered entry list (str path | [op, ...]).
+      - (:AssetBundle)-[:INCLUDES_BUNDLE]->(:AssetBundle)  for each ('include', X)
+        composition reference (X may live in any module — MERGE the target so a
+        forward reference is never orphaned, mirroring the placeholder convention).
+
+    Single-row lookups only — every MERGE is keyed on (name, odoo_version), so no
+    .single() multi-row pattern is reintroduced (the issue WI-A fixed). Reuses the
+    ADR-0034 profile-union SSOT for the contributing Module and the AssetBundle.
+    """
+    import json
+
+    from .writer_neo4j import _profile_union_set
+
+    for c in result.contributions:
+        is_private = "._" in c.bundle_name
+        # MERGE the AssetBundle node + the contributing Module + CONTRIBUTES_TO edge.
+        # module (definer) is set ON CREATE only so the first contributor owns the
+        # `module` prop; later contributors still get a CONTRIBUTES_TO edge but do
+        # not overwrite the definer.
+        tx.run(f"""
+            MERGE (b:AssetBundle {{name: $name, odoo_version: $ver}})
+            ON CREATE SET b.profile = $profiles, b.module = $module,
+                          b.is_private = $is_private
+            ON MATCH  SET b.profile =
+                {_profile_union_set("b")},
+                          b.is_private = $is_private
+            WITH b
+            MERGE (mod:Module {{name: $module, odoo_version: $ver}})
+            ON CREATE SET mod.profile = $profiles
+            ON MATCH  SET mod.profile =
+                {_profile_union_set("mod")}
+            MERGE (mod)-[r:CONTRIBUTES_TO]->(b)
+            SET r.entries = $entries
+        """, name=c.bundle_name, ver=c.odoo_version, module=c.module,
+             is_private=is_private, entries=json.dumps(c.entries),
+             profiles=profiles)
+
+        # INCLUDES_BUNDLE edges — ('include', X) composition. MERGE the target so a
+        # not-yet-written referenced bundle is created (profile-less, ADR-0034
+        # SCOPE-CHOKE: it is a REFERENCED node not owned by this run; a later real
+        # write under its own owner converges on the same (name, odoo_version) key).
+        for target in c.includes:
+            tx.run("""
+                MATCH (src:AssetBundle {name: $src_name, odoo_version: $ver})
+                MERGE (tgt:AssetBundle {name: $tgt_name, odoo_version: $ver})
+                ON CREATE SET tgt.is_private = $tgt_private
+                MERGE (src)-[:INCLUDES_BUNDLE]->(tgt)
+            """, src_name=c.bundle_name, tgt_name=target, ver=c.odoo_version,
+                 tgt_private=("._" in target))
 
 
 def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> None:
@@ -242,6 +515,7 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
                               module: $mod, odoo_version: $v})
             MATCH (c:OWLComp {name: $target, odoo_version: $v})
             WHERE NOT coalesce(c.unresolved, false)
+            WITH j, c ORDER BY c.module ASC LIMIT 1
             MERGE (j)-[:PATCHES]->(c)
             RETURN 1
         """, target=patch.target, pn=patch.patch_name,

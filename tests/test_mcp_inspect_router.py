@@ -340,6 +340,62 @@ def test_entity_lookup_pattern_missing_name():
     assert "name" in result.lower()
 
 
+def test_entity_lookup_report_kind_registered():
+    """GAP-2: 'report' is a valid entity_lookup kind."""
+    assert "report" in _ENTITY_KINDS
+
+
+def test_entity_lookup_report_missing_model_and_name():
+    """GAP-2: kind='report' with neither model nor name → Error: message."""
+    # No model/name → tree_builder.list_reports short-circuits with an Error
+    # string before any DB access, so this needs no server mock.
+    result = _entity_lookup("report", odoo_version=TEST_VERSION)
+    assert result.startswith("Error:")
+    assert "model" in result.lower()
+
+
+def test_entity_lookup_report_routes_to_list_reports(monkeypatch):
+    """GAP-2: kind='report' with model= dispatches to tree_builder.list_reports."""
+    import src.mcp.tree_builder as tb
+
+    captured = {}
+
+    def _fake_list_reports(*, model, name, odoo_version, profile_name):
+        captured.update(
+            model=model, name=name, odoo_version=odoo_version,
+            profile_name=profile_name,
+        )
+        return _STUB_RETURN
+
+    monkeypatch.setattr(tb, "list_reports", _fake_list_reports)
+    with _patch_server(_make_srv_mock()):
+        result = _entity_lookup(
+            "report", model="sale.order", odoo_version=TEST_VERSION,
+        )
+    assert result == _STUB_RETURN
+    assert captured["model"] == "sale.order"
+
+
+def test_entity_lookup_report_xmlid_aliases_name(monkeypatch):
+    """GAP-2: kind='report' xmlid= is forwarded as the name filter."""
+    import src.mcp.tree_builder as tb
+
+    captured = {}
+
+    def _fake_list_reports(*, model, name, odoo_version, profile_name):
+        captured.update(model=model, name=name)
+        return _STUB_RETURN
+
+    monkeypatch.setattr(tb, "list_reports", _fake_list_reports)
+    with _patch_server(_make_srv_mock()):
+        _entity_lookup(
+            "report", xmlid="sale.action_report_saleorder",
+            odoo_version=TEST_VERSION,
+        )
+    assert captured["name"] == "sale.action_report_saleorder"
+    assert captured["model"] is None
+
+
 # ---------------------------------------------------------------------------
 # AC-D1-3 edge: _invalid_method_error and _invalid_kind_error helpers
 # ---------------------------------------------------------------------------

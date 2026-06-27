@@ -215,6 +215,14 @@ def build_registry(
             if not manifest.get('installable', True):
                 skipped_not_installable += 1
                 continue
+            # NOTE: do NOT skip on `active: False`. `active` (legacy, pre-
+            # `auto_install`) is an auto-activate-on-fresh-DB hint — it is NOT an
+            # index-exclusion signal. `installable: True` is what gates indexing.
+            # The only v10-v14 module carrying `active: False` is `account_test`
+            # (installable:True), which ships the real, queryable model
+            # `accounting.assert.test` + views + a report — exactly what OSM is
+            # meant to index. Skipping it dropped that module/model from the index
+            # (parser MED-1 review).
 
             version_raw = manifest.get('version', '')
             odoo_version = resolve_odoo_version(version_raw, repo_path)
@@ -244,7 +252,12 @@ def build_registry(
             action = license_policy_action(effective_license)
             if action == "skip":
                 skipped_license += 1
-                _logger.warning(
+                # By-design policy exclusion (ADR-0036), not a problem: the
+                # per-repo INFO summary below already reports `skipped_license`,
+                # so the per-module line is DEBUG to avoid duplicating it 13x
+                # per scan (zero-noise reindex). Indexer log-level policy: see
+                # the module header in parser_python.py.
+                _logger.debug(
                     "License policy: skipping module '%s' (license=%s, action=skip)."
                     " To enable, flip LICENSE_POLICY['%s'] in src/constants.py.",
                     module_name, effective_license, effective_license,
@@ -274,6 +287,9 @@ def build_registry(
             _external_python: list[str] = list(_ext_deps.get('python') or [])
             _external_bin: list[str] = list(_ext_deps.get('bin') or [])
 
+            # v17+ manifest `countries` key — module install-UI country filter.
+            _countries: list[str] = list(manifest.get('countries') or [])
+
             info = ModuleInfo(
                 name=module_name,
                 odoo_version=odoo_version,
@@ -296,6 +312,7 @@ def build_registry(
                 summary=_summary,
                 external_python=_external_python,
                 external_bin=_external_bin,
+                countries=_countries,
                 # A2c — repo provenance
                 repo_url=repo_url,
                 repo_id=repo_id,

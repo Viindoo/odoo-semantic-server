@@ -184,3 +184,169 @@ def render_list_block(rows: list[str], *, prefix: str = "│   ") -> list[str]:
         connector = "└─" if i == last_idx else "├─"
         result.append(f"{prefix}{connector} {row}")
     return result
+
+
+def format_view_conditions(
+    conditions_raw: str | None, connector: str, sub_indent: str
+) -> list[str]:
+    """Render a View node's conditional-visibility blob into tree lines (GAP-1).
+
+    *conditions_raw* is the JSON string stored on ``View.conditions`` by
+    ``writer_neo4j_ui`` - a list of ``{element, attr, expr, field, legacy}`` maps
+    covering both the legacy ``attrs=``/``states=`` form (v8-v16) and the v17+
+    direct ``invisible=``/``required=``/``readonly=``/``column_invisible=`` form.
+
+    Returns the rendered lines (header + one line per condition) using the caller's
+    ``connector`` (the tree ASCII branch glyph) and ``sub_indent``. Returns ``[]``
+    when there are no conditions or the blob is missing/malformed (so the caller
+    appends nothing) - keeps the empty-section-silently-skipped contract
+    (ADR-0023 §1.6).
+    """
+    if not conditions_raw:
+        return []
+    import json
+
+    try:
+        conds = json.loads(conditions_raw)
+    except (ValueError, TypeError):
+        return []
+    if not conds:
+        return []
+
+    lines = [f"{connector} Conditional visibility ({len(conds)}):"]
+    last_c = len(conds) - 1
+    for j, c in enumerate(conds):
+        cconn = "└─" if j == last_c else "├─"
+        fld = c.get("field")
+        target = f"{c.get('element', '?')}[{fld}]" if fld else c.get("element", "?")
+        tag = " (legacy attrs/states)" if c.get("legacy") else ""
+        lines.append(
+            f"{sub_indent}{cconn} {target} {c.get('attr', '?')}="
+            f"{c.get('expr', '')!r}{tag}"
+        )
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# entity_lookup(kind='report') — Report (ir.actions.report) listing (GAP-2/GAP-5)
+# ---------------------------------------------------------------------------
+#
+# Implemented HERE (not in server.py) because server.py is at its 3700-line
+# god-file ceiling (test_no_god_file). Uses the same srv.* read helpers every
+# other inspect path uses (_get_driver / _resolve_version / _data_bounded /
+# _scope / _scope_pred). Routed through srv._data_bounded so a tx-timeout becomes
+# OrmQueryTimeout (clean English, no Cypher leaked) — the raise propagates to the
+# entity_lookup async handler which records the metric + returns the clean string.
+
+def list_reports(
+    *,
+    model: str | None,
+    name: str | None,
+    odoo_version: str = "auto",
+    profile_name: str | None = None,
+) -> str:
+    """List :Report nodes (ir.actions.report) matching a model and/or name.
+
+    At least one of *model* (business model the report runs on) or *name* (xmlid /
+    title substring) must be given. Renders an ADR-0023 §1 tree: one row per report
+    with its report_type, target model, and the QWeb template it uses.
+    """
+    from src.constants import LIST_PREVIEW_MAX_ITEMS
+    from src.mcp import server as srv
+
+    if not model and not name:
+        return (
+            "Error: entity_lookup(kind='report') requires model='<model_name>' "
+            "(reports on a model) and/or name='<report_xmlid_or_title>'."
+        )
+
+    with srv._get_driver().session() as session:
+        odoo_version = srv._resolve_version(odoo_version, session)
+
+        where = [srv._scope_pred("rp"), "rp.module <> '__unresolved__'"]
+        params: dict = {"v": odoo_version, **srv._scope(profile_name)}
+        if model:
+            where.append("rp.model = $model")
+            params["model"] = model
+        if name:
+            # Case-insensitive substring match on either the xmlid or the title.
+            where.append(
+                "(toLower(rp.xmlid) CONTAINS toLower($name) "
+                "OR toLower(rp.name) CONTAINS toLower($name))"
+            )
+            params["name"] = name
+        where_clause = " AND ".join(where)
+
+        # ADR-0023 list convention (mirror _find_deprecated_usage / entity_lookup):
+        # fetch cap+1 so a full page reveals whether more rows exist, then trim and
+        # append a truncation banner — never a silent hard cap.
+        cap_plus_one = LIST_PREVIEW_MAX_ITEMS + 1
+        params["cap_plus_one"] = cap_plus_one
+        rows = srv._data_bounded(
+            session,
+            f"""
+            MATCH (rp:Report {{odoo_version: $v}})
+            WHERE {where_clause}
+            OPTIONAL MATCH (rp)-[:DEFINED_IN]->(mod:Module)
+            RETURN rp.xmlid AS xmlid, rp.name AS name, rp.model AS model,
+                   rp.report_type AS report_type, rp.report_name AS report_name,
+                   rp.paperformat AS paperformat,
+                   coalesce(mod.repo_url, mod.repo) AS repo, mod.name AS module
+            ORDER BY rp.xmlid ASC
+            LIMIT $cap_plus_one
+            """,
+            f"report list (model={model!r}, name={name!r}, Odoo {odoo_version})",
+            **params,
+        )
+
+    overflow = len(rows) > LIST_PREVIEW_MAX_ITEMS
+    if overflow:
+        rows = rows[:LIST_PREVIEW_MAX_ITEMS]
+
+    scope = []
+    if model:
+        scope.append(f"model={model!r}")
+    if name:
+        scope.append(f"name={name!r}")
+    header = (
+        f"entity_lookup(kind='report', {', '.join(scope)}, "
+        f"odoo_version={odoo_version!r})"
+    )
+    if not rows:
+        return (
+            f"{header}\n"
+            "└─ No reports found. Verify the model name / report xmlid, or the "
+            "version (reports are indexed from ir.actions.report records and the "
+            "v8-v13 <report> shorthand)."
+        )
+
+    lines = [header, f"├─ Reports ({len(rows)}):"]
+    # When overflow, the truncation banner is the tree's last sibling, so no
+    # report row may close the tree with "└─".
+    last = -1 if overflow else len(rows) - 1
+    for i, r in enumerate(rows):
+        conn = "└─" if i == last else "├─"
+        # integration LOW-1: ADR-0023 §1.3 wants 4-char indent — the non-last
+        # vertical-continuation prefix is "│   " (pipe + 3 spaces), not "│  ".
+        sub = "    " if i == last else "│   "
+        repo = f"[{r['repo']}] " if r.get("repo") else ""
+        lines.append(f"{conn} {r['xmlid']}  ({r.get('report_type') or '?'})")
+        title = r.get("name")
+        if title:
+            lines.append(f"{sub}├─ Title:    {title}")
+        lines.append(f"{sub}├─ Model:    {r.get('model') or '?'}")
+        lines.append(f"{sub}├─ Module:   {repo}{r.get('module') or '?'}")
+        tmpl = r.get("report_name")
+        pf = r.get("paperformat")
+        if pf:
+            lines.append(f"{sub}├─ Template: {tmpl or '(none)'}")
+            lines.append(f"{sub}└─ Paperformat: {pf}")
+        else:
+            lines.append(f"{sub}└─ Template: {tmpl or '(none)'}")
+    if overflow:
+        cap = len(rows)  # == LIST_PREVIEW_MAX_ITEMS after the trim above
+        lines.append(
+            f"└─ ... showing first {cap} reports (more than {cap} total)"
+            " — narrow with model=<model_name> and/or name=<xmlid_or_title>"
+        )
+    return "\n".join(lines)

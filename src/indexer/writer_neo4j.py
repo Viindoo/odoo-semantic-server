@@ -124,10 +124,21 @@ class Neo4jWriter:
                 " ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
+                # GAP-2/GAP-5 report layer: composite key (xmlid, odoo_version)
+                # backs the Report MERGE; the (model, odoo_version) index backs the
+                # entity_lookup(kind='report', model=...) lookup by business model.
+                "CREATE INDEX IF NOT EXISTS FOR (n:Report) ON (n.xmlid, n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Report) ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:JSPatch)"
                 " ON (n.target, n.patch_name, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:OWLComp)"
                 " ON (n.name, n.module, n.odoo_version)",
+                # WI-D asset-bundle layer (ADR-0052): composite key (name, odoo_version).
+                # Backs the EXTENDS_ASSET_BUNDLE base-lookup (resolves v15+ legacy
+                # <template inherit_id="web.assets_backend"> extenders) + CONTRIBUTES_TO
+                # / INCLUDES_BUNDLE writes — all (name, odoo_version)-keyed.
+                "CREATE INDEX IF NOT EXISTS FOR (n:AssetBundle)"
+                " ON (n.name, n.odoo_version)",
                 # M4.5 spec layer (per ADR-0002):
                 "CREATE INDEX IF NOT EXISTS FOR (n:CoreSymbol)"
                 " ON (n.qualified_name, n.odoo_version)",
@@ -232,6 +243,24 @@ class Neo4jWriter:
         with self.driver.session() as session:
             for result in results:
                 session.execute_write(_write_js_graph_result, result, _profiles)
+
+    def write_asset_results(
+        self,
+        results: list,
+        profiles: list[str] | None = None,
+    ) -> None:
+        """Persist :AssetBundle nodes + CONTRIBUTES_TO/INCLUDES_BUNDLE edges (WI-D).
+
+        MUST be called BEFORE write_view_results so the legacy
+        ``<template inherit_id="web.assets_backend">`` extenders (written in the
+        view/qweb pass) can resolve against the AssetBundle base nodes via the
+        EXTENDS_ASSET_BUNDLE fallback. *profiles* written as node property
+        (ADR-0034 single-owner provenance, same as every other writer).
+        """
+        _profiles = profiles if profiles is not None else []
+        with self.driver.session() as session:
+            for result in results:
+                session.execute_write(_write_asset_parse_result, result, _profiles)
 
     # --- M4.5 spec layer (CoreSymbol + diff edges) -------------------------
 
@@ -454,7 +483,7 @@ class Neo4jWriter:
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
         """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.
 
-        Child nodes (Model/Field/Method/View/QWebTmpl/JSPatch/OWLComp) are
+        Child nodes (Model/Field/Method/View/QWebTmpl/Report/JSPatch/OWLComp) are
         scoped by (module_name, odoo_version) — they're deleted ONLY if their
         Module parent is being deleted in this call, to avoid orphan cleanup of
         nodes that belong to other repos in the same version.
@@ -502,12 +531,21 @@ class Neo4jWriter:
             # an implicit (auto-commit) transaction — session.run() here, NOT execute_write.
             # CALL (child) { ... } syntax required for Neo4j 5.23+ (5.x deprecates
             # CALL { WITH <var> } in favour of CALL (<var>) { }; both work on 5.26.25).
+            # graph MED-1 / integration LOW: AssetBundle and Stylesheet are
+            # INTENTIONALLY excluded from this per-module cascade. Both are
+            # version-global, shared across modules (two modules contributing to
+            # web.assets_backend correctly share ONE AssetBundle node), so
+            # deleting one on a per-module scope would orphan OTHER live modules'
+            # CONTRIBUTES_TO / IMPORTS edges. They are reclaimed by a version-
+            # global orphan sweep instead (gc_orphan_asset_bundles, run in the
+            # --full GC path) — same class as CoreSymbol (also version-global,
+            # also not in this cascade).
             children_row = session.run(
                 f"""
                 MATCH (child)
                 WHERE child.module IN $names AND child.odoo_version = $version
                   AND (child:Model OR child:Field OR child:Method OR child:View
-                       OR child:QWebTmpl OR child:JSPatch OR child:OWLComp)
+                       OR child:QWebTmpl OR child:Report OR child:JSPatch OR child:OWLComp)
                 CALL (child) {{
                     DETACH DELETE child
                 }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
@@ -661,6 +699,48 @@ class Neo4jWriter:
         # nodes/edges that survived from the pre-PR-#194 placeholder path.
         self.heal_resolved_unresolved_flags(odoo_version)
         return counts
+
+    def gc_orphan_asset_bundles(self, odoo_version: str) -> int:
+        """DETACH DELETE orphaned :AssetBundle nodes for *odoo_version*.
+
+        graph MED-1 / integration LOW: AssetBundle is version-global (shared
+        across modules), so it is deliberately NOT in the per-module
+        ``delete_modules_scoped`` cascade — deleting it per-module would orphan
+        other live modules' CONTRIBUTES_TO edges. Instead, after a --full reindex
+        (which re-writes every live module's contributions), any AssetBundle with
+        NO inbound CONTRIBUTES_TO and that participates in NO INCLUDES_BUNDLE /
+        EXTENDS_ASSET_BUNDLE edge is genuinely unreferenced — a leftover from a
+        bundle whose sole contributor module was removed — and can be reclaimed.
+
+        Safety:
+        - Scoped strictly by ``odoo_version`` (cross-version data untouched).
+        - Only deletes nodes with zero inbound CONTRIBUTES_TO AND no
+          INCLUDES_BUNDLE (either direction) AND no inbound EXTENDS_ASSET_BUNDLE,
+          so a forward-referenced or still-extended bundle is preserved.
+        - Idempotent: a second run returns 0.
+        - Safe in incremental runs too, but most effective on --full (where all
+          live contributions have just been re-written, so survivors are real
+          orphans rather than not-yet-written nodes).
+        """
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (b:AssetBundle {odoo_version: $version})
+                WHERE NOT (:Module)-[:CONTRIBUTES_TO]->(b)
+                  AND NOT (b)-[:INCLUDES_BUNDLE]-()
+                  AND NOT (b)<-[:EXTENDS_ASSET_BUNDLE]-()
+                DETACH DELETE b
+                RETURN count(b) AS deleted
+                """,
+                version=odoo_version,
+            ).single()
+        deleted = row["deleted"] if row is not None else 0
+        if deleted > 0:
+            _logger.info(
+                "AssetBundle orphan GC: deleted %d unreferenced bundles for "
+                "version %s", deleted, odoo_version,
+            )
+        return deleted
 
     def reconcile_same_name_inherits(self, odoo_version: str) -> int:
         """MERGE any missing extender-to-definition INHERITS edges for odoo_version.
@@ -1399,6 +1479,7 @@ from .writer_neo4j_spec import (  # noqa: E402,I001
     _write_replaced_by_edges,
 )
 from .writer_neo4j_ui import (  # noqa: E402,I001
+    _write_asset_parse_result,
     _write_js_graph_result,
     _write_stylesheets_batch,
     _write_view_parse_result,

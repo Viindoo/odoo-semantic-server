@@ -50,6 +50,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.summary = $summary,
                       m.external_python = $external_python,
                       m.external_bin = $external_bin,
+                      m.countries = $countries,
                       m.repo_url = $repo_url,
                       m.repo_id = $repo_id
         ON MATCH  SET m.profile =
@@ -60,6 +61,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.summary = coalesce($summary, m.summary),
                       m.external_python = $external_python,
                       m.external_bin = $external_bin,
+                      m.countries = $countries,
                       m.repo_url = coalesce($repo_url, m.repo_url),
                       m.repo_id = coalesce($repo_id, m.repo_id)
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
@@ -84,6 +86,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
          summary=module.summary,
          external_python=module.external_python,
          external_bin=module.external_bin,
+         countries=module.countries,
          repo_url=module.repo_url,
          repo_id=module.repo_id,
          profiles=profiles)
@@ -162,10 +165,31 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 """, name=model.name, mod=model.module, v=model.odoo_version,
                      order=idx)
             else:
+                # Prefer-definition collapse (graph HIGH-1 + mixin-resolve fix,
+                # ADR-0048): the cross-name parent (e.g. `mail.thread`) must be
+                # resolved to exactly ONE target, but a HARD `is_definition=true`
+                # filter was TOO STRICT — a mixin / AbstractModel parent has NO
+                # is_definition=true node (it is injected, never self-declared with
+                # an explicit `_name` outside its own inherit), so the filter
+                # returned 0 rows and DROPPED the edge, making the parent disappear
+                # (purchase.order losing mail.thread; sale.order.message_ids
+                # unresolvable). Use a PREFERENCE ORDERING instead: drop only
+                # placeholders (`NOT unresolved`), then rank is_definition DESC
+                # first so the canonical definition wins WHEN ONE EXISTS, falling
+                # through to the best non-definition node (the mixin) when none does.
+                # LIMIT 1 collapses to a single row — killing both the `.single()`
+                # multi-row warning (D>1: a fork + upstream can both be definitions)
+                # and the K×D edge fan-out — while NEVER dropping a legitimate
+                # parent. field_count is not a stored property (coalesces to 0), so
+                # the effective tiebreak after is_definition is module ASC.
                 rec = tx.run(f"""
                     MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
                     MATCH (parent:Model {{name: $parent_name, odoo_version: $v}})
                     WHERE NOT coalesce(parent.unresolved, false)
+                    WITH m, parent
+                    ORDER BY coalesce(parent.is_definition, false) DESC,
+                             coalesce(parent.field_count, 0) DESC, parent.module ASC
+                    LIMIT 1
                     MERGE (m)-[r:{REL_INHERITS}]->(parent)
                     SET r.order = $order
                     RETURN 1 AS ok
@@ -201,10 +225,22 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                          order=idx)
 
         for delegated_model, via_field in model.inherits.items():
+            # Prefer-definition collapse (graph HIGH-1 + mixin-resolve fix,
+            # ADR-0048): same rationale as the cross-name INHERITS branch above.
+            # A HARD `is_definition=true` filter is too strict — a delegated
+            # AbstractModel/mixin parent with no is_definition=true node would be
+            # dropped. Drop only placeholders, then prefer the definition via
+            # ORDER BY (is_definition DESC, field_count DESC, module ASC) + LIMIT 1
+            # so the single canonical delegate wins when one exists and the best
+            # non-definition node wins otherwise — never dropping a real target.
             rec = tx.run("""
                 MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
                 MATCH (d:Model {name: $delegated, odoo_version: $v})
                 WHERE NOT coalesce(d.unresolved, false)
+                WITH m, d
+                ORDER BY coalesce(d.is_definition, false) DESC,
+                         coalesce(d.field_count, 0) DESC, d.module ASC
+                LIMIT 1
                 MERGE (m)-[:DELEGATES_TO {via_field: $via_field}]->(d)
                 RETURN 1 AS ok
             """, name=model.name, mod=model.module, v=model.odoo_version,

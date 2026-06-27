@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_parser_python.py
+import logging
 import textwrap
 from pathlib import Path
 
@@ -337,6 +338,70 @@ def test_parse_skips_syntax_error_files(tmp_path, sale_module):
     bad.write_text("def broken(: invalid syntax {{{")
     result = parse_file(str(bad), sale_module)
     assert result == []
+
+
+def test_fallback_zero_models_controller_logs_debug_not_warning(
+    tmp_path, v8_module, caplog
+):
+    """#285 safety net: a file that fails ast.parse and recovers 0 models but has
+    NO model-definition tokens (controller/vendored) is an EXPECTED benign gap →
+    DEBUG, never WARNING. Red-before-green: drop the token check and this WARNs.
+    """
+    import logging
+
+    # Py2 `print` statement → SyntaxError → text-regex fallback; the body is a
+    # controller (http.route) with no _name/_inherit/_columns tokens.
+    bad = tmp_path / "controllers.py"
+    bad.write_text(
+        "print 'loading'\n\n"
+        "class MyController(http.Controller):\n"
+        "    @http.route('/x')\n"
+        "    def index(self):\n"
+        "        return 'ok'\n"
+    )
+    stats: dict[str, int] = {}
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        result = parse_file(str(bad), v8_module, stats=stats)
+
+    assert result == []
+    assert stats.get("fallback_zero_models", 0) == 1
+    assert stats.get("fallback_zero_models_with_tokens", 0) == 0
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert not warnings, [r.getMessage() for r in warnings]
+    assert any(
+        r.levelno == logging.DEBUG and "found no ORM models" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_fallback_zero_models_with_model_tokens_logs_warning(
+    tmp_path, v8_module, caplog
+):
+    """#285 safety net: a file that fails ast.parse, has `_name=` at class-body
+    indentation, yet recovers 0 models is a PROBABLE LOSS → WARNING. The class
+    header here has no base-parens, so the era1 fallback (which requires
+    `class X(...):`) recovers nothing despite the model token being present.
+    Red-before-green: downgrade this branch to DEBUG and the assert fails.
+    """
+    import logging
+
+    bad = tmp_path / "model.py"
+    bad.write_text(
+        "print 'loading'\n\n"
+        "class Broken:\n"           # no base-parens → era1 class regex misses it
+        "    _name = 'x.model'\n"
+        "    _columns = {}\n"
+    )
+    stats: dict[str, int] = {}
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        result = parse_file(str(bad), v8_module, stats=stats)
+
+    assert result == []
+    assert stats.get("fallback_zero_models_with_tokens", 0) == 1
+    warnings = [
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert any("probable model loss" in m and "model.py" in m for m in warnings), warnings
 
 
 def test_parse_skips_non_model_classes(tmp_path, sale_module):
@@ -2125,3 +2190,182 @@ def test_annassign_mixed_assign_and_annassign_both_captured(tmp_path, v18_module
     )
     assert field_map['name'].ttype == 'char'
     assert field_map['commercial_partner_id'].ttype == 'many2one'
+
+
+# --- WI-B: zero-noise reindex — Py2 fallback logs are DEBUG, not WARNING/ERROR ---
+# Behaviour protected: the by-design Python-2 text-regex fallback for v8-v10 is
+# an expected success path, so it must NOT raise the operator-facing log levels.
+# A controller/vendored file that recovers 0 ORM models is also expected and must
+# NOT log ERROR ("models LOST" was the misleading message we removed, #285).
+
+
+def _assert_no_warn_or_error(caplog):
+    offenders = [
+        f"{r.levelname}:{r.getMessage()}"
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+    ]
+    assert not offenders, f"unexpected WARNING/ERROR log(s): {offenders}"
+
+
+def test_py2_fallback_with_model_logs_debug_not_warning(
+    tmp_path, v10_base_module, caplog
+):
+    # A Py2-syntax file that still defines an ORM model: the fallback recovers the
+    # model. The fallback notice must be DEBUG; nothing at WARNING or above.
+    f = write_py(tmp_path, "res_users.py", """
+        from odoo import models, fields
+
+        class ResUsers(models.Model):
+            _name = 'res.users'
+            login = fields.Char()
+
+            def _legacy(self):
+                print 'py2 print statement forces SyntaxError'
+    """)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        models_found = parse_file(f, v10_base_module)
+
+    assert any(m.name == "res.users" for m in models_found), (
+        "model identity must survive the Py2 fallback (#285)"
+    )
+    _assert_no_warn_or_error(caplog)
+    assert "falling back to text-regex extraction" in caplog.text, (
+        "the fallback notice must still be emitted, at DEBUG"
+    )
+
+
+def test_py2_controller_zero_models_logs_debug_not_error(
+    tmp_path, v10_base_module, caplog
+):
+    # A controller/vendored-style file: Py2 syntax + ZERO ORM models. The old code
+    # logged this at ERROR with a misleading "models LOST" message. It must now be
+    # DEBUG (nothing is lost — there were no ORM models to begin with).
+    f = write_py(tmp_path, "controllers_main.py", """
+        from odoo import http
+
+        class WebController(http.Controller):
+            @http.route('/legacy', auth='public')
+            def legacy(self):
+                print 'py2 print statement forces SyntaxError'
+                return 'ok'
+    """)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        models_found = parse_file(f, v10_base_module)
+
+    assert models_found == [], "a controller file has no ORM models to recover"
+    _assert_no_warn_or_error(caplog)
+    assert "no ORM models" in caplog.text, (
+        "the 0-model outcome must still be visible, at DEBUG"
+    )
+    assert "LOST" not in caplog.text, (
+        "the misleading 'models LOST' wording must be gone (#285)"
+    )
+
+
+def test_parse_module_emits_single_info_fallback_summary(
+    tmp_path, v10_base_module, caplog
+):
+    # One INFO summary per module replaces the per-file WARNING/ERROR spam:
+    # 2 files use the fallback (1 with a model, 1 controller with 0 models).
+    write_py(tmp_path, "res_users.py", """
+        from odoo import models, fields
+
+        class ResUsers(models.Model):
+            _name = 'res.users'
+            login = fields.Char()
+
+            def _legacy(self):
+                print 'py2'
+    """)
+    write_py(tmp_path, "controllers_main.py", """
+        from odoo import http
+
+        class WebController(http.Controller):
+            def legacy(self):
+                print 'py2'
+    """)
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.parser"):
+        result = parse_module(v10_base_module)
+
+    assert any(m.name == "res.users" for m in result.models)
+    summaries = [
+        r for r in caplog.records
+        if r.levelno == logging.INFO
+        and r.getMessage().startswith("parse_module base")
+    ]
+    assert len(summaries) == 1, (
+        f"expected exactly one INFO summary per module, got {len(summaries)}"
+    )
+    msg = summaries[0].getMessage()
+    assert "2 file(s) used text-regex fallback" in msg, msg
+    assert "1 with 0 ORM models" in msg, msg
+    # No WARNING/ERROR anywhere — the whole point of WI-B.
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# --- WI-G: small coverage/correctness fixes (osm-audit-orm) ---
+
+def test_parse_fields_id_pseudotype_captured(tmp_path, sale_module):
+    """`id = fields.Id()` on a SQL-view model is captured (osm-audit-orm GAP-3).
+
+    Behaviour contract: an explicit ``fields.Id`` declaration must surface as a
+    field named ``id`` (provenance: source line), not be dropped because ``Id``
+    was absent from FIELD_TYPES.
+    """
+    f = write_py(tmp_path, "report.py", """
+        from odoo import models, fields
+
+        class MyReport(models.Model):
+            _name = 'my.report'
+            _auto = False
+            id = fields.Id()
+            name = fields.Char()
+    """)
+    result = parse_file(f, sale_module)
+    fmap = {fld.name: fld for fld in result[0].fields}
+    assert "id" in fmap, "explicit fields.Id() must be captured"
+    assert fmap["id"].ttype == "id"
+
+
+def test_parse_fields_id_with_string_kwarg(tmp_path, sale_module):
+    """`id = fields.Id(string='ID')` is still captured (v19 lunch report form)."""
+    f = write_py(tmp_path, "report.py", """
+        from odoo import models, fields
+
+        class CashReport(models.Model):
+            _name = 'cash.report'
+            _auto = False
+            id = fields.Id(string='ID')
+    """)
+    result = parse_file(f, sale_module)
+    fmap = {fld.name: fld for fld in result[0].fields}
+    assert "id" in fmap
+
+
+def test_parse_columns_update_call_captured(tmp_path, v8_module):
+    """`_columns.update({...})` on a Py3-parseable v8 file captures the fields.
+
+    Behaviour contract (osm-audit-orm GAP-2): era2 AST runs on Py3-parseable v8
+    files; a bare ``_columns.update({'ref': fields.char(...)})`` statement must
+    contribute its fields, matching the era1 text-regex fallback.
+    """
+    f = write_py(tmp_path, "pos_box.py", """
+        from openerp.osv import osv, fields
+
+        class CashBoxIn(osv.osv_memory):
+            _name = 'cash.box.in'
+            _columns = {}
+            _columns.update({
+                'ref': fields.char('Reference'),
+                'amount': fields.float('Amount'),
+            })
+    """)
+    result = parse_file(f, v8_module)
+    assert len(result) == 1
+    fmap = {fld.name: fld for fld in result[0].fields}
+    assert "ref" in fmap, "_columns.update() field 'ref' must be captured"
+    assert "amount" in fmap

@@ -317,34 +317,126 @@ def _format_deprecated_usage(
     return "\n".join(lines)
 
 
+# GAP-1 (osm-audit-orm.md): version-removed method decorators that the indexer
+# stores on Method.decorators (as 'api.<attr>' strings) with NO USES_CORE_SYMBOL
+# edge, so the call-based scan below cannot see them. Each entry carries the
+# float version at which the decorator was REMOVED from the framework — usage is
+# only deprecated once the queried version reaches that removal. (@api.one removed
+# in 10.0; @api.multi removed in 13.0.) Surfaced as synthetic hits in the same
+# result shape as call-based hits; replacement note mirrors the framework change.
+_DEPRECATED_DECORATORS: dict[str, dict] = {
+    "api.one": {
+        "removed_in": 10.0,
+        "replacement": "methods operate on recordsets; remove @api.one and "
+                       "iterate self explicitly (removed in 10.0)",
+    },
+    "api.multi": {
+        "removed_in": 13.0,
+        "replacement": "methods are multi by default; remove the @api.multi "
+                       "decorator (removed in 13.0)",
+    },
+}
+
+
+def _removed_decorators_for_version(odoo_version: str) -> list[str]:
+    """Return the decorators removed as of *odoo_version*, sorted.
+
+    graph LOW-1 / integration MED-1: ``odoo_version`` is a resolved explicit arg
+    that ``normalize_version_arg`` does NOT validate as ``\\d+\\.\\d+``, so a
+    non-numeric label (e.g. ``"saas-17.4"``) would raise an uncaught ``ValueError``
+    and 500 the tool (ADR-0023 clean-text break). Mirror the defensive belt in
+    ``guidance.py`` — fail-closed: on a non-numeric version return an EMPTY list
+    (skip the decorator leg; the call-based leg still runs).
+    """
+    try:
+        ver = float(odoo_version)
+    except (TypeError, ValueError):
+        return []
+    return sorted(
+        d for d, meta in _DEPRECATED_DECORATORS.items()
+        if ver >= meta["removed_in"]
+    )
+
+
 def _find_deprecated_usage(
     odoo_version: str = "auto", kind: str | None = None,
     profile_name: str | None = None,
 ) -> str:
-    """Scan user code for usage of CoreSymbol entries with deprecated/removed status."""
+    """Scan user code for usage of deprecated/removed APIs.
+
+    Two hit sources are merged: (1) Methods with a USES_CORE_SYMBOL edge to a
+    CoreSymbol whose status is deprecated/removed (calls in the body), and (2)
+    GAP-1 — Methods carrying a version-removed decorator (``@api.multi`` /
+    ``@api.one``) on ``Method.decorators``, which carry no edge. The decorator
+    leg is version-gated: a decorator is only flagged once the queried version is
+    at or past its removal version, so e.g. ``@api.multi`` on v12 is not flagged.
+    """
     cap_plus_one = LIST_PREVIEW_MAX_ITEMS + 1
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
-        cypher = f"""
-            MATCH (mth:Method {{odoo_version: $v}})-[:{REL_USES_CORE_SYMBOL}]->(cs:CoreSymbol)
-            WHERE cs.status IN ['deprecated', 'removed']
-            AND ($own IS NULL OR (size(mth.profile) > 0
-                 AND all(__p IN mth.profile WHERE __p IN $own OR __p IN $shared)))
-        """
         params: dict = {"v": odoo_version, "cap_plus_one": cap_plus_one,
                         **_srv._scope(profile_name)}
+
+        # Profile-scope guard shared by both legs (ADR-0034 read-side filter).
+        # SSOT: use the canonical _scope_pred helper (same fragment list_reports
+        # uses as _scope_pred('rp')) instead of an inline copy — keeps this
+        # security-critical tenant choke-point in one place (no per-site drift).
+        scope_guard = _srv._scope_pred("mth")
+
+        # Leg 1 — call-based hits via USES_CORE_SYMBOL edge.
+        kind_clause = ""
         if kind:
-            cypher += " AND cs.kind = $kind"
+            kind_clause = " AND cs.kind = $kind"
             params["kind"] = kind
-        # B1: OPTIONAL MATCH Module to get repo so agent can locate the file.
-        cypher += """
-            OPTIONAL MATCH (mod:Module {name: mth.module, odoo_version: $v})
+        leg_calls = f"""
+            MATCH (mth:Method {{odoo_version: $v}})-[:{REL_USES_CORE_SYMBOL}]->(cs:CoreSymbol)
+            WHERE cs.status IN ['deprecated', 'removed']
+              AND {scope_guard}{kind_clause}
             RETURN mth.module AS module, mth.model AS model, mth.name AS method,
                    cs.qualified_name AS deprecated_symbol,
                    cs.status AS status,
-                   cs.replacement_qname AS replacement,
+                   cs.replacement_qname AS replacement
+        """
+
+        legs = [leg_calls]
+        # Leg 2 — GAP-1 decorator hits. Skipped when a `kind` filter is set, since
+        # decorators carry no CoreSymbol kind to match against. Version gate is
+        # decided once in Python (numeric, not lexical — Neo4j 5.x gotcha) so only
+        # decorators removed as of the queried version enter the allow-list.
+        if not kind:
+            removed_decorators = _removed_decorators_for_version(odoo_version)
+            if removed_decorators:
+                params["removed_decorators"] = removed_decorators
+                # Pick the first matching decorator per method as the reported
+                # symbol (a method carries at most one of api.one/api.multi).
+                leg_decorators = f"""
+                    MATCH (mth:Method {{odoo_version: $v}})
+                    WHERE any(__d IN coalesce(mth.decorators, [])
+                              WHERE __d IN $removed_decorators)
+                      AND {scope_guard}
+                    WITH mth, [__d IN coalesce(mth.decorators, [])
+                               WHERE __d IN $removed_decorators][0] AS __dec
+                    RETURN mth.module AS module, mth.model AS model,
+                           mth.name AS method,
+                           __dec AS deprecated_symbol,
+                           'removed' AS status,
+                           NULL AS replacement
+                """
+                legs.append(leg_decorators)
+
+        union_body = "\n            UNION\n".join(legs)
+        # B1: OPTIONAL MATCH Module (post-union) for repo so the agent can locate
+        # the file. CALL{} wraps the UNION so the outer ORDER BY/LIMIT applies to
+        # the combined result; no `WITH` import into the subquery (ADR-0048: avoid
+        # `CALL { WITH }`), the union legs are self-contained.
+        cypher = f"""
+            CALL {{
+            {union_body}
+            }}
+            OPTIONAL MATCH (mod:Module {{name: module, odoo_version: $v}})
+            RETURN module, model, method, deprecated_symbol, status, replacement,
                    coalesce(mod.repo_url, mod.repo) AS repo
-            ORDER BY mth.module, mth.model, mth.name
+            ORDER BY module, model, method, deprecated_symbol
             LIMIT $cap_plus_one
         """
         records = _srv._data_bounded(
@@ -352,6 +444,12 @@ def _find_deprecated_usage(
             label=f"deprecated-usage scan (Odoo {odoo_version})",
             **params,
         )
+    # Backfill the decorator replacement note from the SSOT dict (the Cypher
+    # leg returns NULL replacement; the human-readable note lives in Python).
+    for r in records:
+        meta = _DEPRECATED_DECORATORS.get(r.get("deprecated_symbol"))
+        if meta and not r.get("replacement"):
+            r["replacement"] = meta["replacement"]
     overflow = len(records) > LIST_PREVIEW_MAX_ITEMS
     if overflow:
         records = records[:LIST_PREVIEW_MAX_ITEMS]
