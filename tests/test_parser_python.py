@@ -2241,3 +2241,67 @@ def test_parse_module_emits_single_info_fallback_summary(
     assert "1 with 0 ORM models" in msg, msg
     # No WARNING/ERROR anywhere — the whole point of WI-B.
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+# --- WI-G: small coverage/correctness fixes (osm-audit-orm) ---
+
+def test_parse_fields_id_pseudotype_captured(tmp_path, sale_module):
+    """`id = fields.Id()` on a SQL-view model is captured (osm-audit-orm GAP-3).
+
+    Behaviour contract: an explicit ``fields.Id`` declaration must surface as a
+    field named ``id`` (provenance: source line), not be dropped because ``Id``
+    was absent from FIELD_TYPES.
+    """
+    f = write_py(tmp_path, "report.py", """
+        from odoo import models, fields
+
+        class MyReport(models.Model):
+            _name = 'my.report'
+            _auto = False
+            id = fields.Id()
+            name = fields.Char()
+    """)
+    result = parse_file(f, sale_module)
+    fmap = {fld.name: fld for fld in result[0].fields}
+    assert "id" in fmap, "explicit fields.Id() must be captured"
+    assert fmap["id"].ttype == "id"
+
+
+def test_parse_fields_id_with_string_kwarg(tmp_path, sale_module):
+    """`id = fields.Id(string='ID')` is still captured (v19 lunch report form)."""
+    f = write_py(tmp_path, "report.py", """
+        from odoo import models, fields
+
+        class CashReport(models.Model):
+            _name = 'cash.report'
+            _auto = False
+            id = fields.Id(string='ID')
+    """)
+    result = parse_file(f, sale_module)
+    fmap = {fld.name: fld for fld in result[0].fields}
+    assert "id" in fmap
+
+
+def test_parse_columns_update_call_captured(tmp_path, v8_module):
+    """`_columns.update({...})` on a Py3-parseable v8 file captures the fields.
+
+    Behaviour contract (osm-audit-orm GAP-2): era2 AST runs on Py3-parseable v8
+    files; a bare ``_columns.update({'ref': fields.char(...)})`` statement must
+    contribute its fields, matching the era1 text-regex fallback.
+    """
+    f = write_py(tmp_path, "pos_box.py", """
+        from openerp.osv import osv, fields
+
+        class CashBoxIn(osv.osv_memory):
+            _name = 'cash.box.in'
+            _columns = {}
+            _columns.update({
+                'ref': fields.char('Reference'),
+                'amount': fields.float('Amount'),
+            })
+    """)
+    result = parse_file(f, v8_module)
+    assert len(result) == 1
+    fmap = {fld.name: fld for fld in result[0].fields}
+    assert "ref" in fmap, "_columns.update() field 'ref' must be captured"
+    assert "amount" in fmap

@@ -46,6 +46,7 @@ from src.indexer import (
 )
 from src.indexer.models import StylesheetInfo, ViewParseResult
 from src.indexer.protocols import IndexWriterProtocol
+from src.indexer.version_registry import less_active, scss_active
 
 # Log under the parent "src.indexer.pipeline" name (NOT __name__) so every
 # per-repo, admin-facing log line (the M7 C5 "Indexer run" summary, the W2-4
@@ -383,9 +384,19 @@ def _index_repo(
             total_owl_comps += len(js_graph.components)
 
             # CSS/SCSS/LESS parsing — stylesheet nodes + embeddings (WI-A1, ADR-0025; RP WI-3)
+            # Era gate (osm-audit-views GAP-3): LESS is the v9-v11 stylesheet
+            # language, SCSS is v12+. Plain CSS spans every era (always parsed).
+            # Gating off-era parsers is harmless (they no-op without files) but
+            # enforces + documents the boundary via the version registry (ADR-0032).
             css_chunks_mod, css_infos = parser_css.parse_module(info)
-            scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
-            less_chunks_mod, less_infos = parser_less.parse_module(info)
+            if scss_active(version):
+                scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
+            else:
+                scss_chunks_mod, scss_infos = [], []
+            if less_active(version):
+                less_chunks_mod, less_infos = parser_less.parse_module(info)
+            else:
+                less_chunks_mod, less_infos = [], []
             all_stylesheet_infos.extend(css_infos)
             all_stylesheet_infos.extend(scss_infos)
             all_stylesheet_infos.extend(less_infos)

@@ -26,6 +26,10 @@ FIELD_TYPES = {
     'Char', 'Text', 'Html', 'Integer', 'Float', 'Monetary', 'Boolean',
     'Date', 'Datetime', 'Binary', 'Selection', 'Many2one', 'One2many',
     'Many2many', 'Reference', 'Json', 'Properties', 'Image',
+    # v10+: explicit `id = fields.Id()` on SQL-view models (odoo/fields.py class Id).
+    # Cosmetic provenance — id is always injected as a builtin, this captures the
+    # explicit declaration's source_definition/line.
+    'Id',
     # v13+: generic many2one without FK constraint (odoo/fields.py:2659 in v13)
     'Many2oneReference',
     # v16+: stores property definitions on a model (odoo/fields.py:3794 in v16)
@@ -695,6 +699,20 @@ def _parse_class(
                 elif attr == '_columns' and isinstance(node.value, ast.Dict):
                     fields_list.extend(_extract_columns_dict_fields(node.value))
                     has_columns_dict = True
+
+        # v8/v9 legacy: `_columns.update({'field': fields.char(...)})` as a bare
+        # statement. era1 text-regex catches this on Py2-only files; era2 AST runs
+        # on Py3-parseable v8 files and would otherwise miss it (osm-audit-orm GAP-2).
+        elif (isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == 'update'
+                and isinstance(node.value.func.value, ast.Name)
+                and node.value.func.value.id == '_columns'
+                and node.value.args
+                and isinstance(node.value.args[0], ast.Dict)):
+            fields_list.extend(_extract_columns_dict_fields(node.value.args[0]))
+            has_columns_dict = True
 
         # Field detection: field_name = fields.FieldType(...)  (era2 v10+)
         # Also handles: field_name: Annotation = fields.FieldType(...)  (v18+)

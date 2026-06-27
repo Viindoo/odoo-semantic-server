@@ -58,3 +58,33 @@ class VersionRegistry[T]:
 def make_version_registry[T](entries: list[tuple[int, int | None, T]]) -> VersionRegistry[T]:
     """Convenience constructor — mirrors ``VersionRegistry(entries)``."""
     return VersionRegistry(entries)
+
+
+# --- Stylesheet era gate (osm-audit-views GAP-3) --------------------------
+# Odoo's frontend stylesheet language migrated LESS -> SCSS at the v11/v12
+# boundary (v11 = 155 LESS files, 1 SCSS; v12 = 0 LESS, 206 SCSS). LESS was
+# introduced in v9 (v8 used plain CSS). Plain CSS is present in every era and is
+# always parsed separately, so it is intentionally NOT gated here.
+#
+# A True handler means "run this parser for this version". A version that matches
+# no entry resolves to the registry default (False) — i.e. do not run.
+#   - LESS: active v9-v11.
+#   - SCSS: active v12+ (open-ended).
+# Both parsers no-op when their file glob finds nothing, so the gate is a
+# correctness/documentation boundary, not a data-loss fix.
+STYLESHEET_LESS_REGISTRY: VersionRegistry[bool] = VersionRegistry([
+    (9, 11, True),  # LESS era: v9-v11
+])
+STYLESHEET_SCSS_REGISTRY: VersionRegistry[bool] = VersionRegistry([
+    (12, None, True),  # SCSS era: v12+
+])
+
+
+def less_active(odoo_version: str) -> bool:
+    """True when the LESS parser should run for *odoo_version* (v9-v11)."""
+    return bool(STYLESHEET_LESS_REGISTRY.resolve_version(odoo_version, default=False))
+
+
+def scss_active(odoo_version: str) -> bool:
+    """True when the SCSS parser should run for *odoo_version* (v12+)."""
+    return bool(STYLESHEET_SCSS_REGISTRY.resolve_version(odoo_version, default=False))

@@ -224,3 +224,39 @@ class TestMakeVersionRegistry:
         reg = make_version_registry([(8, 9, "era1"), (10, None, "era2")])
         assert reg.resolve(9) == "era1"
         assert reg.resolve(10) == "era2"
+
+
+# ---------------------------------------------------------------------------
+# Stylesheet era gate (osm-audit-views GAP-3): LESS v9-v11, SCSS v12+
+# ---------------------------------------------------------------------------
+
+class TestStylesheetEraGate:
+    def test_less_active_only_v9_to_v11(self):
+        from src.indexer.version_registry import less_active
+
+        assert less_active("8.0") is False   # v8 = plain CSS era
+        assert less_active("9.0") is True
+        assert less_active("10.0") is True
+        assert less_active("11.0") is True
+        assert less_active("12.0") is False  # migrated to SCSS
+
+    def test_scss_active_from_v12(self):
+        from src.indexer.version_registry import scss_active
+
+        assert scss_active("11.0") is False
+        assert scss_active("12.0") is True
+        assert scss_active("15.0") is True
+        assert scss_active("19.0") is True   # open-ended
+
+    def test_eras_are_mutually_exclusive_at_boundary(self):
+        """The v11/v12 boundary: exactly one of LESS/SCSS is active per version."""
+        from src.indexer.version_registry import less_active, scss_active
+
+        assert less_active("11.0") and not scss_active("11.0")
+        assert scss_active("12.0") and not less_active("12.0")
+
+    def test_unparseable_version_runs_neither(self):
+        from src.indexer.version_registry import less_active, scss_active
+
+        assert less_active("unknown") is False
+        assert scss_active("unknown") is False

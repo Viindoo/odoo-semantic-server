@@ -215,6 +215,13 @@ def build_registry(
             if not manifest.get('installable', True):
                 skipped_not_installable += 1
                 continue
+            # `active: False` (v8-v14, removed v15) marks a deprecated/placeholder
+            # module that should not be auto-installed; these often coexist with
+            # `installable: True`. Treat them like not-installable so they don't
+            # pollute model_inspect/check_module_exists (osm-audit-manifest GAP-1).
+            if not manifest.get('active', True):
+                skipped_not_installable += 1
+                continue
 
             version_raw = manifest.get('version', '')
             odoo_version = resolve_odoo_version(version_raw, repo_path)
@@ -279,6 +286,9 @@ def build_registry(
             _external_python: list[str] = list(_ext_deps.get('python') or [])
             _external_bin: list[str] = list(_ext_deps.get('bin') or [])
 
+            # v17+ manifest `countries` key — module install-UI country filter.
+            _countries: list[str] = list(manifest.get('countries') or [])
+
             info = ModuleInfo(
                 name=module_name,
                 odoo_version=odoo_version,
@@ -301,6 +311,7 @@ def build_registry(
                 summary=_summary,
                 external_python=_external_python,
                 external_bin=_external_bin,
+                countries=_countries,
                 # A2c — repo provenance
                 repo_url=repo_url,
                 repo_id=repo_id,

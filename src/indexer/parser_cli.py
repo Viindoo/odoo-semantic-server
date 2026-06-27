@@ -66,6 +66,25 @@ def _is_command_subclass(class_node: ast.ClassDef) -> bool:
     return False
 
 
+def _command_name_attr(class_node: ast.ClassDef) -> str | None:
+    """Return the value of a class-body `name = '...'` string assignment, if any.
+
+    Odoo CLI command classes may declare an explicit command name via a class
+    attribute (`name = 'upgrade_code'`); this is the authoritative name and must
+    win over the lowercased class name.
+    """
+    for stmt in class_node.body:
+        if not isinstance(stmt, ast.Assign):
+            continue
+        for target in stmt.targets:
+            if (isinstance(target, ast.Name)
+                    and target.id == "name"
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)):
+                return stmt.value.value
+    return None
+
+
 def _parse_cli_module(
     source: str, odoo_version: str, file_path: str | None,
 ) -> list[CLICommandInfo]:
@@ -82,8 +101,12 @@ def _parse_cli_module(
             continue
         if not _is_command_subclass(node):
             continue
-        # Command name = lowercase class name (Odoo convention).
-        cmd_name = node.name.lower()
+        # Prefer an explicit `name = '...'` class attribute (e.g.
+        # `class UpgradeCode(Command): name = 'upgrade_code'`) over the
+        # lowercased class name, which would mangle multi-word names into
+        # `upgradecode` (osm-audit-manifest GAP-2). Fall back to the
+        # lowercased class name (Odoo convention) when no attribute is set.
+        cmd_name = _command_name_attr(node) or node.name.lower()
         description = ast.get_docstring(node)
         out.append(CLICommandInfo(
             name=cmd_name,

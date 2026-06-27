@@ -50,6 +50,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.summary = $summary,
                       m.external_python = $external_python,
                       m.external_bin = $external_bin,
+                      m.countries = $countries,
                       m.repo_url = $repo_url,
                       m.repo_id = $repo_id
         ON MATCH  SET m.profile =
@@ -60,6 +61,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.summary = coalesce($summary, m.summary),
                       m.external_python = $external_python,
                       m.external_bin = $external_bin,
+                      m.countries = $countries,
                       m.repo_url = coalesce($repo_url, m.repo_url),
                       m.repo_id = coalesce($repo_id, m.repo_id)
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
@@ -84,6 +86,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
          summary=module.summary,
          external_python=module.external_python,
          external_bin=module.external_bin,
+         countries=module.countries,
          repo_url=module.repo_url,
          repo_id=module.repo_id,
          profiles=profiles)

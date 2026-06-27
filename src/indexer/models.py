@@ -63,6 +63,9 @@ class ModuleInfo:
     summary: str | None = None
     external_python: list[str] = field(default_factory=list)
     external_bin: list[str] = field(default_factory=list)
+    # v17+ manifest `countries` key: restricts module to these ISO country codes
+    # for install-UI filtering (e.g. l10n_* modules). Empty = no restriction.
+    countries: list[str] = field(default_factory=list)
     # A2c — repo provenance
     repo_url: str | None = None
     repo_id: int | None = None

@@ -107,6 +107,74 @@ def test_build_registry_skips_non_installable(tmp_path):
     assert "active_mod" in registry.get("17.0", {})
 
 
+def _write_raw_manifest(module_dir: Path, body: str) -> None:
+    """Write a __manifest__.py with arbitrary dict *body* (for keys make_manifest lacks)."""
+    module_dir.mkdir(parents=True, exist_ok=True)
+    (module_dir / "__manifest__.py").write_text(body)
+
+
+# --- WI-G: manifest correctness fixes (osm-audit-manifest) ---
+
+def test_build_registry_skips_active_false_module(tmp_path):
+    """`active: False` (with installable: True) is skipped (osm-audit-manifest GAP-1).
+
+    Behaviour contract: v8-v14 deprecated/placeholder modules declaring
+    ``active: False`` must NOT be indexed even though ``installable`` is True,
+    so they don't pollute model_inspect/check_module_exists.
+    """
+    repo = make_git_repo(tmp_path / "repo_14.0", "14.0")
+    _write_raw_manifest(
+        repo / "deprecated_mod",
+        "{'name': 'Deprecated', 'version': '14.0.1.0.0', 'depends': [], "
+        "'installable': True, 'active': False}\n",
+    )
+    make_manifest(repo / "live_mod", "Live", "14.0.1.0.0", [])
+    registry = build_registry([(str(repo), "14.0")])
+    assert "deprecated_mod" not in registry.get("14.0", {})
+    assert "live_mod" in registry.get("14.0", {})
+
+
+def test_build_registry_active_false_counted_in_skip_summary(tmp_path, caplog):
+    """An `active: False` module increments the not-installable skip count."""
+    import logging
+
+    repo = make_git_repo(tmp_path / "repo_14.0", "14.0")
+    _write_raw_manifest(
+        repo / "deprecated_mod",
+        "{'name': 'Deprecated', 'version': '14.0.1.0.0', 'depends': [], "
+        "'installable': True, 'active': False}\n",
+    )
+    make_manifest(repo / "live_mod", "Live", "14.0.1.0.0", [])
+    with caplog.at_level(logging.INFO, logger="src.indexer.registry"):
+        build_registry([(str(repo), "14.0")])
+    summary = next(
+        r.getMessage() for r in caplog.records
+        if r.getMessage().startswith("registry scan")
+    )
+    assert "1 not-installable" in summary, summary
+
+
+def test_build_registry_reads_countries_key(tmp_path):
+    """v17+ `countries` manifest key is read into ModuleInfo.countries (GAP-3)."""
+    repo = make_git_repo(tmp_path / "repo_17.0", "17.0")
+    _write_raw_manifest(
+        repo / "l10n_fr_mod",
+        "{'name': 'FR localization', 'version': '17.0.1.0.0', 'depends': [], "
+        "'installable': True, 'countries': ['fr', 'be']}\n",
+    )
+    registry = build_registry([(str(repo), "17.0")])
+    info = registry["17.0"]["l10n_fr_mod"]
+    assert info.countries == ["fr", "be"]
+
+
+def test_build_registry_countries_defaults_empty(tmp_path):
+    """A manifest without `countries` yields an empty list (no restriction)."""
+    repo = make_git_repo(tmp_path / "repo_17.0", "17.0")
+    make_manifest(repo / "global_mod", "Global", "17.0.1.0.0", [])
+    registry = build_registry([(str(repo), "17.0")])
+    assert registry["17.0"]["global_mod"].countries == []
+
+
 def test_build_registry_multi_repo(tmp_path):
     repo1 = make_git_repo(tmp_path / "odoo_17.0", "17.0")
     repo2 = make_git_repo(tmp_path / "acme_addons_17.0", "17.0")
