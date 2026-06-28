@@ -140,11 +140,15 @@ def test_uses_template_edge(writer, clean_neo4j):
 
 def test_reports_on_unresolved_indexed_module_warns(writer, clean_neo4j, caplog):
     """REPORTS_ON on a model whose module IS indexed but the model node is missing
-    is a genuine coverage gap → WARNING (zero-silent-loss, consistent w/ USES_TEMPLATE).
+    is a genuine coverage gap -> WARNING (zero-silent-loss, consistent w/ USES_TEMPLATE).
 
     Index module 'sale' (so the module node exists with a profile) but do NOT write
     the 'sale.order' Model node; a report on 'sale.order' must surface a WARNING.
     Red-before-green: remove the RETURN/.single() guard and no log is emitted.
+
+    Issue #347: this test pins the WARN side of the own-module-namespace gap split.
+    prefix('sale.order') == 'sale' == rep.module -> _report_model_in_own_module True
+    -> WARN is preserved. Do NOT flip to DEBUG.
     """
     import logging
 
@@ -284,6 +288,209 @@ def test_entity_lookup_report_returns_it(writer, clean_neo4j):
     assert "sale.action_report_saleorder" in out
     assert "qweb-pdf" in out
     assert "sale.report_saleorder" in out
+
+
+# ---------------------------------------------------------------------------
+# Issue #347 - REPORTS_ON-miss scope misclassification (CLASS B false positive)
+# ---------------------------------------------------------------------------
+
+
+def test_report_on_class_b_cross_module_model_is_debug_not_warning(
+    writer, clean_neo4j, caplog
+):
+    """CLASS B canonical: a qweb report targeting a model in a DIFFERENT module's
+    namespace must log DEBUG, not WARNING, even when the dotted prefix matches an
+    indexed module.
+
+    Setup: module 'base' is indexed with a profile (a 'base.model' Model node
+    exists); 'base_automation' is NOT indexed. A qweb report in 'my_addon' targets
+    model 'base.automation'.
+
+    Bug (current code): _base_module_out_of_scope splits 'base.automation' -> 'base',
+    finds 'base' indexed -> returns False -> _warn = qweb AND not False = True -> WARNING.
+
+    Fix (issue #347): _report_model_in_own_module('base.automation', 'my_addon')
+    -> prefix 'base' != module 'my_addon' -> False -> DEBUG.
+
+    Red-before: current code emits WARNING (no-WARNING assertion fails).
+    Green-after: fix routes to DEBUG (no-WARNING assertion passes).
+    """
+    import logging
+
+    # Index 'base' with a profile so the dotted-prefix lookup finds it.
+    writer.write_results([_model_result("base", "base.model")], profiles=["test_repo"])
+    # 'base_automation' is NOT indexed - the owning module of base.automation is absent.
+    res = ViewParseResult(module=_mod("my_addon"), reports=[
+        _report(
+            "my_addon.report_automation", "base.automation", "my_addon", None,
+            report_type="qweb-pdf",
+        ),
+    ])
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "REPORTS_ON" in r.getMessage()
+    ]
+    assert not warnings, (
+        "Expected no REPORTS_ON WARNING for cross-module target (base.automation "
+        "in my_addon); got: " + str(warnings)
+    )
+    debugs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
+    ]
+    assert any("base.automation" in m for m in debugs), (
+        "Expected a DEBUG 'unresolved REPORTS_ON' mentioning 'base.automation'; "
+        "got debug messages: " + str(debugs)
+    )
+
+
+def test_report_on_account_analytic_line_cross_module_is_debug_not_warning(
+    writer, clean_neo4j, caplog
+):
+    """CLASS B reachability: hr_timesheet's qweb report on account.analytic.line
+    must log DEBUG, not WARNING, even when 'account' is indexed.
+
+    This is the live confirmed trigger (hr_timesheet/mrp_account reports on
+    account.analytic.line when 'analytic' is out of scope).
+
+    Setup: module 'account' is indexed with a profile (account.move Model exists);
+    'analytic' is NOT indexed. Report in 'hr_timesheet' on 'account.analytic.line'.
+
+    Red-before: prefix 'account' indexed -> WARNING.
+    Green-after: prefix 'account' != module 'hr_timesheet' -> DEBUG.
+    """
+    import logging
+
+    # Index 'account' with a profile so the dotted-prefix lookup finds it.
+    writer.write_results(
+        [_model_result("account", "account.move")], profiles=["test_repo"]
+    )
+    # 'analytic' is NOT indexed - the real owner of account.analytic.line is absent.
+    res = ViewParseResult(module=_mod("hr_timesheet"), reports=[
+        _report(
+            "hr_timesheet.timesheet_report", "account.analytic.line",
+            "hr_timesheet", None, report_type="qweb-pdf",
+        ),
+    ])
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "REPORTS_ON" in r.getMessage()
+    ]
+    assert not warnings, (
+        "Expected no REPORTS_ON WARNING for hr_timesheet cross-module target; "
+        "got: " + str(warnings)
+    )
+    debugs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
+    ]
+    assert any("account.analytic.line" in m for m in debugs), (
+        "Expected a DEBUG 'unresolved REPORTS_ON' for 'account.analytic.line'; "
+        "got: " + str(debugs)
+    )
+
+
+def test_report_on_hr_expense_sheet_cross_module_is_debug_not_warning(
+    writer, clean_neo4j, caplog
+):
+    """Issue #347 guard (reviewer F4 / accepted trade): a qweb report in 'hr_expense'
+    targeting model 'hr.expense.sheet' (prefix 'hr', module 'hr_expense') must log
+    DEBUG, not WARNING.
+
+    This is the WARN->DEBUG narrowing accepted for cross-module targets. The Model
+    node 'hr.expense.sheet' is NOT written. Both 'hr' and 'hr_expense' modules ARE
+    indexed with profiles.
+
+    Bug (current code): prefix 'hr' indexed -> _base_module_out_of_scope False
+    -> WARNING. Even though the declaring module is 'hr_expense', not the owner.
+
+    Fix: _report_model_in_own_module('hr.expense.sheet', 'hr_expense')
+    -> prefix 'hr' != 'hr_expense' -> False -> DEBUG.
+
+    Red-before: WARNING emitted (no-WARNING assertion fails).
+    Green-after: DEBUG only.
+    """
+    import logging
+
+    # Index BOTH 'hr' and 'hr_expense' with profiles.
+    writer.write_results([_model_result("hr", "hr.employee")], profiles=["test_repo"])
+    writer.write_results(
+        [_model_result("hr_expense", "hr.expense")], profiles=["test_repo"]
+    )
+    # Do NOT write 'hr.expense.sheet' - the Model node is absent.
+    res = ViewParseResult(module=_mod("hr_expense"), reports=[
+        _report(
+            "hr_expense.action_report_expense_sheet", "hr.expense.sheet",
+            "hr_expense", None, report_type="qweb-pdf",
+        ),
+    ])
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "REPORTS_ON" in r.getMessage()
+    ]
+    assert not warnings, (
+        "Expected no REPORTS_ON WARNING for hr_expense cross-module target; "
+        "got: " + str(warnings)
+    )
+    debugs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
+    ]
+    assert any("hr.expense.sheet" in m for m in debugs), (
+        "Expected a DEBUG 'unresolved REPORTS_ON' for 'hr.expense.sheet'; "
+        "got: " + str(debugs)
+    )
+
+
+def test_report_on_class_c_base_action_rule_cross_module_is_debug(
+    writer, clean_neo4j, caplog
+):
+    """CLASS C (version-rename): a qweb report on 'base.action.rule' declared in
+    a cross-module addon (not 'base_action_rule') must log DEBUG.
+
+    Proves version-uniform correctness: the v10-era model name also routes to DEBUG
+    regardless of which modules are indexed.
+
+    Setup: 'base' is indexed with a profile; 'base_action_rule' is NOT indexed.
+    Report in 'my_addon' on 'base.action.rule' (qweb-pdf, the v10-era name).
+    """
+    import logging
+
+    writer.write_results([_model_result("base", "base.model")], profiles=["test_repo"])
+    res = ViewParseResult(module=_mod("my_addon"), reports=[
+        _report(
+            "my_addon.report_action_rule", "base.action.rule",
+            "my_addon", None, report_type="qweb-pdf",
+        ),
+    ])
+    with caplog.at_level(logging.DEBUG, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([res], profiles=["test_repo"])
+
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if r.levelno >= logging.WARNING and "REPORTS_ON" in r.getMessage()
+    ]
+    assert not warnings, (
+        "Expected no REPORTS_ON WARNING for CLASS C cross-module target; "
+        "got: " + str(warnings)
+    )
+    debugs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.DEBUG and "unresolved REPORTS_ON" in r.getMessage()
+    ]
+    assert any("base.action.rule" in m for m in debugs), (
+        "Expected a DEBUG 'unresolved REPORTS_ON' for 'base.action.rule'; "
+        "got: " + str(debugs)
+    )
 
 
 def test_entity_lookup_report_overflow_banner(writer, clean_neo4j):
