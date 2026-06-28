@@ -67,6 +67,22 @@ provenance label and deliberately does NOT classify brand/provider - that infere
 (and any live-verify) is the client's job. No curated brand-mapping table is added
 (it would be a second source of truth that drifts from the manifest - ETHOS #11 SSOT).
 
+**Extended manifest metadata (follow-up to the identity card).** Nine more raw
+manifest keys are indexed on the Module node, same pattern (default `None`, ON CREATE
+direct / ON MATCH `coalesce`, MERGE key untouched): `description` (FULL, not
+truncated), `website`, `live_test_url`, `demo_video_url`, `support`, `sequence`
+(coerced int), `old_technical_name`, `price` (coerced float), `currency`.
+`installable` is intentionally NOT indexed - it is a gate-only key (a module with
+`installable=False` is skipped at registry build, so every indexed node would carry
+`installable=True`, pure noise). Render policy: `check_module_exists` and
+`describe_module` surface `website`, `price` ("`<price> <currency>`", rendered even at
+0.0 - a priced-but-free marketplace module), and `old_technical_name` when non-NULL;
+`live_test_url` / `demo_video_url` / `support` / `sequence` are INDEX-ONLY (queryable,
+not rendered). `description` is OPT-IN: `describe_module(include_description=True)`
+appends the full text as a "Description (from indexed manifest):" block (and only then
+is the long field SELECTed at all) - the default keeps the overview lean and is
+backward compatible (no tool-count change; still 31 tools / 9 resources).
+
 ### 2. Edition reclassification: OPL-1 + Viindoo/TVTMA author -> viindoo - P5
 
 `_detect_module_edition` gains a rule, placed AFTER the OEEL-1 check and BEFORE OCA:

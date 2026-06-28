@@ -64,6 +64,7 @@ def describe_module(
     name: str,
     odoo_version: RequiredOdooVersion,
     profile_name: str | None = None,
+    include_description: bool = False,
 ) -> ToolResult:
     """Return a full architecture overview of an Odoo module (manifest +
     model/view/JS counts).
@@ -78,10 +79,15 @@ def describe_module(
     Args:
         name: Module technical name (e.g. 'sale', 'viin_sale').
         profile_name: Optional profile filter.
+        include_description: When True, append the module's full manifest
+            description (the long marketing/RST text) as a "Description" block.
+            Default False keeps the overview lean - turn it on for sales /
+            marketing / documentation work that needs the full module write-up.
 
     Returns:
-        Tree: Manifest (Depends, Edition, Version), Defines models,
-        Extends models, Views (by type), JS patches.
+        Tree: Manifest (Depends, Edition, Author, Version, Summary, Website,
+        Old technical name, Price), Defines models, Extends models, Views (by
+        type), JS patches; plus a Description block when include_description=True.
 
     Example:
         describe_module("viin_sale", "17.0")
@@ -102,7 +108,10 @@ def describe_module(
     # (ADR-0023 §1: the plain-text tree IS the contract). The unwired
     # _describe_module_structured companion + DescribeModuleOutput DTO have been
     # removed (L9) now that no consumer references them.
-    text = _srv._describe_module(name, odoo_version, profile_name)
+    text = _srv._describe_module(
+        name, odoo_version, profile_name,
+        include_description=include_description,
+    )
     return ToolResult(
         content=[TextContent(type="text", text=text)],
         structured_content=None,

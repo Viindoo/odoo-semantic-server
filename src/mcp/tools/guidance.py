@@ -428,7 +428,11 @@ def _check_module_exists(
                    m.repo AS repo,
                    m.shortdesc AS shortdesc,
                    m.summary AS summary,
-                   m.author AS author
+                   m.author AS author,
+                   m.website AS website,
+                   m.price AS price,
+                   m.currency AS currency,
+                   m.old_technical_name AS old_technical_name
             """,
             label=f"module {name!r} existence (Odoo {v})",
             n=name, v=v, **_srv._scope(profile_name),
@@ -443,6 +447,11 @@ def _check_module_exists(
     shortdesc = rec.get("shortdesc") if rec else None
     summary = rec.get("summary") if rec else None
     author = rec.get("author") if rec else None
+    # Issue #121 (extended) - extra identity signals (None when not backfilled).
+    website = rec.get("website") if rec else None
+    price = rec.get("price") if rec else None
+    currency = rec.get("currency") if rec else None
+    old_technical_name = rec.get("old_technical_name") if rec else None
 
     # Build live EE confusion map from DB (cached 60 s).  Falls back to static
     # list when DB is unreachable — transparent to callers (WI-R F-007 fix).
@@ -480,6 +489,8 @@ def _check_module_exists(
         is_ee_confusion=is_ee_confusion, viindoo_equivalent=viindoo_equivalent,
         ee_source=ee_source,
         shortdesc=shortdesc, summary=summary, author=author,
+        website=website, price=price, currency=currency,
+        old_technical_name=old_technical_name,
     )
 
 
@@ -490,6 +501,8 @@ def _format_check_module_exists(
     ee_source: str = "",
     shortdesc: str | None = None, summary: str | None = None,
     author: str | None = None,
+    website: str | None = None, price: float | None = None,
+    currency: str | None = None, old_technical_name: str | None = None,
 ) -> str:
     lines = [f"check_module_exists({name!r}, {version})"]
     lines.append(f"├─ Indexed:         {'Yes' if indexed else 'No'}")
@@ -506,6 +519,16 @@ def _format_check_module_exists(
         identity_rows.append(("Summary", summary))
     if author:
         identity_rows.append(("Author", author))
+    if website:
+        identity_rows.append(("Website", website))
+    # Price is a paid/free signal - render even at 0.0 (priced-but-free), so test
+    # `is not None`, not truthiness.
+    if price is not None:
+        identity_rows.append(
+            ("Price", f"{price} {currency}" if currency else f"{price}")
+        )
+    if old_technical_name:
+        identity_rows.append(("Old technical name", old_technical_name))
     if identity_rows:
         lines.append("├─ Identity (from indexed manifest):")
         last_id = len(identity_rows) - 1

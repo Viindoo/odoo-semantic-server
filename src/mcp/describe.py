@@ -42,6 +42,7 @@ def _describe_module(
     odoo_version: str = "auto",
     profile_name: str | None = None,
     *,
+    include_description: bool = False,
     _reraise_timeout: bool = False,
 ) -> str:
     """Layer-0 module overview: manifest + model/view/JS counts.
@@ -66,6 +67,14 @@ def _describe_module(
     with _srv._get_driver().session() as session:
         odoo_version = _srv._resolve_version(odoo_version, session)
 
+        # Issue #121 (extended): `description` can be very long (up to ~9k chars),
+        # so it is opt-in - only SELECTed (and only rendered) when the caller asks
+        # for it via include_description=True. The default keeps the overview lean
+        # and avoids pulling the big field off Neo4j at all.
+        description_select = (
+            ",\n                   m.description AS description"
+            if include_description else ""
+        )
         mod_rec = _srv._single_bounded(
             session,
             """
@@ -84,8 +93,14 @@ def _describe_module(
                    m.summary AS summary,
                    m.shortdesc AS shortdesc,
                    m.author AS author,
+                   m.website AS website,
+                   m.price AS price,
+                   m.currency AS currency,
+                   m.old_technical_name AS old_technical_name,
                    m.external_python AS external_python,
-                   m.external_bin AS external_bin
+                   m.external_bin AS external_bin"""
+            + description_select
+            + """
             """,
             f"module manifest for '{name}' (Odoo {odoo_version})",
             n=name, v=odoo_version, **_srv._scope(profile_name),
@@ -253,10 +268,31 @@ def _describe_module(
     manifest_rows.append(("Version", mod_rec.get("version_raw") or "—"))
     if mod_rec.get("summary"):
         manifest_rows.append(("Summary", mod_rec["summary"]))
+    # Issue #121 (extended) - extra manifest metadata, each only when non-NULL.
+    if mod_rec.get("website"):
+        manifest_rows.append(("Website", mod_rec["website"]))
+    if mod_rec.get("old_technical_name"):
+        manifest_rows.append(("Old technical name", mod_rec["old_technical_name"]))
+    # Price is a paid/free signal: render even when 0.0 (a priced-but-free
+    # marketplace module), so test `is not None`, not truthiness.
+    if mod_rec.get("price") is not None:
+        _cur = mod_rec.get("currency")
+        _price_str = f"{mod_rec['price']} {_cur}" if _cur else f"{mod_rec['price']}"
+        manifest_rows.append(("Price", _price_str))
     last_m = len(manifest_rows) - 1
     for i, (label, value) in enumerate(manifest_rows):
         conn = "└─" if i == last_m else "├─"
         lines.append(f"│   {conn} {label}: {value}")
+
+    # Issue #121 (extended) - opt-in full description block (include_description),
+    # rendered only when the field is present. Kept OUTSIDE the Manifest sub-tree
+    # because it can be long / multi-line (RST), so a one-line sublist row would
+    # be unreadable. The raw text is emitted verbatim under a top-level header.
+    if include_description and mod_rec.get("description"):
+        lines.append("├─ Description (from indexed manifest):")
+        for _dl in mod_rec["description"].splitlines():
+            # rstrip so a blank RST line renders as a bare "│" (no trailing space).
+            lines.append(f"│   {_dl}".rstrip())
 
     # Defines models — count + capped inline preview.
     def_total = len(defines)

@@ -72,6 +72,20 @@ class ModuleInfo:
     #   absent in CE core v9-v17 (artifact 04 §3), summary absent in ~70% of v8.
     shortdesc: str | None = None
     author: str | None = None
+    # Issue #121 (extended) - additional manifest metadata, all default None (NOT
+    # ''/0/False) so "manifest did not declare" stays distinct from "declared
+    # empty" cross-version. `installable` is intentionally NOT indexed: it is a
+    # gate-only key (a module with installable=False is skipped at registry build,
+    # so every indexed node would carry installable=True - pure noise).
+    description: str | None = None        # manifest 'description' RAW, full (not truncated)
+    website: str | None = None            # manifest 'website' (CE core often '' -> None)
+    live_test_url: str | None = None      # manifest 'live_test_url' (Viindoo/marketplace)
+    demo_video_url: str | None = None     # manifest 'demo_video_url' (Viindoo/marketplace)
+    support: str | None = None            # manifest 'support' (email/URL)
+    sequence: int | None = None           # manifest 'sequence' (coerced int; Odoo default 100)
+    old_technical_name: str | None = None  # manifest 'old_technical_name' (Viindoo rename alias)
+    price: float | None = None            # manifest 'price' (coerced float; int in some manifests)
+    currency: str | None = None           # manifest 'currency' (e.g. 'EUR'), paired with price
     external_python: list[str] = field(default_factory=list)
     external_bin: list[str] = field(default_factory=list)
     # v17+ manifest `countries` key: restricts module to these ISO country codes

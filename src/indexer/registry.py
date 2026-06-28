@@ -39,6 +39,39 @@ def _scan(repo_path: str, filename: str) -> list[str]:
     return results
 
 
+def _coerce_int(value) -> int | None:
+    """Best-effort int coercion of a manifest value; None on anything non-numeric.
+
+    Rejects bool explicitly: `isinstance(True, int)` is True in Python, but a
+    manifest `'sequence': True` must NOT silently become 1. A malformed value
+    (e.g. `'sequence': '1.5'`, a list, or junk text) returns None rather than
+    raising - one odd third-party/marketplace manifest must never crash the
+    whole index run (the per-module loop has no try/except around this).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _coerce_float(value) -> float | None:
+    """Best-effort float coercion of a manifest value; None on anything non-numeric.
+
+    Same defensive contract as _coerce_int: rejects bool (a manifest
+    `'price': True` must NOT become 1.0) and swallows ValueError/TypeError so a
+    malformed `'price'` (e.g. `'free'`, `'13,5'`, or a list) yields None instead
+    of crashing the index run.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 class ModernManifestFinder:
     """Locate __manifest__.py (Odoo v10+)."""
 
@@ -288,6 +321,20 @@ def build_registry(
             _shortdesc: str | None = manifest.get('name') or None
             _author: str | None = _normalize_author(manifest)
 
+            # Issue #121 (extended) - additional manifest metadata (default None).
+            _description: str | None = manifest.get('description') or None
+            _website: str | None = manifest.get('website') or None
+            _live_test_url: str | None = manifest.get('live_test_url') or None
+            _demo_video_url: str | None = manifest.get('demo_video_url') or None
+            _support: str | None = manifest.get('support') or None
+            # sequence/price may be declared as str/int/junk in third-party
+            # manifests - coerce defensively (None when absent, bool, or
+            # non-numeric); never raise (would crash the whole index run).
+            _sequence: int | None = _coerce_int(manifest.get('sequence'))
+            _old_technical_name: str | None = manifest.get('old_technical_name') or None
+            _price: float | None = _coerce_float(manifest.get('price'))
+            _currency: str | None = manifest.get('currency') or None
+
             _ext_deps = manifest.get('external_dependencies') or {}
             _external_python: list[str] = list(_ext_deps.get('python') or [])
             _external_bin: list[str] = list(_ext_deps.get('bin') or [])
@@ -318,6 +365,16 @@ def build_registry(
                 # Issue #121 P2 - identity card
                 shortdesc=_shortdesc,
                 author=_author,
+                # Issue #121 (extended) - additional manifest metadata
+                description=_description,
+                website=_website,
+                live_test_url=_live_test_url,
+                demo_video_url=_demo_video_url,
+                support=_support,
+                sequence=_sequence,
+                old_technical_name=_old_technical_name,
+                price=_price,
+                currency=_currency,
                 external_python=_external_python,
                 external_bin=_external_bin,
                 countries=_countries,

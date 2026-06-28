@@ -108,16 +108,22 @@ def test_writer_coalesce_on_match_preserves_identity(clean_neo4j):
 
 def _seed_module(driver, *, name, edition="community", license_val=None,
                  shortdesc=None, summary=None, author=None, repo="test_repo",
-                 category=None, profile=("default",)):
+                 category=None, profile=("default",),
+                 website=None, price=None, currency=None,
+                 old_technical_name=None, description=None):
     with driver.session() as session:
         session.run(
             "MERGE (m:Module {name: $n, odoo_version: $v}) "
             "SET m.edition = $edition, m.license = $license, m.repo = $repo, "
             "    m.shortdesc = $shortdesc, m.summary = $summary, m.author = $author, "
-            "    m.category = $category, m.profile = $profile",
+            "    m.category = $category, m.profile = $profile, "
+            "    m.website = $website, m.price = $price, m.currency = $currency, "
+            "    m.old_technical_name = $old_technical_name, m.description = $description",
             n=name, v=TEST_VERSION, edition=edition, license=license_val,
             repo=repo, shortdesc=shortdesc, summary=summary, author=author,
             category=category, profile=list(profile),
+            website=website, price=price, currency=currency,
+            old_technical_name=old_technical_name, description=description,
         )
 
 
@@ -193,6 +199,116 @@ def test_describe_module_display_name_header_and_author(clean_neo4j):
         "Author: T.V.T Marine Automation (aka TVTMA),Viindoo" in ln
         for ln in lines
     ), f"Author manifest row missing, got:\n{out}"
+
+
+# --- Issue #121 (extended) - 9 new manifest props -----------------------------
+
+
+def test_writer_roundtrip_extended_metadata(clean_neo4j):
+    """A Module written with the 9 extended props reads them all back."""
+    writer = _writer()
+    writer.setup_indexes()
+    mod = ModuleInfo(
+        name="id_ext_mod", odoo_version=TEST_VERSION, repo="r",
+        path="/tmp/id_ext_mod", depends=[],
+        description="Full RST description.", website="https://viindoo.com/apps/x",
+        live_test_url="https://demo.viindoo.com", demo_video_url="https://yt/x",
+        support="apps.support@viindoo.com", sequence=31,
+        old_technical_name="viin_old_name", price=13.5, currency="EUR",
+    )
+    writer.write_results([ParseResult(module=mod)], profiles=["default"])
+    writer.close()
+
+    with clean_neo4j.session() as session:
+        rec = session.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN "
+            "m.description AS description, m.website AS website, "
+            "m.live_test_url AS live_test_url, m.demo_video_url AS demo_video_url, "
+            "m.support AS support, m.sequence AS sequence, "
+            "m.old_technical_name AS old_technical_name, m.price AS price, "
+            "m.currency AS currency",
+            n="id_ext_mod", v=TEST_VERSION,
+        ).single()
+    assert rec["description"] == "Full RST description."
+    assert rec["website"] == "https://viindoo.com/apps/x"
+    assert rec["live_test_url"] == "https://demo.viindoo.com"
+    assert rec["demo_video_url"] == "https://yt/x"
+    assert rec["support"] == "apps.support@viindoo.com"
+    assert rec["sequence"] == 31
+    assert rec["old_technical_name"] == "viin_old_name"
+    assert rec["price"] == 13.5
+    assert rec["currency"] == "EUR"
+
+
+def test_check_module_exists_renders_website_price_oldname(clean_neo4j):
+    srv = _import_server()
+    _seed_module(
+        clean_neo4j, name="id_meta_full", edition="viindoo", license_val="OPL-1",
+        shortdesc="E-Invoice - VNIs VN-Invoice Integrator",
+        website="https://viindoo.com/apps/app/17.0/l10n_vn_viin_accounting_vninvoice",
+        price=13.5, currency="EUR",
+        old_technical_name="viin_l10n_vn_accounting_vninvoice",
+    )
+    out = srv._check_module_exists("id_meta_full", TEST_VERSION)
+    assert "Website: https://viindoo.com/apps/app/17.0/l10n_vn_viin_accounting_vninvoice" in out
+    assert "Price: 13.5 EUR" in out
+    assert "Old technical name: viin_l10n_vn_accounting_vninvoice" in out
+
+
+def test_check_module_exists_hides_extended_when_null(clean_neo4j):
+    srv = _import_server()
+    _seed_module(clean_neo4j, name="id_meta_empty", edition="community")
+    out = srv._check_module_exists("id_meta_empty", TEST_VERSION)
+    assert "Website:" not in out
+    assert "Price:" not in out
+    assert "Old technical name:" not in out
+
+
+def test_describe_module_renders_website_price_oldname(clean_neo4j):
+    srv = _import_server()
+    _seed_module(
+        clean_neo4j, name="id_meta_desc", edition="viindoo", license_val="OPL-1",
+        shortdesc="E-Invoice - VNIs VN-Invoice Integrator",
+        website="https://viindoo.com/apps/x", price=13.5, currency="EUR",
+        old_technical_name="viin_l10n_vn_accounting_vninvoice",
+    )
+    out = srv._describe_module("id_meta_desc", TEST_VERSION)
+    assert "Website: https://viindoo.com/apps/x" in out
+    assert "Price: 13.5 EUR" in out
+    assert "Old technical name: viin_l10n_vn_accounting_vninvoice" in out
+
+
+def test_describe_module_price_zero_rendered(clean_neo4j):
+    """price=0.0 (priced-but-free) must still render (is-not-None, not truthiness)."""
+    srv = _import_server()
+    _seed_module(
+        clean_neo4j, name="id_freeprice", edition="viindoo",
+        price=0.0, currency="EUR",
+    )
+    out = srv._describe_module("id_freeprice", TEST_VERSION)
+    assert "Price: 0.0 EUR" in out
+
+
+def test_describe_module_description_opt_in(clean_neo4j):
+    """include_description gates the Description block: absent by default, full
+    text when True."""
+    srv = _import_server()
+    _seed_module(
+        clean_neo4j, name="id_desc_mod", edition="viindoo",
+        shortdesc="Some Display Name",
+        description="Line one of the write-up.\nLine two with detail.",
+    )
+    # Default (False): no Description block, output stays lean.
+    out_default = srv._describe_module("id_desc_mod", TEST_VERSION)
+    assert "Description" not in out_default
+    assert "Line one of the write-up." not in out_default
+    # Opt-in (True): full description rendered verbatim.
+    out_full = srv._describe_module(
+        "id_desc_mod", TEST_VERSION, include_description=True,
+    )
+    assert "Description (from indexed manifest):" in out_full
+    assert "Line one of the write-up." in out_full
+    assert "Line two with detail." in out_full
 
 
 # --- H1: reclassified viindoo edition outranks 'custom' in the ORM tiebreak --
