@@ -832,7 +832,9 @@ sudo systemd-run --uid=odoo-semantic --gid=odoo-semantic --pipe --wait \
 
 > **Ops - backfill `--full` sau feature release thêm index-time property (ADR-0053, issue #121):**
 > Khi một release thêm property mới TÍNH TẠI INDEX-TIME (ví dụ `shortdesc`/`author` =
-> module identity card, hoặc `edition` được reclassify OPL-1+Viindoo -> `viindoo`), incremental
+> module identity card + metadata mở rộng `description`/`website`/`live_test_url`/
+> `demo_video_url`/`support`/`sequence`/`old_technical_name`/`price`/`currency`, hoặc
+> `edition` được reclassify OPL-1+Viindoo -> `viindoo`), incremental
 > reindex CHỈ chạm module có git-diff nên các module manifest không đổi sẽ giữ `NULL`/edition cũ
 > cho tới khi có một lượt `--full`. Sau khi deploy code, chạy MỘT lượt `--full` off-peak để
 > backfill (tối thiểu profile chứa tvtmaaddons, vd `standard_viindoo_17`); ghi (`coalesce` ON
