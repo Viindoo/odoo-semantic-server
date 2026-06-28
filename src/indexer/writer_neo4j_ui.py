@@ -90,6 +90,36 @@ def _base_module_out_of_scope(tx, inherit_xmlid: str, odoo_version: str) -> bool
     return bool(rec["out_of_scope"])
 
 
+def _report_model_in_own_module(model_name: str, report_module: str) -> bool:
+    """Return True when a report targets a model in its OWN module's namespace.
+
+    True iff the model's dotted prefix equals the report's declaring module name
+    (e.g. report in module 'sale' on model 'sale.order' -> True). The declaring
+    module is always indexed in the current run, so a missing same-namespace model
+    is a genuine, actionable coverage gap worth a WARNING.
+
+    Issue #347 - scope rationale for the REPORTS_ON-miss WARN/DEBUG routing:
+    on the miss path the target :Model node does NOT exist for (model, version) by
+    construction (the REPORTS_ON MERGE just failed). The model's TRUE owning module
+    is therefore unknowable at write time - it is absent from the graph AND from
+    this repo's in-memory scan (an in-scope owner would have a Model node and the
+    MERGE would have hit), and the owning-module name is not recoverable from the
+    model name by any string op ('account.analytic.line' is owned by 'analytic',
+    'base.automation' by 'base_automation'). So we cannot decide "is the owning
+    module in scope"; we instead WARN only for the soundly-determinable own-module
+    gap and stay DEBUG for cross-module targets (a dependency of unknowable scope),
+    which removes the systematic CLASS-B false WARNING (e.g. hr_timesheet's report
+    on account.analytic.line when 'analytic' is out of scope).
+
+    Fail-safe: empty or None model_name or report_module -> returns False ->
+    caller logs DEBUG (no crash, no false WARNING).
+    """
+    if not report_module or not model_name:
+        return False
+    prefix = model_name.split(".", 1)[0]
+    return bool(prefix) and prefix == report_module
+
+
 def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
     import json
 
@@ -344,11 +374,14 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
         # REPORTS_ON -> Model. A model name maps to K per-module Model nodes
         # (C1 schema); pick ONE deterministically. Prefer the definition node
         # (is_definition=true), else the highest field_count, with a stable
-        # name tiebreak — LIMIT 1 keeps this single-row (no .single() multi-row).
+        # name tiebreak - LIMIT 1 keeps this single-row (no .single() multi-row).
         # Always attempt the bind when `model` is present (node never dropped).
-        # On a miss: WARNING only for a genuine qweb report whose module IS indexed;
-        # DEBUG when the report is non-qweb (legacy bogus/parser model) OR the
-        # model's module is out of scope (expected gap).
+        # On a miss: WARNING only for a genuine qweb report whose target model is
+        # in the report's OWN module namespace (own-module coverage gap - the
+        # declaring module should define this model and it is absent). DEBUG for a
+        # non-qweb report OR a cross-module target whose owning module cannot be
+        # resolved at write time (issue #347 - removes systematic CLASS-B false
+        # WARNING; see _report_model_in_own_module for the infeasibility proof).
         if rep.model:
             on_model = tx.run(f"""
                 MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
@@ -362,13 +395,16 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             """, xmlid=rep.xmlid, ver=rep.odoo_version,
                  model_name=rep.model).single()
             if on_model is None:
-                _warn = (
-                    qweb
-                    and not _base_module_out_of_scope(tx, rep.model, rep.odoo_version)
-                )
+                # Issue #347: WARN only for an own-module-namespace gap (the
+                # report's own module should define this model). A cross-module
+                # target's owning module is unresolvable at write time (the Model
+                # node is absent by construction and the owner is not derivable
+                # from the dotted prefix), so stay DEBUG - this removes the
+                # systematic CLASS-B false WARNING. See _report_model_in_own_module.
+                _warn = qweb and _report_model_in_own_module(rep.model, rep.module)
                 _log = _logger.warning if _warn else _logger.debug
                 _log(
-                    "unresolved REPORTS_ON: %s -> %s (version %s) — "
+                    "unresolved REPORTS_ON: %s -> %s (version %s) - "
                     "business model not indexed",
                     rep.xmlid, rep.model, rep.odoo_version,
                 )
