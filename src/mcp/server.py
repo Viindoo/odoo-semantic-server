@@ -185,7 +185,10 @@ def _edition_label(edition: str | None, license: str | None = None) -> str:
             return label
     if edition:
         return _EDITION_ENUM_TO_LABEL.get(edition, edition)
-    return "Community (CE)"
+    # No edition and no license: same verbose CE label every other path uses
+    # (issue #121 L1). Direct subscript not .get: "community" is always present,
+    # so a terse default would be dead code re-introducing the bare label.
+    return _EDITION_ENUM_TO_LABEL["community"]
 
 
 def _render_capped(
