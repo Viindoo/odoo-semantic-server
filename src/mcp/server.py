@@ -188,7 +188,11 @@ def _edition_label(edition: str | None, license: str | None = None) -> str:
     # No edition AND no license -> the same verbose CE label every other path
     # uses (consistency: the bare "Community (CE)" terse fallback diverged from
     # the enum-mapped wording carried everywhere else - issue #121 L1).
-    return _EDITION_ENUM_TO_LABEL.get("community", "Community (CE)")
+    # Direct subscript (not .get with a terse default): "community" is a static
+    # literal key always present in the dict above, so a fallback would be dead
+    # code that silently re-introduces the terse label this fix removed - fail
+    # loud instead if the key is ever dropped.
+    return _EDITION_ENUM_TO_LABEL["community"]
 
 
 def _render_capped(

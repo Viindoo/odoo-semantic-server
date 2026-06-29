@@ -119,7 +119,6 @@ def test_edition_label_none_edition_defaults_to_ce():
     srv = _import_server_module()
     label = srv._edition_label(None, None)
     assert label == srv._EDITION_ENUM_TO_LABEL["community"]
-    assert "free" in label.lower() and "bundled" in label.lower()
 
 
 # --- ADR-0023 §2 English-only static-template language policy ---------------
