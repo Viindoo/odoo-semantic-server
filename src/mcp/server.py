@@ -185,13 +185,9 @@ def _edition_label(edition: str | None, license: str | None = None) -> str:
             return label
     if edition:
         return _EDITION_ENUM_TO_LABEL.get(edition, edition)
-    # No edition AND no license -> the same verbose CE label every other path
-    # uses (consistency: the bare "Community (CE)" terse fallback diverged from
-    # the enum-mapped wording carried everywhere else - issue #121 L1).
-    # Direct subscript (not .get with a terse default): "community" is a static
-    # literal key always present in the dict above, so a fallback would be dead
-    # code that silently re-introduces the terse label this fix removed - fail
-    # loud instead if the key is ever dropped.
+    # No edition and no license: same verbose CE label every other path uses
+    # (issue #121 L1). Direct subscript not .get: "community" is always present,
+    # so a terse default would be dead code re-introducing the bare label.
     return _EDITION_ENUM_TO_LABEL["community"]
 
 
