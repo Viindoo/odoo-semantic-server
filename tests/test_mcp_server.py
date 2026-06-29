@@ -3734,9 +3734,60 @@ def test_dep_closure_diamond_no_duplicate(neo4j_driver):
         srv = _import_server_module()
         out = srv._module_dep_closure("wg4_dmd_a", _WG4_DEP_VERSION)
 
-        # wg4_dmd_d appears exactly once (DISTINCT in Cypher).
+        # wg4_dmd_d appears exactly once (per-hop BFS dedup by module name).
         assert out.count("wg4_dmd_d") == 1, (
             f"T1 (F-4): diamond dep wg4_dmd_d should appear exactly once.\n{out}"
+        )
+    finally:
+        _cleanup_wg4_dep(neo4j_driver)
+
+
+def test_dep_closure_shortest_path_depth_wins(neo4j_driver):
+    """ADR-0048 per-hop BFS: a dep reachable by BOTH a short and a long path is
+    listed ONCE, at its SHORTEST depth (the load-order proxy).
+
+    Graph: A->Z (direct, depth 1) AND A->B->C->Z (depth 3); B is depth 1, C is
+    depth 2.  Z's min-depth is 1, so in the deepest-first load order Z must sort
+    AFTER the depth-2 dep C.  This locks the BFS contract: a path-enumerating
+    implementation that recorded Z at depth 3, or listed it twice, fails here.
+    """
+    _cleanup_wg4_dep(neo4j_driver)
+    try:
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        writer.setup_indexes()
+
+        mod_z = ModuleInfo("wg4_sp_z", _WG4_DEP_VERSION, "test_repo", "/tmp", [], "")
+        mod_c = ModuleInfo("wg4_sp_c", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_sp_z"], "")
+        mod_b = ModuleInfo("wg4_sp_b", _WG4_DEP_VERSION, "test_repo", "/tmp", ["wg4_sp_c"], "")
+        mod_a = ModuleInfo(
+            "wg4_sp_a", _WG4_DEP_VERSION, "test_repo", "/tmp",
+            ["wg4_sp_z", "wg4_sp_b"], "",
+        )
+        writer.write_results([
+            ParseResult(module=mod_z, models=[]),
+            ParseResult(module=mod_c, models=[]),
+            ParseResult(module=mod_b, models=[]),
+            ParseResult(module=mod_a, models=[]),
+        ])
+        writer.close()
+
+        srv = _import_server_module()
+        out = srv._module_dep_closure("wg4_sp_a", _WG4_DEP_VERSION)
+
+        # Reachable at depth 1 (direct) and depth 3 (A->B->C->Z): appears once.
+        assert out.count("wg4_sp_z") == 1, (
+            f"shortest-path: wg4_sp_z must appear exactly once (BFS dedup).\n{out}"
+        )
+        # At its SHORTEST depth 1, so deepest-first order puts depth-2 C first.
+        pos_c = out.index("wg4_sp_c")
+        pos_z = out.index("wg4_sp_z")
+        assert pos_c < pos_z, (
+            "shortest-path: depth-2 wg4_sp_c must load before depth-1 wg4_sp_z "
+            f"(Z min-depth is 1, not 3).\n{out}"
         )
     finally:
         _cleanup_wg4_dep(neo4j_driver)
