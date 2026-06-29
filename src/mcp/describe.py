@@ -29,6 +29,7 @@ preview-cap constants) are imported directly below.
 """
 
 import sys
+import time
 
 from src.constants import (
     LIST_PREVIEW_MAX_ITEMS,
@@ -372,10 +373,19 @@ def _module_dep_closure(
 ) -> str:
     """Transitive DEPENDS_ON closure for a module — returns all dependencies + load order.
 
-    Traverses (:Module)-[:DEPENDS_ON*]->(:Module) up to depth 20 to collect
-    the full transitive closure.  Then computes a topological load order using
-    path-length as a proxy (shorter path = loaded earlier) with alphabetical
-    tiebreak for determinism.  Each dependency line shows [repo] name (repo_url).
+    Walks (:Module)-[:DEPENDS_ON]->(:Module) ONE hop at a time (per-hop
+    name-deduped BFS, ADR-0048: NO variable-length `*1..N` path — the dependency
+    graph reaches the same Module by many paths, which a VLP would enumerate
+    combinatorially). Collects the full transitive closure (depth capped at 20)
+    and records each dep's shortest path length as a load-order proxy (shorter
+    path = loaded earlier) with alphabetical tiebreak for determinism.  Each
+    dependency line shows [repo] name (repo_url).
+
+    Tenant scope is applied ONCE, in Cypher, at the final inclusion step
+    (`_scope_pred`, ADR-0034 choke-point); the traversal itself is unscoped so the
+    closure + shortest-path depths stay identical to the prior single-query form
+    (which filtered only the final dep). The whole closure shares one ~30s
+    wall-clock budget so a deep chain fails fast like the old bounded query.
 
     B2: This is surfaced as module_inspect(method='dependencies') per ADR-0028
     consolidation — no new top-level tool.
@@ -397,60 +407,78 @@ def _module_dep_closure(
             return f"No module named '{name}' indexed for Odoo {odoo_version}."
 
         # Transitive DEPENDS_ON closure via per-hop name-deduped BFS (ADR-0048:
-        # NO VLP `*1..N`). The dependency graph can reach the same Module by many
-        # distinct paths, so a variable-length match enumerates combinatorial
-        # paths even when the node set is small — the #273-class blow-up that the
-        # depth-20 cap + 30s bound only papered over. Instead we walk ONE hop at
-        # a time, dedupe by module name, and record the FIRST hop a dep is seen at
-        # = its shortest path length = the Odoo load-order proxy (BFS reaches
-        # shallower deps first, so first-seen == min-depth). The tenant scope
-        # filter stays in Cypher via `_scope_pred` (ADR-0034 choke-point — never
-        # reimplemented in Python); traversal therefore advances only through
-        # in-scope modules, which is the correct fail-closed behaviour and is
-        # output-identical to the old query whenever `own IS NULL` or every
-        # intermediate module is in scope. Each hop is bounded by `_data_bounded`
-        # (30s); the depth-20 cap matches the prior `*1..20` ceiling.
-        visited: dict[str, dict] = {}  # dep_name -> {repo, repo_url, min_depth}
+        # NO VLP `*1..N` — the dependency graph reaches the same Module by many
+        # distinct paths, which a variable-length match enumerates combinatorially
+        # even when the node set is small [the #273-class blow-up the old depth-20
+        # + 30s bound only papered over]). We walk ONE hop at a time and dedupe by
+        # module name; the FIRST hop a dep is seen at is its shortest path length
+        # = the Odoo load-order proxy (BFS reaches shallower deps first). A Python
+        # loop (not the fixed-3-hop `_ANCESTOR_TAGGED_PROLOGUE` helper) is used
+        # because a dependency closure is variable-depth (cap 20), not shallow.
+        #
+        # Phase 1 traverses UNSCOPED: the old single-query form filtered only the
+        # FINAL dep, so a path could pass through any intermediate. Keeping the
+        # traversal unscoped makes the closure + shortest-path depths identical to
+        # the old query; tenant scope is applied once, in Cypher, at Phase 2.
+        #
+        # All hops share ONE wall-clock deadline equal to the per-query timeout,
+        # so a deep chain fails fast (~30s total) instead of up to 20 separate
+        # 30s hops holding a read slot for minutes.
+        deadline = time.monotonic() + _srv.NEO4J_QUERY_TIMEOUT_SECONDS
+        closure_label = f"dependency closure for '{name}' (Odoo {odoo_version})"
+        min_depth: dict[str, int] = {}  # dep_name -> shortest hop count
         frontier: list[str] = [name]
         for depth in range(1, 21):
             if not frontier:
                 break
+            if time.monotonic() > deadline:
+                raise _srv._nonorm_timeout(closure_label)
             hop_rows = _srv._data_bounded(
                 session,
                 f"""
                 MATCH (m:Module {{odoo_version: $v}})
                       -[:{REL_DEPENDS_ON}]->(dep:Module {{odoo_version: $v}})
-                WHERE m.name IN $frontier AND {_srv._scope_pred('dep')}
-                RETURN DISTINCT dep.name AS dep_name,
-                       dep.repo AS repo,
-                       dep.repo_url AS repo_url
+                WHERE m.name IN $frontier
+                RETURN DISTINCT dep.name AS dep_name
                 """,
-                f"dependency closure hop {depth} for '{name}' (Odoo {odoo_version})",
-                v=odoo_version, frontier=frontier, **_srv._scope(profile_name),
+                closure_label,
+                v=odoo_version, frontier=frontier,
             )
             next_frontier: list[str] = []
             for row in hop_rows:
                 dep_name = row["dep_name"]
                 # Skip the root (a cycle pointing back) and anything already seen
                 # at a shallower/equal depth — BFS keeps the minimum.
-                if dep_name == name or dep_name in visited:
+                if dep_name == name or dep_name in min_depth:
                     continue
-                visited[dep_name] = {
-                    "repo": row.get("repo"),
-                    "repo_url": row.get("repo_url"),
-                    "min_depth": depth,
-                }
+                min_depth[dep_name] = depth
                 next_frontier.append(dep_name)
             frontier = next_frontier
 
-        # Same order as the old Cypher: deepest transitive dep first (Odoo loads
-        # it earliest), alphabetical tiebreak for determinism.
-        dep_rows = [
-            {"dep_name": dn, "repo": meta["repo"],
-             "repo_url": meta["repo_url"], "min_depth": meta["min_depth"]}
-            for dn, meta in visited.items()
-        ]
-        dep_rows.sort(key=lambda r: (-r["min_depth"], r["dep_name"]))
+        # Phase 2: scope-filter the closure and fetch repo metadata in ONE bounded
+        # Cypher query (ADR-0034 choke-point via `_scope_pred` — never reimplemented
+        # in Python). Only deps that pass the tenant filter are surfaced, exactly
+        # like the old query's `WHERE <scope on dep>`.
+        dep_rows: list[dict] = []
+        if min_depth:
+            scoped = _srv._data_bounded(
+                session,
+                f"""
+                MATCH (dep:Module {{odoo_version: $v}})
+                WHERE dep.name IN $names AND {_srv._scope_pred('dep')}
+                RETURN dep.name AS dep_name, dep.repo AS repo, dep.repo_url AS repo_url
+                """,
+                closure_label,
+                v=odoo_version, names=list(min_depth), **_srv._scope(profile_name),
+            )
+            # Deepest transitive dep first (Odoo loads it earliest), alphabetical
+            # tiebreak for determinism — same order as the old Cypher ORDER BY.
+            dep_rows = [
+                {"dep_name": r["dep_name"], "repo": r.get("repo"),
+                 "repo_url": r.get("repo_url"), "min_depth": min_depth[r["dep_name"]]}
+                for r in scoped
+            ]
+            dep_rows.sort(key=lambda r: (-r["min_depth"], r["dep_name"]))
 
     if not dep_rows:
         lines = [f"{name} dependency closure (Odoo {odoo_version})"]
@@ -461,7 +489,7 @@ def _module_dep_closure(
         ]))
         return "\n".join(lines)
 
-    # Build load order: sort by (min_depth DESC, name ASC) — already ordered by Cypher.
+    # Render the load order (dep_rows already sorted above: min_depth DESC, name ASC).
     # Odoo loads deepest transitive dependencies FIRST (e.g. 'base' before 'sale').
     # index 1 = first to be installed / loaded; deepest deps have highest min_depth.
     lines = [f"{name} dependency closure (Odoo {odoo_version})"]
