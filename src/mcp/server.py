@@ -185,7 +185,10 @@ def _edition_label(edition: str | None, license: str | None = None) -> str:
             return label
     if edition:
         return _EDITION_ENUM_TO_LABEL.get(edition, edition)
-    return "Community (CE)"
+    # No edition AND no license -> the same verbose CE label every other path
+    # uses (consistency: the bare "Community (CE)" terse fallback diverged from
+    # the enum-mapped wording carried everywhere else - issue #121 L1).
+    return _EDITION_ENUM_TO_LABEL.get("community", "Community (CE)")
 
 
 def _render_capped(

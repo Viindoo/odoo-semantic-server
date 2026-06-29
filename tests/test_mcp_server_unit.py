@@ -109,9 +109,17 @@ def test_edition_label_fallback_to_enum_when_no_license():
 
 
 def test_edition_label_none_edition_defaults_to_ce():
-    """None edition + None license -> a Community (CE) label."""
+    """None edition + None license -> the SAME verbose CE label as the enum path.
+
+    Business rule (issue #121 L1): the all-NULL fallback must not diverge from the
+    verbose 3-tier wording carried on every other path. A bare "Community (CE)"
+    (no "- free, bundled..." suffix) is inconsistent output, so this asserts the
+    fallback equals the enum-mapped label - red before the L1 fix, green after.
+    """
     srv = _import_server_module()
-    assert "Community (CE)" in srv._edition_label(None, None)
+    label = srv._edition_label(None, None)
+    assert label == srv._EDITION_ENUM_TO_LABEL["community"]
+    assert "free" in label.lower() and "bundled" in label.lower()
 
 
 # --- ADR-0023 §2 English-only static-template language policy ---------------
