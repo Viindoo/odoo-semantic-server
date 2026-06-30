@@ -66,15 +66,7 @@ For other AI tools (Cursor, Codex CLI, Gemini CLI, VS Code, Windsurf, JetBrains 
 
 ## Pricing
 
-A free tier is available; paid plans start at $19/seat/month.
-
-| Plan | Price |
-|------|-------|
-| Free | $0 |
-| Pro | $19/seat/mo (up to 5 seats) |
-| Team | $39/seat/mo (min 3 seats - from $117/mo) |
-
-Monthly tool-call quotas and per-minute rate limits are read live from the server and may change - see the [pricing page](https://odoo-semantic.viindoo.com/pricing) for current values.
+A free tier is available; paid plans are seat-based (Pro and Team). Quotas, rate limits, seat counts, and prices are strategy-dependent and change over time, so they live in one place only - the [live pricing page](https://odoo-semantic.viindoo.com/pricing) - instead of being duplicated (and going stale) here.
 
 [Get your free API key](https://odoo-semantic.viindoo.com/signup/) - no credit card required.
 
