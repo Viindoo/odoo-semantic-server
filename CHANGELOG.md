@@ -2,12 +2,12 @@
 
 All notable changes to Odoo Semantic MCP are documented here.
 
-> **Release policy note (2026-06-02):** Git tags exist only for v0.2.0, v0.3.0, v0.5.0, and
-> v0.13.0. Releases v0.11.0 and v0.11.1 were shipped without a tag; v0.13.1 was likewise
-> shipped untagged. v0.12.x was skipped entirely (no code or release at that version).
-> Historical `[Unreleased]` blocks that preceded an untagged release have been relabelled
+> **Release policy note (updated 2026-06-30):** Early releases were inconsistently tagged -
+> at the time only v0.2.0, v0.3.0, v0.5.0, and v0.13.0 had tags; v0.11.0/v0.11.1/v0.13.1
+> shipped untagged and v0.12.x was skipped entirely (no code or release at that version).
+> Historical `[Unreleased]` blocks that preceded an untagged release were relabelled
 > as `[Merged into vX.Y.Z]` in this file to preserve history without misleading the reader.
-> **Going forward, every release should be tagged immediately after merge** (`git tag vX.Y.Z && git push --tags`).
+> **This policy is now honored: every release v0.14.0 through v0.18.0 is tagged** (`git tag vX.Y.Z && git push --tags` immediately after merge).
 
 ## [0.18.0] - 2026-06-29 - Module identity card + edition reclassification + extended manifest metadata (issue #121); zero-warning reindex + asset/report indexing (ADR-0052); graph reconciliation (#117); dependency-closure VLP removal (ADR-0048)
 

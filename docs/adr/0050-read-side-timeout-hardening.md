@@ -161,8 +161,9 @@ migration.
 of one of its tools is bounded only by the 30s per-query timeout + uvicorn
 `limit_concurrency`, not by a dedicated semaphore. Mitigation: the one-line
 promotion to `@offload_bounded_nonorm` is available if profiling shows a genuine
-drain. The `_resolve_model` ranking query remains a bare `session.run()` (an open
-follow-up noted in ADR-0048) — out of scope for #287.
+drain. (The `_resolve_model` ranking query was a bare `session.run()` at the time
+of #287, noted then as an open follow-up; it has since been bounded via
+`_data_bounded` - see `src/mcp/server.py` `_resolve_model`.)
 
 ## Revert triggers
 

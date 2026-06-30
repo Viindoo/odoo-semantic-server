@@ -677,7 +677,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 ## Milestone 10 — "Billing Wow" + Tool Surface + Polish
 
-**Status:** `[~]` M10A + M10.5 P1+P2 shipped; M10C substantially complete (Prometheus histogram shipped 2026-05-26 WI-D1; NAMEGET/reembed/audit shipped PR #159; nonce-CSP BLOCKED awaits Astro v5.1+); M10B P0 shipped (PR #200: plans schema + quota gating + usage dashboard); **M10B P1 engineering-complete on `feat/m10b-p1-billing`** (Entitlement Activation API + Polar webhook + claim-on-login + W1-W6 completion waves; single migration `m13_014` covers all billing schema — cancel_at_period_end + prices JSONB + terms_accepted_at + waitlist CHECK drop gộp vào m13_014; vendor-generic pipeline, self-serve cancel, admin config, legal pages + consent gate, billing dashboard); **legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01); `paid_checkout_enabled` already flipped to `true` in prod (2026-06); remaining: Polar KYB + cancel-endpoint/webhook confirmation**; M10B P2-P3 pending. Prod reindex v8→v19 (comodel_name + mth.depends + migration m9_010) remains an OPS follow-up — admin run pending.
+**Status:** `[~]` M10A + M10.5 P1+P2 shipped; M10C substantially complete (Prometheus histogram shipped 2026-05-26 WI-D1; NAMEGET/reembed/audit shipped PR #159; nonce-CSP BLOCKED awaits Astro v5.1+); M10B P0 shipped (PR #200: plans schema + quota gating + usage dashboard); **M10B P1 engineering-complete on `feat/m10b-p1-billing`** (Entitlement Activation API + Polar webhook + claim-on-login + W1-W6 completion waves; single migration `m13_014` covers all billing schema — cancel_at_period_end + prices JSONB + terms_accepted_at + waitlist CHECK drop gộp vào m13_014; vendor-generic pipeline, self-serve cancel, admin config, legal pages + consent gate, billing dashboard); **legal CEO sign-off done (PR #224, DRAFT removed 2026-06-01); `paid_checkout_enabled` already flipped to `true` in prod (2026-06); remaining: Polar KYB + cancel-endpoint/webhook confirmation**; M10B P2-P3 pending. Prod reindex v8→v19 (comodel_name + mth.depends; schema folded into `0001_initial.sql` baseline, no standalone migration file) remains an OPS follow-up — admin run pending.
 
 **Intent:** Three independent substreams launched after M9 ship. M10A delivers low-risk MCP tool surface expansion. M10B delivers the commercialization platform — control plane / data plane, Merchant-of-Record billing, and quota gating (largest scope; re-scoped from Stripe 2026-05-28, see ADR-0039). M10C absorbs polish + observability + carry-over fixes from M7.5/M8/M9.
 
@@ -1095,7 +1095,7 @@ Stream A can ship first as a clean release (mechanical, low-risk). Stream B WI-B
 
 ## Milestone 13 — "Multi-Tenant Wow"
 
-**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. **Path portability active (feat/portable-paths, ADR-0037)** — stored paths are now repo-relative; `[repo]` output label shows git URL. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Reindex v8→v19 DONE (2026-05-25): 591,108 embeddings; 48 repos; graph clean (0 stale absolute-path nodes); `ops/cleanup_absolute_path_nodes.cypher` run. Remaining for M13 close:** WI-7 (FERNET secrets / RLS hardening).
+**Status:** `[~]` In progress. Pre-reindex foundation (feat/m13pre-wave3, v0.9.1) + **P2 enforcement gate (WI-3/WI-4) shipped v0.10.0 (PR #163, feat/osm-final-stretch)** + **parser/writer/runbook correctness shipped v0.11.0 (WG-1..WG-6 fix-wave)** alongside enrichment. **Path portability active (feat/portable-paths, ADR-0037)** — stored paths are now repo-relative; `[repo]` output label shows git URL. Design locked in [`docs/adr/0034-multi-tenant-pooled-isolation.md`](docs/adr/0034-multi-tenant-pooled-isolation.md) (+ enforcement Amendment + WG-6 tenant model clarification). **Reindex v8→v19 DONE (2026-05-25): 591,108 embeddings; 48 repos; graph clean (0 stale absolute-path nodes); `ops/cleanup_absolute_path_nodes.cypher` run. Remaining for M13 close:** WI-7 RLS hardening (FERNET credstore cut already DONE 2026-05-28 — see WI-7 `[x]` below).
 
 > **v0.11.0 fix-wave (WG-1..WG-6):** Parser correctness v8-v19 (v9 Py2, field types, JS OWLComp/JSPatch, query.py path, NewId); writer schema (arch_snippet, F-5/F-8/F-12/F-13/V16-G2); 13-site tenant leak closed + leak test extended; query/render (F-4, list↔tree, file:line); enrichment (edition, summary, OWL widget pattern); bootstrap_versions.json corrected; ADR-0034/0005/runbook docs. See CHANGELOG.md `[0.11.0]`.
 > **v0.10.0 wave (PR #163):** P2 enforcement — WI-3 `resolve_tenant_scope` + WI-4 fail-closed own/shared filter at 61+4 Cypher + 3 pgvector sites + cross-tenant leak test (RELEASE GATE, PASSED). Plus Group A reindex-forcing enrichment (v19 core, docstring/manifest-deps/repo-provenance/USES_FIELD edges, Field.string/help, embeddings provenance m13_003) + Group B agent-convenient output + `module_inspect(method='dependencies')`. See CHANGELOG.md `[0.10.0]`.
@@ -1230,7 +1230,7 @@ Small items surfaced post-PR-#200 deploy (2026-05-28). Not milestone-gated — d
 - [ ] **Nightly cron switch from raw `pg_dump` to `python -m src.cli backup`** — prod cron currently calls raw `pg_dump`; should use the CLI which handles bundle assembly (postgres.sql + neo4j.cypher + fernet.enc + manifest.json), retention policy, and structured logging. Ref: ADR-0018 backup contract.
 - [ ] **Neo4j `dbms.connector.bolt.unsupported_thread_pool_queue_size` tuning evaluation** — RCA follow-up from 2026-05-26 burst load. Evaluate whether the default queue size is causing BOLT rejection under burst; tune in `docker-compose.yml` neo4j env vars or `neo4j.conf`. Low risk to tune; monitor `/metrics` histogram `p95` before/after.
 - [ ] **FU-3 offsite backup provider decision** — decide between B2 / Wasabi / R2 / AWS S3 / MinIO; set budget cap + crypt-password custody plan; configure `rclone` target. Blocker: operator picks provider. See Track 2 Wave 2.D for the bootstrap OPS step.
-- [ ] **Account-deletion + data-export self-service endpoints (GDPR baseline)** — `DELETE /api/account/me` (soft-delete: deactivate + anonymize PII) + `GET /api/account/export` (JSON dump of own API keys + usage counters + profile memberships). Needed before public growth.
+- [x] **Account-deletion + data-export self-service endpoints (GDPR baseline)** — `DELETE /api/account/me` (soft-delete: deactivate + anonymize PII) + `GET /api/account/export` (JSON dump of own API keys + usage counters + profile memberships). Needed before public growth. ✅ shipped commit `deee0a3` (`src/web_ui/routes/account.py` delete_my_account + export_my_data; `src/db/auth/_user.py` purge_user_account).
 - [ ] **Tenant self-service creation** — currently tenants are admin-created only per ADR-0038 W1. Customer self-service tenant creation (W2 portal has `/account/repos` but not new-tenant form) requires ADR-0038 D11 work. Deferred until M10B P1 Polar payment flow lands (creation gated by paid checkout).
 - [ ] **Plan-selection UI at signup** — `/signup` currently provisions a `free` plan silently. Show a plan picker (Free / Pro / Team) at signup so users understand tier. Deferred until M10B P1 Polar adapter ships (pricing page CTA → checkout → key provisioning).
 - [x] **`GET /api/plans` public endpoint** — DONE (marked [x] at M10B P1 W4, TASKS line ~764). Duplicate stale item; cross-ref: `src/web_ui/routes/plans.py`.
@@ -1309,7 +1309,7 @@ false-green root cause. V1 requires separate infra design.
 
 ## Pre-launch Signoff
 
-Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 25 MCP tool sign-off table.
+Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) để biết 10 mục + 31 MCP tool sign-off table.
 
 | Mục | Admin | Ngày | Ghi chú |
 |-----|-------|------|---------|
@@ -1318,7 +1318,7 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | Port Isolation | | | |
 | Logrotate | | | |
 | Backup & Recovery | | | |
-| MCP Tool Sign-Off (25 tools) | | | |
+| MCP Tool Sign-Off (31 tools) | | | |
 | Install Page | | | |
 | Systemd Services | | | |
 | Indexer Cron | | | |
@@ -1334,5 +1334,5 @@ Admin ký tên trước khi mở public / phân phát API key. Xem [`docs/deploy
 | ← | [`README.md`](README.md) | Điểm bắt đầu: tổng quan, onboard, hướng dẫn deploy |
 | ↓ | [`docs/thiet-ke-kien-truc.md`](docs/thiet-ke-kien-truc.md) | Thiết kế kiến trúc đầy đủ: schema, pipeline, MCP tools |
 | ↓ | Implementation plans (archived internally) | Per-milestone implementation plans |
-| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 25 MCP tool verify |
+| → | [`docs/deploy/pre-launch-checklist.md`](docs/deploy/pre-launch-checklist.md) | Pre-launch signoff — 10 mục + 31 MCP tool verify |
 | → | [`docs/deploy/disaster-recovery.md`](docs/deploy/disaster-recovery.md) | DR runbook — backup frequency, restore order, RTO |

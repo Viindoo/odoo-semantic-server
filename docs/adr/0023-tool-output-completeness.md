@@ -1,6 +1,6 @@
 # ADR-0023 — OSM Tool Output Completeness: Tree Grammar, Language Policy, Truncation, Next-Step Hints
 
-**Status:** Proposed (parked — will be finalized as 0023 on land)
+**Status:** Accepted
 **Date:** 2026-05-16
 **Milestone:** M9 W-OSM (Wave 1)
 
@@ -496,7 +496,7 @@ This ADR is **not invalidated** by the new tools — it is the contract they mus
 
 ## Notes on this ADR's status
 
-This file is parked in `docs/adr/proposed/` until Wave 1 lands. On merge of the Wave 1 PR, the main session moves it to `docs/adr/0023-tool-output-completeness.md`. Number 0023 is reserved because ADR-0022 was claimed by MFA TOTP (merged in PR #100 on 2026-05-15). If a concurrent ADR claims 0023 before Wave 1 lands, this file is renamed to the next free number with no content changes.
+Wave 1 has landed; this ADR is Accepted and lives at `docs/adr/0023-tool-output-completeness.md`. The tree-grammar, English-only language policy, truncation, and next-step-hint decisions are implemented and test-enforced (`tests/test_grammar_consistency.py`, `tests/test_tree_disclosure_connector.py`).
 
 ---
 

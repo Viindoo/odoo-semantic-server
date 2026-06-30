@@ -1,6 +1,6 @@
 # Odoo Semantic MCP (OSM)
 
-AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v14-v19 (as of 2026-06). No running Odoo database required.
+AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v8-v19 (as of 2026-06). No running Odoo database required.
 
 **12,000+ models** | **184,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free: 1,000 tool calls/month**
 
