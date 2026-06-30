@@ -75,8 +75,10 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
     # and as a documented tenant override surface) but DOES NOT alter
     # runtime gating until the value is propagated into ``plans``.  The UI
     # surfaces this distinction so operators do not believe they are
-    # tuning live quotas through the wrong endpoint.
-    SettingDef("quota.free_calls_per_month", "quota", "int", 100,
+    # tuning live quotas through the wrong endpoint.  These catalogue defaults
+    # MIRROR the ``plans`` seed in ``migrations/0001_initial.sql`` (free=200/30,
+    # pro=10000/120, team=100000/300) - keep them in sync to avoid value drift.
+    SettingDef("quota.free_calls_per_month", "quota", "int", 200,
                {"min": 1, "max": 1_000_000}, tenant_scopable=True,
                advisory=True, advisory_canonical_source="table `plans` (slug='free')",
                description="Free tier monthly call quota."),
