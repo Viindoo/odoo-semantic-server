@@ -11,9 +11,13 @@
 # tests/test_env_versions_sync.py sẽ fail CI nếu .env.example và file này bị lệch.
 # ─────────────────────────────────────────────────────────────────────
 # Catches B1 indexer-wiring regressions and Phase-0 ManifestFinder / era1 regressions.
+# Production-liveness HTTP probes live in a SEPARATE `smoke-prod-liveness` job so a
+# transient production network blip cannot red the indexer jobs (issue #353).
 #
 # Schedule: 19:00 UTC = 02:00 Vietnam time (GitHub least-busy window).
-# On failure: auto-creates a GitHub issue with labels [nightly-smoke, bug, priority:high].
+# On failure: report-failure auto-files an issue, classified by failure type -
+#   indexer/recall regression -> labels [nightly-smoke, bug, priority:high];
+#   prod-liveness probe        -> labels [nightly-smoke, prod-liveness] (infra, NOT priority:high).
 # Manual trigger: gh workflow run nightly-smoke.yml [-r <branch>]
 
 name: Nightly Real-Source Smoke
@@ -477,30 +481,6 @@ jobs:
           NEO4J_PASSWORD: password
           PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
 
-      - name: "Astro smoke — landing page GET /"
-        run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/ 2>/dev/null || true)
-          echo "Landing page status: $status"
-          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
-
-      - name: "Astro smoke — canonical login page GET /login"
-        run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/login 2>/dev/null || true)
-          echo "Login page status: $status"
-          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
-
-      - name: "Astro smoke — /admin/login 301 redirect"
-        run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/admin/login 2>/dev/null || true)
-          echo "Admin login redirect status: $status"
-          [ "$status" = "301" ] || (echo "Expected 301 permanent redirect, got $status" && exit 1)
-
-      - name: "FastAPI JSON smoke — GET /api/auth/verify (expect 401 no cookie)"
-        run: |
-          status=$(curl -s -o /dev/null -w "%{http_code}" https://odoo-semantic.viindoo.com/api/auth/verify 2>/dev/null || true)
-          echo "FastAPI auth verify status: $status"
-          [ "$status" = "401" ] || (echo "Expected 401 no cookie, got $status" && exit 1)
-
   smoke-real-odoo-8:
     runs-on: ubuntu-latest
     services:
@@ -613,6 +593,51 @@ jobs:
           print('v8 smoke PASS')
           PYEOF
 
+  smoke-prod-liveness:
+    # Probes the LIVE, already-deployed production site - orthogonal to the indexer
+    # smoke above. Decoupled into its own job (2026-06-30, issue #353) so a transient
+    # production network blip can NOT red the indexer jobs nor file a priority:high
+    # indexer-regression issue. The curl probes retry to absorb blips; a hard failure
+    # here is reported as an infra/prod-liveness matter by report-failure, never as an
+    # indexer regression. No service containers / Python deps needed - just HTTP probes.
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Astro smoke — landing page GET /"
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 --retry 4 --retry-delay 5 --retry-connrefused --retry-all-errors https://odoo-semantic.viindoo.com/ 2>/dev/null || true)
+          echo "Landing page status: $status"
+          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
+
+      - name: "Astro smoke — canonical login page GET /login"
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 --retry 4 --retry-delay 5 --retry-connrefused --retry-all-errors https://odoo-semantic.viindoo.com/login 2>/dev/null || true)
+          echo "Login page status: $status"
+          [ "$status" = "200" ] || (echo "Expected 200, got $status" && exit 1)
+
+      - name: "Astro smoke — /admin/login 301 redirect"
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 --retry 4 --retry-delay 5 --retry-connrefused --retry-all-errors https://odoo-semantic.viindoo.com/admin/login 2>/dev/null || true)
+          echo "Admin login redirect status: $status"
+          [ "$status" = "301" ] || (echo "Expected 301 permanent redirect, got $status" && exit 1)
+
+      - name: "FastAPI JSON smoke — GET /api/auth/verify (expect 401 no cookie)"
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 15 --retry 4 --retry-delay 5 --retry-connrefused --retry-all-errors https://odoo-semantic.viindoo.com/api/auth/verify 2>/dev/null || true)
+          echo "FastAPI auth verify status: $status"
+          [ "$status" = "401" ] || (echo "Expected 401 no cookie, got $status" && exit 1)
+
+      - name: "Prod /ready — index-size floor (guards README 12k models / 184k fields claim)"
+        # Pins a lower bound on the live index so the public README counts cannot
+        # silently drift far below what is advertised. Field-chunk embeddings are the
+        # hard proxy (~173k as of 2026-06); the 150k floor leaves headroom for normal
+        # churn but trips if the live index is materially smaller than the claim.
+        run: |
+          body=$(curl -s --connect-timeout 5 --max-time 20 --retry 4 --retry-delay 5 --retry-connrefused --retry-all-errors https://odoo-semantic.viindoo.com/ready 2>/dev/null || true)
+          echo "$body"
+          fields=$(printf '%s' "$body" | python3 -c "import sys, json; print(json.load(sys.stdin)['embeddings_by_chunk_type'].get('field', 0))" 2>/dev/null || echo 0)
+          echo "field embeddings: $fields"
+          [ "$fields" -ge 150000 ] || (echo "field embeddings $fields < 150000 floor - live index shrank or README 184k+ claim drifted; investigate" && exit 1)
+
   check-ollama:
     # Lightweight gate job: checks whether OLLAMA_URL secret is set and exposes
     # an output `enabled` so downstream jobs can use `needs` context (secrets
@@ -703,29 +728,45 @@ jobs:
           OLLAMA_MODEL: ${{ secrets.OLLAMA_MODEL }}
 
   report-failure:
-    needs: [smoke-real-odoo-17, smoke-real-odoo-8, check-ollama, recall-benchmark]
-    # Run when any needed job failed (ignore recall-benchmark when skipped), but
+    needs: [smoke-real-odoo-17, smoke-real-odoo-8, smoke-prod-liveness, check-ollama, recall-benchmark]
+    # Run when any needed job failed (recall-benchmark is ignored when skipped), but
     # ONLY for the scheduled nightly — a manual `workflow_dispatch` verify-run that
     # fails (e.g. while iterating a fix on a branch) must NOT auto-file a noise issue
     # (this is what created the spurious #309).
-    if: always() && github.event_name == 'schedule' && (needs.smoke-real-odoo-17.result == 'failure' || needs.smoke-real-odoo-8.result == 'failure' || needs.recall-benchmark.result == 'failure')
+    #
+    # Two failure CLASSES are reported SEPARATELY (issue #353 root cause): an
+    # indexer/recall regression is a code bug in THIS repo (priority:high, assign the
+    # indexer owner); a prod-liveness failure is the already-deployed site being
+    # unreachable (infra/ops, label `prod-liveness`, NOT priority:high). A transient
+    # production network blip must never file a priority:high indexer-regression issue.
+    if: always() && github.event_name == 'schedule' && (needs.smoke-real-odoo-17.result == 'failure' || needs.smoke-real-odoo-8.result == 'failure' || needs.recall-benchmark.result == 'failure' || needs.smoke-prod-liveness.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - name: Create GitHub issue on smoke failure
+      - name: Report indexer / recall regression (priority:high)
+        if: needs.smoke-real-odoo-17.result == 'failure' || needs.smoke-real-odoo-8.result == 'failure' || needs.recall-benchmark.result == 'failure'
         uses: actions/github-script@v9
+        env:
+          V17_RESULT: ${{ needs.smoke-real-odoo-17.result }}
+          V8_RESULT: ${{ needs.smoke-real-odoo-8.result }}
+          RECALL_RESULT: ${{ needs.recall-benchmark.result }}
         with:
           script: |
             const today = new Date().toISOString().slice(0, 10);
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const failed = [];
+            if (process.env.V17_RESULT === 'failure') failed.push('smoke-real-odoo-17 (v17 index-core + ORM read + LintRule + validate_relation)');
+            if (process.env.V8_RESULT === 'failure') failed.push('smoke-real-odoo-8 (v8 Phase-0 ManifestFinder + era1 parser)');
+            if (process.env.RECALL_RESULT === 'failure') failed.push('recall-benchmark (Ollama recall@5 thresholds)');
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Nightly smoke fail ${today}`,
+              title: `Nightly smoke fail (indexer/recall) ${today}`,
               body:
-                `Nightly smoke against real Odoo 17 + Odoo 8 sources failed.\n\n` +
+                `Nightly indexer/recall smoke against real Odoo sources failed.\n\n` +
                 `**Run**: ${runUrl}\n\n` +
+                `**Failed job(s):**\n` + failed.map(f => `- ${f}`).join('\n') + `\n\n` +
                 `Check the workflow logs to identify which assertion failed.\n\n` +
                 `**Possible regressions:**\n` +
                 `- B1 indexer wiring: CoreSymbol/LintRule/CLICommand/CLIFlag counts < threshold\n` +
@@ -734,4 +775,23 @@ jobs:
                 `- Upstream Odoo schema drift: file rename, allow-list outdated\n\n` +
                 `Assign to the engineer who last modified \`src/indexer/\`.`,
               labels: ['nightly-smoke', 'bug', 'priority:high'],
+            });
+
+      - name: Report prod-liveness failure (infra, not priority:high)
+        if: needs.smoke-prod-liveness.result == 'failure'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0, 10);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Nightly prod-liveness probe fail ${today}`,
+              body:
+                `The nightly probe of the LIVE production site failed AFTER retries.\n\n` +
+                `**Run**: ${runUrl}\n\n` +
+                `This job probes the already-deployed production site (landing / login / admin redirect / api auth / index-size floor), NOT anything this CI run built. The curl probes retry to absorb transient blips, so a failure here means production was unreachable or off-spec for the entire retry window - an INFRA/ops matter, not an indexer regression.\n\n` +
+                `**Check:** Is https://odoo-semantic.viindoo.com/ up? Is \`/ready\` healthy (neo4j/postgres ok, index size above floor)? nginx / TLS / DNS / deploy status? Re-probe manually; if production is healthy now, this was a transient and the issue can be closed.`,
+              labels: ['nightly-smoke', 'prod-liveness'],
             });
