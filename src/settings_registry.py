@@ -75,8 +75,12 @@ SETTINGS_CATALOGUE: list[SettingDef] = [
     # and as a documented tenant override surface) but DOES NOT alter
     # runtime gating until the value is propagated into ``plans``.  The UI
     # surfaces this distinction so operators do not believe they are
-    # tuning live quotas through the wrong endpoint.
-    SettingDef("quota.free_calls_per_month", "quota", "int", 100,
+    # tuning live quotas through the wrong endpoint.  The numeric defaults here
+    # are NON-AUTHORITATIVE placeholders only - quotas/rate-limits are
+    # strategy-dependent and change over time, so the operative SSOT is the
+    # live ``plans`` table (GET /api/plans), NEVER this constant. Do not try to
+    # keep these in lockstep with production; treat them as inert fallbacks.
+    SettingDef("quota.free_calls_per_month", "quota", "int", 1000,
                {"min": 1, "max": 1_000_000}, tenant_scopable=True,
                advisory=True, advisory_canonical_source="table `plans` (slug='free')",
                description="Free tier monthly call quota."),

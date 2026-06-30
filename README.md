@@ -1,8 +1,8 @@
 # Odoo Semantic MCP (OSM)
 
-AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v14-v19 (as of 2026-06). No running Odoo database required.
+AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v8-v19 (as of 2026-06). No running Odoo database required.
 
-**12,000+ models** | **184,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free: 1,000 tool calls/month**
+**12,000+ models** | **184,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free tier available**
 
 ---
 
@@ -29,7 +29,7 @@ claude mcp add --transport http https://odoo-semantic.viindoo.com/mcp/demo
 
 The demo endpoint gives you 20 read-only queries with a shared public key. No signup needed.
 
-**Option 2 - Full access (free tier: 1,000 tool calls/month):**
+**Option 2 - Full access (free tier, no credit card):**
 
 1. [Sign up for a free API key](https://odoo-semantic.viindoo.com/signup/) - 30 seconds, no credit card
 2. Visit **https://odoo-semantic.viindoo.com/install/**, paste your API key, copy the snippet for your AI tool
@@ -66,13 +66,7 @@ For other AI tools (Cursor, Codex CLI, Gemini CLI, VS Code, Windsurf, JetBrains 
 
 ## Pricing
 
-Free tier: 1,000 tool calls/month. Paid plans from $19/seat/month.
-
-| Plan | Tool calls/month | Rate limit | Price |
-|------|-----------------|------------|-------|
-| Free | 1,000 | 30 calls/min | $0 |
-| Pro | 10,000 | 120 calls/min | $19/seat/mo (up to 5 seats) |
-| Team | 100,000 | 300 calls/min | $39/seat/mo (min 3 seats - from $117/mo) |
+A free tier is available; paid plans are seat-based (Pro and Team). Quotas, rate limits, seat counts, and prices are strategy-dependent and change over time, so they live in one place only - the [live pricing page](https://odoo-semantic.viindoo.com/pricing) - instead of being duplicated (and going stale) here.
 
 [Get your free API key](https://odoo-semantic.viindoo.com/signup/) - no credit card required.
 

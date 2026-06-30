@@ -1,7 +1,7 @@
 # ADR-0037 — Path Portability (Repo-Relative Storage + Output, Migration-Safe)
 
 **Date:** 2026-05-25
-**Status:** Proposed — M13
+**Status:** Accepted (D1-D8 + migration safety-net implemented across `src/indexer/` + `src/mcp/`)
 
 > Read-side companion to [ADR-0034](0034-multi-tenant-pooled-isolation.md) (who
 > may read) and [ADR-0035](0035-git-access-model.md) (how repos are cloned).

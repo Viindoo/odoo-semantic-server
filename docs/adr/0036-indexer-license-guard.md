@@ -1,7 +1,7 @@
 # ADR-0036 — License Policy Engine (Config-Driven Soft Block)
 
 **Date:** 2026-05-22
-**Status:** Proposed — M13
+**Status:** Accepted (engine implemented in `src/constants.py` LICENSE_POLICY + `src/indexer/registry.py`; D3 Web-UI badge + D5 ToS clause remain as non-code surface)
 
 > Complements [ADR-0034](0034-multi-tenant-pooled-isolation.md): that ADR guards
 > **who can read** the graph; this one decides **what enters / is exposed** and

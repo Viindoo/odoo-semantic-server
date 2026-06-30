@@ -1,7 +1,7 @@
 # ADR-0035 — Git Access Model: Subprocess CLI + Multi-Tenant Concurrency Policy
 
 **Date:** 2026-05-22
-**Status:** Proposed — M13
+**Status:** Accepted (D1-D4/D6 implemented in `src/git_utils.py` + `src/indexer/pipeline.py`; D5 partial-clone spike still open)
 
 > Companion to [ADR-0034](0034-multi-tenant-pooled-isolation.md) (multi-tenant) and
 > [ADR-0008](0008-ssh-auto-clone.md) (SSH auto-clone). D3 supersedes ADR-0008's
