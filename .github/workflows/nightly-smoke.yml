@@ -627,16 +627,22 @@ jobs:
           [ "$status" = "401" ] || (echo "Expected 401 no cookie, got $status" && exit 1)
 
       - name: "Prod /ready — index-size floor (guards README 12k models / 184k fields claim)"
-        # Pins a lower bound on the live index so the public README counts cannot
-        # silently drift far below what is advertised. Field-chunk embeddings are the
-        # hard proxy (~173k as of 2026-06); the 150k floor leaves headroom for normal
-        # churn but trips if the live index is materially smaller than the claim.
+        # Catastrophe floor on the live index so the public README counts cannot
+        # silently collapse far below what is advertised. Reads the live /ready
+        # contract `embeddings_by_chunk_type.field` (an integer - verified present
+        # 2026-06; if a future /ready reshape drops this key the `|| echo 0`
+        # fallback fails this step, which is the intended fail-closed behaviour).
+        # Steady state ~173k field-chunk embeddings (2026-06); the 130k floor is a
+        # deliberately conservative ~25% headroom so normal churn and a mid-reindex
+        # probe window do NOT trip it - it fires only on a real index collapse.
+        # Revisit upward if the index grows materially. Requires python3 (present
+        # on ubuntu-latest).
         run: |
           body=$(curl -s --connect-timeout 5 --max-time 20 --retry 4 --retry-delay 5 --retry-connrefused --retry-all-errors https://odoo-semantic.viindoo.com/ready 2>/dev/null || true)
           echo "$body"
           fields=$(printf '%s' "$body" | python3 -c "import sys, json; print(json.load(sys.stdin)['embeddings_by_chunk_type'].get('field', 0))" 2>/dev/null || echo 0)
           echo "field embeddings: $fields"
-          [ "$fields" -ge 150000 ] || (echo "field embeddings $fields < 150000 floor - live index shrank or README 184k+ claim drifted; investigate" && exit 1)
+          [ "$fields" -ge 130000 ] || (echo "field embeddings $fields < 130000 catastrophe floor - live index collapsed or README 184k+ claim drifted; investigate" && exit 1)
 
   check-ollama:
     # Lightweight gate job: checks whether OLLAMA_URL secret is set and exposes
