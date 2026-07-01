@@ -317,7 +317,7 @@ alternative backup strategy is in place.
 
 - **`ops/offsite-backup-systemd.template/`** — systemd unit templates (created by W1C-2)
 - **`docs/adr/0018-backup-contract.md`** — backup bundle contract (tar.gz format, 4-component manifest)
-- **`docs/adr/0020-fernet-credstore.md`** — `LoadCredential=` key delivery pattern (reused here for crypt passwords)
+- **`docs/adr/0020-fernet-key-delivery.md`** - `LoadCredential=` key delivery pattern (reused here for crypt passwords)
 - **`docs/adr/0027-system-user-deployment.md`** — canonical paths + `ProtectHome` + `TMPDIR` gotcha
 - **`docs/deploy/runbooks/backup-confirm-and-dr-drill.md`** — local backup verification + DR drill
 - **rclone crypt docs** — https://rclone.org/crypt/

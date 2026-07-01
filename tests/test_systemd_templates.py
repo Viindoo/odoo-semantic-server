@@ -90,6 +90,54 @@ def test_service_files_are_present():
 
 
 # ---------------------------------------------------------------------------
+# FERNET_KEY LoadCredential guard (issue #355 fetch-gap fix)
+# ---------------------------------------------------------------------------
+
+# Every unit whose ExecStart transitively runs `index-repo` (which calls
+# `refresh_before_scan` -> `git fetch` on every configured repo, all SSH in
+# prod) or otherwise needs to decrypt a stored SSH key / FERNET-encrypted
+# blob at runtime MUST provision FERNET_KEY via the systemd credential store
+# (ADR-0020). A missing LoadCredential= here means the unit's git fetch step
+# silently falls back to indexing on-disk state only (see #355).
+_FERNET_LOADCREDENTIAL_UNITS = (
+    "odoo-semantic-reindex.service",
+    "odoo-semantic-webui.service",
+    "odoo-semantic-backup.service",
+)
+
+
+def test_fernet_consumer_units_load_fernet_credential():
+    """Units that need FERNET_KEY at runtime must ship an active LoadCredential=.
+
+    Covers the reindex unit specifically because its `index-repo --all` run
+    fetches every configured repo (all SSH in production) before scanning -
+    without FERNET_KEY that fetch cannot decrypt the stored SSH key and the
+    nightly job silently degrades to on-disk-only indexing (issue #355).
+    """
+    missing = []
+    for unit_name in _FERNET_LOADCREDENTIAL_UNITS:
+        unit_path = REPO_ROOT / "docs" / "deploy" / unit_name
+        assert unit_path.exists(), f"Expected service file not found: {unit_path}"
+        content = unit_path.read_text()
+        has_active_directive = any(
+            line.strip() == "LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY"
+            for line in content.splitlines()
+        )
+        if not has_active_directive:
+            missing.append(unit_name)
+
+    assert not missing, (
+        "Expected an active 'LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY' "
+        "line in each of these unit files, found none in:\n"
+        + "\n".join(f"  docs/deploy/{name}" for name in missing)
+        + "\n\nSee ADR-0020 + issue #355: any unit whose ExecStart reaches "
+        "src.indexer.pipeline_repo.refresh_before_scan (git fetch on SSH repos) "
+        "needs FERNET_KEY to decrypt stored SSH keys, or the fetch silently "
+        "no-ops and the job indexes stale on-disk state only."
+    )
+
+
+# ---------------------------------------------------------------------------
 # systemd-analyze verify regression test
 # ---------------------------------------------------------------------------
 

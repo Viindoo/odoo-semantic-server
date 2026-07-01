@@ -1,8 +1,8 @@
 # ADR-0020 — FERNET Key Delivery and Rotation Procedure
 
-**Status:** Accepted (updated 2026-05-25 — WI-7 hardening)  
+**Status:** Accepted (updated 2026-07-01 - reindex service consumer added)  
 **Date:** 2026-05-15  
-**Authors:** W-FE stream (M9 security hardening); WI-7 update (M13 FERNET hardening)
+**Authors:** W-FE stream (M9 security hardening); WI-7 update (M13 FERNET hardening); 2026-07-01 amendment (post-#355 reindex fetch-gap fix)
 
 ---
 
@@ -93,8 +93,9 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
 
 5. **Preferred systemd setup via `LoadCredential` — now the active shipped design (WI-7 holistic cut realized).**
 
-   The key lives at `/etc/credstore/FERNET_KEY` (root:root 0600). Both the
-   `odoo-semantic-webui.service` and `odoo-semantic-backup.service` units ship
+   The key lives at `/etc/credstore/FERNET_KEY` (root:root 0600). The
+   `odoo-semantic-webui.service`, `odoo-semantic-backup.service`, and
+   `odoo-semantic-reindex.service` units all ship
    with an **active** (not commented-out) `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
    directive. The ad-hoc CLI (indexer, `rotate-fernet`, `restore`) receives the key via
    the `osm-fernet-run` wrapper (`systemd-run -p LoadCredential=`), which spawns a
@@ -102,8 +103,18 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
    widening credstore permissions and NOT by keeping the key in the process environment.
    `FERNET_KEY` has been removed from `.env` / `webui.env`.
 
+   > **2026-07-01 amendment - `odoo-semantic-reindex.service` added as a consumer.**
+   > Post-#355, the periodic reindex (`index-repo --all`, systemd timer) runs `git fetch`
+   > against every configured repo BEFORE scanning, and fetching a private SSH repo needs
+   > its stored SSH key decrypted via `src.crypto` - which requires `FERNET_KEY`. The
+   > reindex timer runs unattended as `odoo-semantic` (not root), so it cannot invoke the
+   > root-only `osm-fernet-run` wrapper the way ad-hoc CLI runs do; `LoadCredential=` on the
+   > unit itself is the only delivery path available to it. Without this, every SSH-scheme
+   > repo (all 49 production repos across 13 profiles, as of 2026-07-01) fails to fetch and
+   > the nightly job silently falls back to indexing on-disk state only.
+
    ```bash
-   # One-time provision (MUST happen BEFORE enabling the webui or backup units):
+   # One-time provision (MUST happen BEFORE enabling the webui, backup, or reindex units):
    sudo install -d -m 0700 -o root -g root /etc/credstore
    # Reuse the existing key (do NOT generate a new one — existing SSH/TOTP secrets
    # are encrypted under the current key and must remain decryptable):
@@ -135,9 +146,9 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
    > **⚠️ Hard-fail — still applies:** `LoadCredential` with a missing source file
    > causes systemd to refuse to start the unit (exit code 243/CREDENTIALS).
    > This is **not** a soft fallback to `EnvironmentFile=`. Provision
-   > `/etc/credstore/FERNET_KEY` **before** enabling or starting the webui/backup
-   > units. Operators on env-only deployments may comment the `LoadCredential=` line
-   > in a drop-in override (see install-runbook.md).
+   > `/etc/credstore/FERNET_KEY` **before** enabling or starting the webui, backup,
+   > or reindex units. Operators on env-only deployments may comment the
+   > `LoadCredential=` line in a drop-in override (see install-runbook.md).
    >
    > **`$FERNET_KEY` env fallback preserved for dev/non-systemd:** `src.crypto`
    > still honors `$FERNET_KEY` as a fallback when `CREDENTIALS_DIRECTORY` is not

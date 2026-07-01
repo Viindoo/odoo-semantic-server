@@ -28,7 +28,7 @@ Read the full ADR file before changing anything it governs (schema, auth, policy
 - `0017` OAuth via arctic + oslo (state + PKCE, Google/GitHub, account linking on verified email)
 - `0018` backup bundle contract (tar.gz: postgres.sql + neo4j.dump + fernet.enc + manifest.json)
 - `0019` restore upload security (OWASP 10-item checklist, tarfile filter='data', pre-restore safety backup)
-- `0020` FERNET key delivery + atomic rotation (central getter `src/crypto.py`; LoadCredential delivery + FERNET_KEY env fallback; totp_secrets co-rotation in same txn; env-var-name indirection --old-key-env/--new-key-env; fail-fast in prod via SystemExit(1); full rollback on any InvalidToken)
+- `0020` FERNET key delivery + atomic rotation (central getter `src/crypto.py`; LoadCredential delivery + FERNET_KEY env fallback; totp_secrets co-rotation in same txn; env-var-name indirection --old-key-env/--new-key-env; fail-fast in prod via SystemExit(1); full rollback on any InvalidToken; **2026-07-01 amendment: `odoo-semantic-reindex.service` added as a 3rd LoadCredential consumer alongside webui/backup - post-#355 the nightly reindex fetches upstream before scanning and must decrypt SSH keys to reach private repos**)
 - `0021` admin audit log (@audit_action decorator, audit_cli context manager, 18+ routes)
 - `0022` MFA TOTP (pyotp, Fernet-encrypted secrets, 10 HMAC backup codes, admin-required policy)
 - `0023` Tool output completeness (M9 W-OSM Wave 1 — tree grammar contract, English-only language policy, truncation+total disclosure via `_render_capped`, next-step hint mapping for 18 drill-down tools)

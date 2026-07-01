@@ -63,7 +63,7 @@ CLI flag wins over env var. Mechanism is idempotent — safe to run multiple tim
 ```
 1. PostgreSQL (registry + auth + embeddings)
 2. Neo4j (graph data — optional nếu sẽ re-index)
-3. FERNET_KEY → /etc/credstore/FERNET_KEY (cần trước khi start Web UI + backup)
+3. FERNET_KEY -> /etc/credstore/FERNET_KEY (cần trước khi start webui, backup, reindex - xem ADR-0020)
 4. Services restart
 ```
 
@@ -158,8 +158,8 @@ docker compose exec neo4j \
 ### 3. Restore FERNET_KEY
 
 Production delivers the key via the **systemd credential store** (`LoadCredential=` trong
-webui + backup units, per ADR-0020). Restore the **EXISTING** key (KHÔNG generate key mới —
-SSH/TOTP secrets đã mã hóa bằng key đó) tới credstore path, root:root 0600:
+webui, backup, và reindex units, per ADR-0020). Restore the **EXISTING** key (KHÔNG generate key
+mới - SSH/TOTP secrets đã mã hóa bằng key đó) tới credstore path, root:root 0600:
 
 ```bash
 # Primary (production) — khớp LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY:
@@ -168,8 +168,10 @@ printf '%s' "<FERNET_KEY từ secrets manager>" | sudo tee /etc/credstore/FERNET
 sudo chmod 600 /etc/credstore/FERNET_KEY && sudo chown root:root /etc/credstore/FERNET_KEY
 ```
 
-> ⚠️ Thiếu `/etc/credstore/FERNET_KEY` sẽ **hard-fail** webui + backup units ở
-> status=243/CREDENTIALS (KHÔNG soft-fallback) — provision TRƯỚC khi start các service đó.
+> ⚠️ Thiếu `/etc/credstore/FERNET_KEY` sẽ **hard-fail** webui, backup, và reindex
+> units ở status=243/CREDENTIALS (KHÔNG soft-fallback) - provision TRƯỚC khi start
+> các service đó (reindex là oneshot unit qua timer nên chỉ cần `daemon-reload`,
+> không cần restart - lần chạy timer kế tiếp tự nạp credential).
 >
 > **Dev / non-credstore fallback only:** `src.crypto` cũng đọc `$FERNET_KEY` từ env file
 > `/home/odoo-semantic/etc/webui.env` (owner odoo-semantic, mode 600). Chỉ dùng path này

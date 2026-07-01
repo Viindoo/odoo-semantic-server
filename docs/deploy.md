@@ -805,14 +805,17 @@ systemctl list-timers odoo-semantic-reindex.timer --no-pager   # verify lần ch
 ```
 
 Incremental `index-repo --all` chạy hằng đêm 03:30. Monthly `--full --gc` (dọn stale Module
-nodes từ rename/move, per ADR-0007) chạy thủ công — vẫn nạp `.env` qua `systemd-run`:
+nodes từ rename/move, per ADR-0007) chạy thủ công - dùng `osm-fernet-run` (KHÔNG bare
+`systemd-run`): `--full --gc` cũng chạy `refresh_before_scan` (post-#355) như nightly timer,
+nên fetch SSH repo riêng tư cần FERNET_KEY để decrypt SSH key. Bare `systemd-run` (không
+`LoadCredential=FERNET_KEY`) khiến lượt chạy monthly này im lặng fail-safe về on-disk-only
+giống hệt gap #355 mà `odoo-semantic-reindex.service` vừa được vá - `osm-fernet-run` đã wrap
+sẵn `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` + nạp `.env` (xem
+`docs/deploy/osm-fernet-run`):
 
 ```bash
-sudo systemd-run --uid=odoo-semantic --gid=odoo-semantic --pipe --wait \
-  -p EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env \
-  -p Environment=ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf \
-  --working-directory=/home/odoo-semantic/odoo-semantic-mcp \
-  /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --full --gc
+sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+  -m src.indexer index-repo --all --full --gc
 ```
 
 > **Alternative — cron.d** (CHỈ khi `odoo-semantic.conf` đã chứa `pg_dsn` + neo4j creds, vì cron
@@ -1553,7 +1556,8 @@ Private key (SSH + TOTP secret) được encrypt bằng Fernet symmetric encrypt
 `src.crypto.get_fernet_key()` là single source of truth — resolution order:
 
 1. **`$CREDENTIALS_DIRECTORY/FERNET_KEY`** — systemd `LoadCredential` (preferred
-   cho new deployments; key không vào process env). Webui service only.
+   cho new deployments; key không vào process env). 3 units mang directive này:
+   webui, backup, và reindex (xem ADR-0020 cho danh sách đầy đủ + rollout steps).
 2. **`$FERNET_KEY`** env var — delivery method cho `EnvironmentFile=` deployments
    (existing setups không cần thay đổi). **Đây là nguồn duy nhất cho CLI**
    (`src/cli.py` — indexer + `rotate-fernet`): CLI chạy như plain process,
@@ -1574,10 +1578,12 @@ sudo systemctl restart odoo-semantic-webui
 
 **Option B — LoadCredential (WI-7 holistic cut — now the active shipped design):**
 
-The shipped `odoo-semantic-webui.service` and `odoo-semantic-backup.service` now carry
-**active** `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` directives. The CLI
-(indexer, `rotate-fernet`, `restore`) is covered by the `osm-fernet-run` wrapper.
-FERNET_KEY has been removed from `.env` / `webui.env`.
+The shipped `odoo-semantic-webui.service`, `odoo-semantic-backup.service`, and
+`odoo-semantic-reindex.service` now carry **active**
+`LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` directives (see ADR-0020 for
+the full 3-consumer list and rationale). The ad-hoc CLI (indexer, `rotate-fernet`,
+`restore`) is covered by the `osm-fernet-run` wrapper. FERNET_KEY has been removed
+from `.env` / `webui.env`.
 
 **Deploy ordering — STRICT (provision credstore BEFORE enabling units):**
 
@@ -1602,6 +1608,10 @@ sudo install -m 0755 docs/deploy/osm-fernet-run /usr/local/bin/osm-fernet-run
 # 5. Reload + restart (credstore must be provisioned BEFORE this step):
 sudo systemctl daemon-reload
 sudo systemctl restart odoo-semantic-webui odoo-semantic-backup.timer
+# odoo-semantic-reindex.service is a oneshot unit fired by odoo-semantic-reindex.timer,
+# not a long-running process - daemon-reload above is enough to pick up its
+# LoadCredential= directive; the next timer fire uses the credential automatically
+# (no "restart odoo-semantic-reindex" step - there is nothing running to restart).
 ```
 
 > ⚠️ **Hard-fail — same as before:** `LoadCredential` with a missing source hard-fails
@@ -1633,8 +1643,11 @@ sudo systemctl restart odoo-semantic-webui odoo-semantic-backup.timer
 Dev mode (chạy `python -m src.web_ui` trực tiếp): export `FERNET_KEY` trong shell hoặc thêm vào `.env` rồi `set -a; source .env; set +a`.
 
 ⚠️ **Nếu mất FERNET_KEY**: mọi SSH private key và TOTP secret đã lưu sẽ không giải
-mã được. Backup key an toàn (vd password manager). Indexer/MCP
-server không cần FERNET_KEY runtime — chỉ Web UI và CLI `rotate-fernet` cần.
+mã được. Backup key an toàn (vd password manager). MCP server không cần
+FERNET_KEY runtime (không có crypto usage trong `src/mcp/`). Web UI, CLI
+`rotate-fernet`, và indexer/reindex đều cần FERNET_KEY - từ #355, reindex chạy
+`git fetch` trước khi scan, và fetch một SSH repo cần decrypt SSH key đã lưu qua
+`src.crypto` (xem ADR-0020).
 
 **Rotation (WI-7 update — `--old-key`/`--new-key` flags REMOVED):**
 

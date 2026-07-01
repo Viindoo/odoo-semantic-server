@@ -970,14 +970,20 @@ sudo systemctl restart odoo-semantic-mcp
 ### FERNET LoadCredential cutover
 
 > **WI-7 holistic cut is now ACTIVE in the shipped unit templates.**
-> Both `odoo-semantic-webui.service` and `odoo-semantic-backup.service` ship with
-> `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` as an **active** directive.
+> `odoo-semantic-webui.service`, `odoo-semantic-backup.service`, and
+> `odoo-semantic-reindex.service` all ship with
+> `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` as an **active** directive
+> (the reindex unit needs it because `index-repo --all` fetches every configured repo,
+> all SSH in production, before scanning - see ADR-0020 for the full consumer list).
 > CLI delivery is covered by the `osm-fernet-run` wrapper (`docs/deploy/osm-fernet-run`,
 > installed to `/usr/local/bin/`). FERNET_KEY has been removed from `.env`/`webui.env`.
 >
 > ⚠️ **Hard-fail still applies:** A missing `/etc/credstore/FERNET_KEY` source
 > hard-fails the unit at status=243/CREDENTIALS (NOT a soft fallback). Provision
-> the credstore as a prerequisite BEFORE enabling or restarting the webui/backup units.
+> the credstore as a prerequisite BEFORE enabling or restarting the webui/backup units,
+> or before the reindex timer's next fire (reindex is a oneshot unit - provisioning
+> only needs `systemctl daemon-reload`, not a restart, since nothing is running
+> continuously to restart).
 >
 > ⚠️ **Provision the EXISTING key** — do NOT generate a new one. Existing SSH/TOTP
 > secrets are encrypted under the current key; reuse it at `/etc/credstore/FERNET_KEY`
