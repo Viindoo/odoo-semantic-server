@@ -92,3 +92,20 @@ def get_fernet():
 
     key = get_fernet_key(require=True)
     return Fernet(key.encode() if isinstance(key, str) else key)
+
+
+def decrypt_private_key(encrypted: str) -> bytes:
+    """Decrypt a Fernet-encrypted private key. Return the plaintext PEM bytes.
+
+    Single source of truth for SSH-key decryption (WI: nightly-fetch). Lives in
+    this leaf ``src.crypto`` module — which owns ``get_fernet()`` and imports
+    nothing from ``src.web_ui`` or ``src.indexer`` — so BOTH the web layer
+    (``src/web_ui/routes/ssh_keys.py``) and the indexer layer
+    (``src/indexer/pipeline_repo.py``, which must NOT import ``src.web_ui`` per
+    the CLAUDE.md one-way pipeline rule) can call the SAME primitive. Mirrors the
+    ``src/metrics.py`` precedent created to fix ``embedder.py``→``src.mcp.metrics``.
+
+    Raises ``RuntimeError`` if FERNET_KEY is not set (via ``get_fernet``).
+    Raises ``cryptography.fernet.InvalidToken`` if the ciphertext is invalid.
+    """
+    return get_fernet().decrypt(encrypted.encode())

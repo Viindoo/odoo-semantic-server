@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.requests import Request
 
+from src.crypto import decrypt_private_key as _crypto_decrypt_private_key
 from src.crypto import get_fernet, get_fernet_key
 from src.db.audit import audit_action
 from src.web_ui._json import _json_safe
@@ -47,8 +48,14 @@ def generate_ed25519_keypair() -> tuple[str, str]:
 
 
 def decrypt_private_key(encrypted: str) -> bytes:
-    """Decrypt a Fernet-encrypted private key. Returns PEM bytes."""
-    return _get_fernet().decrypt(encrypted.encode())
+    """Decrypt a Fernet-encrypted private key. Returns PEM bytes.
+
+    Thin wrapper over the SSOT ``src.crypto.decrypt_private_key`` (single source
+    of truth for SSH-key decryption). Kept as a module-level name here so the
+    existing web-layer / cloner call sites (``from src.web_ui.routes.ssh_keys
+    import decrypt_private_key``) stay valid. External behaviour is unchanged.
+    """
+    return _crypto_decrypt_private_key(encrypted)
 
 
 def parse_ed25519_private_pem(pem: bytes) -> tuple[str, str]:

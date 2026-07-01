@@ -277,6 +277,7 @@ def index_profile(
     max_workers: int = 1,
     full_reindex: bool = False,
     gc: bool = False,
+    refresh: bool = True,
 ) -> dict:
     """Index all repos belonging to *profile_name*.
 
@@ -300,6 +301,12 @@ def index_profile(
                        nodes (modules that no longer exist on disk). Risk-gated:
                        only runs when scanner found ≥1 module. Recommended for
                        monthly runs or after module renames. See ADR-0007 §D5.
+        refresh:       When True (default), each repo is `git fetch`ed and
+                       `reset --hard origin/<branch>` BEFORE the incremental
+                       check, so upstream merges become visible to the nightly
+                       cron. Fail-safe: a fetch error is logged and indexing
+                       proceeds on the on-disk state. Set False (CLI --no-fetch)
+                       to keep the old local-only behaviour.
 
     Returns:
         Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
@@ -390,6 +397,7 @@ def index_profile(
                             progress=progress, full_reindex=full_reindex, gc=gc,
                             profile_name=profile_name,
                             core_rng_root=core_rng_root,
+                            refresh=refresh,
                         )
                         _elapsed = time.monotonic() - _t0
                         total_modules += counters["modules"]
@@ -445,6 +453,7 @@ def index_profile(
                             gc=gc,
                             profile_name=profile_name,
                             core_rng_root=core_rng_root,
+                            refresh=refresh,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")
@@ -778,6 +787,7 @@ def index_all(
     full_reindex: bool = False,
     profile_workers: int = 1,
     gc: bool = False,
+    refresh: bool = True,
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
@@ -802,6 +812,12 @@ def index_all(
                          lock (Wave 1 P1) ensures no collision across workers.
         gc:              When True, run Module GC for each repo (see index_profile
                          and ADR-0007 §D5). Forwarded to each index_profile() call.
+        refresh:         When True (default), `git fetch` + `reset --hard
+                         origin/<branch>` each repo before the incremental check
+                         so upstream merges are visible to the nightly cron.
+                         Fail-safe (fetch error → index on-disk state). Set False
+                         (CLI --no-fetch) for the old local-only behaviour.
+                         Forwarded to each index_profile() call.
 
     Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
     qweb, embeddings, js_patches, owl_comps}.
@@ -829,6 +845,7 @@ def index_all(
                     max_workers=max_workers,
                     full_reindex=full_reindex,
                     gc=gc,
+                    refresh=refresh,
                 )
                 agg_modules += summary["modules"]
                 agg_views += summary["views"]
@@ -875,6 +892,7 @@ def index_all(
                     max_workers=max_workers,
                     full_reindex=full_reindex,
                     gc=gc,
+                    refresh=refresh,
                 )
             finally:
                 pg_conn_thread.close()
