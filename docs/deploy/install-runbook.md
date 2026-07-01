@@ -144,10 +144,12 @@ sudo chown odoo-semantic:odoo-semantic /home/odoo-semantic/etc/webui.env
 ```
 
 > **FERNET credstore — REQUIRED step (WI-7 holistic cut):**
-> The shipped `odoo-semantic-webui.service` and `odoo-semantic-backup.service`
-> templates now carry **active** `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY`
-> directives (not commented-out). You MUST provision `/etc/credstore/FERNET_KEY`
-> **before** running `systemctl enable --now` on these units — a missing source
+> The shipped `odoo-semantic-webui.service`, `odoo-semantic-backup.service`, and
+> `odoo-semantic-reindex.service` templates now carry **active**
+> `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` directives (not commented-out;
+> see ADR-0020 for the full 3-consumer list). You MUST provision
+> `/etc/credstore/FERNET_KEY` **before** running `systemctl enable --now` on the
+> webui/backup units, or before the reindex timer's first fire - a missing source
 > hard-fails the unit at status=243/CREDENTIALS (NOT a soft fallback to EnvironmentFile).
 >
 > ```bash
@@ -225,7 +227,7 @@ make check-systemd-overrides
 git pull origin master
 
 # 3. Diff the new shipped unit bodies vs installed
-for u in odoo-semantic-mcp odoo-semantic-webui odoo-semantic-astro odoo-semantic-backup; do
+for u in odoo-semantic-mcp odoo-semantic-webui odoo-semantic-astro odoo-semantic-backup odoo-semantic-reindex; do
     diff -u "/etc/systemd/system/${u}.service" "docs/deploy/${u}.service" || true
 done
 # Review each diff: are the changes safe to roll out? Any new required
@@ -236,7 +238,7 @@ sudo install -m 644 docs/deploy/odoo-semantic-*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 
 # 5. Verify drop-ins still merge cleanly
-for u in odoo-semantic-mcp odoo-semantic-webui odoo-semantic-astro odoo-semantic-backup; do
+for u in odoo-semantic-mcp odoo-semantic-webui odoo-semantic-astro odoo-semantic-backup odoo-semantic-reindex; do
     systemctl cat "${u}.service"
 done
 # Confirm effective ExecStart=, EnvironmentFile=, ReadWritePaths= match

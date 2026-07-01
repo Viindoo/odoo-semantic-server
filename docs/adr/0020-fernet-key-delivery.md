@@ -114,7 +114,7 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
    > the nightly job silently falls back to indexing on-disk state only.
 
    ```bash
-   # One-time provision (MUST happen BEFORE enabling the webui or backup units):
+   # One-time provision (MUST happen BEFORE enabling the webui, backup, or reindex units):
    sudo install -d -m 0700 -o root -g root /etc/credstore
    # Reuse the existing key (do NOT generate a new one — existing SSH/TOTP secrets
    # are encrypted under the current key and must remain decryptable):
@@ -146,9 +146,9 @@ logic (e.g. adding `CREDENTIALS_DIRECTORY` support) had to be duplicated.
    > **⚠️ Hard-fail — still applies:** `LoadCredential` with a missing source file
    > causes systemd to refuse to start the unit (exit code 243/CREDENTIALS).
    > This is **not** a soft fallback to `EnvironmentFile=`. Provision
-   > `/etc/credstore/FERNET_KEY` **before** enabling or starting the webui/backup
-   > units. Operators on env-only deployments may comment the `LoadCredential=` line
-   > in a drop-in override (see install-runbook.md).
+   > `/etc/credstore/FERNET_KEY` **before** enabling or starting the webui, backup,
+   > or reindex units. Operators on env-only deployments may comment the
+   > `LoadCredential=` line in a drop-in override (see install-runbook.md).
    >
    > **`$FERNET_KEY` env fallback preserved for dev/non-systemd:** `src.crypto`
    > still honors `$FERNET_KEY` as a fallback when `CREDENTIALS_DIRECTORY` is not

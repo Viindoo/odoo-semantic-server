@@ -1,6 +1,6 @@
 # FERNET Key Provisioning Runbook
 
-> Provision `FERNET_KEY` credential for webui + backup services on production.
+> Provision `FERNET_KEY` credential for webui, backup, and reindex services on production.
 > ADR-0020: FERNET key delivery + atomic rotation.
 
 ---
@@ -34,6 +34,9 @@ OSM services resolve `FERNET_KEY` in this order (first win):
 **Affected (require FERNET_KEY):**
 - `<WEBUI_SERVICE>` — FastAPI admin panel (decrypts SSH keys + TOTP for login)
 - `<BACKUP_SERVICE>` — Nightly backup oneshot (decrypts SSH keys + TOTP in bundles with `--bundle-passphrase-env`)
+- `<REINDEX_SERVICE>` - Nightly reindex oneshot, fired by its timer (since #355, `index-repo --all`
+  runs `git fetch` on every configured repo before scanning; an SSH-scheme repo needs its stored
+  key decrypted via `src.crypto`, which requires FERNET_KEY - see ADR-0020)
 
 **NOT affected:**
 - `<MCP_SERVICE>` — MCP server (:8002) does NOT decrypt secrets at runtime; no `LoadCredential` needed
@@ -51,6 +54,7 @@ Before provisioning:
   # Should show: systemd 247+ (or check with: systemctl show -p Version)
   ```
 - `<WEBUI_SERVICE>` and `<BACKUP_SERVICE>` units are **not currently running**, or operator is willing to restart them after provision
+- `<REINDEX_SERVICE>` is a oneshot unit fired by its timer, not a long-running process - no restart needed, only `systemctl daemon-reload` to pick up the `LoadCredential=` directive before the next timer fire
 - CLI command to generate key is available (see Execute section)
 
 ---
@@ -63,6 +67,7 @@ Before provisioning:
 | `<APP_USER>` | `odoo-semantic` | System user running webui + backup services |
 | `<WEBUI_SERVICE>` | `odoo-semantic-webui` | systemd unit name for FastAPI admin |
 | `<BACKUP_SERVICE>` | `odoo-semantic-backup` | systemd unit name for nightly backup |
+| `<REINDEX_SERVICE>` | `odoo-semantic-reindex` | systemd oneshot unit for nightly reindex (fired by `odoo-semantic-reindex.timer`) |
 | `<MCP_SERVICE>` | `odoo-semantic-mcp` | systemd unit name for MCP server (NOT affected) |
 
 Operators on non-canonical layouts (e.g., `/opt/` or personal-user deployments) substitute the actual values. Example: if app user is `semantic-bot` and service unit is `semantic-bot-webui`, replace all placeholders accordingly.
@@ -132,6 +137,11 @@ sudo systemctl restart <WEBUI_SERVICE>
 # Restart backup service (oneshot, safe to restart anytime)
 sudo systemctl restart <BACKUP_SERVICE>
 
+# Reindex is a oneshot unit fired by its timer, not a long-running process -
+# daemon-reload above already picked up its LoadCredential=; the next timer
+# fire uses the credential automatically. Do NOT "restart" it - nothing is
+# running continuously to restart.
+
 # Do NOT restart MCP — it does not use FERNET
 ```
 
@@ -147,6 +157,10 @@ Run these checks **immediately after** restart to confirm provisioning succeeded
 # Both should show "active (running)"
 sudo systemctl is-active <WEBUI_SERVICE>
 sudo systemctl is-active <BACKUP_SERVICE>
+
+# Reindex has no persistent process to check (oneshot fired by its timer) -
+# verify the timer itself is scheduled instead:
+systemctl list-timers <REINDEX_SERVICE>.timer --no-pager
 
 # MCP unaffected (should remain active)
 sudo systemctl is-active <MCP_SERVICE>
@@ -228,6 +242,9 @@ python3 -m src.cli rotate-fernet --old-key-env OLD_FERNET_KEY --new-key-env NEW_
    sudo systemctl restart <WEBUI_SERVICE>
    sudo systemctl restart <BACKUP_SERVICE>
    ```
+   `<REINDEX_SERVICE>` needs no restart - as a oneshot unit it reads the credential
+   fresh from credstore on every timer fire, so it picks up the new key automatically
+   once the `daemon-reload` in step 2 above has run.
 
 4. Verify (same checks as section 3b above)
 
@@ -284,7 +301,7 @@ sudo ls -l '<CREDSTORE_PATH>'
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `"FERNET_KEY missing"` in webui/backup logs | `<CREDSTORE_PATH>` file does not exist or `LoadCredential=` directive not loaded | Re-run section 2 (Write Credential Store) + `systemctl daemon-reload` |
+| `"FERNET_KEY missing"` in webui/backup/reindex logs | `<CREDSTORE_PATH>` file does not exist or `LoadCredential=` directive not loaded | Re-run section 2 (Write Credential Store) + `systemctl daemon-reload` |
 | `"InvalidToken"` during login or backup | Credstore key does not match the key used to encrypt existing SSH/TOTP rows | Restore the correct key from offline backup (section Rollback); verify key fingerprint if unsure |
 | `systemctl daemon-reload` has no effect; services still fail | systemd version < 247 (does not support `LoadCredential=`) | Verify `systemctl --version`; upgrade systemd or fall back to `EnvironmentFile=` with key in plaintext env file (less secure) |
 | `"PermissionError"` when service tries to read credstore | File mode is not 0600, or owner is not root:root | Correct permissions: `sudo chmod 0600 '<CREDSTORE_PATH>'` and `sudo chown root:root '<CREDSTORE_PATH>'` |
@@ -303,6 +320,7 @@ FERNET provisioning does not require DB schema changes, but ensure Postgres migr
 - **`src/crypto.py`** — Canonical key resolution logic (systemd credential store, env fallback)
 - **`docs/deploy/odoo-semantic-webui.service`** — `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` directive
 - **`docs/deploy/odoo-semantic-backup.service`** — Same `LoadCredential=` directive
+- **`docs/deploy/odoo-semantic-reindex.service`** - Same `LoadCredential=` directive (added post-#355)
 - **`docs/deploy/odoo-semantic-mcp.service`** — Verify NOT present (MCP does not decrypt secrets)
 - **`src/cli.py`** — `rotate-fernet` subcommand implementation
 - **ADR-0020** — Architecture Decision Record: FERNET key delivery + atomic rotation
