@@ -805,14 +805,17 @@ systemctl list-timers odoo-semantic-reindex.timer --no-pager   # verify lần ch
 ```
 
 Incremental `index-repo --all` chạy hằng đêm 03:30. Monthly `--full --gc` (dọn stale Module
-nodes từ rename/move, per ADR-0007) chạy thủ công — vẫn nạp `.env` qua `systemd-run`:
+nodes từ rename/move, per ADR-0007) chạy thủ công - dùng `osm-fernet-run` (KHÔNG bare
+`systemd-run`): `--full --gc` cũng chạy `refresh_before_scan` (post-#355) như nightly timer,
+nên fetch SSH repo riêng tư cần FERNET_KEY để decrypt SSH key. Bare `systemd-run` (không
+`LoadCredential=FERNET_KEY`) khiến lượt chạy monthly này im lặng fail-safe về on-disk-only
+giống hệt gap #355 mà `odoo-semantic-reindex.service` vừa được vá - `osm-fernet-run` đã wrap
+sẵn `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` + nạp `.env` (xem
+`docs/deploy/osm-fernet-run`):
 
 ```bash
-sudo systemd-run --uid=odoo-semantic --gid=odoo-semantic --pipe --wait \
-  -p EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env \
-  -p Environment=ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf \
-  --working-directory=/home/odoo-semantic/odoo-semantic-mcp \
-  /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --full --gc
+sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+  -m src.indexer index-repo --all --full --gc
 ```
 
 > **Alternative — cron.d** (CHỈ khi `odoo-semantic.conf` đã chứa `pg_dsn` + neo4j creds, vì cron

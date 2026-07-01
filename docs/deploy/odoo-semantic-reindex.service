@@ -15,6 +15,25 @@
 # auth unless the secrets happen to live in odoo-semantic.conf. EnvironmentFile=
 # here loads the same .env as the other units — creds guaranteed present.
 #
+# FERNET_KEY delivery (post-#355): since #355, `index-repo --all` runs
+# `git fetch` + `reset --hard origin/<branch>` BEFORE scanning each clone
+# (see src.indexer.pipeline_repo.refresh_before_scan, which calls
+# src.git_utils.refresh_repo). Fetching a private SSH repo needs
+# its stored SSH key decrypted via `src.crypto` - which requires FERNET_KEY.
+# This unit runs as `odoo-semantic` (not root), so it cannot use the root-only
+# `osm-fernet-run` wrapper (systemd-run -p LoadCredential=) the way ad-hoc CLI
+# invocations do; instead FERNET_KEY is delivered directly via the systemd
+# credential store, exactly like the odoo-semantic-webui.service and
+# odoo-semantic-backup.service units (ADR-0020 / ADR-0035). PREREQUISITE:
+# `/etc/credstore/FERNET_KEY` must exist (root:root 0600) BEFORE this line is
+# active, or the unit hard-fails at startup with `status=243/CREDENTIALS`
+# (NOT a soft fallback to EnvironmentFile=). Without
+# FERNET_KEY, every SSH-scheme repo fails to fetch (logged WARNING, falls back
+# to indexing on-disk state - see #355 fail-safe) - in practice this made the
+# fetch-before-scan step inert, since all indexed repos in production are SSH.
+# Operators who want an air-gapped/no-fetch nightly run can pass `--no-fetch`
+# on ExecStart instead of provisioning the credential.
+#
 # Monthly `--full --gc` cleanup of stale Module nodes (renames/moves) stays a
 # separate/manual step — see deploy.md §3.6.
 #
@@ -39,6 +58,12 @@ Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
 # Loads PG_DSN + NEO4J_PASSWORD (+ optional $POSTGRES_CONTAINER) — same as the
 # MCP/webui/backup units. This is what makes a periodic reindex viable off-cron.
 EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# FERNET_KEY for decrypting stored SSH keys during the pre-scan `git fetch`
+# (post-#355, see header comment above) - systemd credential store, same
+# source as odoo-semantic-webui.service / odoo-semantic-backup.service.
+# PREREQUISITE: /etc/credstore/FERNET_KEY must exist root:root 0600 BEFORE
+# this line is active, or the unit hard-fails at status=243/CREDENTIALS.
+LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
 # Pre-flight: wait up to 60s for Postgres (indexer needs PG + Neo4j reachable).
 ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --profile-workers 2
