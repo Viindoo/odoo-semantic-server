@@ -150,3 +150,51 @@ class TestGetFernet:
 
         with pytest.raises(RuntimeError, match="FERNET_KEY"):
             get_fernet()
+
+
+class TestDecryptPrivateKey:
+    """SSOT for SSH-key decryption (nightly-fetch): src.crypto.decrypt_private_key.
+
+    Rule: encrypting a PEM with the same Fernet key then decrypting via
+    decrypt_private_key must round-trip to the original bytes. This is the
+    primitive the indexer layer calls so it never has to import src.web_ui.
+    """
+
+    def test_decrypt_round_trip(self, monkeypatch):
+        """encrypt(pem) -> decrypt_private_key(token) == pem (Rule 5)."""
+        from src.crypto import decrypt_private_key, get_fernet
+
+        key = Fernet.generate_key().decode()
+        monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+        monkeypatch.setenv("FERNET_KEY", key)
+
+        pem = b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc123\n-----END OPENSSH PRIVATE KEY-----\n"
+        token = get_fernet().encrypt(pem).decode()
+
+        assert decrypt_private_key(token) == pem
+
+    def test_decrypt_raises_when_key_absent(self, monkeypatch):
+        """decrypt_private_key raises RuntimeError when FERNET_KEY is absent."""
+        from src.crypto import decrypt_private_key
+
+        monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+        monkeypatch.delenv("FERNET_KEY", raising=False)
+
+        with pytest.raises(RuntimeError, match="FERNET_KEY"):
+            decrypt_private_key("anything")
+
+    def test_web_ui_wrapper_delegates_to_ssot(self, monkeypatch):
+        """The web-layer decrypt_private_key wrapper produces the identical result
+        as the SSOT (no duplicated Fernet logic; behaviour unchanged)."""
+        from src.crypto import decrypt_private_key as ssot_decrypt
+        from src.crypto import get_fernet
+        from src.web_ui.routes.ssh_keys import decrypt_private_key as web_decrypt
+
+        key = Fernet.generate_key().decode()
+        monkeypatch.delenv("CREDENTIALS_DIRECTORY", raising=False)
+        monkeypatch.setenv("FERNET_KEY", key)
+
+        pem = b"payload-bytes"
+        token = get_fernet().encrypt(pem).decode()
+
+        assert web_decrypt(token) == ssot_decrypt(token) == pem

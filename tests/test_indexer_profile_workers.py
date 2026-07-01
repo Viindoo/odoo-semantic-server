@@ -222,7 +222,7 @@ class TestProfileWorkersFullReindex:
 
         def fake_index_profile(
             pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
-            gc=False,
+            gc=False, refresh=True,
         ):
             seen_full_reindex.append(full_reindex)
             return _fake_counters(modules=1)
@@ -263,7 +263,7 @@ class TestSequentialFallback:
 
         def fake_index_profile(
             pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
-            gc=False,
+            gc=False, refresh=True,
         ):
             call_order.append(profile_name)
             return _fake_counters(modules=2)

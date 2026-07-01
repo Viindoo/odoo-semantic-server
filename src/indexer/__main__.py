@@ -73,6 +73,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip embedding step (Neo4j only). Default: embed using [embedder] config.",
     )
     sub_repo.add_argument(
+        "--no-fetch", action="store_true",
+        help=(
+            "Skip the pre-scan `git fetch` + `reset --hard origin/<branch>` "
+            "(index the on-disk clone as-is). Default: fetch each repo first so "
+            "upstream merges are picked up by the incremental check."
+        ),
+    )
+    sub_repo.add_argument(
         "--verbose", action="store_true", default=False,
         help="Enable INFO logging and progress bar.",
     )
@@ -249,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         job_id = getattr(args, "job_id", None)
         full_reindex = getattr(args, "full", False)
         gc = getattr(args, "gc", False)
+        refresh = not getattr(args, "no_fetch", False)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
         max_workers = getattr(args, "max_workers", 1)
@@ -295,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                         full_reindex=full_reindex,
                         profile_workers=profile_workers,
                         gc=gc,
+                        refresh=refresh,
                     )
                 else:
                     summary = index_profile(
@@ -305,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
                         max_workers=max_workers,
                         full_reindex=full_reindex,
                         gc=gc,
+                        refresh=refresh,
                     )
                 print(f"Done: {summary}")
                 if args.no_embed:

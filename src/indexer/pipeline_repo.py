@@ -28,7 +28,9 @@ pipeline``). By contrast ``_incremental`` and the ``parser_*`` submodules are
 ``pipeline.parser_python.parse_module`` is visible here regardless of the binding
 path — those stay as ordinary module-level imports.
 """
+import contextlib
 import logging
+import subprocess
 import sys
 from pathlib import Path
 
@@ -114,6 +116,153 @@ def _owning_profiles(
     return [owner]
 
 
+def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
+    """Fetch + reset the repo's local clone to its upstream branch tip.
+
+    ROOT CAUSE this fixes (nightly-fetch): the incremental check in ``_index_repo``
+    only reads the LOCAL clone (``git rev-parse HEAD`` / ``merge-base`` / ``diff``).
+    The nightly reindex cron never ran ``git fetch``, so when an upstream branch
+    advanced (a merged PR), local HEAD still equalled ``repos.head_sha`` and the
+    repo was skipped - upstream merges were structurally invisible to the cron.
+    Running a fetch + ``reset --hard origin/<branch>`` FIRST advances local HEAD to
+    the real remote tip so the existing incremental diff (and force-push /
+    is_ancestor handling) compose naturally on top of it.
+
+    Reuses ``src.git_utils.refresh_repo`` (ADR-0035 SSH hardening: GIT_SSH_COMMAND,
+    pinned known_hosts, StrictHostKeyChecking=yes, per-call 0o600 tempfile key) -
+    no git/SSH logic is re-implemented here.
+
+    Serialization: the mutating fetch/reset runs UNDER the per-repo Postgres
+    advisory lock ``_repo_git_lock(pg_conn, repo_id)`` - the SAME lock the on-demand
+    cloner uses (ADR-0035 D2) - so a scheduled fetch and a concurrent ``clone-all``
+    for the same repo serialize instead of racing on ``.git/index.lock``. The lock
+    is skipped only when ``pg_conn`` is None; only non-DB / unit-test callers hit
+    that path - all production callers (cron, web routes) pass a pg connection, so
+    the lock is always held in production.
+
+    SSH key resolution shares ONE helper with the cloner:
+    ``src.ssh_key_resolve.resolve_ssh_key_pem`` (decides by URL scheme, decrypts
+    via the SSOT ``src.crypto.decrypt_private_key``). HTTPS repo -> None. SSH repo
+    with no usable key -> ``SshKeyUnavailable`` is SURFACED (WARNING + skip fetch,
+    index on-disk) rather than running a doomed keyless SSH fetch that would just
+    fail auth and leave the clone stale forever. Decrypt / DB errors (e.g. missing
+    FERNET_KEY) propagate out of the helper and land on the WARNING fail-safe path
+    below - they are resolved BEFORE the lock, so they can NEVER be misread as
+    benign lock contention.
+
+    FAIL-SAFE: any git/SSH/network error (``CalledProcessError``,
+    ``TimeoutExpired``, ``FileNotFoundError``, or any other unexpected error) is
+    caught, logged as a WARNING, and swallowed - the caller then indexes whatever is
+    on disk. Network reachability must NEVER become a hard dependency of the nightly
+    job: a fetch failure must not abort the profile's reindex.
+
+    Benign lock contention: if a concurrent ``clone-all`` already holds the per-repo
+    advisory lock, ``_repo_git_lock`` raises ``RuntimeError`` at acquisition. That is
+    an EXPECTED, non-error case (the other worker is refreshing the same repo), so it
+    is logged at INFO - NOT WARNING - and indexing proceeds on the on-disk state.
+    Because the key is resolved BEFORE the lock and ``refresh_repo`` never raises
+    ``RuntimeError`` (it raises CalledProcessError/TimeoutExpired/FileNotFoundError),
+    the ONLY RuntimeError reachable inside the ``with`` block is the lock acquisition
+    -> the RuntimeError branch below unambiguously means contention.
+
+    Self-healing note: a partial refresh (fetch OK but reset fails) needs no special
+    handling - ``refresh_repo`` re-runs the reset after every fetch, so the next run
+    completes it. A reset that keeps failing is an ops/timeout issue, not a
+    silent-skip logic bug.
+    """
+    # resolve_ssh_key_pem is a leaf SSOT (is_ssh_url + auth_store + decrypt_private_key,
+    # none of them src.web_ui) so this indexer-layer module honours the one-way
+    # pipeline rule (src/indexer must not import src.web_ui). Deferred imports keep
+    # module load cheap + avoid pulling crypto/DB deps when refresh is off.
+    from src.git_utils import refresh_repo
+    from src.indexer import pipeline as _pipeline
+    from src.ssh_key_resolve import SshKeyUnavailable, resolve_ssh_key_pem
+
+    local_path = Path(repo["local_path"])
+    url = repo.get("url", str(local_path))
+    branch: str | None = repo.get("branch")
+    if not branch:
+        _logger.warning(
+            "Repo %s has no branch recorded - skipping pre-scan fetch "
+            "(cannot reset --hard origin/<branch> without a branch name)",
+            url,
+        )
+        return
+
+    # Resolve the SSH key BEFORE acquiring the lock. This keeps the ONLY RuntimeError
+    # that can fire inside the `with` block below the lock-acquisition one (contention).
+    try:
+        private_key_pem: bytes | None = resolve_ssh_key_pem(repo)
+    except SshKeyUnavailable as exc:
+        # SSH URL but no usable key. Surface it (WARNING) and skip - do NOT run a
+        # keyless SSH fetch that would fail auth and leave the clone stale silently.
+        _logger.warning(
+            "Repo %s: %s - skipping pre-scan fetch, indexing on-disk state",
+            url, exc,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - decrypt/DB error (e.g. FERNET_KEY absent)
+        # A genuine config/crypto failure resolving the key. Non-fatal for the
+        # nightly job, but a real error -> WARNING (not the INFO contention line).
+        _logger.warning(
+            "Repo %s: pre-scan fetch failed resolving SSH key (%s: %s) - "
+            "indexing on-disk state instead",
+            url, type(exc).__name__, exc,
+        )
+        return
+
+    # ADR-0035 D2: serialize the mutating fetch/reset behind the per-repo advisory
+    # lock (same lock id the cloner uses) so a scheduled fetch and an on-demand
+    # clone-all for the same repo never race on .git/index.lock. nullcontext keeps
+    # ONE refresh_repo call site for both the locked (pg_conn) and unlocked paths.
+    lock_cm = (
+        _pipeline._repo_git_lock(pg_conn, repo["id"])
+        if pg_conn is not None
+        else contextlib.nullcontext()
+    )
+    try:
+        with lock_cm:
+            refresh_repo(local_path, branch, private_key_pem=private_key_pem)
+    except RuntimeError:
+        # _repo_git_lock raises RuntimeError ONLY at acquisition (contention);
+        # refresh_repo raises CalledProcessError/TimeoutExpired/FileNotFoundError,
+        # never RuntimeError. So a RuntimeError here == a concurrent clone-all holds
+        # the lock. Benign, EXPECTED - INFO (not WARNING) so operators are not
+        # alarmed; index the on-disk state.
+        _logger.info(
+            "Repo %s: another git op in progress for repo %s, skipping pre-scan "
+            "fetch; indexing on-disk state",
+            url, repo.get("id"),
+        )
+        return
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ) as exc:
+        # Expected git failures: network blip, revoked/rejected key, unreachable
+        # host, missing/damaged clone. Non-fatal - index on-disk state.
+        _logger.warning(
+            "Repo %s: pre-scan fetch failed (%s: %s) - indexing on-disk state instead",
+            url, type(exc).__name__, exc,
+        )
+        return
+    except Exception as exc:  # noqa: BLE001 - defensive: any git error is non-fatal
+        # Any other unexpected error (e.g. OSError from the subprocess machinery)
+        # must ALSO not abort the profile reindex.
+        _logger.warning(
+            "Repo %s: pre-scan fetch failed unexpectedly (%s: %s) - "
+            "indexing on-disk state instead",
+            url, type(exc).__name__, exc,
+        )
+        return
+
+    _logger.info(
+        "Repo %s: pre-scan refresh (fetch + reset --hard origin/%s) OK",
+        url, branch,
+    )
+
+
 def _index_repo(
     repo: dict,
     writer: IndexWriterProtocol,
@@ -124,6 +273,7 @@ def _index_repo(
     gc: bool = False,
     profile_name: str | None = None,
     core_rng_root: Path | None = None,
+    refresh: bool = True,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile).
 
@@ -146,6 +296,17 @@ def _index_repo(
     - Otherwise → diff-filter scan results to changed modules only.
     - head_sha advanced to current HEAD ONLY after all writes succeed.
     - full_reindex=True bypasses the skip + diff filter (use to clean stale nodes).
+
+    refresh (nightly-fetch): when True (default), do a ``git fetch`` +
+        ``reset --hard origin/<branch>`` on the local clone BEFORE the incremental
+        check, so upstream merges become visible to the cron (the incremental
+        check only reads the local clone, so without a fetch an advanced upstream
+        branch left local HEAD == repos.head_sha and the repo was skipped). The
+        fetch runs under the per-repo advisory lock and is FAIL-SAFE: a fetch
+        error is logged and indexing proceeds on the on-disk state (network
+        reachability is never a hard dependency of the nightly job). Set False
+        (CLI ``--no-fetch``) to preserve the old local-only behaviour. See
+        ``refresh_before_scan``.
     """
     # Resolve the parent orchestrator module at call time. ``build_registry``,
     # ``topological_sort`` and ``repo_store`` are referenced through it so that
@@ -173,6 +334,16 @@ def _index_repo(
     rng_root: Path | None = next(
         (p for p in _rng_candidates if p.is_dir()), core_rng_root
     )
+
+    # === Pre-scan refresh (nightly-fetch) ===
+    # Fetch + reset --hard origin/<branch> BEFORE reading HEAD, so an advanced
+    # upstream branch (e.g. a merged PR) is picked up by the incremental check
+    # below instead of being invisible (local HEAD == repos.head_sha -> skip).
+    # FAIL-SAFE inside refresh_before_scan: a fetch error is logged and we index
+    # whatever is on disk. Gated by `refresh` (CLI --no-fetch turns it off).
+    if refresh:
+        refresh_before_scan(repo, pg_conn)
+    # === End pre-scan refresh ===
 
     # === Incremental check (W2-4) ===
     current_head = _incremental.get_repo_head(repo_path)

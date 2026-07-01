@@ -29,6 +29,11 @@ _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 _INDEXER_DIR = _REPO_ROOT / "src" / "indexer"
 
 _FORBIDDEN_PREFIX = "src.mcp"
+# The indexer layer must also NOT import the web (server) layer. The nightly
+# pre-scan refresh needs to decrypt an SSH key; the primitive was placed in the
+# leaf src.crypto module (owner of get_fernet) precisely so the indexer never
+# reaches up into src.web_ui.routes.ssh_keys. This guards that direction.
+_FORBIDDEN_WEB_PREFIX = "src.web_ui"
 
 
 def _module_names_imported(source: str) -> set[str]:
@@ -74,6 +79,32 @@ def test_indexer_layer_does_not_import_mcp_server_layer():
     assert not offenders, (
         "src/indexer/ must not import src.mcp (CLAUDE.md pipeline cross-import "
         f"rule). Offending modules: {offenders}"
+    )
+
+
+def test_indexer_layer_does_not_import_web_ui_layer():
+    """No module in src/indexer/ may import src.web_ui (one-way pipeline rule).
+
+    The indexer is upstream of the web (server) layer. The nightly pre-scan
+    refresh must decrypt an SSH key WITHOUT importing
+    src.web_ui.routes.ssh_keys - it uses the leaf SSOT src.crypto.decrypt_private_key
+    instead. This test turns red if any indexer module reaches up into src.web_ui.
+    """
+    offenders: dict[str, set[str]] = {}
+    for path in _indexer_py_files():
+        imported = _module_names_imported(path.read_text(encoding="utf-8"))
+        bad = {
+            name
+            for name in imported
+            if name == _FORBIDDEN_WEB_PREFIX or name.startswith(_FORBIDDEN_WEB_PREFIX + ".")
+        }
+        if bad:
+            offenders[str(path.relative_to(_REPO_ROOT))] = bad
+
+    assert not offenders, (
+        "src/indexer/ must not import src.web_ui (CLAUDE.md pipeline cross-import "
+        "rule). SSH-key decryption belongs in the leaf src.crypto module. "
+        f"Offending modules: {offenders}"
     )
 
 
