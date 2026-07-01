@@ -189,6 +189,9 @@ def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
     repo_s = _make_repo_store(get_repo_by_id=dict(_SSH_REPO))
     auth_s = _make_auth_store(get_ssh_key_by_id=dict(_SSH_KEY_ROW))
 
+    # The cloner now resolves the key via the shared SSOT src.ssh_key_resolve, which
+    # calls auth_store().get_ssh_key_by_id + decrypt_private_key. Let the real
+    # resolver run and patch its decrypt primitive (bound in src.ssh_key_resolve).
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
@@ -196,7 +199,7 @@ def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
         patch("src.db.pg.auth_store", return_value=auth_s),
         patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
         patch(
-            "src.cloner.__main__.decrypt_private_key",
+            "src.ssh_key_resolve.decrypt_private_key",
             return_value=b"fake-pem",
         ) as fake_decrypt,
         patch("src.cloner.__main__.clone_repo") as fake_clone,
@@ -205,8 +208,41 @@ def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
 
     assert rc == 0
     fake_decrypt.assert_called_once_with(_SSH_KEY_ROW["private_key_encrypted"])
+    auth_s.get_ssh_key_by_id.assert_called_once_with(42)
     fake_clone.assert_called_once()
     assert fake_clone.call_args.kwargs["private_key_pem"] == b"fake-pem"
+
+
+def test_main_ssh_url_missing_key_row_returns_1():
+    # SSH url WITH an ssh_key_id set, but the key row is gone from the DB:
+    # the shared resolver raises SshKeyUnavailable, the cloner re-raises it as
+    # ValueError, and the outer handler sets clone_status='error' and returns 1
+    # - identical to the pre-helper behavior where a missing row raised
+    # ValueError("ssh_key_id=... not found"). Guards the exit-code contract of
+    # the SshKeyUnavailable -> ValueError -> exit 1 transition end-to-end.
+    statuses: list[tuple] = []
+
+    def fake_set_status(rid, status, error_msg=None):
+        statuses.append((status, error_msg))
+
+    repo_s = _make_repo_store(
+        get_repo_by_id=dict(_SSH_REPO),
+        set_clone_status=fake_set_status,
+    )
+    auth_s = _make_auth_store(get_ssh_key_by_id=None)  # key row missing
+
+    with (
+        patch("src.cloner.__main__._init_pg"),
+        patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.db.pg.repo_store", return_value=repo_s),
+        patch("src.db.pg.auth_store", return_value=auth_s),
+    ):
+        rc = main(["--repo-id", "2"])
+
+    assert rc == 1
+    assert statuses  # at least one status written
+    assert statuses[-1][0] == "error"
+    auth_s.get_ssh_key_by_id.assert_called_once_with(42)
 
 
 # ---------------------------------------------------------------------------

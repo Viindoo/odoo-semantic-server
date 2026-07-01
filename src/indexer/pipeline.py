@@ -815,7 +815,7 @@ def index_all(
         refresh:         When True (default), `git fetch` + `reset --hard
                          origin/<branch>` each repo before the incremental check
                          so upstream merges are visible to the nightly cron.
-                         Fail-safe (fetch error → index on-disk state). Set False
+                         Fail-safe (fetch error -> index on-disk state). Set False
                          (CLI --no-fetch) for the old local-only behaviour.
                          Forwarded to each index_profile() call.
 

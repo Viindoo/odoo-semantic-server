@@ -31,7 +31,7 @@ from contextlib import contextmanager
 
 from src import config
 from src.git_utils import clone_repo, default_clone_dir, is_ssh_url, refresh_repo
-from src.web_ui.routes.ssh_keys import decrypt_private_key
+from src.ssh_key_resolve import SshKeyUnavailable, resolve_ssh_key_pem
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     _init_pg()
-    from src.db.pg import auth_store, repo_store
+    from src.db.pg import repo_store
 
     repo = repo_store().get_repo_by_id(args.repo_id)
     if repo is None:
@@ -115,13 +115,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # Lifecycle: pending → clone → cloned / error
     try:
-        # Decrypt private key if SSH URL (FERNET errors handled here)
-        private_key_pem: bytes | None = None
-        if is_ssh_url(url):
-            key_row = auth_store().get_ssh_key_by_id(ssh_key_id)
-            if key_row is None:
-                raise ValueError(f"ssh_key_id={ssh_key_id} not found")
-            private_key_pem = decrypt_private_key(key_row["private_key_encrypted"])
+        # Resolve the SSH private key via the shared SSOT (src.ssh_key_resolve):
+        # HTTPS -> None; SSH + usable key -> decrypted PEM; SSH + missing key row ->
+        # SshKeyUnavailable (the ssh_key_id-None case is already handled by the
+        # pre-try gate above that returns exit 2). FERNET/decrypt errors propagate.
+        try:
+            private_key_pem: bytes | None = resolve_ssh_key_pem(repo)
+        except SshKeyUnavailable as e:
+            # Key row vanished between registration and clone -> treat as an error
+            # (same outcome as the old ValueError("ssh_key_id=... not found")).
+            raise ValueError(str(e)) from e
 
         # ADR-0035 D2: serialize mutating git ops on this repo behind a
         # per-repo Postgres advisory lock so two concurrent clone jobs for the

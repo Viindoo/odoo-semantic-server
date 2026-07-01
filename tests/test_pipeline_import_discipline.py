@@ -87,7 +87,7 @@ def test_indexer_layer_does_not_import_web_ui_layer():
 
     The indexer is upstream of the web (server) layer. The nightly pre-scan
     refresh must decrypt an SSH key WITHOUT importing
-    src.web_ui.routes.ssh_keys — it uses the leaf SSOT src.crypto.decrypt_private_key
+    src.web_ui.routes.ssh_keys - it uses the leaf SSOT src.crypto.decrypt_private_key
     instead. This test turns red if any indexer module reaches up into src.web_ui.
     """
     offenders: dict[str, set[str]] = {}

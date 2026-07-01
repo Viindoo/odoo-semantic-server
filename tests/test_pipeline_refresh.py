@@ -3,22 +3,22 @@
 
 NO Docker, NO live DB, NO Neo4j. Everything that touches Postgres, Neo4j, or the
 network is mocked. Real git repos are built in ``tmp_path`` (git is a plain
-subprocess, safe in the unit lane — mirrors tests/test_incremental.py).
+subprocess, safe in the unit lane - mirrors tests/test_incremental.py).
 
 Business rules under test (the fix's contract):
 
-  1. CORE REGRESSION — a repo whose LOCAL HEAD == repos.head_sha (looks
+  1. CORE REGRESSION - a repo whose LOCAL HEAD == repos.head_sha (looks
      unchanged) but whose upstream advanced: after refresh advances the local
      clone A -> B, ``_index_repo`` with ``refresh=True`` picks up the new HEAD
      and scans the changed module (the module that was invisible now appears).
-  2. FAIL-SAFE — a fetch failure (CalledProcessError / TimeoutExpired /
+  2. FAIL-SAFE - a fetch failure (CalledProcessError / TimeoutExpired /
      FileNotFoundError / unexpected) is logged as WARNING and swallowed;
      ``_index_repo`` proceeds against the on-disk state and does NOT raise.
-  3. ``refresh=False`` (CLI ``--no-fetch``) — ``refresh_repo`` is NOT called;
+  3. ``refresh=False`` (CLI ``--no-fetch``) - ``refresh_repo`` is NOT called;
      the old local-only behaviour is preserved.
-  4. Advisory-lock — the mutating refresh runs UNDER ``_repo_git_lock(pg_conn,
+  4. Advisory-lock - the mutating refresh runs UNDER ``_repo_git_lock(pg_conn,
      repo_id)`` (same lock the cloner uses) with the correct ``repo_id``.
-  5. SSH-key resolution — an ssh_key_id repo decrypts via the SSOT
+  5. SSH-key resolution - an ssh_key_id repo decrypts via the SSOT
      ``src.crypto.decrypt_private_key`` and passes the key to ``refresh_repo``;
      an HTTPS repo (ssh_key_id=None) passes ``private_key_pem=None``.
 """
@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# NOTE: no pytestmark — this is the pure-unit lane. Never mark neo4j/postgres:
+# NOTE: no pytestmark - this is the pure-unit lane. Never mark neo4j/postgres:
 # the prod box shares a live Postgres+Neo4j and those markers can DROP prod data.
 
 
@@ -101,7 +101,7 @@ class _FakeEmptyParseResult:
 def _install_inmemory_parsers(stack, registry):
     """Patch build_registry / topological_sort / every parser used by the loop.
 
-    Returns nothing — the caller uses ``registry`` to control which modules the
+    Returns nothing - the caller uses ``registry`` to control which modules the
     scan yields. All parsers return empty results so the writer (a MagicMock)
     just records calls; there is zero DB / Neo4j / embedding activity.
     """
@@ -145,7 +145,7 @@ def _module_info(name: str, abs_path: str, version: str = "17.0"):
 
 
 # ---------------------------------------------------------------------------
-# Rule 1 — CORE REGRESSION: upstream advanced, local HEAD looked unchanged
+# Rule 1 - CORE REGRESSION: upstream advanced, local HEAD looked unchanged
 # ---------------------------------------------------------------------------
 
 def test_refresh_picks_up_upstream_advance(tmp_path):
@@ -230,18 +230,24 @@ def test_refresh_picks_up_upstream_advance(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Rule 2 — FAIL-SAFE: fetch failure is non-fatal
+# Rule 2 - FAIL-SAFE: fetch failure is non-fatal
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("exc", [
     subprocess.CalledProcessError(128, ["git", "fetch"]),
     subprocess.TimeoutExpired(["git", "fetch"], 30),
     FileNotFoundError("not a git repo"),
-    RuntimeError("some unexpected git/crypto error"),
+    OSError("some unexpected subprocess error"),
 ])
 def test_fetch_failure_is_non_fatal(tmp_path, caplog, exc):
-    """refresh_repo raises -> refresh_before_scan logs WARNING and does NOT raise;
-    _index_repo proceeds against the on-disk state."""
+    """refresh_repo raises a git failure -> refresh_before_scan logs WARNING and does
+    NOT raise; _index_repo proceeds against the on-disk state.
+
+    NOTE: RuntimeError is deliberately NOT in this list. refresh_repo never raises
+    RuntimeError (it raises CalledProcessError/TimeoutExpired/FileNotFoundError), so
+    a RuntimeError inside the `with lock_cm:` block can ONLY be lock contention -
+    covered by test_lock_contention_is_info_not_warning_and_non_fatal.
+    """
     import contextlib
     import logging
 
@@ -279,14 +285,14 @@ def test_fetch_failure_is_non_fatal(tmp_path, caplog, exc):
 
 
 # ---------------------------------------------------------------------------
-# Rule 2b — BENIGN lock contention: logged at INFO (not WARNING), non-fatal
+# Rule 2b - BENIGN lock contention: logged at INFO (not WARNING), non-fatal
 # ---------------------------------------------------------------------------
 
 def test_lock_contention_is_info_not_warning_and_non_fatal(tmp_path, caplog):
     """A concurrent clone-all holding the per-repo lock makes _repo_git_lock raise
-    RuntimeError at acquisition. That is EXPECTED contention: it must be logged at
-    INFO (never WARNING — operators must not be alarmed), refresh_repo must NOT run,
-    and indexing proceeds on the on-disk state (non-fatal).
+    RuntimeError at acquisition (i.e. at `with lock_cm:` __enter__). That is EXPECTED
+    contention: it must be logged at INFO (never WARNING - operators must not be
+    alarmed), refresh_repo must NOT run, and indexing proceeds on-disk (non-fatal).
     """
     import contextlib
     import logging
@@ -309,15 +315,16 @@ def test_lock_contention_is_info_not_warning_and_non_fatal(tmp_path, caplog):
         import src.indexer.pipeline as _pipeline
         stack.enter_context(patch.object(_pipeline, "repo_store", return_value=fake_store))
         refresh = stack.enter_context(patch("src.git_utils.refresh_repo"))
-        # _repo_git_lock raises at acquisition, exactly like the real lock does when
-        # another worker already holds it (contextmanager raises RuntimeError before
-        # yielding).
-        stack.enter_context(
-            patch.object(
-                _pipeline, "_repo_git_lock",
-                side_effect=RuntimeError("Git mutation already in progress for repo id=88"),
-            )
+        # Real _repo_git_lock is a @contextmanager that raises RuntimeError INSIDE the
+        # body when the lock is already held -> the raise surfaces at __enter__, i.e.
+        # when the `with` statement is entered. Model that with a CM whose __enter__
+        # raises (NOT the factory call - the factory returns the CM fine).
+        lock_cm = MagicMock()
+        lock_cm.__enter__ = MagicMock(
+            side_effect=RuntimeError("Git mutation already in progress for repo id=88")
         )
+        lock_cm.__exit__ = MagicMock(return_value=False)
+        stack.enter_context(patch.object(_pipeline, "_repo_git_lock", return_value=lock_cm))
         registry = {"17.0": {"mod_ondisk": _module_info("mod_ondisk", str(repo / "mod_ondisk"))}}
         _install_inmemory_parsers(stack, registry)
 
@@ -343,10 +350,12 @@ def test_lock_contention_is_info_not_warning_and_non_fatal(tmp_path, caplog):
     )
 
 
-def test_real_refresh_runtimeerror_stays_on_warning_path(tmp_path, caplog):
-    """A RuntimeError raised INSIDE refresh_repo (lock already held) is a GENUINE
-    failure and must stay on the WARNING path — the sentinel must not mislabel it
-    as benign contention."""
+def test_key_resolution_runtimeerror_is_warning_not_contention(tmp_path, caplog):
+    """Finding #3 regression guard: a RuntimeError while RESOLVING the SSH key (e.g.
+    missing FERNET_KEY) must land on the WARNING path and must NOT be mislabeled as
+    benign lock contention (INFO). The key is resolved BEFORE the lock, so the
+    contention branch can never see this error. refresh_repo must NOT run.
+    """
     import contextlib
     import logging
 
@@ -354,34 +363,39 @@ def test_real_refresh_runtimeerror_stays_on_warning_path(tmp_path, caplog):
 
     repo = _make_repo(tmp_path / "repo", branch="17.0")
     repo_row = {
-        "id": 91, "local_path": str(repo), "url": "file://local",
-        "branch": "17.0", "ssh_key_id": None,
+        "id": 91, "local_path": str(repo), "url": "git@github.com:o/r.git",
+        "branch": "17.0", "ssh_key_id": 5,
     }
     pg_conn = object()
 
     with contextlib.ExitStack() as stack:
         import src.indexer.pipeline as _pipeline
-        # Lock acquires fine (no-op CM); refresh_repo then raises RuntimeError.
-        lock_cm = MagicMock()
-        lock_cm.__enter__ = MagicMock(return_value=None)
-        lock_cm.__exit__ = MagicMock(return_value=False)
-        stack.enter_context(patch.object(_pipeline, "_repo_git_lock", return_value=lock_cm))
+        refresh = stack.enter_context(patch("src.git_utils.refresh_repo"))
+        lock = stack.enter_context(patch.object(_pipeline, "_repo_git_lock"))
+        # resolve_ssh_key_pem raises RuntimeError (simulating FERNET/decrypt failure).
         stack.enter_context(
-            patch("src.git_utils.refresh_repo", side_effect=RuntimeError("git exploded"))
+            patch(
+                "src.ssh_key_resolve.resolve_ssh_key_pem",
+                side_effect=RuntimeError("FERNET_KEY is not set"),
+            )
         )
         with caplog.at_level(logging.INFO, logger="src.indexer.pipeline"):
             refresh_before_scan(repo_row, pg_conn)  # must not raise
 
+    # Key error is a real failure -> WARNING wording, never the INFO contention line.
     assert "fetch failed" in caplog.text.lower(), (
-        "a real refresh_repo RuntimeError must stay on the WARNING 'fetch failed' path"
+        "a key-resolution RuntimeError must land on the WARNING 'fetch failed' path"
     )
     assert "another git op in progress" not in caplog.text.lower(), (
-        "a real fetch RuntimeError must NOT be mislabeled as benign contention"
+        "a key-resolution RuntimeError must NOT be mislabeled as benign contention"
     )
+    # Never reach the lock or the fetch when key resolution failed.
+    refresh.assert_not_called()
+    lock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Rule 3 — refresh=False / --no-fetch: refresh_repo is NOT called
+# Rule 3 - refresh=False / --no-fetch: refresh_repo is NOT called
 # ---------------------------------------------------------------------------
 
 def test_no_fetch_does_not_call_refresh_repo(tmp_path):
@@ -415,12 +429,12 @@ def test_no_fetch_does_not_call_refresh_repo(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Rule 5 — SSH-key resolution (SSOT decrypt) + HTTPS None-key
+# Rule 5 - SSH-key resolution (SSOT decrypt) + HTTPS None-key
 # ---------------------------------------------------------------------------
 
 def test_ssh_repo_decrypts_key_via_ssot_and_passes_to_refresh(tmp_path):
-    """An ssh_key_id repo decrypts through src.crypto.decrypt_private_key and
-    passes the resulting PEM to refresh_repo; the advisory lock is used."""
+    """An SSH-url repo with a usable key resolves the PEM via the shared SSOT and
+    passes it to refresh_repo; the advisory lock is used."""
     import contextlib
 
     from src.indexer.pipeline_repo import refresh_before_scan
@@ -430,15 +444,13 @@ def test_ssh_repo_decrypts_key_via_ssot_and_passes_to_refresh(tmp_path):
         "id": 42, "local_path": str(repo), "url": "git@github.com:o/r.git",
         "branch": "17.0", "ssh_key_id": 9,
     }
-    fake_auth = MagicMock()
-    fake_auth.get_ssh_key_by_id.return_value = {"private_key_encrypted": "ENC"}
     pg_conn = object()
 
     with contextlib.ExitStack() as stack:
         import src.indexer.pipeline as _pipeline
-        stack.enter_context(patch("src.db.pg.auth_store", return_value=fake_auth))
-        stack.enter_context(
-            patch("src.crypto.decrypt_private_key", return_value=b"PEM-BYTES")
+        # Patch the shared resolver (used by both refresh + cloner) at its call site.
+        resolve = stack.enter_context(
+            patch("src.ssh_key_resolve.resolve_ssh_key_pem", return_value=b"PEM-BYTES")
         )
         refresh = stack.enter_context(patch("src.git_utils.refresh_repo"))
         lock_cm = MagicMock()
@@ -448,15 +460,15 @@ def test_ssh_repo_decrypts_key_via_ssot_and_passes_to_refresh(tmp_path):
 
         refresh_before_scan(repo_row, pg_conn)
 
-    fake_auth.get_ssh_key_by_id.assert_called_once_with(9)
+    resolve.assert_called_once_with(repo_row)
     refresh.assert_called_once()
     assert refresh.call_args.kwargs["private_key_pem"] == b"PEM-BYTES"
     lock.assert_called_once_with(pg_conn, 42)
 
 
 def test_https_repo_passes_none_key(tmp_path):
-    """An HTTPS repo (ssh_key_id=None) passes private_key_pem=None; no auth_store
-    lookup, no decrypt."""
+    """An HTTPS repo (ssh_key_id=None) resolves to private_key_pem=None (no SSH
+    credential); refresh_repo is called with None."""
     import contextlib
 
     from src.indexer.pipeline_repo import refresh_before_scan
@@ -468,6 +480,7 @@ def test_https_repo_passes_none_key(tmp_path):
     }
 
     with contextlib.ExitStack() as stack:
+        # Let the REAL resolver run (https -> None, no auth_store/decrypt touched).
         auth = stack.enter_context(patch("src.db.pg.auth_store"))
         refresh = stack.enter_context(patch("src.git_utils.refresh_repo"))
         # No pg_conn -> no advisory lock needed; the fetch still happens once.
@@ -476,6 +489,41 @@ def test_https_repo_passes_none_key(tmp_path):
     auth.assert_not_called()
     refresh.assert_called_once()
     assert refresh.call_args.kwargs["private_key_pem"] is None
+
+
+def test_ssh_url_without_key_surfaces_warning_and_skips(tmp_path, caplog):
+    """Finding #1 regression guard: an SSH-scheme URL with ssh_key_id=None must NOT
+    run a keyless SSH fetch. resolve_ssh_key_pem raises SshKeyUnavailable ->
+    refresh_before_scan surfaces a WARNING and skips (index on-disk); refresh_repo
+    is never called (no doomed keyless fetch, no silent stale-forever)."""
+    import contextlib
+    import logging
+
+    from src.indexer.pipeline_repo import refresh_before_scan
+
+    repo = _make_repo(tmp_path / "repo", branch="17.0")
+    repo_row = {
+        "id": 7, "local_path": str(repo), "url": "git@github.com:o/r.git",
+        "branch": "17.0", "ssh_key_id": None,
+    }
+    pg_conn = object()
+
+    with contextlib.ExitStack() as stack:
+        import src.indexer.pipeline as _pipeline
+        # Let the REAL resolver run: SSH url + no ssh_key_id -> SshKeyUnavailable.
+        refresh = stack.enter_context(patch("src.git_utils.refresh_repo"))
+        lock = stack.enter_context(patch.object(_pipeline, "_repo_git_lock"))
+        with caplog.at_level(logging.INFO, logger="src.indexer.pipeline"):
+            refresh_before_scan(repo_row, pg_conn)  # must not raise
+
+    refresh.assert_not_called()  # NO keyless SSH fetch
+    lock.assert_not_called()     # never reach the lock
+    # Surfaced (WARNING), not swallowed at INFO / not the benign-contention line.
+    warn_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("no ssh_key_id" in r.getMessage() for r in warn_records), (
+        "SSH-url-without-key must be surfaced as a WARNING, not run keyless"
+    )
+    assert "another git op in progress" not in caplog.text.lower()
 
 
 def test_missing_branch_skips_refresh(tmp_path):
