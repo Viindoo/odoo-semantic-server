@@ -670,27 +670,48 @@ class RepoStore:
                 (repo_id,),
             )
 
-    def get_repo_ids_by_local_path_basenames(self, basenames: list[str]) -> list[int]:
-        """Return repo IDs whose local_path basename matches any entry in *basenames*.
+    def get_repo_ids_by_local_path_basenames(
+        self, basenames: list[str], odoo_version: str
+    ) -> list[int]:
+        """Return repo IDs whose local_path basename matches any entry in *basenames*
+        AND whose owning profile is pinned to *odoo_version*.
 
         The Neo4j Module.repo property equals ``Path(local_path).name`` (the
         directory basename of the checkout).  This function maps those basename
         strings back to PostgreSQL ``repos.id`` values so that ``reset_head_sha``
         can null them out.
 
+        The ``odoo_version`` predicate is REQUIRED (ADR-0007 W14 fix): the same
+        repo (e.g. ``tvtmaaddons``) is cloned once per version/profile, so the
+        basename alone matches every version's clone.  Cross-repo dependency
+        propagation is version-scoped (``find_dependent_repos`` pins both sides
+        to ``$version``), so a basename returned for version X must only reset
+        clones at version X - never the same-basename clone at a different
+        version.  Scoping by ``profiles.odoo_version`` (NOT by profile) keeps
+        the legitimate cross-profile-same-version dependency intact (e.g. a
+        ``viindoo_internal_17`` module depending on a ``standard_viindoo_17``
+        module).
+
         Uses ``regexp_replace`` to extract the basename server-side — avoids
         fetching all rows into Python and doing the split there.
 
         Returns:
-            List of repo IDs (may be shorter than basenames if some are not in DB).
+            List of repo IDs (may be shorter than basenames if some are not in
+            DB at this version).
         """
         if not basenames:
             return []
         with self._pool.checkout() as conn:
             rows = self._pool.fetch_all(
                 conn,
-                "SELECT id FROM repos WHERE regexp_replace(local_path, '^.*/', '') = ANY(%s)",
-                (basenames,),
+                """
+                SELECT r.id
+                FROM repos r
+                JOIN profiles p ON r.profile_id = p.id
+                WHERE regexp_replace(r.local_path, '^.*/', '') = ANY(%s)
+                  AND p.odoo_version = %s
+                """,
+                (basenames, odoo_version),
             )
         return [r["id"] for r in rows]
 
