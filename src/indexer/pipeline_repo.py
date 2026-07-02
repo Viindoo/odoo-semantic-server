@@ -799,10 +799,14 @@ def _index_repo(
             if dep_repo_basenames:
                 dep_repo_ids = _pipeline.repo_store().get_repo_ids_by_local_path_basenames(
                     dep_repo_basenames,
+                    odoo_version,
                 )
                 # Warn if more IDs than basenames: two repos share a basename
-                # (e.g. /srv/odoo and /home/a/odoo both have basename 'odoo').
-                # Both get reset — over-eager but safe. See ADR-0007 W14 note.
+                # AT THE SAME odoo_version (e.g. /srv/odoo and /home/a/odoo both
+                # basename 'odoo' in the same version's profiles). Both get reset
+                # - over-eager but safe. The cross-VERSION leak (same basename at
+                # a different version) is now filtered out by the odoo_version
+                # predicate. See ADR-0007 W14 note.
                 if len(dep_repo_ids) > len(dep_repo_basenames):
                     _logger.warning(
                         "Cross-repo dep propagation: basename collision detected — "
