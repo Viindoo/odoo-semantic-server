@@ -250,6 +250,29 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
      when `reset_head_sha` is called for more than 1 repo matching the same basename
      (see pipeline.py cross-repo dep propagation block).
 
+  > **#357 amendment (2026-07-02) - basename collision narrowed to same-version only.**
+  > `get_repo_ids_by_local_path_basenames` now takes the in-scope `odoo_version` and
+  > adds `JOIN profiles p ON r.profile_id = p.id AND p.odoo_version = %s`, so a basename
+  > match only fires within one version's set of profiles. This closes the DOMINANT
+  > real-world case of point 2 above WITHOUT the M8 schema change: the SAME repo cloned
+  > once per version/profile (e.g. `tvtmaaddons` across v8-v19, 12 profiles) no longer
+  > cross-resets all 12 on a single-version upstream change - verified zero genuine
+  > same-version basename collisions exist today. The remaining "over-eager but safe"
+  > reset described in point 2 is now scoped to SAME-`odoo_version` basename collisions
+  > only (two structurally-distinct repos sharing a leaf directory name at the SAME
+  > version) - the M8 full-`local_path`-in-`Module.repo` fix remains the eventual path
+  > for THAT residual case only. The correctness invariant point 2 protects is preserved:
+  > real cross-profile SAME-version propagation still fires (e.g. `viindoo_internal_17`
+  > -> `standard_viindoo_17`); only the cross-VERSION over-reset was removed. MED-3
+  > (tenant/profile blindness, orthogonal to version) stays separately deferred per the
+  > reindex-v8-v19 runbook. Implementation: `src/db/repo_registry.py` +
+  > `src/indexer/pipeline_repo.py`. Tests:
+  > `test_different_version_same_basename_not_matched`,
+  > `test_same_version_basename_collision_resets_both`,
+  > `test_dep_propagation_version_scoped_not_profile_scoped` (in
+  > `tests/test_cross_repo_dep_propagation.py`) +
+  > `tests/test_cross_repo_version_scope_unit.py`.
+
 - Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this — future tuning may add explicit metrics.
 
 ## Embedder hang risk (added 2026-05-15)

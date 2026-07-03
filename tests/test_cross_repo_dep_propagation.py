@@ -228,7 +228,7 @@ class TestGetRepoIdsByBasename:
             local_path="/home/user/git/odoo_17.0",
         )
 
-        result = repo_store().get_repo_ids_by_local_path_basenames(["odoo_17.0"])
+        result = repo_store().get_repo_ids_by_local_path_basenames(["odoo_17.0"], TEST_VERSION)
         assert repo_id in result, (
             f"Expected repo_id {repo_id} in result; got: {result}"
         )
@@ -242,17 +242,62 @@ class TestGetRepoIdsByBasename:
         """Empty basenames list → empty result without query error."""
         from src.db.pg import repo_store
 
-        result = repo_store().get_repo_ids_by_local_path_basenames([])
+        result = repo_store().get_repo_ids_by_local_path_basenames([], TEST_VERSION)
         assert result == []
 
-    def test_basename_collision_resets_both(self, pg_conn):
-        """Two repos with same basename (e.g. /srv/odoo and /home/a/odoo) both get returned.
+    def test_different_version_same_basename_not_matched(self, pg_conn):
+        """ADR-0007 W14 fix: same basename cloned at a DIFFERENT odoo_version is NOT returned.
 
-        Trade-off documented in ADR-0007 W14 note: get_repo_ids_by_local_path_basenames
-        uses a regex that strips the leading path, so two repos whose local_path share
-        the same final component are BOTH returned and BOTH get head_sha reset.
-        This is the safe default (over-eager reset); the fix would require storing
-        full local_path in the Module.repo property instead of just the basename.
+        Business rule: the same repo (e.g. `tvtmaaddons`) is cloned once per
+        version.  Cross-repo dep propagation is version-scoped, so a lookup for
+        version X must return ONLY the version-X clone - never the same-basename
+        clone at a different version.  This is the core regression the fix locks.
+        """
+        from src.db.migrate import run_migrations
+        from src.db.pg import repo_store
+
+        run_migrations(pg_conn)
+
+        other_version = "98.0"
+        prof_target = repo_store().add_profile("_ver_scope_target_profile", TEST_VERSION)
+        prof_other = repo_store().add_profile("_ver_scope_other_profile", other_version)
+        # Same basename "sharedaddons" cloned under two versions.
+        id_target = repo_store().add_repo(
+            prof_target,
+            url="file://ver-scope-target",
+            branch=TEST_VERSION,
+            local_path="/git/v99/sharedaddons",
+        )
+        id_other = repo_store().add_repo(
+            prof_other,
+            url="file://ver-scope-other",
+            branch=other_version,
+            local_path="/git/v98/sharedaddons",
+        )
+
+        result = repo_store().get_repo_ids_by_local_path_basenames(
+            ["sharedaddons"], TEST_VERSION
+        )
+        assert id_target in result, (
+            f"Expected target-version repo {id_target} in result; got: {result}"
+        )
+        assert id_other not in result, (
+            f"Different-version clone {id_other} must NOT be returned "
+            f"(cross-version scope leak); got: {result}"
+        )
+
+        # Cleanup
+        with pg_conn.cursor() as cur:
+            cur.execute("DELETE FROM repos WHERE id = ANY(%s)", ([id_target, id_other],))
+            cur.execute("DELETE FROM profiles WHERE id = ANY(%s)", ([prof_target, prof_other],))
+
+    def test_same_version_basename_collision_resets_both(self, pg_conn):
+        """Safety-net: two repos same basename AT THE SAME version both get returned.
+
+        The ADR-0007 W14 fix narrows ONLY the cross-VERSION over-reset. A genuine
+        same-version basename collision (two repos whose local_path share the same
+        final component within the same version's profiles) is still resolved to
+        BOTH ids - the safe, over-eager default is preserved for this rare real case.
         """
         from src.db.migrate import run_migrations
         from src.db.pg import repo_store
@@ -273,8 +318,8 @@ class TestGetRepoIdsByBasename:
             local_path="/home/a/odoo",
         )
 
-        # Both have basename "odoo" → both should be returned (collision behaviour)
-        result = repo_store().get_repo_ids_by_local_path_basenames(["odoo"])
+        # Both have basename "odoo" at the SAME version, both returned.
+        result = repo_store().get_repo_ids_by_local_path_basenames(["odoo"], TEST_VERSION)
         assert id_a in result, (
             f"Expected id_a ({id_a}) in collision result; got: {result}"
         )
@@ -644,3 +689,124 @@ class TestDepPropagationEndToEnd:
         with pg_conn.cursor() as cur:
             cur.execute("DELETE FROM repos WHERE id = ANY(%s)", ([repo_a_id, repo_b_id],))
             cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
+
+    def test_dep_propagation_version_scoped_not_profile_scoped(
+        self, clean_neo4j, pg_conn, tmp_path
+    ):
+        """ADR-0007 W14 fix: propagation is version-scoped, NOT profile-scoped.
+
+        A dependent repo sharing a basename with the changed-version clone is:
+          - RESET when it is a DIFFERENT profile but the SAME odoo_version
+            (real cross-profile-same-version dependency - must NOT be dropped).
+          - NOT reset when it is the same basename at a DIFFERENT odoo_version
+            (the cross-version scope leak the fix eliminates).
+
+        Seed Neo4j (all TEST_VERSION): repo_a_dir5 provides 'base';
+        'shared_dep_dir' provides 'shared_mod' DEPENDS_ON 'base'.
+        Seed PG: repo_a (profile P1, TEST_VERSION); a same-version dependent in
+        a DIFFERENT profile P2 with basename 'shared_dep_dir'; a DIFFERENT-version
+        clone in profile P3 (98.0) with the SAME basename 'shared_dep_dir'.
+        Assert: P2 reset (NULL); P3 unchanged.
+        """
+        from src.db.migrate import run_migrations
+        from src.db.pg import repo_store
+        from src.indexer.pipeline import _index_repo
+
+        driver = clean_neo4j
+        run_migrations(pg_conn)
+
+        other_version = "98.0"
+
+        # Neo4j (TEST_VERSION only): base in repo_a, shared_mod DEPENDS_ON base.
+        _create_module_with_dep(driver, "base", repo="repo_a_dir5", depends_on=None)
+        _create_module_with_dep(
+            driver, "shared_mod", repo="shared_dep_dir", depends_on="base"
+        )
+
+        # PG: three profiles.
+        prof_a = repo_store().add_profile("_e2e_vscope_a_profile", TEST_VERSION)
+        prof_same_ver = repo_store().add_profile("_e2e_vscope_same_profile", TEST_VERSION)
+        prof_other_ver = repo_store().add_profile("_e2e_vscope_other_profile", other_version)
+
+        repo_a_path = str(tmp_path / "repo_a_dir5")
+        (tmp_path / "repo_a_dir5").mkdir()
+        # Same basename 'shared_dep_dir' under two version-distinct parent dirs.
+        same_ver_dep_path = str(tmp_path / "v99" / "shared_dep_dir")
+        other_ver_dep_path = str(tmp_path / "v98" / "shared_dep_dir")
+
+        repo_a_id = repo_store().add_repo(
+            prof_a, url="file://a5", branch=TEST_VERSION, local_path=repo_a_path
+        )
+        same_ver_dep_id = repo_store().add_repo(
+            prof_same_ver,
+            url="file://same-ver-dep",
+            branch=TEST_VERSION,
+            local_path=same_ver_dep_path,
+        )
+        other_ver_dep_id = repo_store().add_repo(
+            prof_other_ver,
+            url="file://other-ver-dep",
+            branch=other_version,
+            local_path=other_ver_dep_path,
+        )
+        repo_store().update_repo_head_sha(repo_a_id, "deadbeef")
+        repo_store().update_repo_head_sha(same_ver_dep_id, "deadbeef")
+        repo_store().update_repo_head_sha(other_ver_dep_id, "deadbeef")
+
+        base_info = self._make_module_info("base", repo_a_path + "/base", "repo_a_dir5")
+        fake_registry = {TEST_VERSION: {"base": base_info}}
+
+        writer = self._make_writer()
+        writer.driver = driver
+
+        repo_a = self._make_repo_dict(repo_a_id, repo_a_path)
+        new_head = "cafebabe"
+
+        with (
+            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
+            patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
+            patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
+            patch(
+                "src.indexer.pipeline._incremental.compute_changed_module_paths",
+                return_value={"base"},
+            ),
+            patch(
+                "src.indexer.pipeline._incremental.filter_modules_by_changed",
+                return_value={"base": base_info},
+            ),
+            patch("src.indexer.pipeline.topological_sort", return_value=["base"]),
+            patch("src.indexer.pipeline.parser_python.parse_module", return_value=MagicMock(
+                module=base_info, models=[],
+            )),
+            patch("src.indexer.pipeline.parser_xml.parse_module", return_value=MagicMock(views=[])),
+            patch("src.indexer.pipeline.parser_qweb.parse_module", return_value=MagicMock(qweb=[])),
+            patch("src.indexer.pipeline.parser_js.parse_module_graph", return_value=MagicMock(
+                patches=[], components=[],
+            )),
+        ):
+            _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
+
+        # Same-version, different-profile dependent MUST be reset (real dependency).
+        same_ver_sha = repo_store().get_repo_head_sha(same_ver_dep_id)
+        assert same_ver_sha is None, (
+            "Same-version cross-profile dependent must be reset (NULL); "
+            f"got: {same_ver_sha}. Fix must NOT narrow to profile scope."
+        )
+
+        # Different-version same-basename clone MUST NOT be reset (scope leak fixed).
+        other_ver_sha = repo_store().get_repo_head_sha(other_ver_dep_id)
+        assert other_ver_sha == "deadbeef", (
+            "Different-version same-basename clone must NOT be reset; "
+            f"got: {other_ver_sha}. Cross-version scope leak."
+        )
+
+        # Cleanup
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM repos WHERE id = ANY(%s)",
+                ([repo_a_id, same_ver_dep_id, other_ver_dep_id],),
+            )
+            cur.execute(
+                "DELETE FROM profiles WHERE id = ANY(%s)",
+                ([prof_a, prof_same_ver, prof_other_ver],),
+            )

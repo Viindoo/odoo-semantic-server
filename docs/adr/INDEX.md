@@ -15,7 +15,7 @@ Read the full ADR file before changing anything it governs (schema, auth, policy
 - `0004` auth-web-ui-ssh-policy
 - `0005` core coverage version paths
 - `0006` environment harness (M6 Wave 1)
-- `0007` incremental indexer (head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel)
+- `0007` incremental indexer (head_sha tracking, force-push fallback, module rename caveat, auto-reseed sentinel; **#357 amendment: version-scope cross-repo dep propagation - W14 cross-version over-reset closed (same-version residual + MED-3 tenant-half still open)**)
 - `0008` SSH auto-clone (URL detection, key delivery via env, tempfile safety, project-local known_hosts, full clone)
 - `0009` pattern catalogue community contribution (115 curated patterns, test-enforced minimum ≥80)
 - `0010` embedding observability (call_count thread-safe; `embeddings_total`/`embeddings_by_chunk_type` now in `/ready` per ADR-0046 amendment; `null` in `/health` until first `/ready` hit)
