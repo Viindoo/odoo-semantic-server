@@ -10,11 +10,12 @@ Three live sources (v17+):
 Static placeholder JSON for v8-v16 (per ADR-0002 §4): empty list, _curate_status='pending'.
 """
 import json
-import os
+import warnings
 from pathlib import Path
 
 import pytest
 
+from src.constants import LINT_RULES_MIN_MAJOR
 from src.indexer.models import LintRuleInfo
 from src.indexer.parser_lint_rules import (
     _parse_eslint_config,
@@ -23,8 +24,15 @@ from src.indexer.parser_lint_rules import (
     _version_has_test_lint,
     parse_lint_rules_for_version,
 )
+from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
 
-ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
+# Discovery for the smoke test below now goes through tests/_odoo_checkouts.py
+# (issue #364 D2) instead of this file's own dead ``ODOO17_SRC`` convention
+# (default ``/nonexistent/odoo17`` - nothing ever set it, so this test skipped
+# unconditionally everywhere, including a dev box with the checkout present at
+# the conventional path). See that module's docstring for the resolution
+# order (legacy env var still honoured).
+_V17_ROOT = checkout_root(17)
 
 
 def test_parse_pylint_odoo_msgs_dict_extracts_rule_id():
@@ -152,14 +160,14 @@ def test_lint_rule_info_dataclass_minimal():
 
 
 @pytest.mark.skipif(
-    not Path(ODOO17_SRC + "/odoo/addons/test_lint/tests").exists(),
-    reason="Real Odoo 17 test_lint dir not on disk",
+    _V17_ROOT is None or not (_V17_ROOT / "odoo" / "addons" / "test_lint" / "tests").exists(),
+    reason=f"Real Odoo 17 test_lint dir not on disk (checked {_V17_ROOT})",
 )
 def test_parse_lint_rules_smoke_real_v17():
     """Smoke: extract real pylint-odoo + eslint rules from Odoo 17 source."""
     rules = parse_lint_rules_for_version(
         "17.0",
-        odoo_source_root=ODOO17_SRC,
+        odoo_source_root=str(_V17_ROOT),
     )
     # Real v17 has at least the gettext checker (E8502) + ESLint base rules.
     rule_ids = {r.rule_id for r in rules}
@@ -266,3 +274,92 @@ def test_v17_states_removal_lint_rule_matches_states_usage(tmp_path):
         "W8169 code_pattern must match a real states= occurrence"
     )
     assert "v17" in states_rule.message
+
+
+# ---------------------------------------------------------------------------
+# WI D2 (issue #364) - wake the dormant guard to its full potential + make
+# dormancy legible.
+#
+# The smoke test above only ever exercised v17 (the one hardcoded version the
+# original dead env-var convention happened to name). Now that discovery goes
+# through tests/_odoo_checkouts.py, the same live oracle
+# (`parse_lint_rules_for_version`) can be exercised across every ELIGIBLE
+# surveyed major this machine has a checkout for. "Eligible" is a real
+# architectural ceiling, not a test gap: `_version_has_test_lint()` gates the
+# code-extract path to v{LINT_RULES_MIN_MAJOR}+ because the pylint-odoo /
+# ESLint / ruff source the parser targets is not vendored in the Odoo
+# checkout at all below that (phase2-D-oracle-infra.md Q2 "lint_rules" -
+# v8-v10 have zero `_odoo_checker_*.py` files; v11-v16 are architecturally
+# plausible but the gate has not been validated/widened there - src/ is out
+# of scope for this work item). Skipping those majors here is the honest,
+# documented-reason case (#364's own acceptance bar, criterion (b)), not a
+# guard-that-doesn't-guard.
+#
+# SCOPE NOTE (do not confuse this with a content-parity test): the test below
+# asserts only that the live parse recovers a NON-EMPTY result for each
+# eligible version - i.e. that the oracle actually parsed real source instead
+# of silently degrading to an empty list. It does NOT compare curated
+# `lint_rules_<version>.json` field values (message/severity/kind) against
+# the live parse - that is a separate, dedicated content-parity effort, out
+# of scope for this file (see phase3-synthesis.md S2 vs S3).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_live_lint_rules_nonempty_where_eligible(major, tmp_path):
+    """T-D2 - business rule: for every surveyed major BOTH eligible (test_lint
+    source is vendored in the checkout from v{LINT_RULES_MIN_MAJOR} onward)
+    AND with a checkout on this machine, a live parse of the real
+    pylint-odoo/eslint/ruff source must recover at least one LintRule
+    (existence guard only; see module note above).
+    """
+    version = f"{major}.0"
+    if not _version_has_test_lint(version):
+        pytest.skip(
+            f"v{major}: no test_lint source vendored in the checkout below "
+            f"v{LINT_RULES_MIN_MAJOR} - architectural gap (src/constants.py "
+            "LINT_RULES_MIN_MAJOR), not a guard failure; see "
+            "phase2-D-oracle-infra.md Q2 lint_rules."
+        )
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS to override)")
+    empty_static = tmp_path / "empty_static"
+    empty_static.mkdir()
+    rules = parse_lint_rules_for_version(
+        version, odoo_source_root=str(root), static_data_dir=str(empty_static),
+    )
+    assert len(rules) > 0, (
+        f"v{major}: live parse of real pylint-odoo/eslint/ruff source returned ZERO "
+        "LintRule entries - the oracle likely failed silently instead of parsing"
+    )
+
+
+def test_lint_rules_live_parser_coverage_is_reported():
+    """T-D2 coverage visibility - business rule: a skipped guard must
+    announce itself, not just fade into individual SKIPPED lines nobody
+    aggregates. Reports, via a warning always shown in pytest's terminal
+    summary (regardless of -q/-v), how many of the 12 surveyed majors are
+    even architecturally ELIGIBLE for a live lint_rules oracle, and how many
+    of those this session actually has a checkout for. Also self-checks the
+    surveyed range itself so a future accidental narrowing of
+    SURVEYED_MAJORS cannot silently shrink this report's coverage.
+    """
+    assert SURVEYED_MAJORS == list(range(8, 20))
+    eligible = [m for m in SURVEYED_MAJORS if _version_has_test_lint(f"{m}.0")]
+    exercised = [m for m in eligible if checkout_root(m) is not None]
+    warnings.warn(
+        UserWarning(
+            "lint_rules live-parser coverage: "
+            f"{len(exercised)}/{len(SURVEYED_MAJORS)} surveyed majors exercised "
+            f"({len(eligible)}/{len(SURVEYED_MAJORS)} are architecturally eligible - "
+            f"v8-v{LINT_RULES_MIN_MAJOR - 1} have no test_lint source vendored in the "
+            f"checkout at all; exercised now: {exercised or 'NONE'}). Set "
+            "OSM_ODOO_CHECKOUTS to point at your checkouts if this reads 0. NOTE: this "
+            "test verifies EXISTENCE only - it does not verify the curated JSON's field "
+            "values (message/severity/kind) match real source; see phase3-synthesis.md S3 "
+            "for the separate content-parity work."
+        ),
+        stacklevel=1,
+    )

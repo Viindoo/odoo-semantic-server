@@ -76,7 +76,11 @@ target-version = "py312"
 # job is to be byte-faithful to upstream, not to satisfy our lint. Linting them is a
 # category error: "fixing" an F821 there would break the very fidelity the parity test
 # (tests/test_framework_bases_parity.py) exists to assert. See that dir's README.md.
-extend-exclude = ["tests/fixtures/odoo_tests_headers"]
+# cli_flags_config_excerpts is the same category: verbatim add_option() argument-list
+# excerpts from real config.py (issue #364 S3, tests/test_cli_flags_content_parity.py) -
+# `group` is deliberately never defined (the file is only ever ast.parse'd, never
+# imported/executed). See that dir's README.md.
+extend-exclude = ["tests/fixtures/odoo_tests_headers", "tests/fixtures/cli_flags_config_excerpts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

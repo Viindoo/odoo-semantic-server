@@ -11,8 +11,7 @@ Notes:
   - We accept both add_option and add_argument shapes for forward compat.
 """
 import json
-import os
-from pathlib import Path
+import warnings
 
 import pytest
 
@@ -27,10 +26,17 @@ from src.indexer.parser_cli import (
     parse_cli_commands,
     parse_cli_flags,
 )
+from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
 
-ODOO8_SRC = os.environ.get("ODOO8_SRC", "/nonexistent/odoo8")
-ODOO9_SRC = os.environ.get("ODOO9_SRC", "/nonexistent/odoo9")
-ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
+# Discovery for the smoke tests below now goes through tests/_odoo_checkouts.py
+# (issue #364 D2) instead of each test file's own dead ``ODOO<N>_SRC``
+# convention (default ``/nonexistent/odooN`` - nothing ever set it, so these
+# tests skipped unconditionally everywhere, including a dev box with all
+# twelve checkouts present at the conventional path). See that module's
+# docstring for the full resolution order (legacy env var still honoured).
+_V8_ROOT = checkout_root(8)
+_V9_ROOT = checkout_root(9)
+_V17_ROOT = checkout_root(17)
 
 
 def test_parse_cli_command_class_subclass_of_command():
@@ -165,12 +171,12 @@ def test_parse_cli_flags_returns_empty_for_nonexistent_root(tmp_path):
 
 
 @pytest.mark.skipif(
-    not Path(ODOO17_SRC + "/odoo/cli/server.py").exists(),
-    reason="Real Odoo 17 cli dir not on disk",
+    _V17_ROOT is None or not (_V17_ROOT / "odoo" / "cli" / "server.py").exists(),
+    reason=f"Real Odoo 17 cli dir not on disk (checked {_V17_ROOT})",
 )
 def test_parse_cli_commands_smoke_real_v17():
     """Smoke: real Odoo 17 has at least 8 well-known cli commands."""
-    cmds = parse_cli_commands(ODOO17_SRC, "17.0")
+    cmds = parse_cli_commands(str(_V17_ROOT), "17.0")
     names = {c.name for c in cmds}
     # Stable subset across v17→v19
     expected_subset = {"server", "shell", "scaffold", "db", "deploy"}
@@ -178,12 +184,12 @@ def test_parse_cli_commands_smoke_real_v17():
 
 
 @pytest.mark.skipif(
-    not Path(ODOO17_SRC + "/odoo/tools/config.py").exists(),
-    reason="Real Odoo 17 config.py not on disk",
+    _V17_ROOT is None or not (_V17_ROOT / "odoo" / "tools" / "config.py").exists(),
+    reason=f"Real Odoo 17 config.py not on disk (checked {_V17_ROOT})",
 )
 def test_parse_cli_flags_smoke_real_v17_picks_up_http_port():
     """Smoke: real Odoo 17 config.py has --http-port flag."""
-    flags = parse_cli_flags(ODOO17_SRC, "17.0")
+    flags = parse_cli_flags(str(_V17_ROOT), "17.0")
     flag_names = {f.flag_name for f in flags}
     assert "--http-port" in flag_names
 
@@ -299,24 +305,24 @@ def test_load_static_cli_commands_uses_spec_data_by_default():
 # --- parse_cli_commands v8/v9 path-prefix tests ------------------------------
 
 @pytest.mark.skipif(
-    not Path(ODOO8_SRC + "/openerp/cli/server.py").exists(),
-    reason="Real Odoo 8 cli dir not on disk",
+    _V8_ROOT is None or not (_V8_ROOT / "openerp" / "cli" / "server.py").exists(),
+    reason=f"Real Odoo 8 cli dir not on disk (checked {_V8_ROOT})",
 )
 def test_parse_cli_commands_smoke_real_v8():
     """Smoke: real Odoo 8 source yields CLICommand count > 0 using openerp/cli/."""
-    cmds = parse_cli_commands(ODOO8_SRC, "8.0")
+    cmds = parse_cli_commands(str(_V8_ROOT), "8.0")
     assert len(cmds) > 0, f"expected >0 CLICommand nodes for v8, got {cmds}"
     names = {c.name for c in cmds}
     assert "server" in names, f"expected 'server' in {names}"
 
 
 @pytest.mark.skipif(
-    not Path(ODOO9_SRC + "/openerp/cli/server.py").exists(),
-    reason="Real Odoo 9 cli dir not on disk",
+    _V9_ROOT is None or not (_V9_ROOT / "openerp" / "cli" / "server.py").exists(),
+    reason=f"Real Odoo 9 cli dir not on disk (checked {_V9_ROOT})",
 )
 def test_parse_cli_commands_smoke_real_v9():
     """Smoke: real Odoo 9 source yields CLICommand count > 0 using openerp/cli/."""
-    cmds = parse_cli_commands(ODOO9_SRC, "9.0")
+    cmds = parse_cli_commands(str(_V9_ROOT), "9.0")
     assert len(cmds) > 0, f"expected >0 CLICommand nodes for v9, got {cmds}"
     names = {c.name for c in cmds}
     assert "server" in names, f"expected 'server' in {names}"
@@ -364,23 +370,23 @@ def test_parse_cli_commands_deduplicates_source_and_static(tmp_path):
 # --- parse_cli_flags v8/v9 path-prefix tests ---------------------------------
 
 @pytest.mark.skipif(
-    not Path(ODOO8_SRC + "/openerp/tools/config.py").exists(),
-    reason="Real Odoo 8 config.py not on disk",
+    _V8_ROOT is None or not (_V8_ROOT / "openerp" / "tools" / "config.py").exists(),
+    reason=f"Real Odoo 8 config.py not on disk (checked {_V8_ROOT})",
 )
 def test_parse_cli_flags_smoke_real_v8_picks_up_config_flag():
     """Smoke: real Odoo 8 openerp/tools/config.py contains --config flag."""
-    flags = parse_cli_flags(ODOO8_SRC, "8.0")
+    flags = parse_cli_flags(str(_V8_ROOT), "8.0")
     flag_names = {f.flag_name for f in flags}
     assert "--config" in flag_names, f"expected --config in v8 flags, got {flag_names}"
 
 
 @pytest.mark.skipif(
-    not Path(ODOO9_SRC + "/openerp/tools/config.py").exists(),
-    reason="Real Odoo 9 config.py not on disk",
+    _V9_ROOT is None or not (_V9_ROOT / "openerp" / "tools" / "config.py").exists(),
+    reason=f"Real Odoo 9 config.py not on disk (checked {_V9_ROOT})",
 )
 def test_parse_cli_flags_smoke_real_v9_picks_up_config_flag():
     """Smoke: real Odoo 9 openerp/tools/config.py contains --config flag."""
-    flags = parse_cli_flags(ODOO9_SRC, "9.0")
+    flags = parse_cli_flags(str(_V9_ROOT), "9.0")
     flag_names = {f.flag_name for f in flags}
     assert "--config" in flag_names, f"expected --config in v9 flags, got {flag_names}"
 
@@ -417,3 +423,95 @@ def test_parse_cli_falls_back_to_lower_classname_without_name_attr():
     cmds = _parse_cli_module(src, "17.0", "/odoo/cli/server.py")
     assert len(cmds) == 1
     assert cmds[0].name == "server"
+
+
+# ---------------------------------------------------------------------------
+# WI D2 (issue #364) - wake the dormant guard to its full potential + make
+# dormancy legible.
+#
+# The smoke tests above only ever exercised 3 of the 12 surveyed Odoo majors
+# (v8, v9, v17), each hardcoded to a single named anchor flag/command. That
+# was itself an artifact of the original (dead) env-var convention, not a
+# deliberate scope decision. Now that discovery goes through
+# tests/_odoo_checkouts.py, the same live oracle (`parse_cli_flags` /
+# `parse_cli_commands`) can be exercised across every surveyed major this
+# machine has a checkout for.
+#
+# SCOPE NOTE (do not confuse this with a content-parity test): the tests
+# below assert only that the live parse recovers a NON-EMPTY result for each
+# version - i.e. that the oracle actually parsed real source instead of
+# silently degrading to an empty list (the exact failure shape a swallowed
+# `SyntaxError` produces, see parser_cli.py's module docstring on the
+# v8/v9/v10 Python-2 octal literal). They do NOT compare curated
+# `cli_flags_<version>.json` field values (default/type/help) against the
+# live parse - that is a separate, dedicated content-parity effort, out of
+# scope for this file (see phase3-synthesis.md S2 vs S3).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_live_cli_commands_nonempty_per_version(major, tmp_path):
+    """T-D2 - business rule: for every surveyed major with a checkout on this
+    machine, a live parse of the real ``<pkg>/cli/*.py`` tree must recover at
+    least one CLICommand (existence guard only; see module note above).
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS to override)")
+    version = f"{major}.0"
+    empty_static = tmp_path / "empty_static"
+    empty_static.mkdir()
+    cmds = parse_cli_commands(str(root), version, static_data_dir=str(empty_static))
+    assert len(cmds) > 0, (
+        f"v{major}: live parse of real cli/*.py returned ZERO CLICommand nodes - "
+        "the oracle likely swallowed a SyntaxError silently instead of parsing"
+    )
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_live_cli_flags_nonempty_per_version(major, tmp_path):
+    """T-D2 - business rule: for every surveyed major with a checkout on this
+    machine, a live parse of the real ``<pkg>/tools/config.py`` must recover
+    at least one CLIFlag (existence guard only; see module note above).
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS to override)")
+    version = f"{major}.0"
+    empty_static = tmp_path / "empty_static"
+    empty_static.mkdir()
+    flags = parse_cli_flags(str(root), version, static_data_dir=str(empty_static))
+    assert len(flags) > 0, (
+        f"v{major}: live parse of real config.py returned ZERO CLIFlag nodes - "
+        "the oracle likely swallowed a SyntaxError silently instead of parsing"
+    )
+
+
+def test_cli_live_parser_coverage_is_reported():
+    """T-D2 coverage visibility - business rule: a skipped guard must
+    announce itself, not just fade into individual SKIPPED lines nobody
+    aggregates (the exact "repo believes it has drift detection that never
+    runs" failure issue #364 names). Reports, via a warning always shown in
+    pytest's terminal summary (regardless of -q/-v), how many of the 12
+    surveyed majors this session's live cli_flags/cli_commands oracle
+    actually has a checkout for. Also self-checks the surveyed range itself
+    so a future accidental narrowing of SURVEYED_MAJORS cannot silently
+    shrink this report's coverage (mirrors
+    test_framework_bases_parity.py::test_ci_layer_covers_every_surveyed_major_with_no_silent_gaps).
+    """
+    assert SURVEYED_MAJORS == list(range(8, 20))
+    exercised = [m for m in SURVEYED_MAJORS if checkout_root(m) is not None]
+    warnings.warn(
+        UserWarning(
+            "cli_flags/cli_commands live-parser coverage: "
+            f"{len(exercised)}/{len(SURVEYED_MAJORS)} surveyed majors have a checkout on "
+            f"this machine (exercised: {exercised or 'NONE'}). Set OSM_ODOO_CHECKOUTS to "
+            "point at your checkouts if this reads 0. NOTE: these tests verify EXISTENCE "
+            "only (a non-empty live parse) - they do not verify the curated JSON's field "
+            "values (default/type/help) match real source; see phase3-synthesis.md S3 for "
+            "the separate content-parity work."
+        ),
+        stacklevel=1,
+    )
