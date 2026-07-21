@@ -6,12 +6,16 @@
     {
       "rule_id": "E9901",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Smoke test lint rule alpha",
       "severity": "error"
     },
     {
       "rule_id": "W9901",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Smoke test lint rule beta",
       "severity": "warning"
     }

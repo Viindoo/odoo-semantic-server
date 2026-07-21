@@ -171,6 +171,60 @@ class TestFlagSchemaValid:
         )
 
 
+# ---------------------------------------------------------------------------
+# Real jsonschema-library validation (issue #364 A7)
+# ---------------------------------------------------------------------------
+# TestFlagSchemaValid above hand-re-implements a SUBSET of cli_flag.schema.json
+# (required fields, flag_name prefix, status enum, replacement_flag_name/
+# posix_only type) - it never checked `default`/`type`/`help`/`env_name`, so
+# 11 real pre-existing violations (int where the schema declares string, e.g.
+# `cloc --verbose` default=0, `genproxytoken --token-length` default=16, at
+# v12.0-v18.0) shipped undetected for as long as this file existed. Worse,
+# `_load_schema()` (above) was defined and never called anywhere - a schema
+# file that is loaded but never validated against is decorative, not a gate.
+# This class fixes both: it actually calls `_load_schema()` and runs the real
+# `jsonschema` library (already a pinned dependency, pyproject.toml) against
+# every property the schema declares, not just the ones a human remembered to
+# re-check. Mirrors tests/test_patterns_schema.py's established pattern for
+# patterns.schema.json. Existing TestFlagSchemaValid assertions are left
+# unweakened - this is additive defense-in-depth, not a replacement.
+
+class TestJsonschemaLibraryValidation:
+    @pytest.fixture(scope="class")
+    @classmethod
+    def validator(cls):
+        from jsonschema import validators
+        schema = _load_schema()
+        validator_cls = validators.validator_for(schema)
+        validator_cls.check_schema(schema)
+        return validator_cls(schema)
+
+    @pytest.mark.parametrize("version", CURATED_VERSIONS)
+    def test_all_flags_validate_against_real_jsonschema(self, validator, version: str) -> None:
+        data = _load_version(version)
+        errors = []
+        for i, flag in enumerate(data.get("flags", [])):
+            for err in validator.iter_errors(flag):
+                errors.append(f"flags[{i}] ({flag.get('flag_name')}): {err.message}")
+        assert not errors, (
+            f"cli_flags_{version}.json has jsonschema violations:\n" + "\n".join(errors)
+        )
+
+    def test_validator_actually_rejects_a_broken_record(self, validator) -> None:
+        """A validator that cannot fail is the thing issue #364 A7 eliminates -
+        prove this one can, on a record shaped exactly like the 11 real
+        pre-existing violations this pass found (int `default` where the
+        schema declares string)."""
+        broken = {
+            "flag_name": "--example",
+            "command_name": "cloc",
+            "status": "stable",
+            "default": 0,  # schema requires ["string", "null"]
+        }
+        errors = list(validator.iter_errors(broken))
+        assert errors, "expected the broken record (int default) to fail validation"
+
+
 class TestV19SubparserCommands:
     """WI-D: Static guards verifying v19 subparser commands are fully indexed.
 

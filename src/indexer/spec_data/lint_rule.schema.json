@@ -4,13 +4,22 @@
   "title": "LintRule",
   "description": "A single lint rule entry in a lint_rules_<version>.json file (per ADR-0002 §4).",
   "type": "object",
-  "required": ["rule_id", "kind", "message", "severity"],
+  "required": ["rule_id", "kind", "message", "severity", "rule_id_source"],
   "additionalProperties": false,
   "properties": {
     "rule_id": {
       "type": "string",
       "minLength": 1,
       "description": "Unique rule identifier within its kind. Examples: 'W8101' (pylint-odoo), 'no-var' (ESLint), 'BLE001' (ruff)."
+    },
+    "rule_id_source": {
+      "type": "string",
+      "enum": ["upstream", "osm-local"],
+      "description": "Provenance of rule_id (issue #364 B4). 'upstream' = rule_id is drawn from and verified to match the real linting tool's own rule registry (the installed pylint-odoo package, the vendored/real ESLint core+plugin rule namespace, or Ruff's own rule/category codes) with the SAME meaning as this record's message. 'osm-local' = rule_id was assigned by OSM curators within the tool's id-naming convention but is NOT a verified real registered id-meaning pair as of the last verification pass. An 'osm-local' id can silently DRIFT INTO a collision as the real tool adds ids over time (see rule_id_collision) - an agent that looks the code up externally may get a different, real rule under the same id."
+    },
+    "rule_id_collision": {
+      "type": ["string", "null"],
+      "description": "Non-null only when rule_id_source='osm-local' AND this exact rule_id string currently denotes a DIFFERENT real rule in the upstream tool's registry as of the verification date recorded here - states that real meaning so the collision is visible in the data instead of latent (issue #364 B4). Null when there is no currently-known collision (osm-local with no verified conflict) or when rule_id_source='upstream' (collision is moot - the id IS the real one)."
     },
     "kind": {
       "type": "string",

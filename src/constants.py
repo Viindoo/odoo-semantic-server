@@ -18,8 +18,45 @@ LEGACY_ERA_MAX_MAJOR: int = 9
 # openerp/ namespace (v8/v9) vs odoo/ namespace (v10+)
 ODOO_NAMESPACE_LEGACY_MAX_MAJOR: int = 9
 
-# test_lint addon available starting from this major version
-LINT_RULES_MIN_MAJOR: int = 17
+# Minimum Odoo major version at which parser_lint_rules.py's live-extraction
+# path (pylint-odoo checker .py / eslintrc / ruff.toml under
+# addons/test_lint/tests/, repo-root ruff.toml) is turned on.
+#
+# Verified directly against real Odoo checkouts (issue #364 B3, 2026-07-21) -
+# not re-derived from the earlier phase-2 audit's word alone, which undercounted
+# v13 (see below):
+#   v8-v9:  odoo/addons/test_lint/tests/ exists but is EMPTY (no checker file
+#           at all). No extractable source.
+#   v10:    odoo/addons/test_lint/tests/ has only test_ecmascript.py/
+#           test_pylint.py - no `class X(BaseChecker): msgs = {...}` anywhere.
+#           No extractable source.
+#   v11-v13: DO carry a real checker with a genuine `msgs = {...}` dict
+#           (`_odoo_checkers.py`, rule E3110 / symbol `no-comma-exception`,
+#           wired into test_pylint.py's `--load-plugins` and its
+#           `ENABLED_CODES` list - genuinely active, not dead code) - but the
+#           filename does not match this parser's `_odoo_checker_*.py` glob
+#           (no separating "_" between "checker" and the suffix), so
+#           live-extraction returns EMPTY for it as-is. v13 additionally has
+#           `_odoo_checker_sql_injection.py` (E8501) which DOES match the
+#           glob - gating the version on for v13 alone would extract E8501
+#           but silently miss E3110 next to it (a partial extraction that
+#           under-reports, worse than an honest exclusion - see the parser
+#           module docstring). Left OUT of this gate; fixing it needs the glob
+#           pattern widened too (a distinct, scoped change, not made here).
+#           UNCHECKED: v11, v12, v13 - real content exists but is only
+#           partially reachable by the current glob; not included pending
+#           that follow-up.
+#   v14+:   checker filenames stabilize on `_odoo_checker_<topic>.py`
+#           (cleanly matches the glob): `_odoo_checker_gettext.py` (E8502)
+#           + `_odoo_checker_sql_injection.py` (E8501) present from v14;
+#           `_odoo_checker_unlink_override.py` (E8503) added at v15; ESLint
+#           `eslintrc` present from v16; repo-root `ruff.toml` present at v19
+#           only (confirmed absent at v16-v18). Every major v14-v19 yields at
+#           least one live-extracted LintRule with zero false gaps.
+#
+# See tests/test_parser_lint_rules.py::test_lint_rules_live_parser_coverage_is_reported
+# for the machine-checked eligible/exercised count this boundary implies.
+LINT_RULES_MIN_MAJOR: int = 14
 
 # ---------------------------------------------------------------------------
 # Neo4j relationship type strings

@@ -359,7 +359,8 @@ class Neo4jWriter:
                        cs.file_path AS file_path,
                        cs.line AS line,
                        cs.status AS status,
-                       cs.replacement_qname AS replacement_qname
+                       cs.replacement_qname AS replacement_qname,
+                       cs.note AS note
             """, v=odoo_version).data()
         return [
             CoreSymbolInfo(
@@ -371,6 +372,7 @@ class Neo4jWriter:
                 line=r.get("line"),
                 status=r.get("status") or "stable",
                 replacement_qname=r.get("replacement_qname"),
+                note=r.get("note"),
             )
             for r in rows
         ]

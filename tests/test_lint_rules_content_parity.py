@@ -43,16 +43,21 @@ THIS FILE'S TWO LAYERS
 ------------------------
 1. Classification pin (`_BOUNDARY_CLAIM_RE` + `_KNOWN_FALSIFIABLE_RULE_IDS`) -
    CI-safe, no checkout needed, never skips. A mechanical regex sweep (the same
-   method the audit used, section 1.2) over the three versions the live
-   pylint-odoo/eslint/ruff extractor can actually reach today (v17.0-v19.0;
-   `LINT_RULES_MIN_MAJOR` is NOT widened here - that is separate work, phase2-B
-   section 4 "v14-v16" bullet) flags every rule whose message carries
-   version-boundary language. The flagged set is pinned against a reviewed
-   snapshot: if a FUTURE edit adds a new boundary claim without updating the
-   snapshot, the mismatch fails loudly - an unmarked boundary claim is exactly
-   what escapes review (this file's whole reason to exist). This layer does NOT
-   check whether a classified-falsifiable rule's CONTENT is true - only that it
-   was correctly IDENTIFIED as needing scrutiny. Content correctness is layer 2.
+   method the audit used, section 1.2) over every version the live
+   pylint-odoo/eslint/ruff extractor can actually reach today (`_LIVE_EXTRACTOR_
+   VERSIONS`, derived from `LINT_RULES_MIN_MAJOR` - widened from v17.0-v19.0 to
+   v14.0-v19.0 by issue #364 B3; the v14.0/15.0/16.0 snapshot rows below were
+   added then, using this exact same regex-then-manual-confirm method) flags
+   every rule whose message carries version-boundary language. The flagged set
+   is pinned against a reviewed snapshot: if a FUTURE edit adds a new boundary
+   claim without updating the snapshot, the mismatch fails loudly - an
+   unmarked boundary claim is exactly what escapes review (this file's whole
+   reason to exist). This layer does NOT check whether a classified-falsifiable
+   rule's CONTENT is true - only that it was correctly IDENTIFIED as needing
+   scrutiny. Content correctness is layer 2 (layer 2 is intentionally NOT
+   widened to v14-v16 here - it targets the two specific, already-fixed W8202/
+   W8167 defects phase2-B found at v16-v19; a new content-correctness pass for
+   v14-v16 is separate, unstarted work, not silently assumed by this widening).
 2. Content-vs-real-source checks (`test_w8202_*` / `test_w8167_*`) - dev-box
    only (`@pytest.mark.odoo_source`), skips per version when the checkout is
    absent. Diffs a specific falsifiable claim against the real Odoo checkout it
@@ -89,8 +94,8 @@ from tests._odoo_checkouts import checkout_root
 _SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
 
 # Versions the live pylint-odoo/eslint/ruff extractor can reach today
-# (LINT_RULES_MIN_MAJOR gate; NOT widened here - out of scope, see module
-# docstring). Currently ["17.0", "18.0", "19.0"].
+# (LINT_RULES_MIN_MAJOR gate - widened v17->v14 by issue #364 B3). Currently
+# ["14.0", "15.0", "16.0", "17.0", "18.0", "19.0"].
 _LIVE_EXTRACTOR_VERSIONS = [f"{m}.0" for m in range(LINT_RULES_MIN_MAJOR, 20)]
 
 
@@ -184,14 +189,31 @@ def _mechanically_flagged_rule_ids(version: str) -> set[str]:
     }
 
 
-# The reviewed snapshot ("marked falsifiable") for the three live-extractor
-# versions, computed by running the regex above over the real
-# lint_rules_{17,18,19}.0.json files and manually confirming each hit is a
+# The reviewed snapshot ("marked falsifiable") for every live-extractor
+# version, computed by running the regex above over the real
+# lint_rules_{14..19}.0.json files and manually confirming each hit is a
 # genuine version-boundary claim (none pruned as false positives this pass).
 # A rule_id appearing in the mechanical sweep but ABSENT from this snapshot is
 # exactly the "unmarked boundary claim" this layer exists to catch - the pin
 # equality test below fails loudly instead of letting it pass silently.
+#
+# v14.0/15.0/16.0 rows added by issue #364 B3 (LINT_RULES_MIN_MAJOR 17->14):
+# each hit read and confirmed a genuine version-boundary claim, e.g. W8107
+# "`@api.multi` is removed in v14" (v14.0), W8165 "invalidate_cache()
+# deprecated in v15" (v15.0), W8167 "renamed to `tracking` in v13" (v16.0 -
+# already the corrected v13 boundary; not the v16 defect phase2-B found,
+# which was fixed upstream of this widening - see the "curated data is
+# correct now" note this work item was given).
 _KNOWN_FALSIFIABLE_RULE_IDS: dict[str, frozenset[str]] = {
+    "14.0": frozenset({
+        "W8107", "W8108", "W8110", "W8111",
+    }),
+    "15.0": frozenset({
+        "W8107", "W8108", "W8165", "W8166",
+    }),
+    "16.0": frozenset({
+        "W8107", "W8108", "W8166", "W8167", "W8202",
+    }),
     "17.0": frozenset({
         "W8107", "W8108", "W8166", "W8167", "W8168", "W8169", "W8202",
     }),
@@ -271,9 +293,9 @@ def test_falsifiable_editorial_split_is_reported_per_live_extractor_version():
     warnings.warn(
         UserWarning(
             "lint_rules falsifiable/editorial split (mechanical regex, "
-            "v17-v19 only): " + "; ".join(lines) + ". Audit's hand-classified "
-            "split across all 12 files was ~16% falsifiable / ~84% editorial "
-            "(phase2-B section 1.2)."
+            f"v{LINT_RULES_MIN_MAJOR}-v19 only): " + "; ".join(lines) + ". Audit's "
+            "hand-classified split across all 12 files was ~16% falsifiable / "
+            "~84% editorial (phase2-B section 1.2)."
         ),
         stacklevel=1,
     )

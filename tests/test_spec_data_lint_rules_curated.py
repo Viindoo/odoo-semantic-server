@@ -219,6 +219,190 @@ class TestRuleSchemaValid:
 
 
 # ---------------------------------------------------------------------------
+# Real jsonschema-library validation (issue #364 A7)
+# ---------------------------------------------------------------------------
+# TestRuleSchemaValid above is a hand-rolled re-implementation of a subset of
+# lint_rule.schema.json. This class additionally runs the actual `jsonschema`
+# library (already a pinned dependency) so every constraint the schema
+# declares is enforced mechanically, not just the ones a human remembered to
+# re-check by hand. Mirrors tests/test_patterns_schema.py's established
+# pattern. TestRuleSchemaValid is left unweakened - this is additive.
+
+class TestJsonschemaLibraryValidation:
+    @pytest.fixture(scope="class")
+    @classmethod
+    def jsonschema_validator(cls):
+        from jsonschema import validators
+        schema = _load_schema()
+        validator_cls = validators.validator_for(schema)
+        validator_cls.check_schema(schema)
+        return validator_cls(schema)
+
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_all_rules_validate_against_real_jsonschema(self, jsonschema_validator, version: str):
+        data = _load_lint_file(version)
+        errors = []
+        for i, rule in enumerate(data.get("rules", [])):
+            for err in jsonschema_validator.iter_errors(rule):
+                errors.append(f"rules[{i}] ({rule.get('rule_id')}): {err.message}")
+        assert not errors, (
+            f"lint_rules_{version}.json has jsonschema violations:\n" + "\n".join(errors)
+        )
+
+    def test_validator_actually_rejects_a_broken_record(self, jsonschema_validator):
+        """A validator that cannot fail is the thing issue #364 A7 eliminates -
+        prove this one can (missing the now-required rule_id_source, issue
+        #364 B4)."""
+        broken = {
+            "rule_id": "W9999",
+            "kind": "pylint-odoo",
+            "message": "Example broken rule missing provenance.",
+            "severity": "warning",
+        }
+        errors = list(jsonschema_validator.iter_errors(broken))
+        assert errors, "expected the broken record (missing rule_id_source) to fail validation"
+
+
+# ---------------------------------------------------------------------------
+# Rule-id provenance (issue #364 B4)
+# ---------------------------------------------------------------------------
+# 18-19 of the 69 distinct curated pylint-odoo rule_ids collide with real,
+# currently-assigned OCA pylint-odoo codes under a COMPLETELY DIFFERENT
+# meaning (e.g. curated W8110 = "_columns dict deprecated" vs real pylint-odoo
+# 10.0.7 W8110 = "missing-return" / "Missing `return` (`super` is used)").
+# rule_id_source/rule_id_collision (lint_rule.schema.json) make that latent
+# collision visible in the data instead of an agent discovering it only by
+# looking the code up externally and getting a different rule. These tests
+# guard the CONTRACT of that provenance field, not its exact classification
+# (which is a point-in-time verification result, expected to need periodic
+# re-verification as the real pylint-odoo package evolves - see the schema
+# description).
+
+class TestRuleIdProvenance:
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_every_rule_has_a_source(self, version: str):
+        data = _load_lint_file(version)
+        for i, rule in enumerate(data.get("rules", [])):
+            src = rule.get("rule_id_source")
+            assert src in ("upstream", "osm-local"), (
+                f"lint_rules_{version}.json rules[{i}] ({rule.get('rule_id')}): "
+                f"rule_id_source={src!r} must be 'upstream' or 'osm-local'"
+            )
+
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_collision_only_set_on_osm_local(self, version: str):
+        """rule_id_collision must be null whenever rule_id_source='upstream' -
+        collision is only a meaningful concept for an OSM-invented id (an
+        'upstream' id IS the real one, so it cannot collide with itself)."""
+        data = _load_lint_file(version)
+        for i, rule in enumerate(data.get("rules", [])):
+            if rule.get("rule_id_source") == "upstream":
+                assert rule.get("rule_id_collision") is None, (
+                    f"lint_rules_{version}.json rules[{i}] ({rule.get('rule_id')}): "
+                    f"rule_id_source='upstream' but rule_id_collision is set - "
+                    f"an upstream id cannot collide with itself"
+                )
+
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_same_rule_id_has_consistent_provenance_across_versions(self, version: str):
+        """The same rule_id must carry the same rule_id_source in every
+        version it appears in - provenance is a fact about the ID, not about
+        which version file happens to hold it (same principle as the existing
+        code_pattern cross-version consistency check below)."""
+        data = _load_lint_file(version)
+        seen: dict[tuple[str, str], str] = {}
+        for rule in data.get("rules", []):
+            key = (rule.get("kind"), rule.get("rule_id"))
+            src = rule.get("rule_id_source")
+            if key in seen:
+                assert seen[key] == src, (
+                    f"lint_rules_{version}.json: {key} has inconsistent "
+                    f"rule_id_source within the same file: {seen[key]!r} vs {src!r}"
+                )
+            seen[key] = src
+
+    def test_known_collision_count_within_expected_range(self):
+        """Pin (loosely) the collision headcount so a future curated-data edit
+        that silently adds/removes a collision without updating
+        rule_id_collision is caught. Verified 2026-07-21 against installed
+        pylint-odoo 10.0.7: 19 of 69 distinct curated pylint-odoo rule_ids
+        collide with a real, differently-meaning code (issue #364 B4) - a
+        range (not an exact pin) because the real package's own id set shifts
+        across its own minor releases (confirmed: 56/58/58 ODOO_MSGS entries
+        across three installed 10.0.x builds on this dev box)."""
+        collisions: set[str] = set()
+        all_pylint_ids: set[str] = set()
+        for version in _REQUIRED_VERSIONS:
+            data = _load_lint_file(version)
+            for rule in data.get("rules", []):
+                if rule.get("kind") != "pylint-odoo":
+                    continue
+                all_pylint_ids.add(rule["rule_id"])
+                if rule.get("rule_id_source") == "osm-local" and rule.get("rule_id_collision"):
+                    collisions.add(rule["rule_id"])
+        assert 15 <= len(collisions) <= 25, (
+            f"expected roughly 15-25 colliding pylint-odoo rule_ids, got "
+            f"{len(collisions)}: {sorted(collisions)}"
+        )
+        assert len(all_pylint_ids) >= 60, (
+            f"expected >= 60 distinct curated pylint-odoo rule_ids, got "
+            f"{len(all_pylint_ids)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Duplicate reporting guard (issue #364 B5)
+# ---------------------------------------------------------------------------
+# W8140 (static, OSM-local) and E8501 (the real Odoo-vendored
+# `_odoo_checker_sql_injection.py` id) used to carry an IDENTICAL
+# code_pattern regex at v17.0-v19.0, so lint_check double-reported one real
+# defect under two different rule_ids. The fix consolidated onto the real
+# upstream id E8501 from v14.0 (the first version its checker source is
+# glob-reachable, LINT_RULES_MIN_MAJOR) through v19.0, and left v8.0-v13.0
+# untouched (no live E8501 oracle wired for those versions - W8140 remains
+# the only way to express the fact there). This guard is intentionally
+# GENERAL (not just "no W8140+E8501 together") so it also catches a FUTURE
+# reintroduction of the same failure mode under different rule_ids.
+
+class TestNoDuplicateCodePatternReporting:
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_no_two_rule_ids_share_an_identical_code_pattern(self, version: str):
+        data = _load_lint_file(version)
+        by_kind_pattern: dict[tuple[str, str], list[str]] = {}
+        for rule in data.get("rules", []):
+            cp = rule.get("code_pattern")
+            if not cp:
+                continue
+            key = (rule["kind"], cp)
+            by_kind_pattern.setdefault(key, []).append(rule["rule_id"])
+        dups = {k: ids for k, ids in by_kind_pattern.items() if len(ids) > 1}
+        assert not dups, (
+            f"lint_rules_{version}.json: multiple rule_ids share an identical "
+            f"code_pattern (double-reports the same defect - issue #364 B5): "
+            f"{dups}"
+        )
+
+    def test_w8140_and_e8501_no_longer_coexist_v14_plus(self):
+        """The specific B5 regression: W8140 (OSM-local) and E8501 (real,
+        live-extractable from v14+) must not both be present from v14.0
+        onward - E8501 wins."""
+        for version in _REQUIRED_VERSIONS:
+            if float(version) < 14.0:
+                continue
+            data = _load_lint_file(version)
+            ids = {r.get("rule_id") for r in data.get("rules", [])}
+            assert not ("W8140" in ids and "E8501" in ids), (
+                f"lint_rules_{version}.json: W8140 and E8501 both present - "
+                f"B5 duplicate SQL-injection reporting regressed"
+            )
+            assert "E8501" in ids, (
+                f"lint_rules_{version}.json: E8501 missing at v{version} "
+                f"(>=14.0) - the SQL-injection fact must survive under the "
+                f"real upstream id"
+            )
+
+
+# ---------------------------------------------------------------------------
 # WI-8 Test E: cross-version consistency + regex safety
 # ---------------------------------------------------------------------------
 

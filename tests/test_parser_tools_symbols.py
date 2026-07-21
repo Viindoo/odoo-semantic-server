@@ -350,3 +350,102 @@ class TestSchemaValidation:
             f"tools_symbols_{version}.json has _curate_status={data.get('_curate_status')!r}; "
             f"expected 'complete'"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. Real jsonschema-library validation (issue #364 A7)
+# ---------------------------------------------------------------------------
+# TestSchemaValidation above is a manual, hand-rolled re-implementation of a
+# subset of the schema's rules - it existed before this pass and is left in
+# place unweakened. This class instead runs the ACTUAL `jsonschema` library
+# (already a pinned dependency, pyproject.toml) against the real schema
+# document, so every constraint the schema declares (including ones no one
+# has hand-transcribed into a bespoke assertion, e.g. a property's declared
+# `type`) is enforced, not just the subset a human remembered to re-check.
+# Mirrors the pattern tests/test_patterns_schema.py already uses for
+# patterns.schema.json.
+
+class TestJsonschemaLibraryValidation:
+    @pytest.fixture(scope="class")
+    @classmethod
+    def validator(cls):
+        from jsonschema import validators
+        schema = json.loads(_SCHEMA_FILE.read_text(encoding="utf-8"))
+        validator_cls = validators.validator_for(schema)
+        validator_cls.check_schema(schema)
+        return validator_cls(schema)
+
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_all_entries_validate_against_real_jsonschema(self, validator, version: str):
+        path = _SPEC_DATA_DIR / f"tools_symbols_{version}.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        errors = []
+        for idx, entry in enumerate(data.get("symbols", [])):
+            for err in validator.iter_errors(entry):
+                errors.append(f"symbols[{idx}] ({entry.get('qualified_name')}): {err.message}")
+        assert not errors, (
+            f"tools_symbols_{version}.json has jsonschema violations:\n" + "\n".join(errors)
+        )
+
+    def test_validator_actually_rejects_a_broken_record(self, validator):
+        """A validator that cannot fail is the thing issue #364 A7 eliminates -
+        prove this one can, on a record shaped exactly like the 11 real
+        pre-existing violations issue #364 A7 found in cli_flags (an int where
+        the schema declares string)."""
+        broken = {
+            "qualified_name": "odoo.tools.example",
+            "kind": "tool_export",
+            "status": "stable",
+            "signature": 42,  # schema requires ["string", "null"]
+        }
+        errors = list(validator.iter_errors(broken))
+        assert errors, "expected the broken record (int signature) to fail validation"
+
+
+# ---------------------------------------------------------------------------
+# 9. note field - loader-gap pin (issue #364 C4)
+# ---------------------------------------------------------------------------
+# `note` is curated on every entry in every tools_symbols_<version>.json file
+# (204/204 as of this pass) and tools_symbol.schema.json documents it as
+# "shown in tool output" - but `_load_static_tools_symbols` (this module)
+# never reads the JSON `note` key, so it is discarded the instant the file is
+# parsed and never reaches CoreSymbolInfo, Neo4j, or lookup_core_api. The
+# write (writer_neo4j_spec.py) and render (src/mcp/tools/spec.py,
+# tests/test_lookup_core_api_note_render.py) legs ARE wired and tested -
+# only this loader's one-line gap remains, deliberately NOT closed in this
+# pass (src/indexer/parser_tools_symbols.py is reserved for concurrent oracle
+# work as of issue #364 S5 - see that file's git history/PR for the
+# coordinating change).
+#
+# This class PINS today's known-gap behavior instead of leaving it latent.
+# The moment someone adds `note=entry.get("note")` to the CoreSymbolInfo(...)
+# call in `_load_static_tools_symbols`, this test legitimately starts
+# failing - that failure is a SIGNAL the fix landed, not a regression to
+# silence. Fix it by asserting notes ARE now populated (and delete this
+# class's docstring caveat) as part of that same change - do not xfail or
+# skip it in place (CLAUDE.md "no suppression without root-causing").
+
+class TestNoteFieldPendingLoaderWiring:
+    @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
+    def test_curated_notes_exist_but_loader_drops_them_today(self, version: str):
+        path = _SPEC_DATA_DIR / f"tools_symbols_{version}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw_notes = [s.get("note") for s in raw.get("symbols", []) if s.get("note")]
+        assert raw_notes, (
+            f"tools_symbols_{version}.json: expected curated 'note' values on "
+            f"disk (issue #364 C4 baseline) - none found; has the curated data "
+            f"changed since this pin was written?"
+        )
+
+        loaded = _load_static_tools_symbols(version)
+        assert loaded, f"loader returned nothing for {version}"
+        loaded_notes = [s.note for s in loaded if s.note]
+        assert loaded_notes == [], (
+            f"tools_symbols_{version}.json: _load_static_tools_symbols now "
+            f"populates CoreSymbolInfo.note ({len(loaded_notes)} non-null) - "
+            f"the loader gap this pin tracks (issue #364 C4) has closed. "
+            f"Update this test to assert notes ARE populated (e.g. compare "
+            f"loaded_notes against raw_notes) and remove the stale docstring "
+            f"caveat on TestNoteFieldPendingLoaderWiring; do not just delete "
+            f"this assertion."
+        )

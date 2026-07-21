@@ -530,6 +530,7 @@ Mọi quyết định kiến trúc lớn — schema policy, storage pattern, par
 | [`0002`](docs/adr/0002-spec-schema-policy.md) | Spec Schema Policy (M4.5) | Neo4j: composite key per-version cho CoreSymbol/LintRule/CLI; lifecycle qua edge ADDED_IN/REMOVED_IN/REPLACED_BY/DEPRECATED_IN; USES_CORE_SYMBOL V0 scope hẹp deprecated/removed only. |
 | [`0003`](docs/adr/0003-pattern-example-storage.md) | PatternExample Storage (M4.6) | Neo4j PatternExample node + reuse `embeddings` table với `chunk_type='pattern_example'`; Module/Method enrichment qua SET property (no ALTER); language filter qua entity_name slug encoding. |
 | [`0009`](docs/adr/0009-pattern-catalogue-community-contribution.md) | Pattern Catalogue Community Contribution (M6 W3) | Community PRs to `src/data/patterns.json` must pass 7-rule checklist (schema, dedup, format, enum, gotchas specificity, no EE refs, symbol resolution) + PR template guidance. |
+| [`0055`](docs/adr/0055-curated-data-minimum-bar.md) | Curated Data Minimum Bar | Any new curated table/field (`spec_data/*.json`, `patterns.json`, or a hand-curated dict elsewhere) needs an oracle, an explicitly recorded reason it cannot have one, or provenance metadata - full list ở `docs/adr/INDEX.md`. |
 
 **Workflow ADR mới:**
 
