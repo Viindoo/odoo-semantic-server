@@ -176,3 +176,74 @@ def test_next_step_max_two_hints():
         if len(templates) > 2
     ]
     assert not offenders, "Over-2-hint entries:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# T13 (issue #362, WI-0c): test_base_classes output must be a LEGAL ADR-0023 tree.
+#
+# RED today: src/mcp/tools/test_tools.py:595 gives the LAST class row `└─`, but two
+# more depth-0 children of the header follow it — `├─ Cursor rule:` (:611) and the
+# `└─ Next:` footer (:619) — violating ADR-0023 §1.2 ("└─ for the LAST child of a
+# parent"). This is defect D1 in phase4-solution.md §0.
+# ---------------------------------------------------------------------------
+
+# A line's "depth" is the length (in chars) of its indent prefix — each indent unit
+# (`│   ` or `    `, ADR-0023 §1.3) is exactly 4 chars, so depth doubles as a stable
+# nesting key without needing a real tree parse.
+_TREE_CONNECTOR_LINE_RE = re.compile(r"^(?P<indent>(?:│   |    )*)(?P<connector>├─|└─) ")
+
+
+def _assert_adr0023_connector_grammar(output: str, label: str) -> None:
+    """ADR-0023 §1.2: every non-header line must open with a legal connector
+    (`├─` for a middle child, `└─` ONLY for the last child of its parent); once a
+    `└─` closes a sibling group at some depth, no later line may reuse that same
+    depth (that would mean a "last" child was not actually last).
+    """
+    lines = output.splitlines()
+    assert lines, f"{label}: empty output"
+    closed_depths: set[int] = set()
+    for line in lines[1:]:  # lines[0] is the header (§1.1) — it carries no connector
+        m = _TREE_CONNECTOR_LINE_RE.match(line)
+        assert m, (
+            f"{label}: line does not open with a legal ADR-0023 §1.2 connector "
+            f"(├─ or └─, optionally preceded by │   / 4-space indent units): {line!r}"
+        )
+        depth = len(m.group("indent"))
+        assert depth not in closed_depths, (
+            f"{label}: └─ at depth {depth} is followed by another sibling at the "
+            f"same depth — └─ is reserved for the LAST child (ADR-0023 §1.2): {line!r}"
+        )
+        # Returning to depth D (or shallower) ends any deeper sibling groups —
+        # a fresh subtree at that depth may legally close again later.
+        closed_depths = {d for d in closed_depths if d <= depth}
+        if m.group("connector") == "└─":
+            closed_depths.add(depth)
+
+
+@pytest.mark.neo4j
+@pytest.mark.parametrize("odoo_version", ["8.0", "14.0", "17.0", "99.0"])
+def test_test_base_classes_output_follows_adr0023_connector_grammar(
+    odoo_version, clean_neo4j,
+):
+    """Business rule (ADR-0023 §1.2): test_base_classes output must be a legal
+    tree — every row opens with a valid connector, and └─ never precedes a later
+    sibling at the same depth.
+
+    RED today: the last class row always gets `└─` even though `Cursor rule:` and
+    `Next:` are additional depth-0 siblings that follow it (D1,
+    phase4-solution.md §0) — true at every version, including the era1 (v8/v9)
+    and out-of-catalogue (99.0) fallback paths, which share the same renderer.
+    """
+    # Isolate from any framework TestHelper nodes another test may have seeded at
+    # this real version string (clean_neo4j only auto-scrubs TEST_VERSION=99.0).
+    with clean_neo4j.session() as s:
+        s.run(
+            "MATCH (h:TestHelper {module: '@framework', odoo_version: $v}) "
+            "DETACH DELETE h",
+            v=odoo_version,
+        )
+
+    from src.mcp.tools.test_tools import _test_base_classes
+
+    result = _test_base_classes(odoo_version=odoo_version, _driver=clean_neo4j)
+    _assert_adr0023_connector_grammar(result, label=f"test_base_classes({odoo_version!r})")
