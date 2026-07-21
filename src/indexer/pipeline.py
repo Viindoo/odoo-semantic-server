@@ -240,10 +240,14 @@ def reconcile_test_surface(
     present). Mirrors reconcile_same_name_inherits. Order matters:
       1. seed framework TestHelper nodes (so INHERITS_TEST resolves framework bases
          like TransactionCase),
-      2. reconcile_test_inherits (builds INHERITS_TEST edges),
-      3. finalize_is_helper (counts inbound INHERITS_TEST edges - AFTER inherits),
-      4. reconcile_test_coverage (COVERS_* edges to is_definition nodes).
-    All passes are idempotent (MERGE) and non-fatal on error.
+      2. prune stale framework TestHelper nodes (a class the CURRENT era no longer
+         declares, e.g. SavepointCase once a version moves onto the v17+ era —
+         issue #362 WI-4/WI-5; must run right after seeding so reconcile_test_inherits
+         below never resolves an addon TestClass onto a class this era no longer has),
+      3. reconcile_test_inherits (builds INHERITS_TEST edges),
+      4. finalize_is_helper (counts inbound INHERITS_TEST edges - AFTER inherits),
+      5. reconcile_test_coverage (COVERS_* edges to is_definition nodes).
+    All passes are idempotent (MERGE / prune-by-name-set) and non-fatal on error.
 
     ADR-0034 provenance: framework TestHelper nodes are stamped with the OWNING
     profile array of the run (mirrors every other node from the checkout). When the
@@ -253,16 +257,35 @@ def reconcile_test_surface(
     profile=[] nodes to every scoped tenant (size(profile)>0 guard), so seeding with
     [] would make test_base_classes return nothing for non-admin keys.
 
+    This function has no source root available (it runs after all repos of a
+    profile are indexed, version-wide, not per-repo checkout) — ``live_names`` is
+    therefore always computed from ``framework_bases(rv)`` with NO
+    ``odoo_source_root`` argument. This is by design, not a missing feature: the
+    curated table is built to answer "which classes exist at this version"
+    correctly with no checkout at all (see ``framework_bases()`` in
+    ``framework_bases.py``), and ``live_names`` must stay a pure function of the
+    version alone (never of a source root or profile) so this profile's prune can
+    never delete a node another profile's run still needs.
+
     Extracted as a module-level function so the pipeline-level e2e test can drive the
     EXACT production wiring (red-before-green: this would build zero edges on the old
     orphaned-reconcile state because nothing called it).
     """
+    from src.indexer.framework_bases import framework_bases
     from src.indexer.parser_odoo_core import seed_framework_test_helpers
     for rv in versions:
         writer.write_framework_test_helpers(
             seed_framework_test_helpers(rv),
             profiles=framework_profiles,
         )
+        live_names = {fact.name for fact in framework_bases(rv)}
+        pruned = writer.prune_framework_test_helpers(rv, live_names)
+        if pruned:
+            _logger.info(
+                "reconcile_test_surface: pruned %d stale '@framework' TestHelper "
+                "node(s) for version %s (no longer in the current era menu)",
+                pruned, rv,
+            )
         writer.reconcile_test_inherits(rv)
         writer.finalize_is_helper(rv)
         writer.reconcile_test_coverage(rv)
@@ -673,6 +696,7 @@ def index_core(
         Summary dict: {core_symbols, lint_rules, cli_commands, cli_flags}.
     """
     from src.indexer.diff_engine import compute_diff
+    from src.indexer.framework_bases import framework_bases
     from src.indexer.parser_cli import parse_cli_commands, parse_cli_flags
     from src.indexer.parser_lint_rules import parse_lint_rules_for_version
     from src.indexer.parser_odoo_core import parse_odoo_core, seed_framework_test_helpers
@@ -730,17 +754,43 @@ def index_core(
     writer.write_cli_flags(flags)
     _logger.info("index_core: wrote %d CLIFlag nodes", len(flags))
 
-    # 4b. Framework TestHelper seeding (WI-1, C1 wiring): seed the built-in Odoo
-    # test base classes (TransactionCase, HttpCase, ...) as TestHelper nodes with
-    # module='@framework' so INHERITS_TEST edges from addon test classes can resolve
-    # to them. Seeded here (the core path) AND in index_profile (so a profile-only
-    # run that does not call index_core is still complete). MERGE-idempotent.
-    framework_helpers = seed_framework_test_helpers(odoo_version)
+    # 4b. Framework TestHelper seeding (WI-1, C1 wiring; prune WI-4/WI-5): seed the
+    # built-in Odoo test base classes (TransactionCase, HttpCase, ...) as TestHelper
+    # nodes with module='@framework' so INHERITS_TEST edges from addon test classes
+    # can resolve to them. Seeded here (the core path) AND in index_profile (so a
+    # profile-only run that does not call index_core is still complete). MERGE-
+    # idempotent. Unlike reconcile_test_surface, THIS path has a real checkout
+    # (source_root), so it is passed through to seed_framework_test_helpers -
+    # the seeded nodes are parse-enriched with real file_path/line/has_setUpClass
+    # (framework_bases.py's composition rules).
+    #
+    # TENANT-VISIBILITY ORDERING NOTE: this call seeds with the default
+    # profiles=[] (index_core has no profile concept - it is the version-wide,
+    # standalone core path). Per ADR-0034, a node whose profile[] is empty is
+    # denied to every SCOPED tenant at the read-side choke (size(profile)>0
+    # guard) - only an admin (own=None) query sees it. These parse-enriched
+    # nodes stay tenant-invisible until a PROFILE run (index_profile ->
+    # reconcile_test_surface) unions a real profile array into the SAME
+    # TestHelper nodes via MERGE (name/module/odoo_version composite key -
+    # profile-less core-seeded and profile-stamped profile-seeded runs land on
+    # one node, not two). The deploy runbook therefore orders the PROFILE pass
+    # BEFORE the core pass (or re-runs the profile pass after core) - running
+    # index-core alone leaves test_base_classes empty for every non-admin key
+    # even though the index-core run itself reports success.
+    framework_helpers = seed_framework_test_helpers(odoo_version, source_root)
     writer.write_framework_test_helpers(framework_helpers)
     _logger.info(
         "index_core: seeded %d framework TestHelper nodes (@framework)",
         len(framework_helpers),
     )
+    live_names = {fact.name for fact in framework_bases(odoo_version)}
+    pruned = writer.prune_framework_test_helpers(odoo_version, live_names)
+    if pruned:
+        _logger.info(
+            "index_core: pruned %d stale '@framework' TestHelper node(s) for "
+            "version %s (no longer in the current era menu)",
+            pruned, odoo_version,
+        )
     cli_curate_status = _read_spec_curate_status(
         "cli_flags", odoo_version, static_data_dir,
     )

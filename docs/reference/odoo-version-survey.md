@@ -189,7 +189,53 @@ Bảng này liên kết từng đặc điểm version với parser/registry cụ
 
 ---
 
-## 6. v20 — Cách Thêm Support
+## 6. Test-Framework Base Classes - 7 Era (issue #362, ADR-0054)
+
+Bảng dưới liệt kê "menu" test-base-class (TransactionCase, SavepointCase, HttpCase, ...)
+mà `test_base_classes` trả về, theo 7 era version-dispatch trong
+`src/indexer/framework_bases.py` (SSOT duy nhất - thay cho `_FRAMEWORK_BASES` cũ đã bị
+xóa, vốn version-blind và là root cause của issue #362).
+
+| Era (major) | File path (prefix) | Menu (thêm/bớt so với era trước) |
+|---|---|---|
+| v8-v9 | `openerp/tests/common.py` | BaseCase, HttpCase, SavepointCase, SingleTransactionCase, TestCase, TransactionCase (6 lớp) |
+| v10 | `odoo/tests/common.py` | Giống hệt v8-v9 (chỉ đổi prefix path `openerp/` -> `odoo/` - ranh giới đường dẫn, KHÔNG phải ranh giới menu) |
+| v11 | `odoo/tests/common.py` | + TreeCase (7 lớp) |
+| v12-v13 | `odoo/tests/common.py` | + Form, O2MForm (9 lớp) |
+| v14 | `odoo/tests/common.py` | + HttpCaseCommon, HttpSavepointCase (11 lớp - full menu cũ, nhưng CHỈ đúng tại v14) |
+| v15-v16 | `odoo/tests/common.py` | - TreeCase, - HttpCaseCommon; SavepointCase/HttpSavepointCase chuyển `deprecated` (9 lớp) |
+| v17+ | `odoo/tests/common.py` (Form/O2MForm -> `odoo/tests/form.py`) | - SavepointCase, - HttpSavepointCase (REMOVED, không phải deprecated); Form/O2MForm chuyển file (7 lớp) |
+
+**Ghi chú quan trọng:**
+- Ranh giới v9->v10 KHÔNG đổi menu (danh sách lớp, test_type, status giống hệt) - chỉ đổi
+  `openerp/` -> `odoo/` prefix. Đây là lý do `framework_bases.py` tách `_ERA_PREFIX_REGISTRY`
+  (registry riêng cho prefix) khỏi `_FRAMEWORK_BASE_REGISTRY` (registry cho menu) - hai ranh
+  giới khác nhau, theo đúng convention per-feature-VersionRegistry của ADR-0052.
+- Trong 11 ranh giới phiên bản liền kề từ v8 đến v19, menu (thành viên, status, hoặc vị trí
+  file) thực sự thay đổi tại 6: v9|v10 (prefix), v10|v11 (TreeCase), v11|v12 (Form/O2MForm),
+  v13|v14 (HttpCaseCommon/HttpSavepointCase), v14|v15 (TreeCase + HttpCaseCommon bị xóa,
+  SavepointCase/HttpSavepointCase deprecated), v16|v17 (SavepointCase/HttpSavepointCase bị
+  REMOVE). Đây là bằng chứng bác bỏ giả định "framework bases change rarely" trong
+  ADR-0051 Amendment 2.
+- `SavepointCase` xuất hiện tại v8 dù bản GA 8.0 (2014) chưa có lớp này - commit
+  `11ba4689b1d9` (2015-06-23) backport nó vào nhánh 8.0 đã release, và
+  `odoo8/addons/mail/tests/common.py:25` dùng nó thật. Đây là ví dụ cụ thể cho ngữ nghĩa
+  BRANCH-HEAD ở dòng dưới.
+
+**BRANCH-HEAD semantics:** mọi cửa sổ phiên bản OSM khẳng định (bảng trên, và mọi
+`odoo_version_min`/`odoo_version_max` trong `patterns.json`) mô tả những gì một
+`git clone -b X.0 <odoo-repo>` chứa ở HEAD hiện tại của nhánh đó - KHÔNG PHẢI snapshot
+đóng băng tại thời điểm tag GA release. Odoo backport fix (và thậm chí cả helper
+test-framework mới) vào các nhánh stable đã release, nên "có mặt tại 8.0" nghĩa là "có
+mặt trong nhánh 8.0 ở trạng thái hiện tại", không phải "có mặt trong bản release
+8.0.0". `SavepointCase` ở trên là ví dụ minh họa trực tiếp.
+
+Xem `docs/adr/0054-parse-verified-framework-test-base-facts.md` cho quyết định đầy đủ
+(parse-verified curation, out-of-catalogue policy, prune contract).
+
+---
+
+## 7. v20 - Cách Thêm Support
 
 Nhờ ADR-0032 (`VersionRegistry`), thêm v20 là thao tác cục bộ trong registry list:
 
@@ -218,6 +264,9 @@ Xem `docs/adr/0032-parser-hooks-registry.md §v20` cho ví dụ đầy đủ.
 | `docs/adr/0025-css-scss-indexing.md` | CSS/SCSS/LESS indexing schema |
 | `docs/adr/0002-spec-schema-policy.md` | `_DEPRECATED_API_SYMBOLS` policy (25 entries; v2 + issue #117 ACL/cache families) |
 | `docs/adr/0005-core-coverage-version-paths.md` | `openerp/` vs `odoo/` path resolution |
+| `docs/adr/0052-per-feature-version-dispatch.md` | Per-feature `VersionRegistry` convention (mỗi feature tự khai báo ranh giới riêng) |
+| `docs/adr/0054-parse-verified-framework-test-base-facts.md` | Test-framework base-class 7-era table (§6 trên) + parse-verified curation + BRANCH-HEAD semantics |
 | `src/indexer/spec_data/bootstrap_versions.json` | Bootstrap version per Odoo major (curated) |
 | `src/indexer/version_registry.py` | `VersionRegistry` implementation |
-| `docs/deploy/reindex-v8-v19-runbook.md` | Ops runbook — prod reindex sau PR #160 |
+| `src/indexer/framework_bases.py` | Test-framework base-class SSOT (§6 trên) |
+| `docs/deploy/reindex-v8-v19-runbook.md` | Ops runbook - prod reindex sau PR #160 |

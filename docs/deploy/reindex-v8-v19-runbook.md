@@ -1246,6 +1246,55 @@ Expected: `deleted = 1` (or 0 if already removed).
 
 ---
 
+### PA7 - Framework TestHelper prune verify (issue #362, ADR-0054)
+
+`test_base_classes`'s menu and `name=` drill-down read from
+`src.indexer.framework_bases.framework_bases()` directly (not from the graph), so they
+are already correct on every server the moment this code is deployed - no reindex
+needed for that part. What a stale graph still holds is the OLD `TestHelper` nodes
+themselves (e.g. `SavepointCase` at v17+, which the pre-fix code could never delete -
+the writer was MERGE-only and no GC path ever touched `TestHelper`). The new writer
+method `prune_framework_test_helpers` closes that gap, wired into the version-wide
+`reconcile_test_surface` post-pass that runs at the end of **every** profile-index
+pass, incremental or `--full` - there is no separate `--full`-only prune step.
+
+```bash
+# Any profile pass removes the stale nodes for that profile's versions - the existing
+# nightly cron (`index-repo --all`, no --full) already does this on its next run:
+<VENV> -m src.indexer index-repo --all
+
+# To force it immediately for one profile instead of waiting for the nightly cron:
+<VENV> -m src.indexer index-repo --profile <profile_name>
+```
+
+**Verify (v17 should list exactly 7 names, no `SavepointCase`):**
+```bash
+cypher-shell -u neo4j -p "$NEO4J_PASSWORD" \
+    "MATCH (h:TestHelper {module: '@framework', odoo_version: '17.0'})
+     RETURN h.name ORDER BY h.name;"
+```
+Expected: 7 rows - `BaseCase`, `Form`, `HttpCase`, `O2MForm`, `SingleTransactionCase`,
+`TestCase`, `TransactionCase`. No `SavepointCase`, no `HttpSavepointCase` (both removed
+at v17). If `SavepointCase` still appears: the profile owning that version has not run
+a reindex since this fix deployed - run either command above for it.
+
+**Ordering fact - PROFILE pass before CORE pass.** `index-core` (the pass that walks a
+real Odoo checkout and can enrich `TestHelper.file_path`/`line` via the AST oracle)
+seeds with `profiles=[]` by design (ADR-0034: it is a version-wide walk, not owned by
+any one tenant profile) - a node it creates or touches stays tenant-invisible until a
+later `index-repo` PROFILE pass unions a real profile onto it (`_write_test_helpers_batch`'s
+coalesce-ON-MATCH profile-union never narrows an existing profile array, so once a
+profile pass has stamped a node, a later `index-core` run with `profiles=[]` cannot
+un-stamp it). Running the profile pass first therefore avoids a window where a freshly
+seeded framework helper exists in the graph but is invisible to every scoped tenant. If
+`index-core` already ran first on a given version, it self-heals on the next profile
+pass for that version - no manual fix needed, just do not treat `index-core` alone as
+sufficient for a version that has never had a profile pass.
+
+**Result:** [ ] v17.0 `TestHelper{module:'@framework'}` = 7 names, no SavepointCase/HttpSavepointCase; [ ] profile pass has run at least once per version since this fix deployed
+
+---
+
 ## 6. Post-Ops Verification Checklist
 
 | Item | Expected | Checked |
