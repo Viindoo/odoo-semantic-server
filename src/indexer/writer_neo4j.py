@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/writer_neo4j.py
 import logging
+from collections.abc import Iterable
 
 from neo4j import GraphDatabase, NotificationMinimumSeverity
 
@@ -11,6 +12,7 @@ from src.constants import (
 )
 
 from .diff_engine import DiffResult
+from .framework_bases import KNOWN_FRAMEWORK_BASE_NAMES
 from .models import (
     CLICommandInfo,
     CLIFlagInfo,
@@ -1064,6 +1066,57 @@ class Neo4jWriter:
         with self.driver.session() as session:
             session.execute_write(_write_test_helpers_batch, helpers, _profiles)
 
+    def prune_framework_test_helpers(
+        self, odoo_version: str, live_names: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale '@framework' TestHelper nodes (issue #362 WI-4).
+
+        Without this method, no code path anywhere ever deletes a TestHelper:
+        ``write_framework_test_helpers`` (``_write_test_helpers_batch``) is
+        MERGE+SET only, ``gc_stale_test_nodes`` DETACH DELETEs TestMethod/TestClass
+        only, and the per-module cascade in ``delete_module_subtree`` never touches
+        TestHelper. A class removed from an era (e.g. SavepointCase leaving the
+        menu at v17+) would otherwise survive on every already-indexed server
+        forever.
+
+        Two safety properties (ADR-0054) that MUST hold:
+
+        1. **No ping-pong.** The ``th.name IN $known_universe`` clause restricts
+           deletion to names this feature has EVER emitted
+           (``KNOWN_FRAMEWORK_BASE_NAMES``). A source-less run at some future
+           version can therefore never delete a class that a source-bearing
+           parse discovered and is not yet in the curated table — without this
+           clause the source-bearing and source-less paths would alternately
+           create and delete the very same node on every reindex.
+        2. **Profile-invariant.** ``live_names`` is a pure function of
+           ``odoo_version`` alone (``framework_bases(odoo_version)`` never takes
+           a profile), so profile A's prune call can never delete a node profile
+           B's reindex still needs. This is why, unlike ``gc_stale_test_nodes``,
+           this method needs no ``repo``/profile scoping parameter.
+
+        Returns the number of TestHelper nodes deleted.
+        """
+        with self.driver.session() as session:
+            row = session.run(
+                """
+                MATCH (th:TestHelper {module: '@framework', odoo_version: $version})
+                WHERE NOT th.name IN $live_names AND th.name IN $known_universe
+                DETACH DELETE th
+                RETURN count(th) AS deleted
+                """,
+                version=odoo_version,
+                live_names=list(live_names),
+                known_universe=list(KNOWN_FRAMEWORK_BASE_NAMES),
+            ).single()
+            deleted = row["deleted"] if row is not None else 0
+            if deleted > 0:
+                _logger.info(
+                    "prune_framework_test_helpers: deleted %d stale '@framework' "
+                    "TestHelper node(s) for version %s",
+                    deleted, odoo_version,
+                )
+            return deleted
+
     def reconcile_test_inherits(self, odoo_version: str) -> int:
         """MERGE missing INHERITS_TEST edges for all TestClass nodes at odoo_version.
 
@@ -1602,6 +1655,16 @@ def _write_test_helpers_batch(
 
     MERGE key: (name, module, odoo_version).
     profile[] is union-only (ADR-0034).
+
+    ``file_path``/``line`` use coalesce-ON-MATCH (issue #362 WI-4, mirrors the
+    Module identity-card pattern in ``writer_neo4j_orm.py::_write_parse_result``
+    ON MATCH SET, e.g. ``m.shortdesc = coalesce($shortdesc, m.shortdesc)``):
+    the profile reindex path (``reconcile_test_surface``) seeds framework
+    helpers WITHOUT a source root, so ``h.file_path``/``h.line`` arrive as
+    None on that call. Unconditionally overwriting would erase every
+    parse-derived enrichment on the very next nightly reindex. A later
+    source-less seed therefore never wipes a previously parse-derived value;
+    a source-bearing seed (non-None) still updates it.
     """
     union_expr = _profile_union_set("th")
     for h in helpers:
@@ -1610,13 +1673,19 @@ def _write_test_helpers_batch(
             tx.run(
                 f"""
                 MERGE (th:TestHelper {{name: $name, module: $module, odoo_version: $ver}})
-                SET th.origin = $origin,
-                    th.test_type = $test_type,
-                    th.setup_summary = $setup_summary,
-                    th.commit_allowed = $commit_allowed,
-                    th.file_path = $file_path,
-                    th.line = $line,
-                    th.profile = {union_expr}
+                ON CREATE SET th.origin = $origin,
+                              th.test_type = $test_type,
+                              th.setup_summary = $setup_summary,
+                              th.commit_allowed = $commit_allowed,
+                              th.file_path = $file_path,
+                              th.line = $line
+                ON MATCH  SET th.origin = $origin,
+                              th.test_type = $test_type,
+                              th.setup_summary = $setup_summary,
+                              th.commit_allowed = $commit_allowed,
+                              th.file_path = coalesce($file_path, th.file_path),
+                              th.line = coalesce($line, th.line)
+                SET th.profile = {union_expr}
                 """,
                 name=h.name, module=h.module, ver=h.odoo_version,
                 origin=h.origin, test_type=h.test_type,
@@ -1628,13 +1697,19 @@ def _write_test_helpers_batch(
             tx.run(
                 f"""
                 MERGE (th:TestHelper {{name: $name, module: $module, odoo_version: $ver}})
-                SET th.origin = $origin,
-                    th.test_type = $test_type,
-                    th.setup_summary = $setup_summary,
-                    th.commit_allowed = $commit_allowed,
-                    th.file_path = $file_path,
-                    th.line = $line,
-                    th.profile = {union_expr}
+                ON CREATE SET th.origin = $origin,
+                              th.test_type = $test_type,
+                              th.setup_summary = $setup_summary,
+                              th.commit_allowed = $commit_allowed,
+                              th.file_path = $file_path,
+                              th.line = $line
+                ON MATCH  SET th.origin = $origin,
+                              th.test_type = $test_type,
+                              th.setup_summary = $setup_summary,
+                              th.commit_allowed = $commit_allowed,
+                              th.file_path = coalesce($file_path, th.file_path),
+                              th.line = coalesce($line, th.line)
+                SET th.profile = {union_expr}
                 WITH th
                 MATCH (m:Module {{name: $module, odoo_version: $ver}})
                 MERGE (th)-[:DEFINED_IN]->(m)

@@ -570,12 +570,17 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
     return out
 
 
-def seed_framework_test_helpers(odoo_version: str) -> list:
+def seed_framework_test_helpers(
+    odoo_version: str, odoo_source_root: str | Path | None = None,
+) -> list:
     """Return TestHelperInfo nodes for Odoo framework test base classes.
 
-    These are seeded from a known static set rather than parsed, because
-    odoo/tests/common.py may not always be in the indexing path and the framework
-    base classes are stable across minor versions.
+    Delegates to ``parser_test.seed_framework_helpers()``, itself a thin adapter
+    over the version-gated ``src.indexer.framework_bases`` SSOT (issue #362) -
+    not a static, version-blind set. ``odoo_source_root`` is optional (backward
+    compatible with existing single-argument call sites) and, when given, is
+    forwarded so the seeded menu is additionally enriched with real
+    ``file_path``/``line`` from an AST parse of the checkout.
 
     Uses module='@framework' (MED-3) so these nodes are clearly distinct from
     addon-sourced helpers and from the '__unresolved__' GC placeholder.
@@ -585,4 +590,4 @@ def seed_framework_test_helpers(odoo_version: str) -> list:
     as TestHelper nodes with no DEFINED_IN edge.
     """
     from .parser_test import seed_framework_helpers  # noqa: PLC0415
-    return seed_framework_helpers(odoo_version)
+    return seed_framework_helpers(odoo_version, odoo_source_root)

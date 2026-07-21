@@ -65,13 +65,39 @@ Each SHA is the `git log -1 --format=%H` HEAD of the corresponding local checkou
 
 ## Python-2-era note (v8/v9)
 
-`openerp/tests/common.py` on v8/v9 is Python-2-flavored source (the real files use
-`unittest2.TestCase` on v8 and `unittest.TestCase` on v9, and are written for py2 execution),
-but the relevant `class` statements are ordinary py2/py3-compatible syntax - `ast.parse` under
-Python 3 parses both real files and both fixtures without modification. No simplification was
-needed.
+CORRECTED (issue #362 WI-1 adversarial review, finding C7): the previous version of this note
+claimed `ast.parse` under Python 3 parses the REAL v8/v9 files without modification. That claim
+is **false** on this project's runtime (`~/.venv/odoo-semantic-mcp/bin/python` = Python 3.12.13,
+`pyproject.toml` `requires-python = ">=3.12"`) - both real files raise a genuine `SyntaxError`:
+`openerp/tests/common.py:297` (odoo8) and `:324` (odoo9) each contain a Python-2-only
+`except select.error, e:` clause inside `HttpCase.phantom_poll`, a PhantomJS output-polling
+helper unrelated to any framework base class's own shape, but fatal to a whole-file `ast.parse`
+anyway because the file must parse as one unit.
+
+What **is** true, and is the reason `v8_common.py`/`v9_common.py` in this directory parse
+cleanly: these two fixtures are excerpts, and the excerpting process (see "What these are"
+above) never copied the one method that carries the Python-2 construct - only the `class`
+statements and reduced bodies needed for the parity comparison. So "the fixtures parse under
+Python 3" is accurate; "the real files parse under Python 3" was not, and has been removed.
+
+This is precisely why `src/indexer/framework_bases.py`'s `parse_framework_bases` does not rely
+on `ast.parse` succeeding unconditionally for v8/v9: on a `SyntaxError`, it falls back to a
+text-regex class-header scanner (`_scan_classes_text`, module docstring "THE v8/v9 PYTHON-2
+SYNTAX HAZARD") that reads class facts directly out of the raw source text, robust to the
+Python-2 construct the AST parser cannot accept. A SEPARATE fixture,
+`py2_fallback_common.py` in this same directory, exists specifically to give that fallback path
+CI coverage - it is NOT one of the 15 `v<major>_common.py` files above (a different naming
+pattern, deliberately excluded from `test_ci_layer_covers_every_surveyed_major_with_no_silent_gaps`'s
+glob) and is consumed by `tests/test_framework_bases_text_scan_fallback.py`, not by the parity
+test in this directory's sibling `tests/test_framework_bases_parity.py`. It is a small, faithful
+excerpt of the real odoo8 `openerp/tests/common.py` that KEEPS the genuine
+`except select.error, e:` construct verbatim (unlike the 15 fixtures above, which excerpt around
+it), so it genuinely fails `ast.parse` under Python 3 and exercises the fallback for real.
 
 ## Verification performed
+
+(The 15 `v<major>_common.py`/`v<major>_form.py` parity fixtures only - `py2_fallback_common.py`
+is deliberately excluded from this section, since its entire purpose is to FAIL `ast.parse`.)
 
 - All 15 fixtures parse under `ast.parse` (Python 3) with zero syntax errors.
 - For every fixture, the AST class-name set was diffed against this feature's authoritative

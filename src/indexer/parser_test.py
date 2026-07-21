@@ -33,20 +33,34 @@ import ast
 import re
 from pathlib import Path
 
+from .framework_bases import framework_bases
 from .models import ModuleInfo, TestClassInfo, TestHelperInfo, TestMethodInfo, TestParseResult
 from .parser_util import parse_external_source
 
 # ---------------------------------------------------------------------------
 # Framework base classification (classifies, never gates emission - HIGH-1)
+#
+# NOTE - this is a DIFFERENT set from the framework MENU in
+# src/indexer/framework_bases.py (KNOWN_FRAMEWORK_BASE_NAMES / framework_bases()).
+# TEST_BASE_CLASSES / TEST_TYPE_MAP below CLASSIFY an addon TestClass's
+# base_classes_ordered (they answer "what test_type does this class inherit",
+# used at parse time on every era, version-blind by design - the classifier
+# does not need to know whether a name is still OFFERED at this version, only
+# whether it is a recognized name at all). framework_bases() instead answers
+# "what base classes does Odoo ACTUALLY OFFER at this version" (the seeded
+# TestHelper menu, version-gated per era). A name can be classifiable here
+# without being offered as a base at every version - TestCase is the example
+# (always classifiable, since it is stdlib unittest, present at every era).
+# Do NOT "helpfully" merge these two sets - they answer different questions.
 # ---------------------------------------------------------------------------
 
 TEST_BASE_CLASSES: frozenset[str] = frozenset({
     "TestCase",                                         # unittest (all eras)
     "BaseCase", "TreeCase",                             # odoo abstract (v10+/v14+)
     "TransactionCase", "SingleTransactionCase",         # all eras
-    "SavepointCase",                                    # v8-v15 (merged into TransactionCase v16+)
+    "SavepointCase",                                    # v8-v16 (deprecated v15+, removed v17)
     "HttpCase", "HttpCaseCommon", "HttpSavepointCase",  # v8+/v14
-    "Form", "O2MForm",                                  # form helpers v14+
+    "Form", "O2MForm",                                  # form helpers v12+ (relocates v17+)
 })
 
 TEST_TYPE_MAP: dict[str, str] = {
@@ -59,71 +73,6 @@ TEST_TYPE_MAP: dict[str, str] = {
     "Form": "form",
     "O2MForm": "form",
     "TestCase": "unittest",
-}
-
-# Known framework bases that carry commit_allowed=True semantics.
-# Note: @standalone decorator -> commit_allowed=True regardless of base class.
-# SingleTransactionCase stays False (forbidden, must open new cursor if needed).
-_FRAMEWORK_BASES: dict[str, dict] = {
-    "TransactionCase": {
-        "test_type": "transaction",
-        "commit_allowed": False,
-        "setup_summary": ["savepoint per method, auto-rollback on teardown"],
-    },
-    "SavepointCase": {
-        "test_type": "savepoint",
-        "commit_allowed": False,
-        "setup_summary": ["savepoint wrapper (deprecated alias, v8-v15)"],
-    },
-    "SingleTransactionCase": {
-        "test_type": "single_transaction",
-        "commit_allowed": False,
-        "setup_summary": [
-            "one transaction for all methods, no savepoint; open new cursor if commit needed",
-        ],
-    },
-    "HttpCase": {
-        "test_type": "http",
-        "commit_allowed": False,
-        "setup_summary": [
-            "TransactionCase + Chrome headless + start_tour(); tag @tagged('post_install')",
-        ],
-    },
-    "HttpCaseCommon": {
-        "test_type": "http",
-        "commit_allowed": False,
-        "setup_summary": ["mixin providing HTTP test utilities"],
-    },
-    "HttpSavepointCase": {
-        "test_type": "http",
-        "commit_allowed": False,
-        "setup_summary": ["HTTP + savepoint variant"],
-    },
-    "Form": {
-        "test_type": "form",
-        "commit_allowed": False,
-        "setup_summary": ["server-side onchange/default simulation via Form(env['model'])"],
-    },
-    "O2MForm": {
-        "test_type": "form",
-        "commit_allowed": False,
-        "setup_summary": ["o2m field form simulation"],
-    },
-    "TestCase": {
-        "test_type": "unittest",
-        "commit_allowed": False,
-        "setup_summary": ["stdlib unittest.TestCase, no Odoo ORM"],
-    },
-    "BaseCase": {
-        "test_type": "transaction",
-        "commit_allowed": False,
-        "setup_summary": ["abstract Odoo base test class (v10+)"],
-    },
-    "TreeCase": {
-        "test_type": "transaction",
-        "commit_allowed": False,
-        "setup_summary": ["abstract tree/hierarchy test case (v14+)"],
-    },
 }
 
 # ---------------------------------------------------------------------------
@@ -718,13 +667,24 @@ def _version_major(odoo_version: str) -> int:
 # Framework base seeding (called from parser_odoo_core during odoo/tests/ walk)
 # ---------------------------------------------------------------------------
 
-def seed_framework_helpers(odoo_version: str) -> list[TestHelperInfo]:
+def seed_framework_helpers(
+    odoo_version: str,
+    odoo_source_root: str | Path | None = None,
+) -> list[TestHelperInfo]:
     """Return TestHelperInfo nodes for Odoo framework test bases (per-version seeding).
 
-    These are seeded from _FRAMEWORK_BASES (known across all versions) rather than
-    parsed at runtime, because framework bases live in odoo/tests/common.py which
-    may not always be accessible. Using module='@framework' (MED-3) avoids confusion
-    with the '__unresolved__' GC placeholder.
+    Thin adapter over ``src.indexer.framework_bases.framework_bases()`` (issue #362
+    SSOT) - it maps each version-gated ``FrameworkBaseFacts`` onto a
+    ``TestHelperInfo``, rather than reading from a flat, version-blind dict. Using
+    module='@framework' (MED-3) avoids confusion with the '__unresolved__' GC
+    placeholder.
+
+    ``odoo_source_root`` is optional (backward compatible with the pre-#362
+    single-argument call sites) and, when given, is forwarded to
+    ``framework_bases()`` so the menu is additionally enriched with real
+    ``file_path``/``line`` from an AST parse of the checkout (see
+    ``framework_bases.py``'s composition rules) - the returned name set itself
+    never depends on it (api-contract.md's prune-universe invariant).
 
     Called from parser_odoo_core._parse_odoo_tests_for_helpers() during the core walk.
     Returns a list; caller (writer_neo4j.write_test_results) persists them as
@@ -732,15 +692,15 @@ def seed_framework_helpers(odoo_version: str) -> list[TestHelperInfo]:
     """
     return [
         TestHelperInfo(
-            name=name,
+            name=fact.name,
             module="@framework",
             odoo_version=odoo_version,
             origin="framework",
-            test_type=props["test_type"],
-            setup_summary=props["setup_summary"],
-            commit_allowed=props["commit_allowed"],
-            file_path=None,
-            line=None,
+            test_type=fact.test_type,
+            setup_summary=fact.setup_summary,
+            commit_allowed=fact.commit_allowed,
+            file_path=fact.file_path,
+            line=fact.line,
         )
-        for name, props in _FRAMEWORK_BASES.items()
+        for fact in framework_bases(odoo_version, odoo_source_root)
     ]

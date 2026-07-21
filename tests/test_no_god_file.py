@@ -38,6 +38,14 @@ large new block of resolver code) is caught.
     _describe_module / _module_dep_closure / _list_* read helpers). listings.py
     is the larger of the two (the nine _list_* bodies). The ceiling is its
     measured size + buffer so neither helper module regrows into a god file.
+
+    Issue #362 follow-up: fixing test_tools.py's own TOOL_MODULE_MAX_LINES
+    breach (tests/test_tools.py grew past the tool-module ceiling while adding
+    the test_base_classes NOT-AVAILABLE branch + graph enrichment) moved its
+    render/format cluster to the new non-tool helper src/mcp/test_render.py,
+    following this exact Phase 7 / A1 precedent. It is added to HELPER_MODULES
+    so the guard covers it too — a helper split must not become an unguarded
+    escape hatch from the god-file ceiling it was created to enforce.
 """
 from pathlib import Path
 
@@ -60,8 +68,10 @@ TOOL_MODULE_MAX_LINES = 1100
 # larger of the two A1 helper modules; describe.py = 423). Buffer ~140 → 1600.
 HELPER_MODULE_MAX_LINES = 1600
 
-# The NON-tool helper modules carved out of the hub in Phase 7 / A1.
-HELPER_MODULES = ("describe.py", "listings.py")
+# The NON-tool helper modules carved out of the hub in Phase 7 / A1, plus
+# test_render.py (issue #362 follow-up: carved out of src/mcp/tools/test_tools.py
+# under the SAME precedent once that tool module breached TOOL_MODULE_MAX_LINES).
+HELPER_MODULES = ("describe.py", "listings.py", "test_render.py")
 
 
 def _line_count(path: Path) -> int:
