@@ -25,13 +25,23 @@ onto 2-3 others (present in all 12 files including the freshly-redone v19), and 
 in v8.0/v9.0 mismarked `deprecated` with a fabricated `replacement_flag_name` pointing at a
 flag that does not even exist at v8 - a v10+ fact bled backward, the same shape as #362.
 
-IF THIS FILE IS EVER MADE TO SKIP EVERYWHERE OR ITS ASSERTIONS WEAKENED TO REACH GREEN, IT
-LOSES ITS ENTIRE JUSTIFICATION. This commit intentionally ships with the primary
-(dev-box) layer FAILING - the curated data genuinely disagrees with the live oracle at
-scale today. Making it pass here would mean either the exclusion list quietly grew to hide
-a real field, or an assertion was loosened - both banned by the work item this file
-implements. The follow-up data-correction commit is what should turn this green, not an
-edit to this file.
+STATUS (post data-correction): the follow-up commit this module docstring originally called
+for has landed - 967 field corrections across the 12 curated `cli_flags_<version>.json`
+files, regenerated from the production oracle. Both layers below now assert PARITY
+(curated == oracle), not "reproduces the known mismatch" - a test that can only ever be
+green while a bug exists protects the bug, not the business rule (see #362 for the exact
+same defect class in two other tests). The durable rule this file enforces from here on:
+with no Odoo checkout available, the curated catalogue must still agree, field by field,
+with what the committed fixture excerpt says the real source declares. That is green after
+a correct fix, red if the data ever drifts again.
+
+IF THIS FILE IS EVER MADE TO SKIP EVERYWHERE, OR ITS ASSERTIONS ARE LOOSENED (EXCLUSION
+LIST QUIETLY GROWN, COMPARED_FIELDS SHRUNK, A MISMATCH SILENCED) TO REACH GREEN WITHOUT THE
+UNDERLYING DATA ACTUALLY BEING CORRECT, IT LOSES ITS ENTIRE JUSTIFICATION. A future green
+run must mean the curated data genuinely agrees with source - never that this file stopped
+checking. Proof that both layers can still go RED on a real disagreement: temporarily
+perturb one curated field in a scratch copy and rerun - see the fixture README's "Negative
+control" note for the reproducible recipe used when this file was last inverted.
 
 SCOPE - GLOBAL ("server") FLAGS ONLY, BY DESIGN
 ------------------------------------------------
@@ -94,24 +104,31 @@ edit cannot silently add a field this file never routes anywhere.
 
 TWO LAYERS (ADR-0054 shape, per the #363 template `test_framework_bases_parity.py`)
 ----------------------------------------------------------------------------------------
-1. CI layer (never skips) - `test_ci_excerpt_*` below, backed by
-   `tests/fixtures/cli_flags_config_excerpts/`. See that directory's README.md for the
-   fixture-cost measurement (482 KB full-file / 180 KB calls-only vs the 76 KB
-   `odoo_tests_headers/` precedent for a DIFFERENT, much smaller curated family) and why a
-   faithful per-version `config.py` fixture was rejected as disproportionate: unlike
+1. CI layer (never skips) - `test_ci_excerpt_matches_curated_global_cli_flags_per_version`
+   below, backed by `tests/fixtures/cli_flags_config_excerpts/`. See that directory's
+   README.md for the fixture-cost measurement (482 KB full-file / 180 KB calls-only vs the
+   76 KB `odoo_tests_headers/` precedent for a DIFFERENT, much smaller curated family) and
+   why a faithful per-version `config.py` fixture was rejected as disproportionate: unlike
    `framework_bases()`, where irrelevant method bodies can be reduced to `pass`, a CLI
    flag's `add_option()` call IS the fact under test end to end - there is no reducible
    filler inside it. What is committed instead: a small, real, verbatim (never
-   hand-transcribed) 5-flag "confirmed mismatching" + 1-flag "healthy control" excerpt per
-   version, ~1.4-1.9 KB each, 18.8 KB total - same size class as the `odoo_tests_headers/`
-   precedent. This proves the diff machinery is real and currently catches genuine defects,
-   on every CI run, with zero dependency on a checkout - not "something total" (that is the
-   dev-box layer's job) but "something real and small, always on."
+   hand-transcribed) 6-flag excerpt per version (the same flags originally chosen at
+   RED-phase build time - 5 that then mismatched + 1 healthy control - see the fixture
+   README's "Chosen flags" table for that provenance), ~1.4-1.9 KB each, 18.8 KB total -
+   same size class as the `odoo_tests_headers/` precedent. Every one of those 6 flags now
+   provably agrees with the corrected curated data (mirrors the template's
+   `test_curated_table_matches_parsed_fixture_per_version` shape: full field-by-field
+   equality, asserted directly, never "at least one still disagrees"). This proves the
+   diff machinery is real and currently exercised on every CI run, with zero dependency on
+   a checkout - not "something total" (that is the dev-box layer's job) but "something
+   real and small, always on."
 2. Dev-box layer (`test_curated_global_cli_flags_match_real_checkout_field_by_field`) - the
    full, un-excerpted comparison against a real `<pkg>/tools/config.py` checkout via
    `tests/_odoo_checkouts.checkout_root()`. THIS is where the audit's full-scale finding
-   (roughly 70-98 mismatches per version, 967 across all 12 on this dev box - see the
-   module-level report this file's own maintainers ran) actually surfaces. Marked
+   (roughly 70-98 mismatches per version, 967 across all 12 on this dev box, per the
+   module-level report this file's own maintainers ran) used to surface before the
+   data-correction commit; on a machine with the 12 real checkouts present it is now GREEN
+   (0 field mismatches, 0 oracle_only, across all 12 majors). Marked
    `@pytest.mark.odoo_source`; skips per version when the checkout is absent, same
    discovery module `tests/test_parser_cli.py`'s WI-D2 section already unified on (issue
    #364 D2) - never a second, third convention for "where is the checkout."
@@ -400,28 +417,41 @@ def test_out_of_scope_per_command_flag_count_is_computed_and_reported_per_versio
 # for the fixture-cost measurement and the small-real-excerpt design it led to.
 # ---------------------------------------------------------------------------------------
 
-# Flags each fixture was built to reproduce a known curated-vs-oracle mismatch on today
-# (file order, first 5 mismatching + 1 healthy control - see the fixture README's
-# "Selection rule"). Hardcoded here (not re-derived from a live full-file parse) so this
-# layer never needs a checkout to know what it expects.
-_CHOSEN_MISMATCH_FLAGS: dict[int, tuple[str, ...]] = {
-    8: ("--addons-path", "--auto-reload", "--data-dir", "--database", "--db_host"),
-    9: ("--addons-path", "--data-dir", "--database", "--db_host", "--db_password"),
-    10: ("--addons-path", "--data-dir", "--database", "--db_host", "--db_password"),
-    11: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host"),
-    12: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host"),
-    13: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host"),
-    14: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host"),
-    15: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host"),
-    16: ("--data-dir", "--database", "--db-filter", "--db_host", "--db_password"),
-    17: ("--data-dir", "--database", "--db-filter", "--db_host", "--db_maxconn_gevent"),
-    18: ("--data-dir", "--database", "--db-filter", "--db_host", "--db_maxconn_gevent"),
-    19: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_app_name"),
-}
-_CHOSEN_HEALTHY_FLAG: dict[int, str] = {
-    8: "--cert-file", 9: "--config", 10: "--config", 11: "--config", 12: "--config",
-    13: "--config", 14: "--config", 15: "--config", 16: "--addons-path",
-    17: "--addons-path", 18: "--addons-path", 19: "--config",
+# Flags each fixture covers (file order). Originally selected at issue #364 S3 RED-phase
+# fixture-build time as "first 5 flags confirmed to mismatch curated data + 1 flag
+# confirmed to already agree (healthy control)" - see the fixture README's "Selection
+# rule" for that provenance and "Negative control" for how a future mismatch is proven
+# detectable. Now that the data-correction commit has landed, ALL SIX are confirmed (by
+# the same diff this file performs - see the fixture README's "Status") to agree with
+# curated data on every compared field; the former mismatch/healthy split no longer marks
+# a behavioral difference, only a provenance note, so both groups are asserted identically
+# below via one flat set. Hardcoded here (not re-derived from a live full-file parse) so
+# this layer never needs a checkout to know what it expects.
+_CHOSEN_FIXTURE_FLAGS: dict[int, tuple[str, ...]] = {
+    8: ("--addons-path", "--auto-reload", "--data-dir", "--database", "--db_host",
+        "--cert-file"),
+    9: ("--addons-path", "--data-dir", "--database", "--db_host", "--db_password",
+        "--config"),
+    10: ("--addons-path", "--data-dir", "--database", "--db_host", "--db_password",
+         "--config"),
+    11: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host",
+         "--config"),
+    12: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host",
+         "--config"),
+    13: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host",
+         "--config"),
+    14: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host",
+         "--config"),
+    15: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_host",
+         "--config"),
+    16: ("--data-dir", "--database", "--db-filter", "--db_host", "--db_password",
+         "--addons-path"),
+    17: ("--data-dir", "--database", "--db-filter", "--db_host", "--db_maxconn_gevent",
+         "--addons-path"),
+    18: ("--data-dir", "--database", "--db-filter", "--db_host", "--db_maxconn_gevent",
+         "--addons-path"),
+    19: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_app_name",
+         "--config"),
 }
 
 
@@ -435,8 +465,7 @@ def _ci_excerpt_diff(major: int) -> DiffResult:
     )
     source = fixture_path.read_text(encoding="utf-8")
     curated = _load_curated_global_flags(version)
-    fixture_name_groups = (_CHOSEN_MISMATCH_FLAGS[major], (_CHOSEN_HEALTHY_FLAG[major],))
-    fixture_flags = {n for names in fixture_name_groups for n in names}
+    fixture_flags = set(_CHOSEN_FIXTURE_FLAGS[major])
     curated_scoped = {k: v for k, v in curated.items() if k in fixture_flags}
     oracle = _oracle_global_flags(source, version, file_path=str(fixture_path))
     return _diff_global_flags(curated_scoped, oracle)
@@ -457,48 +486,47 @@ def test_ci_fixture_dir_has_one_excerpt_per_surveyed_major():
 
 
 @pytest.mark.parametrize("major", SURVEYED_MAJORS)
-def test_ci_excerpt_reproduces_confirmed_curated_global_flag_mismatch_per_version(major):
-    """CI layer (never skips, no checkout needed) - business rule: for the small,
-    real, verbatim per-version excerpt, every flag chosen as 'confirmed mismatching' at
-    fixture-build time must still disagree with curated data on at least one of
-    status/default/type/help. Expected RED today (issue #364) - this is what proves the
-    diff machinery is real and currently exercised on every CI run, not fixture-only
-    theater with nothing to disagree on. If this ever goes green it means the underlying
-    spec_data/*.json was corrected (good!) - regenerate the fixture + _CHOSEN_* tables +
-    this file's README together, per the fixture README's last section, rather than
-    treating a pass here as this test being broken.
+def test_ci_excerpt_matches_curated_global_cli_flags_per_version(major):
+    """CI layer (never skips, no checkout needed) - business rule: with no Odoo checkout
+    available, the curated catalogue must still agree, field by field, with what the
+    committed fixture excerpt says the real source declares - for every flag the fixture
+    covers, on every one of status/default/type/help, AND the fixture-scoped curated and
+    oracle flag-name sets must match exactly (no curated-only, no oracle-only within this
+    narrow, controlled excerpt - unlike the dev-box layer's full-file comparison, a
+    committed excerpt has no legitimate reason to disagree on WHICH flags exist).
+
+    Mirrors test_framework_bases_parity.py's
+    test_curated_table_matches_parsed_fixture_per_version shape: full-equality parity,
+    asserted directly - not "at least one still disagrees" (that phrasing can only ever be
+    green while the underlying bug exists; see this file's module docstring "STATUS").
+    Green today (data-correction commit, issue #364) - this is what proves the diff
+    machinery is real and currently exercised on every CI run, not fixture-only theater
+    with nothing to compare. A future RED here means either the curated
+    spec_data/*.json drifted from real source again, or the fixture itself no longer
+    reflects real source (regenerate the fixture + this table + the README together, per
+    the fixture README's "Selection rule" - never loosen this assertion to reach green).
     """
     result = _ci_excerpt_diff(major)
-    mismatched_flags = {m.flag_name for m in result.field_mismatches}
-    expected = set(_CHOSEN_MISMATCH_FLAGS[major])
-    still_matching_curated = expected - mismatched_flags
-    assert not still_matching_curated, (
-        f"v{major}: expected {sorted(expected)} to still disagree with curated "
-        f"cli_flags_{major}.0.json on >=1 field - {sorted(still_matching_curated)} now "
-        f"match. Full diff: {_format_diff_report(f'{major}.0', result, 0)}"
+    expected = set(_CHOSEN_FIXTURE_FLAGS[major])
+    report = _format_diff_report(f"{major}.0", result, 0)
+    assert result.matched == expected, (
+        f"v{major}: expected the fixture-scoped flag set to be exactly {sorted(expected)} "
+        f"on both curated and oracle sides - matched={sorted(result.matched)}, "
+        f"curated_only={sorted(result.curated_only)}, oracle_only={sorted(result.oracle_only)}. "
+        f"Full diff: {report}"
     )
-
-
-@pytest.mark.parametrize("major", SURVEYED_MAJORS)
-def test_ci_excerpt_healthy_control_flag_has_zero_mismatch_per_version(major):
-    """CI layer negative control - business rule: the one flag chosen as a 'healthy'
-    (zero-mismatch) control per version must stay a genuine agreement, proving this
-    comparison does not just flag every flag unconditionally - a comparison that always
-    fails is exactly as useless as one that never does.
-    """
-    result = _ci_excerpt_diff(major)
-    healthy_name = _CHOSEN_HEALTHY_FLAG[major]
-    healthy_mismatches = [m for m in result.field_mismatches if m.flag_name == healthy_name]
-    assert not healthy_mismatches, (
-        f"v{major}: healthy control {healthy_name!r} was expected to match curated data "
-        f"exactly - got mismatches {healthy_mismatches}"
+    assert not result.field_mismatches, (
+        f"v{major}: curated cli_flags_{major}.0.json must agree field-by-field with the "
+        f"committed fixture excerpt for {sorted(expected)} - got mismatches. "
+        f"Full diff: {report}"
     )
 
 
 # ---------------------------------------------------------------------------------------
 # Layer 2 - dev-box (real checkouts; skips per version when absent, never fails).
-# THIS is the layer that reproduces the audit's full-scale finding. Expect RED here on
-# any machine with real Odoo checkouts on disk - see module docstring.
+# On a machine with real Odoo checkouts on disk, this is now GREEN (see module docstring
+# "STATUS") - it was the layer that reproduced the audit's full-scale finding before the
+# data-correction commit landed.
 # ---------------------------------------------------------------------------------------
 
 @pytest.mark.odoo_source
@@ -508,11 +536,13 @@ def test_curated_global_cli_flags_match_real_checkout_field_by_field(major):
     this machine, every curated GLOBAL cli flag's status/default/type/help must equal
     what the production oracle derives from a live parse of the real, full,
     un-excerpted tools/config.py, AND every flag the oracle can prove exists in real
-    source must have a curated entry at all (oracle_only must be empty). Expected RED
-    today (issue #364) - see module docstring for the confirmed defect classes this
-    reproduces (truncated --load default, fabricated type, help-text bleed, mismarked
-    --debug deprecation at v8/v9, plus a missing --log-config entry at v17-v19 this
-    audit had not previously named).
+    source must have a curated entry at all (oracle_only must be empty). Green today on a
+    machine with the real checkouts present - the data-correction commit fixed every
+    defect class the original audit found (truncated --load default, fabricated type,
+    help-text bleed, mismarked --debug deprecation at v8/v9, missing --log-config entry at
+    v17-v19). A future RED here means the curated data drifted from source again, or a new
+    Odoo release changed a flag this file has not been updated for - not that this test is
+    broken.
     """
     version = f"{major}.0"
     root = checkout_root(major)

@@ -24,14 +24,19 @@ is corrected - not touched by this file):
      introduction to the v11 dev cycle - phase2-C audit section 3 item 1).
      Same failure shape as issue #362: a version's own file asserts a false
      claim about that version's real source.
-  2. `odoo.tools.image_process`'s curated `signature` string is byte-identical
-     across all 7 versions it appears in (v13.0-v19.0) - it matches the real
-     parameter list at NO version (curated 'b64source' vs real 'base64_source'
-     then 'source'; real `expand`/`padding` params added at v18 never picked
-     up). Its `qualified_name` is additionally invalid specifically at v19.0:
-     the flat `odoo.tools.image_process` re-export was dropped from
+  2. `odoo.tools.image_process`'s `qualified_name` was invalid specifically at
+     v19.0: the flat `odoo.tools.image_process` re-export was dropped from
      `odoo/tools/__init__.py` at v19 (only `odoo.tools.image.image_process`
-     resolves there now) - phase2-C audit section 3 item 2.
+     resolves there now) - phase2-C audit section 3 item 2b. FIXED (issue #364
+     follow-up): the flat entry is now OMITTED from tools_symbols_19.0.json
+     (schema's own "'removed' = absent, omit it" convention, same one already
+     applied to pycompat in that file) rather than kept `deprecated` with a
+     `replacement_qname` - `deprecated` means still-importable-but-discouraged
+     per the schema, and the flat name is not importable at all at v19. Only
+     `odoo.tools.image.image_process` (status `stable`) represents it there
+     now. The signature-accuracy checks below (item 2a, curated `signature`
+     string vs real params) follow that move for v19 - see
+     `_image_process_qname_for`.
 
 These checks read real source directly (file existence, an AST-first /
 text-regex-on-SyntaxError parameter extraction, and a plain substring check on
@@ -50,14 +55,21 @@ Discovery for every real-checkout test in this file goes through
 mechanism is invented here.
 
 EXPECT RED (do not weaken these to reach green - see the top-level task brief):
-  - test_pycompat_claimed_stable_before_the_module_exists_in_real_source[8]
-  - test_pycompat_claimed_stable_before_the_module_exists_in_real_source[9]
-  - test_pycompat_claimed_stable_before_the_module_exists_in_real_source[10]
+  - every test in Part B (ImportError: parse_tools_symbols does not exist yet)
+
+NO LONGER RED - fixed by prior curated-data corrections (pycompat at v8-v10,
+image_process signature/expand/padding at v18-v19) plus this file's own
+issue #364 follow-up (image_process qualified_name modeling at v19):
+  - test_pycompat_claimed_stable_before_the_module_exists_in_real_source[8,9,10]
   - test_image_process_signature_is_frozen_copy_paste... (all 7 versions)
   - test_image_process_v18_v19_curated_signature_missing_expand_and_padding
     (both versions)
   - test_image_process_qualified_name_no_longer_resolves_at_v19
-  - every test in Part B (ImportError: parse_tools_symbols does not exist yet)
+Part A's job (real-source parity) is otherwise still incomplete for OTHER
+tools_symbols_*.json versions (v13-v17 image_process signature accuracy is
+out of this file's control - those JSON files belong to other work), so new
+real defects there would still legitimately show up red here; none currently
+do.
 """
 from __future__ import annotations
 
@@ -95,6 +107,23 @@ def _tools_dir(root: Path, major: int) -> Path:
 def _curated_entry(version: str, qualified_name: str):
     symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
     return next((s for s in symbols if s.qualified_name == qualified_name), None)
+
+
+def _image_process_qname_for(version: str) -> str:
+    """Which curated qualified_name carries image_process's signature truth
+    at `version`.
+
+    Every version except 19.0 keys off the flat `odoo.tools.image_process`
+    re-export. v19 intentionally OMITS that flat entry (issue #364 Problem 2
+    - the re-export was dropped from odoo/tools/__init__.py at v19, so the
+    flat name no longer resolves there; see
+    test_image_process_qualified_name_no_longer_resolves_at_v19 for the full
+    ground-truth argument). v19's signature truth therefore lives under the
+    replacement path, odoo.tools.image.image_process, instead - tests that
+    inspect the curated signature must follow that move rather than looking
+    up a qualified_name the data no longer carries.
+    """
+    return "odoo.tools.image.image_process" if version == "19.0" else "odoo.tools.image_process"
 
 
 def _real_image_process_params(root: Path) -> list[str] | None:
@@ -182,12 +211,14 @@ def test_pycompat_correctly_present_from_v11():
     "version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0", "19.0"],
 )
 def test_image_process_signature_is_frozen_copy_paste_never_matching_real_params(version):
-    """Business rule: image_process's curated `signature` string is
-    byte-identical across all 7 versions it appears in - it does not match
-    the real parameter list at ANY of them (phase2-C audit section 3 item
-    2a): the real first positional parameter is 'base64_source' (v13-v15)
-    then 'source' (v16+), never the curated 'b64source'. EXPECT RED for all
-    7 versions.
+    """Business rule: image_process's curated `signature` string must match
+    the real parameter list at each version - historically it was a single
+    copy-pasted string across all versions (phase2-C audit section 3 item
+    2a: real first positional parameter is 'base64_source' at v13-v15, then
+    'source' from v16 on). v19 looks up the entry under
+    odoo.tools.image.image_process rather than the flat odoo.tools.image_process
+    - see `_image_process_qname_for` (issue #364 Problem 2: the flat qname is
+    intentionally omitted at v19).
     """
     major = int(version.split(".")[0])
     root = checkout_root(major)
@@ -199,8 +230,9 @@ def test_image_process_signature_is_frozen_copy_paste_never_matching_real_params
         f"image_process() in v{major} odoo/tools/image.py"
     )
 
-    entry = _curated_entry(version, "odoo.tools.image_process")
-    assert entry is not None, f"odoo.tools.image_process missing from tools_symbols_{version}.json"
+    qname = _image_process_qname_for(version)
+    entry = _curated_entry(version, qname)
+    assert entry is not None, f"{qname} missing from tools_symbols_{version}.json"
     curated_sig = entry.signature or ""
     m = _RE_CURATED_FIRST_PARAM.search(curated_sig)
     curated_first_param = m.group(1) if m else None
@@ -220,8 +252,10 @@ def test_image_process_signature_is_frozen_copy_paste_never_matching_real_params
 @pytest.mark.parametrize("version", ["18.0", "19.0"])
 def test_image_process_v18_v19_curated_signature_missing_expand_and_padding(version):
     """Business rule: real image_process() gained `expand` and `padding`
-    parameters at v18 - the curated signature (frozen since v13) never
-    picked them up. EXPECT RED at v18/v19 (phase2-C audit section 3 item 2a).
+    parameters at v18 - the curated signature must carry them from v18 on.
+    v19 looks up the entry under odoo.tools.image.image_process rather than
+    the flat odoo.tools.image_process - see `_image_process_qname_for`
+    (issue #364 Problem 2: the flat qname is intentionally omitted at v19).
     """
     major = int(version.split(".")[0])
     root = checkout_root(major)
@@ -233,8 +267,9 @@ def test_image_process_v18_v19_curated_signature_missing_expand_and_padding(vers
         f"should define expand/padding, got {real_params}"
     )
 
-    entry = _curated_entry(version, "odoo.tools.image_process")
-    assert entry is not None
+    qname = _image_process_qname_for(version)
+    entry = _curated_entry(version, qname)
+    assert entry is not None, f"{qname} missing from tools_symbols_{version}.json"
     curated_sig = entry.signature or ""
     assert "expand" in curated_sig and "padding" in curated_sig, (
         f"v{major}: curated image_process signature is missing the real "
@@ -247,9 +282,25 @@ def test_image_process_qualified_name_no_longer_resolves_at_v19():
     """Business rule: odoo.tools.image_process was re-exported via `from
     .image import image_process` in odoo/tools/__init__.py through v18; that
     re-export was dropped at v19 (no 'image' reference anywhere in v19's
-    odoo/tools/__init__.py) - the curated v19.0 entry's qualified_name no
-    longer resolves as a real import path there. EXPECT RED (phase2-C audit
-    section 3 item 2b).
+    odoo/tools/__init__.py) - the curated data must reflect that the flat
+    qualified_name no longer resolves as a real import path there.
+
+    NOTE (issue #364 follow-up): the original version of this assertion
+    (`assert real_still_reexports`) was inverted relative to this docstring
+    and its own failure message - it demanded the real v19 checkout still
+    re-export image_process, which is a fact about upstream source no
+    curated-data edit could ever change, and which is also simply false
+    (confirmed against /home/tuan/git/odoo19/odoo/tools/__init__.py). Fixed
+    here to assert the real rule the docstring always described: the
+    re-export IS gone at v19, and the curated data must model that by
+    OMITTING the flat qualified_name (schema's own "'removed' = absent - do
+    not include removed symbols, omit them instead" rule; same convention
+    already applied to pycompat in tools_symbols_19.0.json) rather than
+    keeping it 'deprecated' with a replacement_qname - 'deprecated' means
+    still-importable-but-discouraged per the schema, and the flat name is not
+    importable at all at v19. The replacement path
+    (odoo.tools.image.image_process, the one v19's own test_image.py imports)
+    must be present and 'stable' instead.
     """
     root = checkout_root(19)
     if root is None:
@@ -257,14 +308,28 @@ def test_image_process_qualified_name_no_longer_resolves_at_v19():
     init_py = root / "odoo" / "tools" / "__init__.py"
     assert init_py.is_file()
     real_still_reexports = "image_process" in init_py.read_text(encoding="utf-8", errors="ignore")
+    assert not real_still_reexports, (
+        "ground-truth check itself is broken (or v19 has changed upstream): "
+        "expected v19's odoo/tools/__init__.py to no longer mention "
+        "image_process at all - if this fires, re-derive the curated-data "
+        "decision below from source, do not just flip this assertion back"
+    )
 
-    entry = _curated_entry("19.0", "odoo.tools.image_process")
-    assert entry is not None, "odoo.tools.image_process missing from tools_symbols_19.0.json"
-    assert real_still_reexports, (
-        f"tools_symbols_19.0.json still claims qualified_name="
-        f"{entry.qualified_name!r} resolves, but v19's odoo/tools/__init__.py "
-        "no longer re-exports image_process (only "
-        "odoo.tools.image.image_process resolves now) - the flat qname is stale"
+    flat_entry = _curated_entry("19.0", "odoo.tools.image_process")
+    assert flat_entry is None, (
+        "tools_symbols_19.0.json still carries a flat odoo.tools.image_process "
+        f"entry (status={flat_entry.status if flat_entry else None!r}), but "
+        "v19's odoo/tools/__init__.py no longer re-exports it - per the "
+        "schema's 'removed = absent, omit it' convention (already applied to "
+        "pycompat in this same file), this qualified_name must be omitted "
+        "entirely, not kept as 'deprecated'"
+    )
+
+    replacement_entry = _curated_entry("19.0", "odoo.tools.image.image_process")
+    assert replacement_entry is not None and replacement_entry.status == "stable", (
+        "tools_symbols_19.0.json must carry a 'stable' "
+        "odoo.tools.image.image_process entry - the real resolving path "
+        "v19's own test_image.py imports ('from odoo.tools import image as tools')"
     )
 
 

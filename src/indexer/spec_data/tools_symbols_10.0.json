@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 10.0. Same landscape as v9: safe_eval submodule, image_resize_image family present, pycompat, no SQL class, no date_utils, no format_datetime/get_lang. Module fully renamed to 'odoo' (no more 'openerp').",
+  "_note": "Curated odoo.tools symbols for Odoo 10.0. Same landscape as v9: safe_eval submodule, image_resize_image family present, no SQL class, no date_utils, no format_datetime/get_lang. pycompat is NOT present at v10 either - odoo/tools/pycompat.py does not exist until v11 (see tools_symbols_8.0.json note). Module fully renamed to 'odoo' (no more 'openerp') at v10 - verified: v10's top-level `openerp/` directory no longer exists at all, and `odoo/tools/config.py` (and the rest of the tree) is the real, git-tracked package.",
   "symbols": [
     {
       "qualified_name": "odoo.tools.image_resize_image",
@@ -37,13 +37,6 @@
       "status": "stable",
       "signature": "ustr(value) -> str",
       "note": "Unicode string coercion helper. Present through v19."
-    },
-    {
-      "qualified_name": "odoo.tools.pycompat",
-      "kind": "tool_export",
-      "status": "stable",
-      "signature": "module",
-      "note": "Python 2/3 compatibility shim. Shrinks from v13 onward."
     },
     {
       "qualified_name": "odoo.tools.float_compare",

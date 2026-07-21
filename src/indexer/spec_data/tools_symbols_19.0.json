@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 19.0. KEY CHANGES: safe_eval signature is BREAKING (keyword-only args, test_expr removed). pycompat dropped from odoo.tools.__init__. SQL class stable. read_group deprecated. Marking safe_eval as deprecated here because the SIGNATURE change is breaking for existing call sites.",
+  "_note": "Curated odoo.tools symbols for Odoo 19.0. KEY CHANGES: safe_eval signature is BREAKING (keyword-only args, test_expr removed). pycompat dropped from odoo.tools.__init__. SQL class stable. read_group deprecated. Marking safe_eval as deprecated here because the SIGNATURE change is breaking for existing call sites. image_process's flat re-export was ALSO dropped from odoo.tools.__init__ at v19 (same mechanism as pycompat) - per this schema's status doc, a name that no longer resolves is 'removed' (omit it), not 'deprecated' (deprecated still resolves, just discouraged - see odoo.tools.html_escape below for a genuine example); the flat odoo.tools.image_process qualified_name is therefore intentionally OMITTED here, only the real resolving odoo.tools.image.image_process path is listed.",
   "symbols": [
     {
       "qualified_name": "odoo.tools.SQL",
@@ -18,11 +18,11 @@
       "note": "JavaScript transpiler submodule for Odoo ES module system."
     },
     {
-      "qualified_name": "odoo.tools.image_process",
+      "qualified_name": "odoo.tools.image.image_process",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "image_process(b64source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='') -> bytes",
-      "note": "Unified image processing function."
+      "signature": "image_process(source, size=(0, 0), verify_resolution=False, quality=0, expand=False, crop=None, colorize=False, output_format='', padding=False)",
+      "note": "Real resolving import path for image_process at v19 (odoo/tools/image.py). The flat odoo.tools.image_process re-export was dropped from odoo/tools/__init__.py at v19 (no more 'from .image import image_process', confirmed against v19's odoo/tools/__init__.py; v19's own test_image.py imports via 'from odoo.tools import image as tools') - it is intentionally OMITTED from this file rather than kept as 'deprecated', because it no longer resolves at all ('deprecated' means still-importable-but-discouraged per the schema; an unresolvable name is 'removed', and 'removed' symbols are omitted, not listed - same convention already applied to pycompat in this file)."
     },
     {
       "qualified_name": "odoo.tools.date_utils",

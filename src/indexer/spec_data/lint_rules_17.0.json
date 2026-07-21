@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v9.x for Odoo v17. Rules merged with live-extracted pylint-odoo/ESLint/ruff rules (per parser_lint_rules.py). v17: `name_get()` removed (use `_compute_display_name`), `group_operator` still valid (renamed v18), `UserError` lazy args, `active_test` context, new asset bundling stable, `attrs`/`states` XML attrs removed (use domain-based visibility).",
+  "_note": "Curated from pylint-odoo v9.x for Odoo v17. Rules merged with live-extracted pylint-odoo/ESLint/ruff rules (per parser_lint_rules.py). v17: `name_get()` is deprecated, not removed (`.. deprecated:: 17.0` + DeprecationWarning in odoo/models.py; actual removal is v18 - see W8202 rule body below and lint_rules_18.0.json), use `_compute_display_name` going forward, `group_operator` still valid (renamed v18), `UserError` lazy args, `active_test` context, new asset bundling stable, `attrs`/`states` XML attrs removed (verified: v17 ir_ui_view.py raises ValidationError 'Since 17.0, the \"attrs\" and \"states\" attributes are no longer used') (use domain-based visibility).",
   "rules": [
     {
       "rule_id": "W8101",
@@ -201,7 +201,7 @@
     {
       "rule_id": "W8167",
       "kind": "pylint-odoo",
-      "message": "`track_visibility` field attribute renamed to `tracking` in v16+.",
+      "message": "`track_visibility` field attribute renamed to `tracking` in v13.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "\\btrack_visibility\\s*="
@@ -345,8 +345,8 @@
     {
       "rule_id": "W8202",
       "kind": "pylint-odoo",
-      "message": "`name_get()` override is removed in v17 — use `_compute_display_name()` instead.",
-      "severity": "error",
+      "message": "`name_get()` override is deprecated in v17 (removed in v18) - use `_compute_display_name()` instead.",
+      "severity": "warning",
       "file_pattern": "**/*.py",
       "fix_template": "Replace `def name_get(self):` with `def _compute_display_name(self):` setting `rec.display_name = ...`.",
       "core_symbol_qname": "odoo.models.BaseModel.name_get",

@@ -1,5 +1,20 @@
 # cli_flags content-parity CI fixtures (issue #364 S3)
 
+## Status (post data-correction)
+
+The curated `spec_data/cli_flags_<version>.json` files were corrected (967 field
+corrections across all 12 versions, regenerated from the production oracle). The CI-layer
+test (`test_ci_excerpt_matches_curated_global_cli_flags_per_version`) was inverted to
+match: it now asserts PARITY (curated == oracle for every fixture-covered flag, field by
+field) instead of "reproduces the known mismatch" - a test that can only be green while a
+bug exists protects the bug, not the business rule. All 6 fixture-covered flags per
+version, on all 12 versions, are confirmed (by the same diff the test performs) to agree
+with the corrected curated data today. The fixture `.py` excerpt files below were
+**not** regenerated - they are verbatim, `_find_option_call_arg_spans`-extracted real
+source and were unaffected by the JSON correction; re-running the extraction against the
+same checkout HEAD SHAs (see "Source provenance" below) reproduces them byte-for-byte.
+See "Negative control" below for the reproducible proof that this test can still fail.
+
 ## What these are, and why they are NOT full-file copies
 
 `tests/test_cli_flags_content_parity.py` diffs curated `spec_data/cli_flags_<version>.json`
@@ -36,44 +51,55 @@ docstring)
 
 ## What is committed instead
 
-A **small, real, verbatim subset**: for each of the 12 surveyed majors, up to 5 flags
-confirmed (via the same diff the test performs) to have >=1 curated-vs-oracle field
-mismatch today, plus exactly 1 flag confirmed to have **zero** mismatches (a negative
-control, proving the comparison does not just flag everything). Their
-`add_option()`/`add_argument()` **argument-list text only** (not the whole statement, not
-surrounding file content) is copied byte-for-byte from real source via the production
-`_find_option_call_arg_spans()` span-finder (never hand-transcribed - eliminates
-transcription risk) and wrapped in a bare `group.add_option(<verbatim args>)` statement.
-These files are only ever `ast.parse()`'d by the parser under test, never imported or
-executed, so `group` does not need to resolve to a real object and a `self.<method>`
-reference inside a real `callback=` kwarg (e.g. `--addons-path`) is harmless.
+A **small, real, verbatim subset**: for each of the 12 surveyed majors, 6 flags - the same
+6 chosen at issue #364 S3 fixture-build time (5 originally confirmed, via the same diff the
+test performs, to have >=1 curated-vs-oracle field mismatch, plus 1 originally confirmed to
+have **zero** mismatches - see "Status" above and "Chosen flags per version" below for
+current parity status). Their `add_option()`/`add_argument()` **argument-list text only**
+(not the whole statement, not surrounding file content) is copied byte-for-byte from real
+source via the production `_find_option_call_arg_spans()` span-finder (never
+hand-transcribed - eliminates transcription risk) and wrapped in a bare
+`group.add_option(<verbatim args>)` statement. These files are only ever `ast.parse()`'d by
+the parser under test, never imported or executed, so `group` does not need to resolve to a
+real object and a `self.<method>` reference inside a real `callback=` kwarg (e.g.
+`--addons-path`) is harmless.
 
 Total size: **18,797 bytes** across all 12 files (~1.4-1.9 KB/version) - in the same size
 class as the `odoo_tests_headers/` precedent, not the 180-482 KB full/calls-only
 alternative above.
 
-This means the CI layer proves something real and small (these specific flags really do
-disagree today, and the healthy control really does not), not something total (it does not
-claim per-version completeness - that is the dev-box layer's job, against the full,
-un-excerpted, real checkout).
+This means the CI layer proves something real and small (these specific flags' curated data
+really does agree with real source today, on every CI run, with zero dependency on a
+checkout), not something total (it does not claim per-version completeness - that is the
+dev-box layer's job, against the full, un-excerpted, real checkout).
 
 ## Selection rule (deterministic, reproducible)
 
-For each major: run the exact same diff `test_cli_flags_content_parity.py` uses
-(`_load_curated_global_flags` vs `_oracle_global_flags`) over the FULL real
-`tools/config.py`, take the first 5 flag names (file order) with >=1 mismatching field,
-plus the first flag name (file order) with zero mismatching fields. Extract each chosen
-flag's argument-list span via `_find_option_call_arg_spans` and write it into
-`v<major>_config_excerpt.py`. This is a data-derived choice (not curator judgment) - see
-`_build_ci_fixtures` methodology recorded below; regenerating from a refreshed checkout
-would very likely choose different flags without invalidating the test's intent (the test
-asserts *specific, named* flags by design - see the test file's `_CHOSEN_*` tables - so a
-future regeneration must update those tables in the same commit, never silently).
+Historical (issue #364 S3, RED phase): for each major, run the exact same diff
+`test_cli_flags_content_parity.py` uses (`_load_curated_global_flags` vs
+`_oracle_global_flags`) over the FULL real `tools/config.py`, take the first 5 flag names
+(file order) with >=1 mismatching field, plus the first flag name (file order) with zero
+mismatching fields. Extract each chosen flag's argument-list span via
+`_find_option_call_arg_spans` and write it into `v<major>_config_excerpt.py`. This was a
+data-derived choice (not curator judgment); the test asserts *specific, named* flags by
+design - see the test file's `_CHOSEN_FIXTURE_FLAGS` table - so any future regeneration
+(different flags, e.g. after a checkout refreshes to a newer point release) must update
+that table + this README's table + the `.py` excerpts together, in the same commit, never
+silently. Since the S3 data-correction commit, this rule no longer has a "first N
+mismatching" set to select from (0 mismatches exist against real source today) - a future
+regeneration should instead pick any deterministic, diverse sample (e.g. first N flags in
+file order) via the identical extraction method; the committed fixtures were left as-is
+(see "Status" above) since they remain faithful, verbatim, real-source excerpts that still
+exercise the full diff machinery meaningfully.
 
-## Chosen flags per version (mirrors `_CHOSEN_MISMATCH_FLAGS` / `_CHOSEN_HEALTHY_FLAG` in
-the test file - kept here for human review, not re-read by the test)
+## Chosen flags per version (mirrors `_CHOSEN_FIXTURE_FLAGS` in the test file - kept here
+for human review, not re-read by the test)
 
-| Major | Confirmed-mismatching (chosen) | Healthy control |
+All 6 flags per version now agree with curated data on every compared field
+(status/default/type/help) - the "originally mismatching" / "healthy control" columns
+below record provenance (why each flag was picked), not current behavior.
+
+| Major | Originally confirmed-mismatching (now: match) | Originally healthy control (still: match) |
 |---|---|---|
 | 8  | `--addons-path`, `--auto-reload`, `--data-dir`, `--database`, `--db_host` | `--cert-file` |
 | 9  | `--addons-path`, `--data-dir`, `--database`, `--db_host`, `--db_password` | `--config` |
@@ -108,13 +134,40 @@ Same checkouts (`~/git/odoo{8..19}`), same HEAD SHAs, as
 | `v18_config_excerpt.py` | `odoo/tools/config.py` (odoo18)    | `fca652c0bef69066ced92cc162a18da0a4101275` |
 | `v19_config_excerpt.py` | `odoo/tools/config.py` (odoo19)    | `14ac0f3eb5ec6ef12023d0fec59fbe1e7504ff39` |
 
-## What happens if the underlying curated JSON is later corrected
+## Negative control (proof this test can still fail)
 
-The follow-up data-correction commit (out of scope for this work item - see the test
-file's module docstring) will very likely turn some of the "confirmed-mismatching" flags
-above into matches. When that happens the CI-layer test that asserts these specific flags
-still mismatch will go RED **for the right reason** (the fixture now disagrees with the
-test's own expectation, not with reality) - at that point regenerate the fixture + this
-table + the test's `_CHOSEN_*` tables together, in the same commit as the data fix, so the
-CI layer keeps a live, real, always-on mismatch to prove against rather than quietly
-losing coverage.
+A parity test that can never go RED is theater, not a guard. Reproduced when this file was
+last inverted (issue #364 S3 follow-up), without ever touching the committed
+`src/indexer/spec_data/*.json`:
+
+1. Copy `src/indexer/spec_data/cli_flags_19.0.json` to a scratch directory (outside the
+   repo working tree).
+2. In the scratch copy only, corrupt one compared field of one fixture-covered flag - e.g.
+   change `--addons-path`'s `help` text to something the real v19 oracle does not say.
+3. Monkeypatch `tests.test_cli_flags_content_parity._load_curated_global_flags` to read
+   from the scratch directory instead of `SPEC_DATA_DIR` (the real loader's `spec_dir`
+   default argument is bound at function-definition time, so reassigning the module-level
+   `SPEC_DATA_DIR` constant alone does *not* propagate - the loader function itself must be
+   swapped), then call the real, unmodified
+   `test_ci_excerpt_matches_curated_global_cli_flags_per_version(19)` directly.
+4. Observe: `AssertionError` - `v19: curated cli_flags_19.0.json must agree field-by-field
+   with the committed fixture excerpt ... got mismatches ... '--addons-path' help
+   curated='<corrupted text>' oracle='specify additional addons paths (separated by
+   commas).'`
+5. Restore the monkeypatch; re-run the same test unpatched against the real committed
+   `spec_data/` - GREEN, no `AssertionError`.
+
+This proves the diff machinery genuinely discriminates (perturbed data -> RED, real data ->
+GREEN), not that the assertion is vacuously true. Repeat this recipe (never edit the real
+`spec_data/*.json` in place) whenever this test's ability to fail needs re-demonstrating -
+e.g. after inverting a similar test in another curated family.
+
+## What happens if the underlying curated JSON drifts again
+
+If a future edit to `src/indexer/spec_data/cli_flags_<version>.json` (or a new Odoo point
+release changing a chosen flag's real source) breaks parity, the CI-layer test goes RED
+**for the right reason** - the curated data now disagrees with the committed, real-source
+fixture. Fix the curated data (never loosen the assertion or the exclusion list to reach
+green). If instead the fixture itself has gone stale (real source moved), regenerate the
+fixture + this table + the test file's `_CHOSEN_FIXTURE_FLAGS` table together, in the same
+commit, per the "Selection rule" above - never silently.

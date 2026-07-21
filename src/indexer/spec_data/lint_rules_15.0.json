@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v8.x for Odoo v15. v15: OWL v2 (hooks API), new asset bundle system mandatory, `create_multi` pattern preferred, `flush()` replaces `invalidate_cache()`, `web.Widget` should be replaced with OWL components. ESLint from odoo/addons/web/static/src/.eslintrc.",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v15. v15: OWL v2 (hooks API), new asset bundle system mandatory, `create_multi` (`@api.model_create_multi`, present since v12) is the preferred create pattern. `flush()` and `invalidate_cache()` coexist unchanged at v15 (both present verbatim v14-v16); `invalidate_cache()` is not actually removed until v17 - do not read this as a v15 replacement. `web.Widget` should be replaced with OWL components - the legacy Widget module moves under static/src/legacy/ starting v15 (was static/src/js/ at v14), consistent with this recommendation. ESLint from odoo/addons/web/static/src/.eslintrc.",
   "rules": [
     {
       "rule_id": "W8101",

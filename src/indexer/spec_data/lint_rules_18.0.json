@@ -192,7 +192,7 @@
     {
       "rule_id": "W8167",
       "kind": "pylint-odoo",
-      "message": "`track_visibility` field attribute renamed to `tracking` in v16+.",
+      "message": "`track_visibility` field attribute renamed to `tracking` in v13.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "\\btrack_visibility\\s*="

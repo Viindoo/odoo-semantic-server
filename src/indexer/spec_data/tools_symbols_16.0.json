@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 16.0. No SQL class yet (introduced v17). pycompat still present but shrinking. html_escape soft-deprecated in favor of markupsafe.escape. js_transpiler stable.",
+  "_note": "Curated odoo.tools symbols for Odoo 16.0. No SQL class yet (introduced v17). pycompat still present but shrinking. html_escape is NOT yet deprecated at v16 - the symbols[] array below correctly carries status='stable' for v16 (status only becomes 'deprecated' at v17, matching odoo.tools.html_escape being a plain markupsafe.escape alias with no deprecation marker attached until then); do not read v16 as a soft-deprecation point. js_transpiler stable.",
   "symbols": [
     {
       "qualified_name": "odoo.tools.js_transpiler",
@@ -14,7 +14,7 @@
       "qualified_name": "odoo.tools.image_process",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "image_process(b64source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='') -> bytes",
+      "signature": "image_process(source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='')",
       "note": "Unified image processing function."
     },
     {

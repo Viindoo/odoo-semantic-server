@@ -163,12 +163,65 @@ class TestImageApiLifecycle:
             f"odoo.tools.image_resize_image must NOT be present in {version} (removed v13)"
         )
 
-    @pytest.mark.parametrize("version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0", "19.0"])
+    @pytest.mark.parametrize("version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0"])
     def test_image_process_present_from_v13(self, version: str):
+        """19.0 deliberately excluded here - see
+        test_image_process_flat_qname_removed_at_v19 below, not an oversight.
+        Through v18 the flat `odoo.tools.image_process` re-export is the real,
+        resolving import path, so checking its literal presence in the
+        curated qnames correctly models "is image_process available here".
+        """
         symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
         qnames = {s.qualified_name for s in symbols}
         assert "odoo.tools.image_process" in qnames, (
             f"odoo.tools.image_process must be present in {version} (replacement since v13)"
+        )
+
+    def test_image_process_flat_qname_removed_at_v19(self):
+        """v19 breaks the pattern test_image_process_present_from_v13 checks
+        for v13-v18 (issue #364 Problem 2 - resolved here, not by weakening
+        that test to also cover v19).
+
+        Ground truth (verified against
+        /home/tuan/git/odoo19/odoo/tools/__init__.py): the flat
+        `from .image import image_process` re-export present through v18 was
+        dropped at v19 - `odoo.tools.image_process` no longer resolves as an
+        import path there (v19's own test_image.py imports the function via
+        `from odoo.tools import image as tools` instead).
+
+        Per tools_symbol.schema.json's own status doc ("'removed' = absent
+        (do NOT include removed symbols - omit them instead)") - the same
+        convention already applied to `odoo.tools.pycompat` inside this very
+        v19.0 file - the curated data must OMIT the flat entry rather than
+        keep it `deprecated`: `deprecated` means "available but discouraged"
+        per the schema, and the flat name is not available at all at v19.
+        Keeping it as `deprecated` + `replacement_qname` (as one might do for
+        a symbol that still works, e.g. odoo.tools.html_escape ->
+        markupsafe.escape) would misrepresent an unresolvable name as
+        resolvable and reintroduce the exact two-convention inconsistency
+        issue #364 was raised to close - the same situation (name gone at
+        this version) must not be modelled two different ways in one data set.
+
+        The capability itself is still present, just under its real
+        resolving path - checked below.
+        """
+        symbols = _load_static_tools_symbols("19.0", static_data_dir=_SPEC_DATA_DIR)
+        qnames = {s.qualified_name for s in symbols}
+        assert "odoo.tools.image_process" not in qnames, (
+            "odoo.tools.image_process (flat) must NOT be present in 19.0 - "
+            "the re-export was dropped from odoo/tools/__init__.py at v19; "
+            "keeping it (even as 'deprecated') misrepresents an unavailable "
+            "name as available, contradicting the schema's own status "
+            "semantics and the pycompat precedent in this same file"
+        )
+
+        replacement = next(
+            (s for s in symbols if s.qualified_name == "odoo.tools.image.image_process"), None
+        )
+        assert replacement is not None and replacement.status == "stable", (
+            "odoo.tools.image.image_process must be present and 'stable' in "
+            "19.0 - the real resolving path v19's own test_image.py imports "
+            "('from odoo.tools import image as tools')"
         )
 
 

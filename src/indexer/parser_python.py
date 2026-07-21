@@ -3,6 +3,7 @@
 import ast
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
@@ -83,53 +84,222 @@ MODEL_BASE_CLASSES = {
 # code defines a local symbol with the same short name in the same file (V0.5
 # scope-resolver, M7 W13). V1 entries are covered by the same mechanism.
 #
-# Numbers in trailing comment = first-affected Odoo major version.
 # Keep this list focused to limit false-positive surface (ADR-0002 §3).
-_DEPRECATED_API_SYMBOLS = frozenset({
-    # --- Removed (no in-place replacement, full rewrite required) ---
-    "name_get",              # 18: removed → use display_name computed field
-    "oldname",               # 15: field option removed → use rename + migration script
-    # --- ACL rename family (issue #117): old names deprecated in 18, replaced by
-    #     check_access / has_access / _filtered_access / _has_cycle. The edge only
-    #     MERGEs when a same-version CoreSymbol with status in {deprecated,removed}
-    #     exists, so these flag usage on the versions where the alias is still
-    #     present-but-deprecated (v18) - and resolve to the underscore CoreSymbols
-    #     that bug#2 (parser_odoo_core underscore-skip) now indexes. ---
-    "check_access_rights",   # 18: deprecated → check_access
-    "check_access_rule",     # 18: deprecated → check_access
-    "_filter_access_rules",  # 18: deprecated → _filtered_access
-    "_check_recursion",      # 18: deprecated → not self._has_cycle()
-    # --- Cache/flush rename family: old names deprecated in 16, REMOVED in 17.
-    #     `flush` is a generic short name; the version-scoped + status-gated edge
-    #     MERGE (writer_neo4j_orm) bounds it to modules indexed on a version where
-    #     odoo.models.BaseModel.flush is itself deprecated/removed. Receiver type is
-    #     not tracked, so a stray `cr.flush()` on such a version can over-match - an
-    #     acceptable cost for an advisory migration scan (caller reviews each hit). ---
-    "flush",                 # 16: deprecated → flush_model / flush_recordset (removed 17)
-    "invalidate_cache",      # 16: deprecated → invalidate_model / invalidate_recordset (removed 17)
-    # --- Signature-changed (kwarg/semantics breaking caller) ---
-    "name_search",           # 18: operator + count semantics changed
-    "safe_eval",             # 19: signature change in odoo.tools
-    "fields_get",            # 18: 'attributes' kwarg semantics changed
-    "_search",               # 18: keyword-only args + access_rights_uid removed
-    "read_group",            # 19: deprecated → _read_group / formatted_read_group
-    "default_get",           # 17: fields_list arg semantics clarified + changed
-    # --- Renamed field option / attribute (declaration-site or attribute access) ---
-    "group_operator",        # 18: field option → aggregator
-    "track_visibility",      # 17: field option → tracking
-    # --- Moved module / changed qualified path ---
-    "float_compare",         # 19: odoo.tools.float_utils → odoo.tools (re-exported)
-    "float_round",           # 19: same module move as float_compare
-    "get_modules",           # 18: odoo.modules.get_modules path changed
-    "html_escape",           # 17: markupsafe.escape preferred over odoo.tools.html_escape
-    # --- odoo.tools image API — removed v13, frequent AI misuse ---
-    "image_resize_image",       # 13: removed → use odoo.tools.image_process
-    "image_resize_image_big",   # 13: removed → use odoo.tools.image_process
-    "image_resize_image_medium",  # 13: removed → use odoo.tools.image_process
-    "image_resize_image_small",   # 13: removed → use odoo.tools.image_process
-    # --- odoo.tools pycompat — removed from __init__ v19 ---
-    "pycompat",              # 19: dropped from odoo.tools.__init__
-})
+
+
+@dataclass(frozen=True)
+class DeprecatedApiSymbol:
+    """One Odoo API/method/field-option name flagged for USES_CORE_SYMBOL
+    migration-review attention (ADR-0002 §3 V1 scope), plus the version fact
+    behind it.
+
+    ``since_version`` is DATA, not a trailing comment (issue #364 D1): the
+    first Odoo major where ``change`` is observably true in real source (a
+    DeprecationWarning present, a method/kwarg absent, a parameter renamed,
+    ...). Every value below is grep/file:line-verified across all twelve
+    indexed checkouts (v8.0-v19.0) - see the issue #364 audit table - not
+    transcribed from memory. That is precisely the failure mode this table
+    itself demonstrated before the fix: ``track_visibility`` was claimed at
+    17.0 in a trailing comment; the real transition is 13.0 (0 hits of
+    ``tracking=`` before v13, 51 at v13). A version fact that lives only in a
+    comment cannot be tested, which is why it rotted silently for this long
+    (same artifact class as issue #362's ``_FRAMEWORK_BASES``).
+
+    ``tests/test_deprecated_api_symbols_parity.py`` is the drift alarm: a
+    CI layer (never skips) pins ``since_version`` against tiny, hand-captured
+    real-source snippets for every entry with a mechanical check, and a
+    dev-box layer re-derives the same facts from the real checkouts on this
+    machine when present.
+
+    No production code reads ``since_version`` today - the consuming check
+    at ``target not in _DEPRECATED_API_SYMBOLS`` (below) is membership-only;
+    the real version-gating for the USES_CORE_SYMBOL edge happens downstream,
+    against the matching CoreSymbol node's own ``status`` at the indexed
+    version (see the "ACL rename family" / "Cache/flush rename family"
+    comments below). Structuring the fact as data anyway - rather than
+    building a framework_bases.py-shaped production oracle for a fact
+    nothing reads at runtime - keeps this module lean while still making the
+    claim falsifiable; see the module docstring of the parity test for the
+    full proportionality argument.
+    """
+
+    name: str
+    since_version: int
+    change: str  # 'removed' | 'deprecated' | 'renamed' | 'moved' | 'signature_changed' | 'review'
+    detail: str
+
+
+_DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
+    sym.name: sym
+    for sym in (
+        # --- Removed (no in-place replacement, full rewrite required) ---
+        DeprecatedApiSymbol(
+            "name_get", 18, "removed",
+            "Removed (odoo/models.py); deprecated since 17.0 with a "
+            "DeprecationWarning. Use the display_name computed field.",
+        ),
+        DeprecatedApiSymbol(
+            "oldname", 14, "removed",
+            "Field option removed (odoo/fields.py); deprecated since 13.0 via "
+            "DEPRECATED_ATTRS, no trace from 14.0 on. Use a rename + "
+            "migration script. Issue #364 corrected this from a claimed "
+            "15.0 (real removal is 14.0; deprecation onset is 13.0).",
+        ),
+        # --- ACL rename family (issue #117): old names deprecated in 18, replaced by
+        #     check_access / has_access / _filtered_access / _has_cycle. The edge only
+        #     MERGEs when a same-version CoreSymbol with status in {deprecated,removed}
+        #     exists, so these flag usage on the versions where the alias is still
+        #     present-but-deprecated (v18) - and resolve to the underscore CoreSymbols
+        #     that bug#2 (parser_odoo_core underscore-skip) now indexes. ---
+        DeprecatedApiSymbol(
+            "check_access_rights", 18, "deprecated",
+            "Deprecated -> check_access() (odoo/models.py).",
+        ),
+        DeprecatedApiSymbol(
+            "check_access_rule", 18, "deprecated",
+            "Deprecated -> check_access() (odoo/models.py).",
+        ),
+        DeprecatedApiSymbol(
+            "_filter_access_rules", 18, "deprecated",
+            "Deprecated -> _filtered_access() (odoo/models.py).",
+        ),
+        DeprecatedApiSymbol(
+            "_check_recursion", 18, "deprecated",
+            "Deprecated -> not self._has_cycle() (odoo/models.py).",
+        ),
+        # --- Cache/flush rename family: old names deprecated in 16, REMOVED in 17.
+        #     `flush` is a generic short name; the version-scoped + status-gated edge
+        #     MERGE (writer_neo4j_orm) bounds it to modules indexed on a version where
+        #     odoo.models.BaseModel.flush is itself deprecated/removed. Receiver type is
+        #     not tracked, so a stray `cr.flush()` on such a version can over-match - an
+        #     acceptable cost for an advisory migration scan (caller reviews each hit). ---
+        DeprecatedApiSymbol(
+            "flush", 16, "deprecated",
+            "Deprecated -> flush_model() / flush_recordset() / env.flush_all() "
+            "(odoo/models.py); removed entirely at 17.0.",
+        ),
+        DeprecatedApiSymbol(
+            "invalidate_cache", 16, "deprecated",
+            "Deprecated -> invalidate_model() / invalidate_recordset() / "
+            "env.invalidate_all() (odoo/models.py); removed entirely at 17.0.",
+        ),
+        # --- Signature-changed (kwarg/semantics breaking caller) ---
+        DeprecatedApiSymbol(
+            "name_search", 18, "signature_changed",
+            "18.0 rewrote name_search() to call search_fetch() directly and "
+            "stopped calling the _name_search() override hook (odoo/models.py) "
+            "- operator/count semantics changed for any custom _name_search "
+            "override. No single mechanical grep pattern isolates this "
+            "rewrite; not covered by the parity test's dev-box oracle.",
+        ),
+        DeprecatedApiSymbol(
+            "safe_eval", 19, "signature_changed",
+            "19.0 rewrote the signature to "
+            "safe_eval(expr, /, context=None, *, mode='eval', filename=None); "
+            "globals_dict/locals_dict/nocopy/locals_builtins removed "
+            "(odoo/tools/safe_eval.py).",
+        ),
+        DeprecatedApiSymbol(
+            "fields_get", 8, "review",
+            "No confirmed version-specific semantics change found for the "
+            "'attributes' kwarg despite auditing v14.0-v19.0 source "
+            "(get_description()'s filter loop is byte-identical) and the "
+            "full upstream git history. Issue #364 could not substantiate "
+            "the original '18: attributes kwarg semantics changed' claim - "
+            "the nearest real event is an unrelated v16.0 perf-only "
+            "filter-in refactor (upstream b9feebc25cc8). Kept in the "
+            "hot-list for general review value (fields_get() overrides are "
+            "a common ACL/UI customization point), not as a proven "
+            "migration boundary.",
+        ),
+        DeprecatedApiSymbol(
+            "_search", 18, "signature_changed",
+            "access_rights_uid kwarg removed at 18.0 (odoo/models.py). Issue "
+            "#364 corrected this entry: the previously-claimed 'keyword-only "
+            "args' addition is actually a 19.0 fact (trailing active_test / "
+            "bypass_access kwargs become keyword-only then), not part of "
+            "the 18.0 change.",
+        ),
+        DeprecatedApiSymbol(
+            "read_group", 19, "deprecated",
+            "Deprecated -> _read_group() (backend) / formatted_read_group() "
+            "(formatted result) (odoo/models.py, @api.deprecated).",
+        ),
+        DeprecatedApiSymbol(
+            "default_get", 19, "renamed",
+            "Positional/keyword parameter renamed fields_list -> fields "
+            "(odoo/models.py; upstream odoo/odoo#218334). Issue #364 "
+            "corrected this from a claimed 17.0 (no evidence found for any "
+            "17.0-specific change; the real rename is 19.0).",
+        ),
+        # --- Renamed field option / attribute (declaration-site or attribute access) ---
+        DeprecatedApiSymbol(
+            "group_operator", 18, "renamed",
+            "Field option renamed group_operator -> aggregator (odoo/fields.py).",
+        ),
+        DeprecatedApiSymbol(
+            "track_visibility", 13, "renamed",
+            "Field option renamed track_visibility -> tracking (odoo/fields.py "
+            "convention; addons/mail/models/ir_model_fields.py and "
+            "mail_thread.py read it via getattr). Issue #364 corrected this "
+            "from a claimed 17.0 - real transition is 13.0 (0 hits of "
+            "tracking= before v13, 51 at v13; the demonstrated defect that "
+            "triggered this audit).",
+        ),
+        # --- Moved module / changed qualified path ---
+        DeprecatedApiSymbol(
+            "float_compare", 8, "moved",
+            "Re-exported at odoo.tools.float_compare via odoo/tools/__init__.py's "
+            "float_utils import at every surveyed major (v8.0-v19.0). Issue "
+            "#364 corrected this: there is NO 19.0-specific move - the "
+            "previous claim was fabricated (no matching source event found "
+            "at any version).",
+        ),
+        DeprecatedApiSymbol(
+            "float_round", 8, "moved",
+            "Same re-export history as float_compare. Issue #364 corrected "
+            "this: there is NO 19.0-specific move.",
+        ),
+        DeprecatedApiSymbol(
+            "get_modules", 8, "moved",
+            "Reachable at {odoo,openerp}.modules.get_modules at every "
+            "surveyed major (v8.0-v19.0). Issue #364 corrected this: there "
+            "is NO 18.0-specific path change - the previous claim was "
+            "fabricated (no matching source event found at any version).",
+        ),
+        DeprecatedApiSymbol(
+            "html_escape", 15, "moved",
+            "odoo.tools.html_escape became a direct alias for "
+            "markupsafe.escape at 15.0 (odoo/tools/misc.py); before that it "
+            "was a vendored werkzeug.utils.escape wrapper. Issue #364 "
+            "corrected this from a claimed 17.0.",
+        ),
+        # --- odoo.tools image API — removed v13, frequent AI misuse ---
+        DeprecatedApiSymbol(
+            "image_resize_image", 13, "removed",
+            "Removed at 13.0 (odoo/tools/image.py). Use odoo.tools.image_process.",
+        ),
+        DeprecatedApiSymbol(
+            "image_resize_image_big", 13, "removed",
+            "Removed at 13.0 (odoo/tools/image.py). Use odoo.tools.image_process.",
+        ),
+        DeprecatedApiSymbol(
+            "image_resize_image_medium", 13, "removed",
+            "Removed at 13.0 (odoo/tools/image.py). Use odoo.tools.image_process.",
+        ),
+        DeprecatedApiSymbol(
+            "image_resize_image_small", 13, "removed",
+            "Removed at 13.0 (odoo/tools/image.py). Use odoo.tools.image_process.",
+        ),
+        # --- odoo.tools pycompat — removed from __init__ v19 ---
+        DeprecatedApiSymbol(
+            "pycompat", 19, "removed",
+            "Dropped from odoo/tools/__init__.py's re-export at 19.0 (the "
+            "pycompat.py module file itself still exists on disk); import "
+            "odoo.tools.pycompat directly if still needed.",
+        ),
+    )
+}
 
 
 def _build_import_scope_map(tree: ast.Module) -> dict[str, str]:

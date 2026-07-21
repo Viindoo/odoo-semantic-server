@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 8.0 (OpenERP era). safe_eval imported from openerp.tools.safe_eval. image_resize_image and friends available. pycompat present. date_utils absent (introduced v12). No SQL class (v17+). format_datetime/format_amount/get_lang absent (v13+).",
+  "_note": "Curated odoo.tools symbols for Odoo 8.0 (OpenERP era). safe_eval imported from openerp.tools.safe_eval. image_resize_image and friends available. pycompat is NOT present at v8 - neither openerp/tools/pycompat.py nor odoo/tools/pycompat.py exists in the v8 source tree (verified absent v8-v10, first present v11 at odoo/tools/pycompat.py). date_utils absent (introduced v12). No SQL class (v17+). format_datetime/format_amount/get_lang absent (v13+).",
   "symbols": [
     {
       "qualified_name": "odoo.tools.image_resize_image",
@@ -37,13 +37,6 @@
       "status": "stable",
       "signature": "ustr(value) -> str",
       "note": "Unicode string coercion helper. Present through v19 though soft-deprecated in later versions. Still valid to use."
-    },
-    {
-      "qualified_name": "odoo.tools.pycompat",
-      "kind": "tool_export",
-      "status": "stable",
-      "signature": "module",
-      "note": "Python 2/3 compatibility shim. Gradually shrinks from v13 onward, deprecated v18, removed from odoo.tools.__init__ in v19."
     },
     {
       "qualified_name": "odoo.tools.float_compare",

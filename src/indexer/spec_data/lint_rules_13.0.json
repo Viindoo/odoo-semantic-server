@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v3.x for Odoo v13. v13: OWL framework introduced (components/hooks), @api.multi/@api.one removed, spreadsheet module added, `active_test` context key. ESLint from odoo/addons/web/static/src/.eslintrc.",
+  "_note": "Curated from pylint-odoo v3.x for Odoo v13. v13: @api.multi/@api.one removed (verified: odoo/api.py drops the decorators and addons/ usage drops to 0), spreadsheet module added. `active_test` context key is NOT new here - it already exists in odoo/models.py at v10 and earlier. OWL framework is NOT introduced at v13 - addons/web/static/lib/owl and Component-based JS are absent at v13 and first appear at v14 (see lint_rules_14.0.json). ESLint from odoo/addons/web/static/src/.eslintrc.",
   "rules": [
     {
       "rule_id": "W8101",
