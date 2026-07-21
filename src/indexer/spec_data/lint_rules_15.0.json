@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v8.x for Odoo v15. v15: OWL v2 (hooks API), new asset bundle system mandatory, `create_multi` (`@api.model_create_multi`, present since v12) is the preferred create pattern. `flush()` and `invalidate_cache()` coexist unchanged at v15 (both present verbatim v14-v16); `invalidate_cache()` is not actually removed until v17 - do not read this as a v15 replacement. `web.Widget` should be replaced with OWL components - the legacy Widget module moves under static/src/legacy/ starting v15 (was static/src/js/ at v14), consistent with this recommendation. ESLint from odoo/addons/web/static/src/.eslintrc.",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v15. v15: still OWL v1 (verified: addons/web/static/lib/owl/owl.js reports version \"1.4.11\", identical to v14; OWL v2 does not land until v16, where owl.js reports \"2.8.2\") - do not read this file as an OWL v2 boundary, new asset bundle system mandatory, `create_multi` (`@api.model_create_multi`, present since v12) is the preferred create pattern. `flush()` and `invalidate_cache()` coexist unchanged at v15 (both present verbatim v14-v16); `invalidate_cache()` is not actually removed until v17 - do not read this as a v15 replacement. `web.Widget` should be replaced with OWL components - the legacy Widget module moves under static/src/legacy/ starting v15 (was static/src/js/ at v14), consistent with this recommendation. ESLint from `addons/web/tooling/_eslintrc.json` (verified path; `addons/web/static/src/.eslintrc` does not exist at any indexed version - the first real ESLint config lands at v15 under tooling/, not static/src/).",
   "rules": [
     {
       "rule_id": "W8101",
@@ -381,7 +381,7 @@
       "message": "OWL component uses deprecated lifecycle hook `mounted` — use `onMounted` hook.",
       "severity": "warning",
       "file_pattern": "**/*.js",
-      "fix_template": "In OWL v2, use `onMounted(() => { ... })` inside the `setup()` method.",
+      "fix_template": "At v15 (still OWL v1), use `owl.hooks.onMounted` (e.g. `const { onMounted } = owl.hooks;`) inside the `setup()` method; the flat `import { onMounted } from \"@odoo/owl\"` form is a v16+ OWL v2 pattern.",
       "code_pattern": "\\bmounted\\s*\\(\\s*\\)"
     },
     {

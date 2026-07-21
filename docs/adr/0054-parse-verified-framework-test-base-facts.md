@@ -345,3 +345,84 @@ one file per version; this feature is a single in-process module, and the genera
 out-of-catalogue policy (Decision §7 - fail open to the newest era, labelled) already
 covers `99.0` correctly as an ordinary case of "major outside the surveyed range",
 with no test-only branch needed.
+
+---
+
+## Amendment 2026-07-21 (issue #364 - the pattern applied to three more families, and where it doesn't fit)
+
+Issue #362 (this ADR) fixed exactly one curated artifact: `_FRAMEWORK_BASES`. Issue #364 asked
+whether the same failure mode - a curated table nothing in the repo could notice drifting from
+source - existed anywhere else. It did, in `cli_flags`, `lint_rules`, and `tools_symbols`
+(`src/indexer/spec_data/*.json`), plus a fourth artifact outside `spec_data/` entirely
+(`_DEPRECATED_API_SYMBOLS`, `src/indexer/parser_python.py`). This amendment records which of
+those four actually adopted THIS ADR's pattern (a real AST/text oracle plus a parity test that
+fails on a value mismatch, not merely a missing entry), where an oracle was found infeasible
+by construction rather than merely unbuilt, and the version-boundary facts the audit surfaced
+along the way. `docs/adr/0055-curated-data-minimum-bar.md` generalizes the bar this amendment's
+findings forced into existence: an oracle is ONE of three acceptable answers, not the only one.
+
+**Full oracle adoption (this ADR's exact shape).** `cli_flags` and `tools_symbols` both now have
+a live AST-first / text-regex-on-`SyntaxError` oracle wired to a content-parity test that compares
+field VALUES, not just presence - `parser_cli.py::parse_cli_flags` /
+`tests/test_cli_flags_content_parity.py`, and the newly-built `parser_tools_symbols.py::
+load_tools_symbols` / `tests/test_tools_symbols_content_parity.py`. Both reuse the identical
+two-tier dispatch this ADR established for `framework_bases.py` and `parser_python.parse_file`
+(`parser_python.py:993-1013`) - a third bespoke recovery mechanism was deliberately NOT invented
+for either.
+
+**Partial adoption, by design.** `lint_rules` has a live oracle (`parser_lint_rules.py`) for the
+FALSIFIABLE slice of its content only - version-boundary claims about when a real pylint-odoo
+checker/eslintrc/ruff.toml source construct appeared or changed. The remaining ~84% of the 603
+curated `lint_rules_*.json` records are EDITORIAL conventions (naming/style recommendations with
+no source construct to parse against, ever) - this is a PERMANENT property of that content, not a
+gap this or a future PR closes. Building a parity test against nonexistent source would be a
+decorative pseudo-oracle, exactly what ADR-0055's Alternative 1 rejects; the correct instrument
+for the editorial majority is a classification guard (`test_lint_rules_content_parity.py::
+test_an_editorial_rule_is_not_misclassified_as_falsifiable` and its sibling) plus ADR-0055's
+"recorded reason" bar, not a fabricated diff against source.
+
+**Deliberately lighter than a full oracle.** `_DEPRECATED_API_SYMBOLS` was restructured from a
+trailing-comment claim (untestable by construction - this is precisely how it rotted) into a
+`DeprecatedApiSymbol` dataclass with a `since_version` field, backed by
+`tests/test_deprecated_api_symbols_parity.py`: a CI layer pinned against tiny hand-captured real-
+source snippets for every one of the 25 entries, plus a dev-box layer that re-derives the same
+facts from real checkouts when present. This is NOT a `framework_bases.py`-shaped production
+oracle, and the module's own docstring states why: no production code reads `since_version` today
+(the runtime check is membership-only; the real version-gating for the `USES_CORE_SYMBOL` edge
+happens downstream against the matching `CoreSymbol` node's own `status`), so building a full
+parser oracle for a fact nothing consumes at runtime would be effort spent for its own sake. A
+pinned, falsifiable data structure satisfies ADR-0055's bar without over-building.
+
+**Boundary fact 1 - the cli oracle's real Python-2 ceiling is v10->v11, one version past the
+namespace split.** `parser_cli.py`'s AST walk had ALWAYS silently returned zero flags at v8, v9,
+and v10 - a permanent `SyntaxError` on real `tools/config.py`'s `os.chmod(self.rcfile, 0600)`, a
+Python-2-only leading-zero octal literal. Odoo itself did not fix this to `0o600` until the
+v10->v11 boundary (`odoo10/odoo/tools/config.py:559` still reads `0600`;
+`odoo11/odoo/tools/config.py:583` reads `0o600`) - ONE VERSION LATER than
+`ODOO_NAMESPACE_LEGACY_MAX_MAJOR` (the `openerp`/`odoo` package-prefix split at v9->v10, which
+this ADR's own `_ERA_PREFIX_REGISTRY` already tracks separately for framework test bases). The
+Python-3-AST-parseability boundary and the namespace-rename boundary are different upstream facts
+that happen to sit one version apart; `parser_cli.py`'s module docstring now states this
+explicitly so the two are never conflated again. Recovery uses the same fallback tier this ADR
+established, never a special case for the one known `0600` literal - the fallback degrades
+per-call and is robust to Python-2 syntax anywhere else in the file.
+
+**Boundary fact 2 - the lint gate's real v14 ceiling, and why v11-v13 stay excluded even though
+real checker content exists there.** `LINT_RULES_MIN_MAJOR` moved from 17 to 14 (`src/constants.py`),
+not to 13. Direct inspection of v11-v13 shows a real, actively-wired checker
+(`_odoo_checkers.py`, rule E3110/`no-comma-exception`) with a genuine `msgs = {...}` dict - but its
+filename does not match this parser's `_odoo_checker_*.py` glob (no separating underscore between
+"checker" and the suffix). v13 additionally carries `_odoo_checker_sql_injection.py` (E8501),
+which DOES match the glob. Gating v13 on alone would therefore recover E8501 while silently
+dropping E3110 sitting right next to it in the same directory - a partial extraction that
+UNDER-REPORTS is judged worse than an honest exclusion (the same "recorded reason" bar ADR-0055
+codifies), so v11-v13 stay out of the live gate with this exact reasoning recorded inline in
+`LINT_RULES_MIN_MAJOR`'s own comment, right alongside v8-v10 (no checker source at all). From v14
+onward, checker filenames stabilize on the matching `_odoo_checker_<topic>.py` pattern and every
+major v14-v19 yields at least one live-extracted rule with zero false gaps - the real ceiling this
+ADR's oracle pattern can reach for `lint_rules` is v14, not the v17 the code previously assumed
+nor the v13 an earlier audit pass guessed from an incomplete look at the glob alone.
+
+See `docs/adr/0055-curated-data-minimum-bar.md` for the generalized minimum-bar decision this
+amendment's findings fed into, and the CHANGELOG `[Unreleased]` entry for issue #364 for the full
+list of corrected facts and record counts.

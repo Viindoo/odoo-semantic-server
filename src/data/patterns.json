@@ -1576,9 +1576,9 @@
     "file_ref": "addons/web/static/src/js/fields/abstract_field_owl.js:1",
     "snippet_text": "odoo.define('web.AbstractFieldOwl', function (require) {\n    \"use strict\";\n\n    const field_utils = require('web.field_utils');\n    const { useListener } = require('web.custom_hooks');\n    const { onMounted, onPatched } = owl.hooks;\n\n    // OWL 1 field base (v14 inception pattern)\n    class AbstractFieldOwl extends owl.Component {\n        setup() {\n            onMounted(() => this._mounted());\n            onPatched(() => this._patched());\n        }\n        get value() {\n            return this.props.value;\n        }\n    }\n    return AbstractFieldOwl;\n});",
     "gotchas": [
-      "v14 uses OWL 1 (`owl.hooks.onMounted`, `owl.Component`) wrapped inside the legacy `odoo.define` module system — in v15+ use `/** @odoo-module **/` with `import { onMounted } from \"@web/core/utils/hooks\"`",
-      "`owl.hooks` (v14) was split into individual imports in v15 — `const { onMounted } = owl.hooks` becomes `import { onMounted } from '@odoo/owl'` in v16+; v15 is the bridge using `const { ... } = owl;`",
-      "The `useListener` helper from `web.custom_hooks` (v14) is removed in v15 — replace with `useExternalListener(target, event, handler)` from `@web/core/utils/hooks`",
+      "v14 uses OWL 1 (`owl.hooks.onMounted`, `owl.Component`) wrapped inside the legacy `odoo.define` module system — in v15+ the same hooks are still sourced from `owl.hooks` (e.g. `const { onMounted } = owl.hooks;`), just wrapped in `/** @odoo-module **/` ES6 syntax instead of `odoo.define`; `@web/core/utils/hooks` does not export `onMounted` at v15",
+      "`owl.hooks` is NOT split into individual `@odoo/owl` imports until v16 (verified: 10 v15 core files still reference `owl.hooks`, 0 do at v16, where `owl.hooks` is gone entirely) — `const { onMounted } = owl.hooks` becomes `import { onMounted } from '@odoo/owl'` only at v16+; what changes at v15 is narrower: `Component`/`useState` move from `owl.Component` (v14) to `const { Component, useState } = owl;` (v15)",
+      "The `useListener` helper from `web.custom_hooks` (v14) is NOT removed at v15 — it is reimplemented with the identical name and signature in the new `@web/core/utils/hooks` module (verified: `export function useListener(eventName, querySelector, handler, options)` at that file, v15); `useExternalListener` is a different, OWL-native hook (from `owl.hooks` at v15, from `@odoo/owl` at v16+), not the v15 replacement for `web.custom_hooks.useListener`",
       "OWL 1 (v14) components cannot use `useService()` directly — they must access services via `this.env.services.service_name`; the `useService` hook from `@web/core/utils/hooks` is a v15+ API"
     ],
     "odoo_version_min": "14.0",
@@ -1588,7 +1588,7 @@
     "category": "production"
   },
   {
-    "pattern_id": "odoo-module-owl2-component-v15",
+    "pattern_id": "odoo-module-owl1-component-v15",
     "intent_keywords": ["@odoo-module", "Component", "owl", "v15", "ES6 import", "setup", "useState"],
     "file_ref": "addons/web/static/src/core/dropdown/dropdown.js:1",
     "snippet_text": "/** @odoo-module **/\n\nimport { useBus, useEffect, useService } from \"@web/core/utils/hooks\";\nimport { usePosition } from \"../position/position_hook\";\n\nconst { Component, useState, QWeb } = owl;\nconst { onWillStart, useRef, useSubEnv } = owl.hooks;\n\nexport class Dropdown extends Component {\n    setup() {\n        this.state = useState({\n            open: this.props.startOpen || false,\n        });\n        onWillStart(async () => {\n            if (this.state.open && this.props.beforeOpen) {\n                await this.props.beforeOpen();\n            }\n        });\n    }\n}\n\nDropdown.props = { startOpen: { type: Boolean, optional: true } };\nDropdown.template = 'web.Dropdown';",
