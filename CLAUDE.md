@@ -38,6 +38,7 @@ Venv ở `~/.venv/odoo-semantic-mcp` - không bao giờ tạo `.venv/` trong rep
 - **Tool surface:** 31 MCP tools + 9 resources. `tests/test_tool_count_sync.py` enforce; bump phải sync `pyproject.toml` + `site/src/lib/constants.ts` (SITE_VERSION/TOOL_COUNT/RESOURCE_COUNT).
 - **`is_admin` DB-sourced** qua `is_admin_session(request)` (`src/web_ui/auth.py`) - KHÔNG `request.session.get("is_admin")` (key đó không được set; đọc trả `False` âm thầm, ẩn data của admin). ADR-0011/0026.
 - **Multi-tenant fail-closed:** read-side luôn qua choke-point filter + RLS trên embeddings; KHÔNG có `tenant_id` trong Neo4j MERGE key. ADR-0034.
+- **Curated data minimum bar:** mọi artifact curated version-keyed mới (`spec_data/*.json`, `patterns.json`, hoặc dict hand-curated khác, vd `_DEPRECATED_API_SYMBOLS`) cần MỘT trong ba: oracle (parser đối chiếu source thật, wired vào test chạy trên data thật), lý do được ghi rõ tại sao không thể có oracle (comment/schema description), hoặc provenance metadata (fact mượn ID/tên từ namespace ngoài phải khai verified/unverified). Curated data không đối chiếu source là root cause của #362 và #364. ADR-0055.
 
 ## Neo4j 5.x gotchas
 
@@ -66,6 +67,7 @@ TEST_VERSION = "99.0"               # data test, tránh đụng data thật
 - Unit tests không cần Docker; integration dùng testcontainers tự spin-up.
 - **FastMCP v3 (#324):** decorator default = function-mode → `@mcp.tool` trả HÀM GỐC (callable). Ưu tiên test import `_resolve_model`/`_resolve_field`/`_resolve_method` (underscore impl, ổn định). Gọi tool body: `server.X(...)` (KHÔNG `.fn` — `.fn` chỉ có trên `FunctionTool`). Lấy `FunctionTool` (cho `.output_schema`/`.parameters`/`.description`): `await mcp.get_tool("X")`. Đếm surface: `await mcp.list_tools()` / `list_resource_templates()`. v3 gỡ `_tool_manager`/`_resource_manager`/`_deprecated_settings` (đọc `json_response`/`stateless_http`/`debug` từ `fastmcp.settings`).
 - **Không suppress warnings** upstream (testcontainers / authlib) - fix root cause, không `filterwarnings`/`ignore`. Xem CONTRIBUTING.md.
+- **Live-parser test discovery:** dùng `tests/_odoo_checkouts.py::checkout_root(major)` (không tự viết `ODOO<N>_SRC` riêng) - resolve qua `OSM_ODOO_CHECKOUTS` (default `~/git`) + `odoo<major>`, legacy `ODOO<N>_SRC` vẫn được honour nếu set. Trước #364, các test này skip ở MỌI máy kể cả máy có đủ 12 checkout vì `ODOO<N>_SRC` mặc định trỏ `/nonexistent` - "guard không chạy" là chính bug đã xảy ra.
 
 ## Indexer ops (chi tiết ở ADR)
 

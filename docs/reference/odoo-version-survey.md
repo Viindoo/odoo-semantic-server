@@ -60,8 +60,10 @@ dùng để định hướng parser và indexer của OSM.
 - v8/v9: `web.Widget` trực tiếp, không có `odoo.define`.
 - v10-v13: `odoo.define("module_name.ClassName", ...)` pattern. Era1/era2 JS.
 - v14: OWL 1 được giới thiệu — `Component` class từ `@odoo/owl`. Widget vẫn tồn tại.
-- v15/v16: OWL 2, Widget dần bị loại bỏ. Era3: `odoo.define` song song với `import {Component}`.
-- v17+: OWL-only (100% component). Era3 JS patch detection (`_extract_era3_patches`) chỉ chạy cho `major >= 14` — xem `_OWL_ENABLED_REGISTRY` (ADR-0032).
+- v15: VẪN là OWL 1 (bản 1.4.11) - OWL 2 CHƯA có tại v15 (issue #364 audit; xem §8 dưới). Widget
+  dần bị loại bỏ, Era3: `odoo.define` song song với `import {Component}`.
+- v16: OWL 2 (bản 2.8.2) chính thức - xem §8. Widget tiếp tục bị loại bỏ.
+- v17+: OWL-only (100% component). Era3 JS patch detection (`_extract_era3_patches`) chỉ chạy cho `major >= 14` - xem `_OWL_ENABLED_REGISTRY` (ADR-0032). Lưu ý: OWL KHÔNG lên v3 tại bất kỳ version nào tính đến v19 (vẫn 2.8.2) - xem §8.
 
 **Styles:**
 - v8-v11: LESS (Bootstrap 3.x). Parser: `src/indexer/parser_less.py`.
@@ -86,7 +88,7 @@ Nguồn sự thật: `src/indexer/spec_data/tools_symbols_X.0.json` (12 files, v
 | `image_resize_image_medium` | v8 | removed | removed | removed | removed | Như trên. |
 | `image_resize_image_small` | v8 | removed | removed | removed | removed | Như trên. |
 | `image_process` | v13 | stable | stable | stable | stable | Hàm xử lý ảnh thay thế cho 4 hàm cũ trên. |
-| `pycompat` | v8 | stable | stable | deprecated | **dropped** | Module tương thích Python 2/3. Bị xóa khỏi `odoo.tools.__init__` trong v19. Vẫn có file nhưng không export qua `__init__`. |
+| `pycompat` | v11 | stable | stable | deprecated | **dropped** | Module tương thích Python 2/3. KHÔNG tồn tại tại v8/v9/v10 (`odoo/tools/pycompat.py` chỉ xuất hiện từ v11 - issue #364 audit, xem §8; curated data từng sai claim "stable" tại v8-v10). Bị xóa khỏi `odoo.tools.__init__` trong v19. Vẫn có file nhưng không export qua `__init__`. |
 | `ustr` | v8 | stable | soft-dep | soft-dep | soft-dep | Vẫn tồn tại qua v19 nhưng không cần thiết trong Python 3. |
 | `html_escape` | v8 | stable | **deprecated** | deprecated | deprecated | Từ v17: dùng `markupsafe.escape` thay thế. |
 | `float_compare` | v8 | stable | stable | stable | deprecated | v19: chuyển sang `odoo.tools.float_utils`, re-exported qua `odoo.tools`. |
@@ -255,6 +257,33 @@ Xem `docs/adr/0032-parser-hooks-registry.md §v20` cho ví dụ đầy đủ.
 
 ---
 
+## 8. Ranh Giới Phiên Bản Phát Hiện Qua Audit Issue #364
+
+Issue #364 kiểm tra toàn bộ dữ liệu curated version-keyed (`cli_flags`, `lint_rules`,
+`tools_symbols`, `_DEPRECATED_API_SYMBOLS`) đối chiếu với cả 12 checkout thật (v8.0-v19.0,
+grep/file:line-verified, không transcribe từ trí nhớ hay comment cũ). Quyết định đầy đủ:
+`docs/adr/0055-curated-data-minimum-bar.md` + Amendment 2026-07-21 của
+`docs/adr/0054-parse-verified-framework-test-base-facts.md`. 8 ranh giới sau đây được xác nhận
+hoặc SỬA LẠI qua audit đó - ghi ở đây để người đọc sau không phải tái xác minh:
+
+| Sự kiện | Ranh giới thật | Ghi chú |
+|---|---|---|
+| Python-2 octal literal (`os.chmod(self.rcfile, 0600)`) trong `tools/config.py` | Có mặt v8-v10, sửa thành `0o600` từ v11 | Ranh giới v10→v11 - **MUỘN HƠN MỘT VERSION** so với ranh giới `openerp`/`odoo` namespace split (v9→v10, `ODOO_NAMESPACE_LEGACY_MAX_MAJOR`) - hai fact khác nhau, đừng gộp làm một. `parser_cli.py` vượt qua literal này bằng AST-first/text-regex-on-`SyntaxError` (cùng cơ chế `framework_bases.py`/`parser_python.py:993-1013`), không special-case riêng cho literal đó. |
+| `test_lint` checker source (filename khớp sạch glob `_odoo_checker_<topic>.py`) | Từ v14 | v11-v13 CÓ checker thật (`_odoo_checkers.py`, rule E3110) nhưng filename không khớp glob (thiếu `_` phân cách "checker" và suffix); riêng v13 có thêm `_odoo_checker_sql_injection.py` (E8501, khớp glob) - bật gate riêng cho v13 sẽ lấy được E8501 nhưng âm thầm bỏ sót E3110 ngay cạnh nó, một trích xuất một phần TỆ HƠN loại trừ trung thực. `LINT_RULES_MIN_MAJOR = 14` trong `src/constants.py` (trước đây `17`), v11-v13 bị loại có chủ đích. |
+| OWL version thật | 1.4.11 xuyên suốt tới v15; 2.8.2 từ v16 | KHÔNG có OWL v3 ở bất kỳ version nào tính đến v19 (v19 vẫn báo "2.8.2", giống v16/v17; v18 báo "2.8.4"). Nguồn: `src/indexer/spec_data/bootstrap_versions.json` (evidence string per version, đã đúng từ trước) + `lint_rules_19.0.json`/`lint_rules_15.0.json`/`lint_rules_13.0.json` `_note` (đã sửa các claim sai "OWL introduced v13", "OWL v3 incremental adoption tại v19"). |
+| `@api.multi`/`@api.one` | Bị xóa tại v13 | KHÔNG phải v14 - `odoo/api.py` bỏ decorator VÀ addons/ usage về 0 kể từ v13; `lint_rules_14.0.json`'s `_note` cũ từng lặp lại claim "v14: @api.multi/@api.one removed" như một sự kiện MỚI tại v14, nay đã sửa để nói rõ đây là fact-đã-xảy-ra-từ-v13. |
+| `openerp` → `odoo` namespace rename | Hoàn tất tại v10 | KHÔNG phải v9 - `odoo9`'s thư mục `odoo/` (nếu có) giữ 0 file git-tracked; namespace thật vẫn là `openerp/` xuyên suốt v9 (`ODOO_NAMESPACE_LEGACY_MAX_MAJOR = 9` nghĩa là "v9 là major CUỐI CÙNG còn `openerp/`", không phải "rename xảy ra tại v9"). |
+| `name_get()` | Deprecated v17, REMOVED v18 | v17: vẫn định nghĩa trong `odoo/models.py`, chỉ mang `.. deprecated:: 17.0` + `DeprecationWarning` - CHƯA bị xóa; xóa thật tại v18. Trước audit, curated data có 3 claim mâu thuẫn nhau (v16/v17/v19) về đúng một ranh giới này. |
+| `track_visibility` field attribute → `tracking` | v12 → v13 | Grep thật: 0 hit `tracking=` trước v13, 51 hit tại v13. Trước audit, HAI artifact curated độc lập (comment trong `parser_python.py` và `lint_rules` rule W8167) khẳng định HAI giá trị SAI khác nhau (v17 và v16) cho cùng một sự kiện - xem CHANGELOG `[Unreleased]` mục issue #364 để biết chi tiết đầy đủ. |
+| `odoo.tools.pycompat` | Xuất hiện từ v11 | KHÔNG phải v8 (bảng §2.1 ở trên đã sửa cột "Thêm vào" từ v8 → v11 theo phát hiện này; file `odoo/tools/pycompat.py` không tồn tại tại v8/v9/v10). |
+
+Tất cả 8 ranh giới trên được verify trực tiếp trên checkout thật, không transcribe từ comment hay
+trí nhớ cũ - xem file:line trong `src/indexer/parser_cli.py` (docstring "THE v8/v9/v10 PYTHON-2
+OCTAL-LITERAL HAZARD"), `src/constants.py` (`LINT_RULES_MIN_MAJOR`), và
+`src/indexer/parser_python.py` (`DeprecatedApiSymbol`, `_DEPRECATED_API_SYMBOLS`).
+
+---
+
 ## Tài Liệu Liên Quan
 
 | File | Nội dung |
@@ -265,7 +294,8 @@ Xem `docs/adr/0032-parser-hooks-registry.md §v20` cho ví dụ đầy đủ.
 | `docs/adr/0002-spec-schema-policy.md` | `_DEPRECATED_API_SYMBOLS` policy (25 entries; v2 + issue #117 ACL/cache families) |
 | `docs/adr/0005-core-coverage-version-paths.md` | `openerp/` vs `odoo/` path resolution |
 | `docs/adr/0052-per-feature-version-dispatch.md` | Per-feature `VersionRegistry` convention (mỗi feature tự khai báo ranh giới riêng) |
-| `docs/adr/0054-parse-verified-framework-test-base-facts.md` | Test-framework base-class 7-era table (§6 trên) + parse-verified curation + BRANCH-HEAD semantics |
+| `docs/adr/0054-parse-verified-framework-test-base-facts.md` | Test-framework base-class 7-era table (§6 trên) + parse-verified curation + BRANCH-HEAD semantics + Amendment 2026-07-21 (issue #364) |
+| `docs/adr/0055-curated-data-minimum-bar.md` | Ranh giới phiên bản §8 trên (issue #364) + minimum bar cho mọi dữ liệu curated version-keyed (oracle / recorded reason / provenance metadata) |
 | `src/indexer/spec_data/bootstrap_versions.json` | Bootstrap version per Odoo major (curated) |
 | `src/indexer/version_registry.py` | `VersionRegistry` implementation |
 | `src/indexer/framework_bases.py` | Test-framework base-class SSOT (§6 trên) |

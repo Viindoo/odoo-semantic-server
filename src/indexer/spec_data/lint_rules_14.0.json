@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v8.x for Odoo v14. @api.multi/@api.one were already removed at v13 (see lint_rules_13.0.json), not a new v14 event - odoo/api.py drops the decorators at v13 and addons/ usage is 0 from v13 onward. v14: new asset bundling via assets.xml. OWL v1 stable. ESLint from odoo/addons/web/static/src/.eslintrc.",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v14. @api.multi/@api.one were already removed at v13 (see lint_rules_13.0.json), not a new v14 event - odoo/api.py drops the decorators at v13 and addons/ usage is 0 from v13 onward. v14: new asset bundling via assets.xml. OWL v1 stable. No ESLint config file exists at v14 (verified: 0 .eslintrc*/eslint.config.* files git-tracked in the v14 checkout, at this path or any other) - the ESLint-kind rules below are hand-curated conventions, not extracted from an upstream config; the first real ESLint config (`addons/web/tooling/_eslintrc.json`) does not land until v15.",
   "rules": [
     {
       "rule_id": "W8101",
