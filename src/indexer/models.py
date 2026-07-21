@@ -528,6 +528,13 @@ class CoreSymbolInfo:
               tool_export}.
     `status` ∈ {stable, deprecated, removed, added}.
     `replacement_qname` non-null when this symbol is superseded by another.
+    `note` - short human-readable lifecycle/misuse/gotcha note (see
+    tools_symbol.schema.json's `note` property, issue #364 C4). Written to
+    Neo4j (writer_neo4j_spec.py) and rendered by lookup_core_api (spec.py)
+    when set - both wired and tested. NOT YET populated by the static-JSON
+    loader (_load_static_tools_symbols in parser_tools_symbols.py does not
+    read the JSON `note` key) - see
+    tests/test_parser_tools_symbols.py::TestNoteFieldPendingLoaderWiring.
     """
     qualified_name: str
     kind: str
@@ -537,6 +544,7 @@ class CoreSymbolInfo:
     line: int | None = None
     status: str = "stable"
     replacement_qname: str | None = None
+    note: str | None = None
 
 
 @dataclass

@@ -963,7 +963,7 @@
       "flag_name": "--verbose",
       "command_name": "cloc",
       "status": "stable",
-      "default": 0,
+      "default": "0",
       "type": "count",
       "help": "Verbose output. Source: cloc.py",
       "replacement_flag_name": null,

@@ -2,14 +2,26 @@
 # src/indexer/parser_lint_rules.py
 """Extract LintRule entries from Odoo upstream lint configs (M4.5 WI3).
 
-Three live sources for v17+:
+Three live sources, gated per-source by real vendored-in-checkout structure
+(see LINT_RULES_MIN_MAJOR in src/constants.py for the full per-version
+evidence - this docstring only summarizes):
     - addons/test_lint/tests/_odoo_checker_*.py — pylint-odoo BaseChecker subclasses
-      with `msgs = {"E8502": (msg, sym, doc)}` AST literal
-    - addons/test_lint/tests/eslintrc — JSON config with rules dict
-    - ruff.toml at repo root (v19+) — TOML with [lint].select = [...]
+      with `msgs = {"E8502": (msg, sym, doc)}` AST literal (v14+; v11-v13 have a
+      real checker too but under a filename this glob does not match - see
+      LINT_RULES_MIN_MAJOR's comment)
+    - addons/test_lint/tests/eslintrc - JSON config with rules dict (v16+).
+      Real v19 ships this file with a trailing comma before a closing
+      `]`/`}}` (valid JSON5/JSONC, invalid strict JSON) - `_load_json_lenient`
+      tolerates exactly that one drift class so the v19 eslint rule family is
+      not silently dropped.
+    - ruff.toml at repo root (v19 only, confirmed absent v16-v18) - TOML with
+      [lint].select = [...]
 
-Static placeholder JSON for v8-v16 (per ADR-0002 §4): `_curate_status: pending`,
-empty rules list. Manual curation defer to M6.
+All 12 versions (v8-v19) have curated static JSON in spec_data/ with
+`_curate_status: "complete"` - none are placeholders; that data is the SSOT
+for editorial/convention rules the live sources above cannot express (see
+issue #364 phase-2 audit). This module's job is only the falsifiable,
+source-derivable subset.
 
 Public API:
     parse_lint_rules_for_version(odoo_version, odoo_source_root, static_data_dir)
@@ -86,6 +98,38 @@ def _parse_pylint_odoo_source(
 
 # --- ESLint config parsing -------------------------------------------------
 
+def _load_json_lenient(text: str) -> dict | None:
+    """Parse JSON, tolerating one specific real-world drift: a trailing comma
+    directly before a closing ``]``/``}`` (valid JSON5/JSONC, invalid strict
+    JSON).
+
+    Real Odoo v19 ships `addons/test_lint/tests/eslintrc` with exactly this
+    shape - a trailing comma after the last object in the
+    `no-restricted-syntax` selector array. Strict `json.loads` raises
+    `JSONDecodeError` on it; before this fix that exception was caught and
+    silently swallowed by the caller, so the entire eslint-odoo rule family
+    for v19 was dropped with no signal (issue #364 B3 - the exact
+    "widened onto a version that silently returns empty" hazard the B3 brief
+    warned about, just for a source-format reason rather than a missing-file
+    reason).
+
+    Deliberately narrow: this does NOT implement JSON5 (comments, unquoted
+    keys, single-quoted strings) - only the one construct observed in real
+    Odoo source. Returns None if the text is not valid JSON even after the
+    trailing-comma strip, so callers degrade the same way they always did
+    for a genuinely malformed file.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    stripped = re.sub(r",(\s*[}\]])", r"\1", text)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+
 def _normalize_severity(sev) -> str:
     """ESLint severity: 'off'/'warn'/'error' or 0/1/2 → string."""
     if isinstance(sev, int):
@@ -148,7 +192,14 @@ def _parse_ruff_toml(toml_src: str, odoo_version: str) -> list[LintRuleInfo]:
 # --- Version dispatch + static fallback ------------------------------------
 
 def _version_has_test_lint(odoo_version: str) -> bool:
-    """Heuristic: test_lint addon present from v17 onward (gates code-extract path)."""
+    """Gate the code-extract path at LINT_RULES_MIN_MAJOR (currently v14).
+
+    Not a raw "addon present" check - the test_lint addon itself exists from
+    v10 onward. This gates on "a checker file this parser's glob can actually
+    recover something from", which is v14+ (see LINT_RULES_MIN_MAJOR's
+    comment in src/constants.py for the full per-version evidence, including
+    why v11-v13 are excluded despite having real, differently-named source).
+    """
     try:
         major = int(odoo_version.split(".")[0])
     except (ValueError, IndexError, AttributeError):
@@ -233,9 +284,11 @@ def parse_lint_rules_for_version(
     """Aggregate lint rules across pylint-odoo / ESLint / ruff + static fallback.
 
     Pipeline:
-      1. If odoo_source_root + version supports test_lint (v17+): code-extract
-         pylint-odoo checkers + ESLint config + ruff.toml.
-      2. Always merge in any static placeholder data (v8-v16 mostly empty).
+      1. If odoo_source_root + version supports test_lint (v{LINT_RULES_MIN_MAJOR}+,
+         currently v14): code-extract pylint-odoo checkers + ESLint config + ruff.toml.
+      2. Always merge in the curated static JSON (all 12 versions v8-v19 are
+         `_curate_status: "complete"` - none are empty placeholders; static
+         data is the SSOT for editorial rules the live sources can't express).
 
     Args:
         odoo_version: Odoo version label, e.g. "17.0".
@@ -264,15 +317,20 @@ def parse_lint_rules_for_version(
                     continue
                 for r in _parse_pylint_odoo_source(src, odoo_version, file_path=str(f)):
                     _add(r)
-        # ESLint config (the file name is `eslintrc`, no extension, JSON content)
+        # ESLint config (the file name is `eslintrc`, no extension, JSON content).
+        # Uses the lenient loader - real v19 has a trailing comma (see
+        # _load_json_lenient's docstring) that strict json.loads rejects.
         eslint_path = checker_dir / "eslintrc"
         if eslint_path.is_file():
             try:
-                cfg = json.loads(eslint_path.read_text(encoding="utf-8"))
-                for r in _parse_eslint_config(cfg, odoo_version):
-                    _add(r)
-            except (OSError, json.JSONDecodeError):
-                pass
+                text = eslint_path.read_text(encoding="utf-8")
+            except OSError:
+                text = None
+            if text is not None:
+                cfg = _load_json_lenient(text)
+                if cfg is not None:
+                    for r in _parse_eslint_config(cfg, odoo_version):
+                        _add(r)
         # ruff.toml at repo root
         ruff_path = root / "ruff.toml"
         if ruff_path.is_file():
@@ -283,7 +341,8 @@ def parse_lint_rules_for_version(
             except OSError:
                 pass
 
-    # Static data — always merge (placeholder for v8-v16 + ad-hoc curated entries).
+    # Static data - always merge (curated editorial + version-boundary rules,
+    # complete for all 12 versions; see module docstring).
     for r in _load_static_lint_rules(odoo_version, static_data_dir):
         _add(r)
 
@@ -294,7 +353,3 @@ def parse_lint_rules_for_version(
     _apply_code_patterns_overlay(rules, odoo_version, static_data_dir)
 
     return rules
-
-
-# Silence "imported but unused" if a downstream module re-exports symbols only.
-_ = re  # re reserved for future regex-based parsing (e.g. selector → rule).

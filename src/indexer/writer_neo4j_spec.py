@@ -43,10 +43,16 @@ def _write_core_symbols_batch(tx, symbols: list[CoreSymbolInfo]) -> None:
                 cs.file_path = $fp,
                 cs.line = $line,
                 cs.status = $status,
-                cs.replacement_qname = $repl
+                cs.replacement_qname = $repl,
+                cs.note = $note
         """, qn=s.qualified_name, v=s.odoo_version,
              kind=s.kind, sig=s.signature, fp=s.file_path,
-             line=s.line, status=s.status, repl=s.replacement_qname)
+             line=s.line, status=s.status, repl=s.replacement_qname,
+             # issue #364 C4: note is None for every CoreSymbolInfo constructed
+             # by today's static-JSON loader (parser_tools_symbols.py does not
+             # read the curated `note` key yet) - this write is real and tested,
+             # it just has nothing to carry until that loader gap closes.
+             note=s.note)
 
 
 def _write_replaced_by_edges(tx, replaced: list[tuple[str, str]],

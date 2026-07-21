@@ -6,12 +6,22 @@ No Neo4j required - exercises only the token matching logic, pattern-first path,
 match-kind labelling, noqa suppression, and the V0.5 banner constant.
 
 WI-8 additions:
-- SQL injection snippet fires W8140 with match_kind 'pattern' (regression for #271).
+- SQL injection snippet fires E8501 with match_kind 'pattern' (regression for #271).
 - UserError string formatting fires W8201 with match_kind 'pattern'.
-- Safe parameterized cr.execute does NOT fire W8140 (no false positive).
+- Safe parameterized cr.execute does NOT fire E8501 (no false positive).
 - Label distinguishes [pattern] from [fuzzy] via _lint_match_kind.
 - noqa suppresses pattern hits on the annotated line.
 - Invalid regex in code_pattern falls back to fuzzy without crashing.
+
+issue #364 B5 note: the SQL-injection pattern used to be curated TWICE at
+v17.0 - once as the OSM-local `W8140` (tested here) and once as the real
+Odoo-vendored `E8501` (`_odoo_checker_sql_injection.py`) - causing
+`lint_check` to double-report one defect. The fix consolidated onto the real
+upstream id E8501 from v14.0 onward (`W8140` removed there; kept only at
+v8.0-v13.0, where no live E8501 oracle is wired). These tests were updated
+from `W8140` to `E8501` accordingly - the REGEX BEHAVIOR under test is
+unchanged (same code_pattern, carried forward verbatim), only the rule_id
+that owns it in `lint_rules_17.0.json` changed.
 """
 import json
 from pathlib import Path
@@ -277,74 +287,60 @@ _SQL_INJECTION_CODE = (
 _SQL_INJECTION_TUPLE_CODE = (
     'cr.execute("SELECT id FROM res_partner WHERE id = %s" % (self.id,))'
 )
-# Safe parameterized variant - must never fire W8140 (no false positive).
+# Safe parameterized variant - must never fire E8501 (no false positive).
 _SQL_SAFE_CODE = "cr.execute(\"SELECT id FROM res_partner WHERE id = %s\", (self.id,))"
 # UserError string formatting snippet - was false-green under V0 fuzzy matcher.
 _USER_ERROR_CODE = "raise UserError('Hi %s' % n)"
 
 
-def test_pattern_w8140_fires_on_sql_injection():
-    """W8140 (SQL injection) must fire on cr.execute with string interpolation.
+def test_pattern_e8501_fires_on_sql_injection():
+    """E8501 (SQL injection) must fire on cr.execute with string interpolation.
 
     Regression for issue #271: V0 fuzzy matcher never fired this rule because
     the rule message vocabulary ('injection', 'interpolation') does not appear
     in the code. Pattern-first matcher uses the real regex from the JSON data.
+
+    Was W8140 before issue #364 B5 consolidated the duplicate SQL-injection
+    rule onto the real upstream id E8501 (see module docstring) - the regex
+    and code snippet are unchanged, only the owning rule_id is.
     """
-    rule = _RULES_BY_ID.get("W8140")
-    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+    rule = _RULES_BY_ID.get("E8501")
+    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
 
     lines = _match_lint_rule_lines(_SQL_INJECTION_CODE, rule)
     assert len(lines) >= 1, (
-        f"W8140 must fire on SQL injection snippet; got no violations.\n"
+        f"E8501 must fire on SQL injection snippet; got no violations.\n"
         f"code_pattern: {rule['code_pattern']!r}\n"
         f"code: {_SQL_INJECTION_CODE!r}"
     )
 
 
-def test_pattern_w8140_silent_on_safe_parameterized():
-    """W8140 must NOT fire on cr.execute with tuple parameters (no false positive).
+def test_pattern_e8501_silent_on_safe_parameterized():
+    """E8501 must NOT fire on cr.execute with tuple parameters (no false positive).
 
     The pattern specifically targets string interpolation; parameterized
     queries pass the values as a separate tuple argument, not in the SQL string.
     """
-    rule = _RULES_BY_ID.get("W8140")
-    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+    rule = _RULES_BY_ID.get("E8501")
+    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
 
     lines = _match_lint_rule_lines(_SQL_SAFE_CODE, rule)
     assert lines == [], (
-        f"W8140 must NOT fire on safe parameterized query; got lines={lines}.\n"
+        f"E8501 must NOT fire on safe parameterized query; got lines={lines}.\n"
         f"code_pattern: {rule['code_pattern']!r}\n"
         f"code: {_SQL_SAFE_CODE!r}"
     )
 
 
-def test_pattern_w8140_fires_on_tuple_interpolation():
-    """W8140 must fire on the tuple-`%` interpolation form (PR #275 HIGH #2).
+def test_pattern_e8501_fires_on_tuple_interpolation():
+    """E8501 must fire on the tuple-`%` interpolation form (PR #275 HIGH #2).
 
     `cr.execute("... %s" % (self.id,))` is an equally dangerous SQL-injection
     shape. The pre-fix pattern carried a `(?!\\()` lookahead right after `%`
     which blocked this form because the char after `% ` is `(`. Removing the
     lookahead makes the must-fire set cover single-value AND tuple forms.
-    """
-    rule = _RULES_BY_ID.get("W8140")
-    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
-
-    lines = _match_lint_rule_lines(_SQL_INJECTION_TUPLE_CODE, rule)
-    assert len(lines) >= 1, (
-        f"W8140 must fire on tuple-interpolation SQL injection; got no violations.\n"
-        f"code_pattern: {rule['code_pattern']!r}\n"
-        f"code: {_SQL_INJECTION_TUPLE_CODE!r}"
-    )
-
-
-def test_pattern_e8501_fires_on_tuple_interpolation():
-    """E8501 must also fire on the tuple-`%` form (sibling rule of W8140, v17+).
-
-    E8501 duplicates the W8140 branch-0 pattern; the same lookahead removal
-    applies. Guards against the two rules drifting apart on this fix.
     """
     rule = _RULES_BY_ID.get("E8501")
     assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
@@ -421,9 +417,9 @@ def test_pattern_w8201_fires_on_usererror_format():
 
 def test_lint_match_kind_pattern_for_rule_with_code_pattern():
     """_lint_match_kind returns 'pattern' when rule has a valid code_pattern."""
-    rule = _RULES_BY_ID.get("W8140")
-    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8140 must have a non-null code_pattern"
+    rule = _RULES_BY_ID.get("E8501")
+    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
+    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
 
     kind = _lint_match_kind(rule)
     assert kind == "pattern", (
@@ -442,21 +438,21 @@ def test_lint_match_kind_fuzzy_for_rule_without_code_pattern():
 
 
 def test_noqa_suppresses_pattern_hit():
-    """noqa: W8140 on the SQL injection line suppresses the pattern-match violation.
+    """noqa: E8501 on the SQL injection line suppresses the pattern-match violation.
 
     noqa suppression must work for pattern hits, not just fuzzy hits.
     """
-    rule = _RULES_BY_ID.get("W8140")
-    assert rule is not None, "W8140 must be present in lint_rules_17.0.json"
+    rule = _RULES_BY_ID.get("E8501")
+    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
 
-    code = _SQL_INJECTION_CODE + "  # noqa: W8140"
+    code = _SQL_INJECTION_CODE + "  # noqa: E8501"
     suppress = _build_noqa_suppress(code)
     hit_lines = _match_lint_rule_lines(code, rule)
     rule_id = rule["rule_id"]
 
     # Without suppression the pattern must have fired (sanity guard).
     raw_lines = _match_lint_rule_lines(_SQL_INJECTION_CODE, rule)
-    assert raw_lines, "Prerequisite: W8140 must fire before noqa is applied"
+    assert raw_lines, "Prerequisite: E8501 must fire before noqa is applied"
 
     # All hit lines should be covered by the noqa annotation.
     suppressed_count = sum(
@@ -464,7 +460,7 @@ def test_noqa_suppresses_pattern_hit():
         if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
     )
     assert suppressed_count == len(hit_lines), (
-        f"All pattern hits must be suppressed by '# noqa: W8140'; "
+        f"All pattern hits must be suppressed by '# noqa: E8501'; "
         f"hit_lines={hit_lines}, suppress={suppress}"
     )
 

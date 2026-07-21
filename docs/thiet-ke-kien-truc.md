@@ -268,14 +268,23 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 ```
 // M4.5 — Odoo upstream specs (per-version, lifecycle qua edge)
 (:CoreSymbol   { qualified_name, odoo_version, kind, signature, file_path,
-                 line, status, replacement_qname })
+                 line, status, replacement_qname, note })
                                   // KEY = (qualified_name, odoo_version)
                                   // kind: function|class|decorator|exception|field_type|orm_method|cursor_method
                                   // status: stable|deprecated|removed|added
+                                  // note: issue #364 C4 - written+rendered (lookup_core_api),
+                                  //   but NOT populated by the tools_symbols static-JSON loader
+                                  //   yet (see models.CoreSymbolInfo.note docstring)
 (:LintRule     { rule_id, odoo_version, kind, message, severity,
-                 file_pattern, fix_template, core_symbol_qname })
+                 file_pattern, fix_template, core_symbol_qname, code_pattern })
                                   // KEY = (rule_id, odoo_version)
                                   // kind: pylint-odoo|pylint-stdlib|eslint-odoo|ruff-builtin
+                                  // issue #364 B4: curated lint_rules_<version>.json also
+                                  //   carries rule_id_source (upstream|osm-local) +
+                                  //   rule_id_collision per record - CURATED-JSON-LEVEL
+                                  //   provenance only, NOT yet projected as a Neo4j
+                                  //   property (the loader is in parser_lint_rules.py,
+                                  //   out of scope for this pass - see lint_rule.schema.json)
 (:CLICommand   { name, odoo_version, description, file_path })
                                   // KEY = (name, odoo_version)
 (:CLIFlag      { flag_name, command_name, odoo_version, status, default,

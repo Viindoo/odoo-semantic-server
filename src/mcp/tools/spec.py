@@ -75,6 +75,7 @@ def _format_core_symbol(rec: dict, version: str) -> str:
     added_in = rec.get("added_in")
     removed_in = rec.get("removed_in")
     deprecated_in = rec.get("deprecated_in")
+    note = rec.get("note")
 
     lines = [f"{qn} (Odoo {version})"]
     lines.append(f"├─ Kind:        {kind}")
@@ -83,6 +84,11 @@ def _format_core_symbol(rec: dict, version: str) -> str:
         lines.append(f"├─ Signature:   {sig}")
     if repl:
         lines.append(f"├─ Replacement: {repl}")
+    if note:
+        # issue #364 C4: populated once parser_tools_symbols.py's static-JSON
+        # loader reads the curated `note` key (not yet - see
+        # models.CoreSymbolInfo.note docstring); the render itself is real.
+        lines.append(f"├─ Note:        {note}")
     if added_in:
         lines.append(f"├─ Added in:    {added_in}")
     if deprecated_in:
@@ -177,7 +183,8 @@ def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
                cs.line AS line,
                cs.added_in AS added_in,
                cs.removed_in AS removed_in,
-               cs.deprecated_in AS deprecated_in
+               cs.deprecated_in AS deprecated_in,
+               cs.note AS note
         // Ranking (issue #117 bug#4): an exact qualified-name match always wins;
         // otherwise, among bare-name homonyms, surface the migration-relevant
         // deprecated/removed candidate BEFORE a stable homonym (a shorter stable
@@ -933,7 +940,8 @@ def lint_check(
     Example:
         lint_check("self.env.cr.execute('... WHERE n=%s' % x)", "17.0", "python")
         → lint_check(Odoo 17.0, language=python) — 1 violations
-          └─ [pattern] W8140 (error): SQL injection risk: `cr.execute` string interpolation.
+          └─ [pattern] E8501 (error): Possible SQL injection risk - string
+             interpolation used in SQL query. Use parameterized queries instead.
         lint_check("", "17.0", "xml")   # RelaxNG violations grouped by view
     """
     return _lint_check(code, odoo_version, language)

@@ -6,6 +6,8 @@
     {
       "rule_id": "W8101",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Manifest file is missing required key `name`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py"
@@ -13,6 +15,8 @@
     {
       "rule_id": "W8102",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Manifest file is missing required key `version`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py",
@@ -21,6 +25,8 @@
     {
       "rule_id": "W8103",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'translation-field': Translation method _(\"string\") in fields is not necessary.",
       "message": "Manifest file is missing recommended key `author`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py"
@@ -28,6 +34,8 @@
     {
       "rule_id": "W8104",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Manifest file is missing recommended key `license`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py"
@@ -35,6 +43,8 @@
     {
       "rule_id": "W8105",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'attribute-deprecated': attribute \"%s\" deprecated",
       "message": "Manifest file `installable` key should be a boolean.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py"
@@ -42,6 +52,8 @@
     {
       "rule_id": "W8107",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'prohibited-method-override': Prohibited override of \"%s\" method.",
       "message": "`@api.multi` is removed in v18 — use plain method with `for rec in self:` loop.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -50,6 +62,8 @@
     {
       "rule_id": "W8108",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`@api.one` is removed in v18.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -58,6 +72,8 @@
     {
       "rule_id": "W8115",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'translation-contains-variable': Translatable term in \"%s\" contains variables. Use %s instead",
       "message": "New model class is missing `_name` attribute.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -65,6 +81,8 @@
     {
       "rule_id": "W8116",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'print-used': Print used. Use `logger` instead.",
       "message": "`_inherit` without `_name` creates extension — ensure this is intentional.",
       "severity": "info",
       "file_pattern": "**/*.py"
@@ -72,6 +90,8 @@
     {
       "rule_id": "W8120",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'translation-positional-used': Translation method _(%s) is using positional string printf formatting with multiple arguments.",
       "message": "ir.model.access entry missing from security CSV — model may be inaccessible.",
       "severity": "warning",
       "file_pattern": "**/security/*.csv"
@@ -79,6 +99,8 @@
     {
       "rule_id": "W8121",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'context-overridden': Context overridden using dict. Better using kwargs `with_context(**%s)`.",
       "message": "XML id reference does not match any declared id in the module or its dependencies.",
       "severity": "error",
       "file_pattern": "**/*.xml"
@@ -86,6 +108,8 @@
     {
       "rule_id": "W8122",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Translation string uses positional `%s` formatting — use named `%(name)s` or lazy format.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -94,6 +118,8 @@
     {
       "rule_id": "W8123",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Translatable string concatenation — do not split translatable strings across `+` operators.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -102,21 +128,17 @@
     {
       "rule_id": "W8130",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "File declared in manifest `data` list does not exist.",
       "severity": "error",
       "file_pattern": "**/__manifest__.py"
     },
     {
-      "rule_id": "W8140",
-      "kind": "pylint-odoo",
-      "message": "SQL injection risk: `cr.execute` called with string interpolation.",
-      "severity": "error",
-      "file_pattern": "**/*.py",
-      "code_pattern": "\\.execute\\s*\\([^)]*?[\"\\']\\s*%\\s|\\bexecute\\s*\\([^)]*?\\.format\\s*\\(|\\.execute\\s*\\(\\s*f[\"\\']"
-    },
-    {
       "rule_id": "W8141",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Built-in dynamic expression interpreter used with external input — use `odoo.tools.safe_eval` instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -125,6 +147,8 @@
     {
       "rule_id": "W8142",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`sudo()` called without restricting scope — avoid broad `sudo()` for entire CRUD operations.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -133,6 +157,8 @@
     {
       "rule_id": "W8150",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'odoo-addons-relative-import': Same Odoo module absolute import. You should use relative import with \".\" instead.",
       "message": "Hardcoded database ID used — use `env.ref()` instead.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -141,6 +167,8 @@
     {
       "rule_id": "W8151",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -149,6 +177,8 @@
     {
       "rule_id": "W8160",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'deprecated-odoo-model-method': %s has been deprecated by Odoo. Please look for alternatives.",
       "message": "`_rec_name` field not present in model fields.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -156,6 +186,8 @@
     {
       "rule_id": "W8161",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'prefer-env-translation': Better using self.env._ (see odoo/odoo#174844).",
       "message": "`copy()` override does not call `super()`.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -163,6 +195,8 @@
     {
       "rule_id": "W8162",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'manifest-external-assets': Asset %s should be distributed with module's source code.",
       "message": "`write()` override does not call `super()` — record changes may not be persisted.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -170,6 +204,8 @@
     {
       "rule_id": "W8163",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'no-search-all': Using an empty domain %s([]) without a `limit` will load all records, may impact performance.",
       "message": "`create()` override does not call `super()`.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -177,6 +213,8 @@
     {
       "rule_id": "W8164",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'super-method-mismatch': `super().%s` mismatch but defined method is `%s`.",
       "message": "`unlink()` override does not call `super()`.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -184,6 +222,8 @@
     {
       "rule_id": "W8165",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`invalidate_cache()` removed — use `flush_recordset()` or `invalidate_recordset()`.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -192,6 +232,8 @@
     {
       "rule_id": "W8167",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`track_visibility` field attribute renamed to `tracking` in v13.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -200,6 +242,8 @@
     {
       "rule_id": "W8168",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`attrs` attribute in XML view removed — use Python-domain `invisible`/`required`/`readonly` directly.",
       "severity": "error",
       "file_pattern": "**/*.xml",
@@ -208,6 +252,8 @@
     {
       "rule_id": "W8169",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`states` attribute in XML view removed — use `invisible` domain expression instead.",
       "severity": "error",
       "file_pattern": "**/*.xml",
@@ -216,6 +262,8 @@
     {
       "rule_id": "W8170",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "N+1 ORM query in loop: `browse()` or `search()` called inside a `for` loop over records.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -223,6 +271,8 @@
     {
       "rule_id": "W8171",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Computed field missing `@api.depends` decorator — will never be recomputed automatically.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -230,6 +280,8 @@
     {
       "rule_id": "W8172",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`search()` method override must return a recordset and call `super()`.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -237,6 +289,8 @@
     {
       "rule_id": "W8173",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Many2one field missing `ondelete` parameter — defaults to 'set null' which may leave orphan references.",
       "severity": "info",
       "file_pattern": "**/*.py"
@@ -244,6 +298,8 @@
     {
       "rule_id": "W8174",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -252,6 +308,8 @@
     {
       "rule_id": "W8175",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`copy=True` set on a field with a unique SQL constraint — duplication will fail.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -259,6 +317,8 @@
     {
       "rule_id": "W8176",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`default_get()` override does not call `super()` — default values from other modules will be lost.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -266,6 +326,8 @@
     {
       "rule_id": "W8177",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
       "severity": "info",
       "file_pattern": "**/*.py"
@@ -273,6 +335,8 @@
     {
       "rule_id": "W8178",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -281,6 +345,8 @@
     {
       "rule_id": "W8179",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`_order` attribute references a field that does not exist in the model.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -288,6 +354,8 @@
     {
       "rule_id": "W8182",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Static assets declared via `qweb` key — use `assets` key with bundle names in v18.",
       "severity": "error",
       "file_pattern": "**/__manifest__.py",
@@ -296,6 +364,8 @@
     {
       "rule_id": "W8183",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "XPath `position='replace'` removes the target element entirely — verify this is intentional.",
       "severity": "info",
       "file_pattern": "**/*.xml"
@@ -303,6 +373,8 @@
     {
       "rule_id": "W8184",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
       "severity": "error",
       "file_pattern": "**/*.xml"
@@ -310,6 +382,8 @@
     {
       "rule_id": "W8192",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`<tree>` view tag used in v18+ — prefer `<list>` tag.",
       "severity": "info",
       "file_pattern": "**/*.xml",
@@ -318,6 +392,8 @@
     {
       "rule_id": "W8201",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "String formatting used in UserError/ValidationError — use lazy args or named placeholders.",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -327,6 +403,8 @@
     {
       "rule_id": "W8202",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": "real pylint-odoo 'use-vim-comment': Use of vim comment.",
       "message": "`name_get()` is removed in v18 — use `_compute_display_name()` instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -336,6 +414,8 @@
     {
       "rule_id": "W8210",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`group_operator` field attribute renamed to `aggregator` in v18.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -345,6 +425,8 @@
     {
       "rule_id": "W8211",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`read_group()` method signature changed in v18 — `fields` parameter now required, `lazy` parameter removed.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -354,6 +436,8 @@
     {
       "rule_id": "W8212",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`--longpolling-port` CLI flag removed in v18 — use `--gevent-port` instead.",
       "severity": "error",
       "file_pattern": "**/*.conf"
@@ -361,6 +445,8 @@
     {
       "rule_id": "W8204",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`_sql_constraints` entry uses invalid constraint type or malformed tuple.",
       "severity": "error",
       "file_pattern": "**/*.py"
@@ -368,6 +454,8 @@
     {
       "rule_id": "no-var",
       "kind": "eslint",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Unexpected `var`. Use `let` or `const` instead.",
       "severity": "error",
       "file_pattern": "**/*.js",
@@ -376,6 +464,8 @@
     {
       "rule_id": "no-console",
       "kind": "eslint",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Unexpected `console` statement in production JS.",
       "severity": "warning",
       "file_pattern": "**/*.js",
@@ -384,6 +474,8 @@
     {
       "rule_id": "no-undef",
       "kind": "eslint",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Reference to undeclared variable.",
       "severity": "error",
       "file_pattern": "**/*.js"
@@ -391,6 +483,8 @@
     {
       "rule_id": "no-unused-vars",
       "kind": "eslint",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Variable declared but never used.",
       "severity": "warning",
       "file_pattern": "**/*.js"
@@ -398,6 +492,8 @@
     {
       "rule_id": "owl/no-unknown-component",
       "kind": "eslint",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "OWL template references a component not imported.",
       "severity": "error",
       "file_pattern": "**/*.js"
@@ -405,6 +501,8 @@
     {
       "rule_id": "BLE001",
       "kind": "ruff-builtin",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Blind exception: do not catch `Exception` without re-raising or logging.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -412,6 +510,8 @@
     {
       "rule_id": "E501",
       "kind": "ruff-builtin",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Line too long (exceeds max line length).",
       "severity": "warning",
       "file_pattern": "**/*.py",
@@ -420,6 +520,8 @@
     {
       "rule_id": "I001",
       "kind": "ruff-builtin",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Import block is unsorted or has wrong grouping.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -427,6 +529,8 @@
     {
       "rule_id": "F401",
       "kind": "ruff-builtin",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Module imported but unused.",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -434,6 +538,8 @@
     {
       "rule_id": "UP",
       "kind": "ruff-builtin",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Use modern Python syntax (pyupgrade rules).",
       "severity": "warning",
       "file_pattern": "**/*.py"
@@ -441,6 +547,8 @@
     {
       "rule_id": "owl/no-bare-arrow-handler",
       "kind": "eslint",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Bare free-identifier arrow in t-on (e.g. t-on-click=\"() => onFoo()\" where onFoo is not a component method, a prop, or a slot variable) resolves to nothing at render. Use t-on-click=\"onFoo\" (auto-bound) or t-on-click=\"() => this.onFoo()\" — both of those are valid.",
       "severity": "error",
       "file_pattern": "**/*.js"
@@ -448,6 +556,8 @@
     {
       "rule_id": "owl/useservice-not-reactive",
       "kind": "eslint",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "A useService() result that drives the template should preserve reactivity: wrap it as useState(useService(\"...\")) when the service is not already reactive. Confirm per service and target version.",
       "severity": "warning",
       "file_pattern": "**/*.js"
@@ -455,6 +565,8 @@
     {
       "rule_id": "owl/raw-contenteditable",
       "kind": "eslint",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Raw contenteditable bypasses the audited editor and its sanitisation. Delegate to the web_editor Wysiwyg, lazy-loaded in onWillStart with stable props.",
       "severity": "error",
       "file_pattern": "**/*.js"
@@ -462,6 +574,8 @@
     {
       "rule_id": "owl/dialog-body-slot",
       "kind": "eslint",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "t-set-slot=\"body\" is invalid under <Dialog>: the body IS the default slot. Put body content in the default slot; only header and footer are named slots.",
       "severity": "error",
       "file_pattern": "**/*.js"
@@ -469,6 +583,8 @@
     {
       "rule_id": "E8501",
       "kind": "pylint-odoo",
+      "rule_id_source": "upstream",
+      "rule_id_collision": null,
       "message": "Possible SQL injection risk - string interpolation used in SQL query. Use parameterized queries instead.",
       "severity": "error",
       "file_pattern": "**/*.py",
@@ -477,6 +593,8 @@
     {
       "rule_id": "W8193",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "`<div class=\"oe_chatter\">` chatter markup removed in v18 - use the `<chatter/>` tag.",
       "severity": "warning",
       "file_pattern": "**/*.xml",
@@ -485,6 +603,8 @@
     {
       "rule_id": "W8205",
       "kind": "pylint-odoo",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "Always-invisible view field (invisible=\"1\" / column_invisible=\"1\") must carry an explanatory XML comment from v18 - base.TestInvisibleField fails the module otherwise.",
       "severity": "warning",
       "file_pattern": "**/*.xml",
@@ -493,6 +613,8 @@
     {
       "rule_id": "W8213",
       "kind": "eslint",
+      "rule_id_source": "osm-local",
+      "rule_id_collision": null,
       "message": "QUnit test framework replaced by Hoot in v18 - migrate `QUnit.test` / `QUnit.module` to `@odoo/hoot` (`test` / `describe`).",
       "severity": "warning",
       "file_pattern": "**/*.js",

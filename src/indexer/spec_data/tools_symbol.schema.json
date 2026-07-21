@@ -32,7 +32,7 @@
     },
     "note": {
       "type": ["string", "null"],
-      "description": "Short human-readable note about the symbol's lifecycle, misuse pattern, or import gotcha. Shown in tool output."
+      "description": "Short human-readable note about the symbol's lifecycle, misuse pattern, or import gotcha. CONTRACT: when populated on a CoreSymbolInfo object, this is written to the CoreSymbol.note Neo4j property (writer_neo4j_spec.py) and rendered by lookup_core_api (src/mcp/tools/spec.py) - both hops are wired and tested (issue #364 C4). As of the same pass, the static-JSON loader (src/indexer/parser_tools_symbols.py::_load_static_tools_symbols) does not yet read this key into CoreSymbolInfo.note, so values curated here do not reach tool output today - see tests/test_parser_tools_symbols.py::TestNoteFieldPendingLoaderWiring, which pins and will fail loudly the moment that loader gap closes (update the pin, don't silence it)."
     }
   }
 }
