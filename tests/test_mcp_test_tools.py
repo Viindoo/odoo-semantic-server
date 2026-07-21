@@ -213,14 +213,26 @@ def test_test_base_classes_states_commit_forbidden(clean_neo4j):
     assert "cr.commit() FORBIDDEN" in result
 
 
-def test_test_base_classes_states_commit_forbidden_static_fallback():
+def test_test_base_classes_states_commit_forbidden_static_fallback(clean_neo4j):
     """Business rule: even without graph data, test_base_classes carries PP3 rule.
 
-    The static fallback (_static_framework_bases_str) is used when no TestHelper
-    nodes are indexed.  It must still contain the PP3 sentinel.
+    Reworked for issue #362 WI-4: ``_static_framework_bases_str`` — the SECOND,
+    divergent copy of the framework-base data — was deleted by WI-3.
+    ``src/indexer/framework_bases.py`` is now the single source of truth for
+    BOTH the graph-backed path and the no-graph (degraded) path: the graph is
+    consulted only to *enrich* file_path/line (``_enrich_with_graph_locations``),
+    never to decide which classes appear, so the curated menu — and therefore
+    the PP3 cursor-contract literal — renders identically whether or not
+    anything is indexed. The BEHAVIOR this test protects is unchanged (an agent
+    querying test_base_classes with nothing indexed must still see the PP3
+    contract); what changed is only the code path used to reach it: the public/
+    underscore entry point (``_test_base_classes``) against a genuinely empty
+    graph, not a deleted private helper. ``clean_neo4j`` scrubs every node at
+    TEST_VERSION before *and* after this test, and nothing is seeded here, so
+    the graph is guaranteed empty — this is the "degraded path" by construction.
     """
-    from src.mcp.tools.test_tools import _static_framework_bases_str
-    result = _static_framework_bases_str("17.0")
+    from src.mcp.tools.test_tools import _test_base_classes
+    result = _test_base_classes(odoo_version=TEST_VERSION, _driver=clean_neo4j)
     assert "cr.commit() FORBIDDEN" in result
 
 
@@ -316,21 +328,66 @@ def clean_versions_neo4j(clean_neo4j):
 
 def test_test_base_classes_v17_excludes_removed_savepointcase(clean_versions_neo4j):
     """Business rule: SavepointCase was removed entering 17.0 (zero occurrences in
-    odoo17/odoo/tests/common.py) — the 17.0 menu must not mention it at all (AC2,
-    phase4-solution.md §6.5/§13).
+    odoo17/odoo/tests/common.py) — the 17.0 menu must never offer it as a USABLE
+    base class (AC2, phase4-solution.md §6.5/§13).
 
-    RED today: seed_framework_helpers() is version-blind, so the graph-backed menu
-    at 17.0 still carries the byte-identical SavepointCase entry every other
-    version gets.
+    ADJUDICATED (issue #362 WI-4, phase5-review.md finding W2 / required change
+    10): the ORIGINAL assertion here was a coarse proxy — "the substring
+    SavepointCase must never appear in the v17 menu" — for the real rule, which
+    is "an agent must never be told to WRITE class TestX(SavepointCase) at v17".
+    A menu-level removal line ("Removed as of Odoo 17.0: SavepointCase ->
+    TransactionCase; ...") does NOT violate that real rule — it SERVES it: the
+    menu is the path an agent actually reads (the name= drill-down is reached
+    only once the agent already suspects the class is gone), and OSM's
+    documented audience includes version-upgrade work, so naming the removal +
+    replacement is strictly more actionable than silence for the reader
+    upgrading FROM v14 who is looking for SavepointCase. So the assertion is
+    RE-EXPRESSED, not loosened: it now targets the exact thing that WOULD
+    violate the rule — SavepointCase rendered as an available CLASS ROW (the
+    "<connector> Name   test_type · ..." shape a caller could mistake for
+    "usable here", captured by the same _CLASS_ROW_RE / _rendered_class_names
+    helpers T10-T12 already share) — while explicitly still requiring the
+    removal line to name both the removed class and its replacement. This is
+    STRONGER than the original: it still fails if SavepointCase is EVER listed
+    as a usable base at v17 (a class-row match would show up in
+    _rendered_class_names), and it additionally pins the removal line's
+    presence, which the original could not express at all.
+
+    RED today (pre-fix): seed_framework_helpers() is version-blind, so the
+    graph-backed menu at 17.0 still carries the byte-identical SavepointCase
+    entry every other version gets — that graph-blindness bug is unrelated to,
+    and unaffected by, this assertion rewrite.
     """
     _seed_framework_menu("17.0")
+    from src.indexer.framework_bases import removed_at
     from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
 
     result = _test_base_classes(odoo_version="17.0", _driver=clean_versions_neo4j)
 
-    assert "SavepointCase" not in result, (
-        f"SavepointCase does not exist at Odoo 17.0 and must not appear. Got:\n{result}"
+    class_rows = _rendered_class_names(result)
+    assert "SavepointCase" not in class_rows, (
+        f"SavepointCase does not exist at Odoo 17.0 and must never be listed as "
+        f"a usable CLASS ROW. Got:\n{result}"
     )
+    assert "HttpSavepointCase" not in class_rows, (
+        f"HttpSavepointCase does not exist at Odoo 17.0 and must never be "
+        f"listed as a usable CLASS ROW. Got:\n{result}"
+    )
+
+    # The removal must still be NAMED explicitly (change 10) — sourced from the
+    # SSOT (removed_at), never a second hardcoded {old: new} literal in this test.
+    removals = removed_at("17.0")
+    assert removals, "removed_at('17.0') must be non-empty for this test to be meaningful"
+    for old_name, replacement in removals:
+        assert old_name in result, (
+            f"{old_name} must still be NAMED in a removal line (it is absent, "
+            f"not unmentionable). Got:\n{result}"
+        )
+        assert replacement in result, (
+            f"the replacement {replacement} must be named alongside {old_name}. "
+            f"Got:\n{result}"
+        )
+
     assert _COMMIT_FORBIDDEN_MSG in result
     assert _last_line(result).startswith("└─ Next:"), (
         f"Next: must be the last line. Got: {_last_line(result)!r}"

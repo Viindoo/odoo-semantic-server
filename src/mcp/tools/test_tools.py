@@ -19,7 +19,14 @@ All tools:
 
 Implementation helpers (``_find_test_examples`` etc.) live HERE and are
 imported by tests directly (FastMCP wraps public tools as FunctionTool —
-not directly callable from tests).
+not directly callable from tests). The EXCEPTION is the ``test_base_classes``
+RENDER/FORMAT cluster (tree renderer, absence/NOT-AVAILABLE branch, era-prefix
+helper, graph-enrichment overlay) — per the Phase 7 / A1 precedent
+(src/mcp/describe.py, src/mcp/listings.py), that cluster was split out to the
+non-tool helper module ``src/mcp/test_render.py`` (issue #362 follow-up, to
+keep this module under the tools/*.py god-file ceiling) and is imported back
+in below; the ``@mcp.tool`` body and its ``_test_base_classes`` impl entry
+point stay HERE.
 
 All DB/Neo4j reads go through the server hub (``_srv.<name>``) accessed at
 call time so ``monkeypatch.setattr(srv, ...)`` still works in tests.
@@ -34,6 +41,10 @@ on the TTL cache — explicit version eliminates that race.
 import sys
 
 from src.constants import VALID_CHUNK_TYPES
+from src.indexer.framework_bases import (
+    framework_base,
+    framework_bases,
+)
 from src.mcp.hints import format_next_step
 from src.mcp.server import (
     READONLY_TOOL_KWARGS,
@@ -50,14 +61,27 @@ from src.mcp.test_query import (
     build_tests_covering_query,
 )
 
+# WI-4 -> issue #362 (Phase 7 / A1 precedent): the test_base_classes
+# render/format cluster (tree renderer, absence/NOT-AVAILABLE branch,
+# era-prefix helper, graph-enrichment overlay) lives in the non-tool helper
+# module src/mcp/test_render.py, split out to keep this tools/*.py module
+# under the god-file ceiling (tests/test_no_god_file.py).
+# _COMMIT_FORBIDDEN_MSG is re-exported here unchanged (not used directly in
+# this module) so `from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG`
+# (tests/test_mcp_test_tools.py) keeps resolving without any test edits.
+from src.mcp.test_render import (
+    _COMMIT_FORBIDDEN_MSG,  # noqa: F401
+    _enrich_with_graph_locations,
+    _format_base_class_not_available,
+    _format_base_classes,
+)
+
 # Test chunk types (WI-1/WI-3, in VALID_CHUNK_TYPES via constants.py).
 _TEST_CHUNK_TYPES = [t for t in ("test_method", "test_class", "js_test") if t in VALID_CHUNK_TYPES]
 
 # Fallback to list literal if constants not yet updated (resilience).
 if not _TEST_CHUNK_TYPES:
     _TEST_CHUNK_TYPES = ["test_method", "test_class", "js_test"]
-
-_COMMIT_FORBIDDEN_MSG = "cr.commit() FORBIDDEN — isolation is savepoint rollback"
 
 # ---------------------------------------------------------------------------
 # Tool 1: find_test_examples
@@ -546,13 +570,27 @@ def _test_base_classes(
     *,
     _driver=None,
 ) -> str:
-    """Return framework base class menu + cursor contract for the version."""
+    """Return framework base class menu + cursor contract for the version.
+
+    ``src.indexer.framework_bases.framework_bases()`` / ``framework_base()``
+    is the AUTHORITY for which classes exist at a version (issue #362 WI-3) —
+    the graph is consulted ONLY to enrich ``file_path``/``line`` (never to
+    decide which classes appear), so a stale already-indexed server can never
+    leak a removed class back into this tool's output before a reindex runs.
+    """
     driver = _driver or _srv._get_driver()
     with driver.session() as session:
         v = _srv._resolve_version(odoo_version, session)
 
-    cypher, params = build_test_base_classes_query(v, name=name)
+    if name:
+        fact = framework_base(v, name)
+        if fact is None:
+            return _format_base_class_not_available(v, name)
+        facts = [fact]
+    else:
+        facts = framework_bases(v)
 
+    cypher, params = build_test_base_classes_query(v, name=name)
     with driver.session() as session:
         from src.mcp.orm import OrmQueryTimeout
         try:
@@ -562,102 +600,8 @@ def _test_base_classes(
         except OrmQueryTimeout as exc:
             return _srv._nonorm_timeout_response(exc, "test_base_classes")
 
-    # era1 note for v8/v9
-    era1_note = ""
-    try:
-        major = int(v.split(".")[0])
-    except (ValueError, AttributeError):
-        major = 99
-    if major in (8, 9):
-        era1_note = (
-            "\n│   Note: v8/v9 era1 - addon-level class hierarchy is regex best-effort."
-        )
-
-    if not rows and not era1_note:
-        # Fallback: framework bases not yet seeded for this version.
-        # Return static known info so tool is always useful.
-        rows_fallback = _static_framework_bases(v)
-        return _format_base_classes(rows_fallback, v) + era1_note
-
-    if not rows:
-        return _static_framework_bases_str(v) + era1_note
-
-    return _format_base_classes(rows, v) + era1_note
-
-
-def _format_base_classes(rows: list[dict], v: str) -> str:
-    """Format TestHelper rows as ADR-0023 tree."""
-    header = f"Odoo {v} - Test framework base classes (odoo/tests/)"
-    lines = [header]
-
-    for i, row in enumerate(rows):
-        is_last = i == len(rows) - 1
-        conn = "└─" if is_last else "├─"
-        name = row.get("name") or "?"
-        test_type = row.get("test_type") or "?"
-        commit_allowed = row.get("commit_allowed")
-        setup_notes = row.get("setup_summary") or []
-
-        if not commit_allowed:
-            commit_str = _COMMIT_FORBIDDEN_MSG
-        else:
-            commit_str = "cr.commit() allowed (@standalone only)"
-        lines.append(f"{conn} {name}     {test_type} · {commit_str}")
-        if setup_notes:
-            indent = "    " if is_last else "│   "
-            lines.append(f"{indent}└─ setup: {', '.join(setup_notes[:3])}")
-
-    # Always append cursor rule (PP3 contract - must appear in output)
-    lines.append(f"├─ Cursor rule:   {_COMMIT_FORBIDDEN_MSG}; isolation = savepoint rollback")
-
-    next_line = format_next_step([
-        f"suggest_pattern(intent='test computed field', odoo_version='{v}',"
-        " category='test') for curated patterns",
-        f"test_class_inspect(name='<ClassName>', odoo_version='{v}')"
-        " to inspect one class",
-    ])
-    lines.append(next_line)
-    return "\n".join(lines)
-
-
-def _static_framework_bases(v: str) -> list[dict]:
-    """Return static known framework bases when graph is not yet populated."""
-    try:
-        major = int(v.split(".")[0])
-    except (ValueError, AttributeError):
-        major = 17
-
-    bases = [
-        {"name": "TransactionCase", "test_type": "transaction",
-         "commit_allowed": False,
-         "setup_summary": ["savepoint-per-method", "auto-rollback"],
-         "parent_bases": []},
-        {"name": "HttpCase", "test_type": "http",
-         "commit_allowed": False,
-         "setup_summary": ["Chrome headless", "start_tour()"],
-         "parent_bases": ["TransactionCase"]},
-        {"name": "SingleTransactionCase", "test_type": "single_transaction",
-         "commit_allowed": False,
-         "setup_summary": ["one-txn", "no savepoint"],
-         "parent_bases": ["TransactionCase"]},
-        {"name": "Form", "test_type": "form",
-         "commit_allowed": False,
-         "setup_summary": ["server-side onchange"],
-         "parent_bases": []},
-    ]
-    if major <= 15:
-        bases.insert(1, {
-            "name": "SavepointCase", "test_type": "savepoint",
-            "commit_allowed": False,
-            "setup_summary": ["legacy savepoint", "merged into TransactionCase v16+"],
-            "parent_bases": ["TransactionCase"],
-        })
-    return bases
-
-
-def _static_framework_bases_str(v: str) -> str:
-    rows = _static_framework_bases(v)
-    return _format_base_classes(rows, v)
+    facts = _enrich_with_graph_locations(facts, rows)
+    return _format_base_classes(facts, v)
 
 
 @mcp.tool(**READONLY_TOOL_KWARGS)

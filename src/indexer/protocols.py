@@ -5,6 +5,7 @@
 #   - Import ONLY from .models - no concrete parser or writer imports (avoids circular deps)
 #   - All protocols use @runtime_checkable so isinstance() works in tests
 
+from collections.abc import Iterable
 from typing import Any, Protocol, runtime_checkable
 
 from .models import (
@@ -94,6 +95,21 @@ class IndexWriterProtocol(Protocol):
         self, helpers: list, profiles: list[str] | None = None,
     ) -> None:
         """Persist framework TestHelper nodes (module='@framework', no DEFINED_IN)."""
+        ...
+
+    def prune_framework_test_helpers(
+        self, odoo_version: str, live_names: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale '@framework' TestHelper nodes (issue #362 WI-4).
+
+        Deletes only names outside the current era's live set AND inside
+        KNOWN_FRAMEWORK_BASE_NAMES (the prune universe) — never a name a
+        source-bearing parse discovered that the curated table does not know
+        about yet (no create/delete ping-pong). ``live_names`` must be a pure
+        function of ``odoo_version`` alone, never of ``odoo_source_root`` or
+        profile, so one profile's prune can never delete what another profile
+        still needs. Returns the count of nodes deleted.
+        """
         ...
 
     def reconcile_test_inherits(self, odoo_version: str) -> int:

@@ -71,6 +71,12 @@ packages = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Parity fixtures are AST-faithful excerpts of FOREIGN source (odoo/tests/common.py per
+# version, incl. Python-2-era v8/v9). They are test DATA that happens to end in .py - their
+# job is to be byte-faithful to upstream, not to satisfy our lint. Linting them is a
+# category error: "fixing" an F821 there would break the very fidelity the parity test
+# (tests/test_framework_bases_parity.py) exists to assert. See that dir's README.md.
+extend-exclude = ["tests/fixtures/odoo_tests_headers"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
