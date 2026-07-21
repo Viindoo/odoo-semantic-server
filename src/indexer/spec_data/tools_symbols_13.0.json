@@ -7,7 +7,7 @@
       "qualified_name": "odoo.tools.image_process",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "image_process(b64source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='') -> bytes",
+      "signature": "image_process(base64_source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='')",
       "note": "New unified image processing function introduced v13. Replaces the removed image_resize_image family."
     },
     {

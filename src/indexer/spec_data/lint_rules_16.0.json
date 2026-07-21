@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: `UserError(_('msg', arg))` lazy format, `_('msg', arg)` translation lazy pattern, `_compute_display_name()` replaces `name_get()` (recommended), `web.Widget` deprecated. `group_operator` still present (renamed `aggregator` v18). `track_visibility` renamed to `tracking` in v16.",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: `UserError(_('msg', arg))` lazy format, `_('msg', arg)` translation lazy pattern, `web.Widget` deprecated. `_compute_display_name()`/`name_get()`: at v16 `name_get()` carries no deprecation marker at all (no `.. deprecated::`, no warning) - the deprecation signal starts v17 (`.. deprecated:: 17.0` + DeprecationWarning), removal is v18; see W8202 rule body below, which already states this correctly. `group_operator` still present at v16 (renamed `aggregator` v18 - verified: v17 fields.py has group_operator only, v18 fields.py has aggregator with a group_operator compat shim). `track_visibility` was renamed to `tracking` in v13, not v16 (verified: file-count of `track_visibility` usage collapses from v12 to v13 while `tracking=` usage climbs sharply, and v13's addons/mail/models/mail_thread.py itself reads `getattr(field, 'tracking', None) or getattr(field, 'track_visibility', None)` - a fallback that only makes sense if `tracking` is the new attribute as of v13) - see W8167 rule body below, which already states v13 correctly.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -201,7 +201,7 @@
     {
       "rule_id": "W8167",
       "kind": "pylint-odoo",
-      "message": "`track_visibility` field attribute renamed to `tracking` in v16.",
+      "message": "`track_visibility` field attribute renamed to `tracking` in v13.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Replace `track_visibility='onchange'` with `tracking=True` in field definition.",
@@ -328,7 +328,7 @@
     {
       "rule_id": "W8202",
       "kind": "pylint-odoo",
-      "message": "`name_get()` override detected — in v16 use `_compute_display_name()` instead.",
+      "message": "`name_get()` override detected - deprecated from v17; use `_compute_display_name()` instead.",
       "severity": "warning",
       "file_pattern": "**/*.py",
       "fix_template": "Replace `def name_get(self):` with `def _compute_display_name(self):` setting `rec.display_name = ...`.",

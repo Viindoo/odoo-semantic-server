@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 11.0. Same landscape as v10. Python 3 only from v11. safe_eval submodule, image_resize_image family, pycompat still present, no date_utils, no SQL class.",
+  "_note": "Curated odoo.tools symbols for Odoo 11.0. Same landscape as v10. Python 3 only from v11. safe_eval submodule, image_resize_image family, pycompat newly present (odoo/tools/pycompat.py is introduced at v11 - absent v8-v10, see tools_symbols_10.0.json note), no date_utils, no SQL class.",
   "symbols": [
     {
       "qualified_name": "odoo.tools.image_resize_image",

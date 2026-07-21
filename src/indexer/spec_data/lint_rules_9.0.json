@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-17",
-  "_note": "Curated from pylint-odoo v1.x for Odoo v9. Inherits v8 rules. Additions: @api.one deprecated, dual-manifest (__openerp__.py still primary), website/portal class checks.",
+  "_note": "Curated from pylint-odoo v1.x for Odoo v9. Inherits v8 rules. Additions: @api.one deprecated (verified: `.. deprecated:: 9.0` marker on odoo.api.one at v9). v9 ships __openerp__.py only (0 __manifest__.py files found in addons/) - dual-manifest support (MANIFEST_NAMES = ('__manifest__.py', '__openerp__.py')) starts at v10, not v9. website/portal class checks.",
   "rules": [
     {
       "rule_id": "W8101",

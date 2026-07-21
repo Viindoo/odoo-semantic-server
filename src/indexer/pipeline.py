@@ -14,6 +14,7 @@ Public API:
 import concurrent.futures
 import hashlib
 import logging
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -718,10 +719,37 @@ def index_core(
     # We filter tool_symbols to exclude any name already produced by parse_odoo_core
     # so the parsed node always wins — and the curated metadata (note, signature) is
     # intentionally dropped for symbols where source-truth already exists.
+    #
+    # issue #364 C3: plain string-equality on qualified_name misses a whole CLASS
+    # of collision. Curated tools_symbols_*.json always uses the flat re-export
+    # name `odoo.tools.<bare_name>` (parser_tools_symbols.py / tools_symbol.schema.json
+    # — "Must start with 'odoo.tools'", never era- or submodule-qualified). A symbol
+    # parsed from an `odoo/tools/<submodule>.py` file in _CORE_FILES (e.g.
+    # `odoo/tools/sql.py`) instead carries the real, submodule-qualified path
+    # (`odoo.tools.sql.SQL`) because parse_odoo_core's module_qname is derived
+    # straight from the file's own relpath (`_extract_from_source`,
+    # parser_odoo_core.py:552). `"odoo.tools.SQL" not in {"odoo.tools.sql.SQL", ...}`
+    # is therefore always True, so the curated entry was never actually deduped —
+    # BOTH nodes get written for v17-v19 (the first version SQL is both parsed and
+    # curated), and lookup_core_api("SQL", ...) deterministically preferred the
+    # thinner curated node (spec.py ranks an EXACT qualified_name match ahead of a
+    # suffix match). Fixed at the class level, not just for SQL: every parsed
+    # symbol whose qualified_name matches `odoo.tools.<submodule>.<bare_name>` also
+    # gets indexed under its flattened `odoo.tools.<bare_name>` alias for dedup
+    # purposes only (never written under that alias — only the real, submodule-
+    # qualified parsed node is written), so ANY future curated flat entry that
+    # collides with a submodule-qualified parsed symbol under odoo/tools/ is caught
+    # by construction, not just the one instance found in current data.
     symbols = parse_odoo_core(source_root, odoo_version)
     tool_symbols = load_tools_symbols(odoo_version, static_data_dir=static_data_dir)
     parsed_qnames: set[str] = {s.qualified_name for s in symbols}
-    deduped_tool_symbols = [s for s in tool_symbols if s.qualified_name not in parsed_qnames]
+    flattened_tools_aliases: set[str] = {
+        f"odoo.tools.{m.group(1)}"
+        for qname in parsed_qnames
+        if (m := re.match(r"^odoo\.tools\.[^.]+\.([^.]+)$", qname))
+    }
+    dedup_qnames = parsed_qnames | flattened_tools_aliases
+    deduped_tool_symbols = [s for s in tool_symbols if s.qualified_name not in dedup_qnames]
     symbols = symbols + deduped_tool_symbols
     writer.write_core_symbols(symbols)
     _logger.info(

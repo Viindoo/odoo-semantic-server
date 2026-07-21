@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 17.0. KEY CHANGE: odoo.tools.SQL class introduced for safe parameterized query building. pycompat still present. html_escape in v17+ should be replaced by markupsafe.escape for Markup-safe usage.",
+  "_note": "Curated odoo.tools symbols for Odoo 17.0. KEY CHANGE: odoo.tools.SQL class introduced for safe parameterized query building. pycompat still present. html_escape has been the literal statement `html_escape = markupsafe.escape` in odoo/tools/misc.py since v15 (unchanged at v17) - it does not need 'replacing' with markupsafe.escape because it already is markupsafe.escape; the curated status flips to 'deprecated' here as an advisory label, not because source gained a new deprecation marker at v17 (none exists in odoo/tools/misc.py at any of v15-v19).",
   "symbols": [
     {
       "qualified_name": "odoo.tools.SQL",
@@ -21,7 +21,7 @@
       "qualified_name": "odoo.tools.image_process",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "image_process(b64source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='') -> bytes",
+      "signature": "image_process(source, size=(0, 0), verify_resolution=False, quality=0, crop=None, colorize=False, output_format='')",
       "note": "Unified image processing function."
     },
     {
