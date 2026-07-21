@@ -62,6 +62,7 @@ markers = [
     "astro: tests driving the Astro SSR/preview server (Node.js 22+ required)",
     "http: FastAPI httpx in-process API tests (no browser, no live server)",
     "unauthenticated: browser test opts out of the auto-login fixture (no session)",
+    "odoo_source: dev-box tests that read a real Odoo checkout on disk (skip per-version khi checkout vắng mặt; override thư mục cha bằng OSM_ODOO_CHECKOUTS)",
 ]
 
 [tool.hatch.build.targets.wheel]

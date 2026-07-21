@@ -23,6 +23,8 @@ callable, but the underscore impls are more stable for unit isolation.
 """
 
 import asyncio
+import os
+import re
 
 import pytest
 
@@ -220,6 +222,351 @@ def test_test_base_classes_states_commit_forbidden_static_fallback():
     from src.mcp.tools.test_tools import _static_framework_bases_str
     result = _static_framework_bases_str("17.0")
     assert "cr.commit() FORBIDDEN" in result
+
+
+# ---------------------------------------------------------------------------
+# T10-T12 (issue #362, WI-0c): test_base_classes must be genuinely PER-VERSION.
+#
+# RED-BEFORE-GREEN: `src/indexer/framework_bases.py` (the production fix) does not
+# exist yet. These tests pin the target read-side contract from
+# /tmp/osm-362/api-contract.md and /tmp/osm-362/phase4-solution.md §6/§7/§13. They
+# are expected to FAIL against the current code, for two independent reasons:
+#   - the graph seed (`_FRAMEWORK_BASES`, src/indexer/parser_test.py) is
+#     version-blind: seed_framework_helpers(v) returns the SAME 11 byte-identical
+#     entries for every version (Defect 1).
+#   - the empty-graph fallback (`_static_framework_bases`, test_tools.py) is a
+#     SECOND, independently-wrong copy of the same data, gated only by a single
+#     inline `major <= 15` check (Defect 2).
+#   - the `name=` drill-down silently prints the WHOLE menu on a miss instead of
+#     stating absence (Defect 3).
+# ---------------------------------------------------------------------------
+
+_REAL_VERSIONS_UNDER_TEST = [
+    "8.0", "9.0", "10.0", "11.0", "12.0", "13.0",
+    "14.0", "15.0", "16.0", "17.0", "18.0", "19.0",
+]
+
+# A class ROW is the only line shaped "<connector> <Name>   <test_type> · ...";
+# test_type is one of the 6 literal values the FrameworkBaseFacts contract allows
+# (api-contract.md). Matching on that shape recovers the rendered NAME SET without
+# coupling to prose wording that will change once the real fix ships.
+_CLASS_ROW_RE = re.compile(
+    r"^[├└]─ (\S+)\s+(?:transaction|savepoint|single_transaction|http|form|unittest) · ",
+)
+
+
+def _rendered_class_names(result: str) -> set[str]:
+    """Return the set of class names rendered as top-level rows in a tree."""
+    names = set()
+    for line in result.splitlines():
+        m = _CLASS_ROW_RE.match(line)
+        if m:
+            names.add(m.group(1))
+    return names
+
+
+def _last_line(result: str) -> str:
+    return result.rstrip("\n").splitlines()[-1]
+
+
+def _seed_framework_menu(odoo_version: str) -> None:
+    """Seed TestHelper framework nodes via the REAL (current, unfixed) indexer path.
+
+    seed_framework_helpers() is version-blind today (src/indexer/parser_test.py
+    _FRAMEWORK_BASES) — every version receives the same 11 nodes. Seeding through
+    the actual production writer (not hand-rolled Cypher) is what makes the
+    per-version assertions below genuinely fail against today's code — it exercises
+    the real defect location (the write side), not a test fixture stand-in.
+    """
+    from src.indexer.parser_test import seed_framework_helpers
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    writer = Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+    try:
+        writer.write_framework_test_helpers(seed_framework_helpers(odoo_version))
+    finally:
+        writer.close()
+
+
+def _wipe_framework_helpers(driver, versions: list[str]) -> None:
+    with driver.session() as s:
+        s.run(
+            "MATCH (h:TestHelper {module: '@framework'}) WHERE h.odoo_version IN $vs "
+            "DETACH DELETE h",
+            vs=versions,
+        )
+
+
+@pytest.fixture
+def clean_versions_neo4j(clean_neo4j):
+    """Wipe framework TestHelper nodes at the REAL Odoo versions T10-T12 exercise.
+
+    clean_neo4j only scrubs odoo_version == TEST_VERSION ('99.0'); T10-T12 render
+    output for real version strings (8.0..19.0), so this fixture keeps those reads
+    isolated from anything else the shared session-scoped Neo4j container holds.
+    """
+    _wipe_framework_helpers(clean_neo4j, _REAL_VERSIONS_UNDER_TEST)
+    yield clean_neo4j
+    _wipe_framework_helpers(clean_neo4j, _REAL_VERSIONS_UNDER_TEST)
+
+
+def test_test_base_classes_v17_excludes_removed_savepointcase(clean_versions_neo4j):
+    """Business rule: SavepointCase was removed entering 17.0 (zero occurrences in
+    odoo17/odoo/tests/common.py) — the 17.0 menu must not mention it at all (AC2,
+    phase4-solution.md §6.5/§13).
+
+    RED today: seed_framework_helpers() is version-blind, so the graph-backed menu
+    at 17.0 still carries the byte-identical SavepointCase entry every other
+    version gets.
+    """
+    _seed_framework_menu("17.0")
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="17.0", _driver=clean_versions_neo4j)
+
+    assert "SavepointCase" not in result, (
+        f"SavepointCase does not exist at Odoo 17.0 and must not appear. Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:"), (
+        f"Next: must be the last line. Got: {_last_line(result)!r}"
+    )
+
+
+def test_test_base_classes_v15_shows_savepointcase_deprecated(clean_versions_neo4j):
+    """Business rule: SavepointCase is real but DEPRECATED at 15.0 (merged into
+    TransactionCase; odoo15/odoo/tests/common.py:873 warns DeprecationWarning).
+
+    RED today: _FRAMEWORK_BASES's SavepointCase text says 'deprecated alias'
+    (lowercase, version-blind) — never the word DEPRECATED — so a v15-specific
+    deprecation signal is not observable in the output at all.
+    """
+    _seed_framework_menu("15.0")
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="15.0", _driver=clean_versions_neo4j)
+
+    assert "SavepointCase" in result
+    assert "DEPRECATED" in result, (
+        f"15.0 SavepointCase must be flagged DEPRECATED. Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:")
+
+
+def test_test_base_classes_v16_shares_v15_deprecated_era(clean_versions_neo4j):
+    """Business rule: v15 and v16 are DELIBERATELY the same era — identical menu and
+    semantics (odoo16/odoo/tests/common.py:826 carries the same DeprecationWarning
+    as v15). The answer legitimately does NOT change here even though it does
+    change at 14->15 and 16->17.
+
+    RED today: same root cause as v15 — no DEPRECATED marker is ever emitted.
+    """
+    _seed_framework_menu("16.0")
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="16.0", _driver=clean_versions_neo4j)
+
+    assert "SavepointCase" in result
+    assert "DEPRECATED" in result, (
+        f"16.0 SavepointCase must be flagged DEPRECATED (same era as 15.0). Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:")
+
+
+def test_test_base_classes_v14_shows_savepointcase_available_and_httpcasecommon(
+    clean_versions_neo4j,
+):
+    """Business rule: at 14.0 SavepointCase is real and RECOMMENDED, not deprecated
+    (`warnings` is not even imported by odoo14/odoo/tests/common.py — deprecation
+    started at v15) and HttpCaseCommon exists ONLY at 14.0.
+
+    RED today: SavepointCase's version-blind text already says 'deprecated alias'
+    — simply FALSE at 14.0.
+    """
+    _seed_framework_menu("14.0")
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="14.0", _driver=clean_versions_neo4j)
+
+    assert "SavepointCase" in result
+    assert "HttpCaseCommon" in result
+    assert "DEPRECATED" not in result
+    assert "alias" not in result, (
+        f"14.0 SavepointCase is not deprecated — 'alias' text is a v8-v16-era leak. "
+        f"Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:")
+
+
+def test_test_base_classes_v11_shows_treecase(clean_versions_neo4j):
+    """Business rule: TreeCase's real window is 11.0-14.0
+    (odoo11/odoo/tests/common.py:94) — it must be listed at 11.0.
+
+    RED today: with no graph data seeded for 11.0, the empty-graph fallback
+    (_static_framework_bases) never lists TreeCase at ANY version — it is simply
+    absent from the hand-written 4/5-entry fallback list.
+    """
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="11.0", _driver=clean_versions_neo4j)
+
+    assert "TreeCase" in result, (
+        f"TreeCase exists at 11.0 (odoo11/odoo/tests/common.py:94). Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:")
+
+
+def test_test_base_classes_v8_header_uses_openerp_prefix_and_footer_is_last_line(
+    clean_versions_neo4j,
+):
+    """Business rule: v8/v9's test package lives under openerp/tests/, not
+    odoo/tests/ (the odoo/tests/ path exists on those branches but holds only
+    __pycache__ — trap D3, phase4-solution.md §0) — the header must say so. Also:
+    the Next: footer must be the LAST line of every rendered output, including
+    v8/v9.
+
+    RED today (two independent bugs pinned by one test):
+      1. _format_base_classes() hardcodes '(odoo/tests/)' in the header regardless
+         of version.
+      2. the v8/v9 era1_note is appended AFTER the already-terminated Next:
+         footer, so Next: is never the last line for v8/v9 — a real bug this fix
+         closes.
+    """
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="8.0", _driver=clean_versions_neo4j)
+
+    header = result.splitlines()[0]
+    assert "openerp/tests/" in header, (
+        f"v8.0 header must reference openerp/tests/, not odoo/tests/. Got: {header!r}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:"), (
+        f"Next: must be the LAST line of the output, even at v8.0 (today the era1 "
+        f"note prints AFTER the footer). Got last line: {_last_line(result)!r}"
+    )
+
+
+def test_test_base_classes_99_resolves_to_modern_menu_with_out_of_catalogue_note(
+    clean_versions_neo4j,
+):
+    """Business rule: a major outside the surveyed catalogue (8..19), including the
+    99.0 test sentinel, resolves to the newest known era (v17+) AND the output
+    states the substitution explicitly — fail-open-and-say-so, never
+    fail-open-silently (api-contract.md §Out-of-catalogue, phase4-solution.md §7).
+
+    RED today: no out-of-catalogue concept exists at all — 99.0 falls through the
+    generic `major = 99` fallback with no provenance line.
+    """
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="99.0", _driver=clean_versions_neo4j)
+
+    assert "TransactionCase" in result
+    assert "outside the surveyed catalogue" in result, (
+        f"99.0 must carry an explicit out-of-catalogue provenance line naming the "
+        f"substitution (phase4-solution.md §7). Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:")
+
+
+def test_test_base_classes_drilldown_states_absence_not_the_whole_menu(
+    clean_versions_neo4j,
+):
+    """Business rule (Defect 3): drilling into a class that does not exist at the
+    resolved version must answer NOT AVAILABLE and name the replacement — never
+    silently fall back to printing the entire menu, which is today's behavior.
+
+    RED today: with no matching TestHelper row, _test_base_classes() falls
+    straight through to _static_framework_bases_str(v) IGNORING the `name` filter
+    entirely — the full generic menu comes back regardless of what was asked for.
+    """
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(
+        odoo_version="17.0", name="SavepointCase", _driver=clean_versions_neo4j,
+    )
+
+    assert "NOT AVAILABLE" in result, (
+        f"absence must be stated explicitly, not answered by silently printing the "
+        f"whole menu. Got:\n{result}"
+    )
+    assert "TransactionCase" in result, "the replacement class must be named"
+    assert "TreeCase" not in result, (
+        f"a drill-down answer must not render any OTHER class row — it must not "
+        f"fall back to the whole menu. Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert "Next:" in result
+
+
+def test_test_base_classes_unknown_name_states_not_a_known_base_class(
+    clean_versions_neo4j,
+):
+    """Business rule: an unrecognized class name gets an explicit 'not a known Odoo
+    framework base class' answer (phase4-solution.md §6.6), not the entire menu.
+
+    RED today: same fall-through as the drill-down test above — an unknown name
+    also silently renders the full generic menu.
+    """
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(
+        odoo_version="17.0", name="TotallyUnknownClass", _driver=clean_versions_neo4j,
+    )
+
+    assert "not a known Odoo framework base class" in result, (
+        f"expected an explicit unknown-class answer. Got:\n{result}"
+    )
+    assert "TotallyUnknownClass" in result
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert "Next:" in result
+
+
+def test_test_base_classes_graph_and_fallback_agree_on_class_names(
+    clean_versions_neo4j,
+):
+    """Business rule (SSOT, Defect 2): the framework base-class NAME SET rendered
+    from a POPULATED graph must equal the name set rendered from an EMPTY graph, at
+    every surveyed Odoo version — one source of truth, not two copies that can
+    silently disagree.
+
+    RED today: the graph seed (_FRAMEWORK_BASES, version-blind) always emits the
+    SAME 11 names; the empty-graph fallback (_static_framework_bases) emits a
+    hand-ordered 4-or-5-name list gated only by `major <= 15`. They diverge at
+    every single surveyed version — this is the only test that can catch a
+    regression of that split-brain defect once it is fixed.
+    """
+    from src.mcp.tools.test_tools import _test_base_classes
+
+    mismatches: dict[str, tuple[list[str], list[str]]] = {}
+    for v in _REAL_VERSIONS_UNDER_TEST:
+        empty_names = _rendered_class_names(
+            _test_base_classes(odoo_version=v, _driver=clean_versions_neo4j)
+        )
+        _seed_framework_menu(v)
+        populated_names = _rendered_class_names(
+            _test_base_classes(odoo_version=v, _driver=clean_versions_neo4j)
+        )
+        _wipe_framework_helpers(clean_versions_neo4j, [v])
+
+        if empty_names != populated_names:
+            mismatches[v] = (sorted(empty_names), sorted(populated_names))
+
+    assert not mismatches, (
+        "graph path and empty-graph fallback must render the SAME class-name set "
+        f"at every surveyed version (SSOT). Divergences (empty vs populated): "
+        f"{mismatches}"
+    )
 
 
 # ---------------------------------------------------------------------------

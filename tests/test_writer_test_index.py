@@ -369,6 +369,19 @@ def test_framework_test_helpers_seeded_per_version(writer, neo4j_driver):
 
     Each Odoo version gets its own set of framework TestHelper nodes.
     They use module='@framework' (MED-3) and have no DEFINED_IN edge.
+
+    CORRECTED (issue #362, ADR-0054 draft): this test used to also assert
+    `"SavepointCase" in names` at TEST_VERSION ('99.0'). Under the out-of-catalogue
+    policy (api-contract.md §Out-of-catalogue), 99.0 resolves through the
+    open-ended v17+ era, and SavepointCase does not exist there — it has zero
+    occurrences in odoo17/odoo/tests/common.py (removed entering 17.0). That
+    assertion was protecting a WRONG answer (the exact bug issue #362 reports), so
+    it is DROPPED here rather than kept — per ETHOS #8, a test must not be kept
+    green by locking in a known-false expectation. The two era-invariant name
+    assertions stay unchanged (real at every surveyed version 8.0-19.0). In their
+    place, an EXACT set-equality assertion against the future SSOT
+    (`framework_bases(TEST_VERSION)`, api-contract.md) is added — a strictly
+    stronger write-path contract than the old per-name sampling.
     """
     helpers = seed_framework_helpers(TEST_VERSION)
     writer.write_framework_test_helpers(helpers)
@@ -382,7 +395,18 @@ def test_framework_test_helpers_seeded_per_version(writer, neo4j_driver):
     names = rows["names"]
     assert "TransactionCase" in names
     assert "HttpCase" in names
-    assert "SavepointCase" in names
+
+    # RED today: src.indexer.framework_bases does not exist yet (issue #362 fix).
+    # Deferred import — collection of this file must stay clean even though the
+    # module is missing; the ImportError below is the RED proof, not a collection
+    # failure.
+    from src.indexer.framework_bases import framework_bases
+    expected = {f.name for f in framework_bases(TEST_VERSION)}
+    assert set(names) == expected, (
+        f"persisted framework TestHelper name set must exactly equal "
+        f"framework_bases({TEST_VERSION!r}) — got {sorted(names)}, "
+        f"expected {sorted(expected)}"
+    )
 
 
 def test_framework_test_helper_has_no_defined_in_edge(writer, neo4j_driver):
@@ -400,6 +424,159 @@ def test_framework_test_helper_has_no_defined_in_edge(writer, neo4j_driver):
         ).single()["cnt"]
     assert count == 0, (
         f"Framework TestHelper nodes must have NO DEFINED_IN edge (MED-3), got {count}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# T9 / T9b / T9c (issue #362, WI-0c): the prune must be executable and safe.
+#
+# api-contract.md "Writer contract":
+#   def prune_framework_test_helpers(self, odoo_version, live_names) -> int
+#   Cypher: MATCH ... WHERE NOT th.name IN $live_names AND th.name IN $known_universe
+#           DETACH DELETE th
+#   INVARIANT: live_names must NEVER become a function of odoo_source_root.
+#
+# Without this prune, a code-only fix cannot remove a stale node from an already-
+# indexed graph — write_framework_test_helpers() is pure MERGE+SET (no delete),
+# and gc_stale_test_nodes() covers TestClass/TestMethod only, never TestHelper
+# (phase4-solution.md R1/Defect 4). RED today: neither
+# `Neo4jWriter.prune_framework_test_helpers` nor
+# `src.indexer.framework_bases.KNOWN_FRAMEWORK_BASE_NAMES` exists yet.
+# ---------------------------------------------------------------------------
+
+def test_prune_framework_test_helpers_removes_stale_era_classes_but_spares_unknown_names(
+    writer, neo4j_driver,
+):
+    """Business rule: prune_framework_test_helpers() removes a framework TestHelper
+    node whose class the CURRENT era no longer declares (e.g. SavepointCase after a
+    reindex moves a version onto the v17+ era), but NEVER deletes a node outside
+    the known-name universe — a parse-discovered future class must survive a
+    source-less (curated-only) reindex, or one profile's reindex could delete what
+    another profile still needs (R-1, phase4-solution.md §12).
+    """
+    # Seed the v15/v16-era (E6) framework menu directly — mirrors what a real
+    # per-era table would have already written before a v17 reindex runs.
+    e6_names = [
+        "BaseCase", "Form", "HttpCase", "HttpSavepointCase", "O2MForm",
+        "SavepointCase", "SingleTransactionCase", "TestCase", "TransactionCase",
+    ]
+    with neo4j_driver.session() as s:
+        for name in e6_names:
+            s.run(
+                """
+                MERGE (h:TestHelper {name: $name, module: '@framework', odoo_version: $v})
+                SET h.origin = 'framework', h.test_type = 'transaction',
+                    h.commit_allowed = false, h.setup_summary = []
+                """,
+                name=name, v=TEST_VERSION,
+            )
+        # A node OUTSIDE the known-name universe — simulates a class a future
+        # parse discovered that the curated table does not know about yet.
+        s.run(
+            """
+            MERGE (h:TestHelper {name: 'TotallyNewBase', module: '@framework', odoo_version: $v})
+            SET h.origin = 'framework', h.test_type = 'transaction',
+                h.commit_allowed = false, h.setup_summary = []
+            """,
+            v=TEST_VERSION,
+        )
+
+    from src.indexer.framework_bases import KNOWN_FRAMEWORK_BASE_NAMES
+    assert "TotallyNewBase" not in KNOWN_FRAMEWORK_BASE_NAMES, (
+        "test setup sanity check: the survivor name must genuinely be outside "
+        "the known universe"
+    )
+
+    # "Reindex" onto the v17+ (E7) era — SavepointCase/HttpSavepointCase are gone.
+    e7_names = [
+        "BaseCase", "Form", "HttpCase", "O2MForm",
+        "SingleTransactionCase", "TestCase", "TransactionCase",
+    ]
+    deleted = writer.prune_framework_test_helpers(TEST_VERSION, e7_names)
+
+    with neo4j_driver.session() as s:
+        remaining = s.run(
+            "MATCH (h:TestHelper {module: '@framework', odoo_version: $v}) "
+            "RETURN collect(h.name) AS names",
+            v=TEST_VERSION,
+        ).single()["names"]
+
+    assert "SavepointCase" not in remaining, (
+        f"SavepointCase is outside the v17+ era and must be pruned. Got: {remaining}"
+    )
+    assert "HttpSavepointCase" not in remaining, (
+        f"HttpSavepointCase is outside the v17+ era and must be pruned. Got: {remaining}"
+    )
+    assert "TotallyNewBase" in remaining, (
+        "a node outside KNOWN_FRAMEWORK_BASE_NAMES must SURVIVE the prune — "
+        "otherwise a source-less (curated-only) reindex could delete a "
+        f"parse-discovered class another profile still needs. Got: {remaining}"
+    )
+    assert deleted >= 2, f"expected at least 2 stale nodes pruned, prune returned {deleted}"
+
+
+def test_framework_bases_live_names_never_depend_on_source_root(tmp_path):
+    """Business rule (ADR-0054 invariant, api-contract.md "Writer contract"): the
+    NAME SET framework_bases() returns for a version must be identical whether or
+    not a source root is supplied. If it were not, one profile's reindex (with a
+    source checkout reachable) could compute a different live_names set than
+    another profile's reindex (without one), and prune_framework_test_helpers
+    could delete a class one profile still needs while another profile re-creates
+    it — a create/delete ping-pong (R-1/R-2, phase4-solution.md §12).
+    """
+    from src.indexer.framework_bases import framework_bases
+
+    for v in ["8.0", "11.0", "14.0", "15.0", "17.0", "99.0"]:
+        with_root = {f.name for f in framework_bases(v, odoo_source_root=tmp_path)}
+        without_root = {f.name for f in framework_bases(v)}
+        assert with_root == without_root, (
+            f"live_names diverged at {v}: with_root={sorted(with_root)} "
+            f"without_root={sorted(without_root)}"
+        )
+
+
+def test_write_framework_test_helpers_preserves_line_on_source_less_reseed(
+    writer, neo4j_driver,
+):
+    """Business rule (api-contract.md "Writer contract"): a source-less reseed must
+    NOT wipe a previously parse-derived `line` value. The ordinary profile-reindex
+    path (reconcile_test_surface) has no source root at all, so if it always
+    overwrote `line`/`file_path` unconditionally, every enrichment an earlier
+    source-bearing run (index-core) produced would be lost on the very next
+    nightly pass.
+
+    RED today: `_write_test_helpers_batch`'s `SET th.line = $line` /
+    `th.file_path = $file_path` are UNCONDITIONAL — they always overwrite, even
+    with None. This targets EXISTING code (Neo4jWriter.write_framework_test_helpers
+    already exists) — no new module import is needed for this one to fail today.
+    """
+    parse_enriched = TestHelperInfo(
+        name="TransactionCase", module="@framework", odoo_version=TEST_VERSION,
+        origin="framework", test_type="transaction", commit_allowed=False,
+        setup_summary=["parse-derived"], file_path="odoo/tests/common.py", line=805,
+    )
+    writer.write_framework_test_helpers([parse_enriched])
+
+    source_less = TestHelperInfo(
+        name="TransactionCase", module="@framework", odoo_version=TEST_VERSION,
+        origin="framework", test_type="transaction", commit_allowed=False,
+        setup_summary=["curated"], file_path=None, line=None,
+    )
+    writer.write_framework_test_helpers([source_less])
+
+    with neo4j_driver.session() as s:
+        row = s.run(
+            "MATCH (h:TestHelper {name:'TransactionCase', module:'@framework', "
+            "odoo_version:$v}) RETURN h.line AS line, h.file_path AS file_path",
+            v=TEST_VERSION,
+        ).single()
+
+    assert row["line"] == 805, (
+        f"a source-less reseed must not wipe a parse-derived line; got {row['line']!r}"
+    )
+    assert row["file_path"] == "odoo/tests/common.py", (
+        f"a source-less reseed must not wipe a parse-derived file_path; "
+        f"got {row['file_path']!r}"
     )
 
 
