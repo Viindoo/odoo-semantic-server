@@ -143,6 +143,44 @@ rather than forced into an oracle that does not exist).
 
 ---
 
+## Follow-up: index-core prune-on-full-write for LintRule / CLICommand / CLIFlag (issue #364 F2)
+
+Removing a curated fact is a distinct failure mode from *changing* one, and the minimum bar above
+does not address it: when #364 DELETED lint rule `W8140` from the v14-v19 curated sets, the next
+`index-core` for those versions left a stale `LintRule {rule_id:'W8140'}` node behind forever,
+because `write_lint_rules` / `write_cli_commands` / `write_cli_flags` are MERGE-only, version-keyed,
+and never delete. Same latent class for CLICommand/CLIFlag.
+
+**Rule:** `pipeline.index_core` (the SOLE caller of those three writers, and always writing the
+FULL set for a version) runs an UNCONDITIONAL version-scoped prune immediately after each write,
+against the live id/name/key set it just wrote — mirroring `prune_framework_test_helpers`
+(ADR-0054). No `prune=` flag is needed because there is no partial caller (the CLI exposes no
+family filter). Two mandatory safety guards, both mirroring existing precedent:
+- **Empty-guard:** an empty live set NEVER deletes (a transient/degraded parse must not wipe a
+  version) — same shape as the `write_pattern_examples` empty-guard.
+- **Soft-drop gate:** if a single run would delete more than a large fraction
+  (`_PRUNE_SOFT_DROP_MAX_FRACTION`, 50%) of a version's existing nodes, the prune is SKIPPED with a
+  WARNING — mirroring `gc_stale_modules`'s skip-and-warn guard and this ADR's sibling ADR-0005
+  (">20% CoreSymbol drop = suspect path refactor"). This protects against a checkout that silently
+  lost its source (e.g. `odoo/addons/test_lint/tests/`) before it can delete the whole version.
+
+CLIFlag is keyed on the composite `(flag_name, command_name, odoo_version)`; the prune compares a
+joined `flag_name|command_name` string so the same `flag_name` under different commands stays
+distinct. `command_name` is never NULL in the stored graph (Neo4j MERGE rejects a null key
+property; `parse_cli_flags` defaults it to the command name, `"server"` for global config flags),
+so the `coalesce(command_name,'')` is defensive belt-and-suspenders, not a live path.
+
+**CoreSymbol is EXEMPT — never add a `prune_core_symbols`.** Its cross-version lifecycle
+(`added_in`/`removed_in`/`deprecated_in` properties + `REPLACED_BY` edges) is precisely what
+`api_version_diff` / `find_deprecated_usage` / `lookup_core_api` consume; deleting a stale-version
+CoreSymbol node would destroy that history. A stale WRONG CoreSymbol from a same-version *correction*
+(not a lifecycle event — e.g. #364's `odoo.tools.pycompat` @ v8-v10 and `odoo.tools.image_process`
+@ v19) is cleaned by a one-time reviewed Cypher (`ops/cleanup_stale_tools_symbols_364.cypher`), not
+by a standing prune. A regression test (`test_no_prune_core_symbols_method_exists`) guards that no
+`prune_core_symbols` method is ever added to `Neo4jWriter`.
+
+---
+
 ## Alternatives Considered
 
 **Alt 1: Require an oracle for every curated fact, no exceptions.** Rejected. B4's finding shows

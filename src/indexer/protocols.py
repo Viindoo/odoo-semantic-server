@@ -146,6 +146,42 @@ class IndexWriterProtocol(Protocol):
         from_version: str,
         to_version: str,
     ) -> None: ...
+
+    def prune_lint_rules(
+        self, odoo_version: str, live_rule_ids: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale LintRule nodes at ``odoo_version`` (issue #364).
+
+        ``write_lint_rules`` is MERGE-only; index_core writes the FULL rule set
+        per version, so a rule_id removed upstream (e.g. #364 dropped W8140 from
+        v14-v19) is deleted by comparing against this run's live id set.
+        Empty-guard: an empty ``live_rule_ids`` NEVER deletes. Soft-drop gate:
+        skips + warns if the prune would remove a large fraction of the version's
+        nodes. CoreSymbol is exempt (lifecycle history). Returns count deleted.
+        """
+        ...
+
+    def prune_cli_commands(
+        self, odoo_version: str, live_names: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale CLICommand nodes at ``odoo_version`` (issue #364).
+
+        Same prune-on-full-write contract as :meth:`prune_lint_rules`, keyed on
+        the CLICommand ``name``. Empty-guard + soft-drop gate. Returns count.
+        """
+        ...
+
+    def prune_cli_flags(
+        self, odoo_version: str, live_keys: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale CLIFlag nodes at ``odoo_version`` (issue #364).
+
+        CLIFlag identity is (flag_name, command_name, odoo_version) with a
+        NULLABLE command_name; ``live_keys`` are joined strings
+        ``f"{flag_name}|{command_name or ''}"`` so the null case is unambiguous.
+        Empty-guard + soft-drop gate. Returns count deleted.
+        """
+        ...
     def write_spec_metadata(
         self, kind: str, odoo_version: str, curate_status: str,
     ) -> None: ...

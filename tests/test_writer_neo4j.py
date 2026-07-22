@@ -1318,6 +1318,210 @@ def test_write_cli_flag_replacement_creates_replaced_by_edge(writer, neo4j_drive
 # test_setup_indexes_makes_lookups_index_backed (parametrized).
 
 
+# --- Version-scoped spec prune tests (issue #364) ----------------------------
+# index-core is the SOLE caller of write_lint_rules / write_cli_commands /
+# write_cli_flags and ALWAYS writes the FULL set for a version, so those
+# MERGE-only writers get an unconditional prune-on-full-write. These tests
+# protect: (1) a rule/command/flag REMOVED upstream (e.g. #364 dropped W8140
+# from v14-v19) is DETACH DELETEd at the run's version while kept ids survive;
+# (2) NOTHING leaks across versions; (3) an empty live set never wipes a version
+# (degraded-parse guard); (4) the soft-drop gate refuses a suspicious mass-delete
+# (ADR-0005 / gc_stale_modules parity); (5) CoreSymbol stays prune-exempt.
+
+_SECOND_VERSION = "98.0"  # manually cleaned; proves cross-version isolation
+
+
+@pytest.fixture
+def clean_second_version(neo4j_driver):
+    """clean_neo4j only wipes TEST_VERSION (99.0); this also wipes 98.0 so the
+    cross-version-isolation assertions start and end from a clean slate."""
+    def _wipe():
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+                v=_SECOND_VERSION,
+            )
+    _wipe()
+    yield
+    _wipe()
+
+
+def test_prune_lint_rules_version_scoped(writer, neo4j_driver, clean_second_version):
+    """prune_lint_rules deletes the removed rule_id at the run's version ONLY.
+
+    #364 removed W8140 from v14-v19; a full index-core rewrite must DELETE the
+    stale W8140 LintRule (write_lint_rules is MERGE-only and never deletes),
+    while the SAME rule_id at another version survives (version-scoped prune).
+    """
+    stale, kept = "W8140", "E8502"
+    writer.write_lint_rules([
+        LintRuleInfo(rule_id=stale, odoo_version=TEST_VERSION, kind="pylint-odoo"),
+        LintRuleInfo(rule_id=kept, odoo_version=TEST_VERSION, kind="pylint-odoo"),
+    ])
+    # Same stale id at a DIFFERENT version — must NOT be touched by a 99.0 prune.
+    writer.write_lint_rules([
+        LintRuleInfo(rule_id=stale, odoo_version=_SECOND_VERSION, kind="pylint-odoo"),
+    ])
+
+    deleted = writer.prune_lint_rules(TEST_VERSION, {kept})
+    assert deleted == 1
+
+    with neo4j_driver.session() as session:
+        v99 = set(session.run(
+            "MATCH (l:LintRule {odoo_version:$v}) RETURN collect(l.rule_id) AS ids",
+            v=TEST_VERSION,
+        ).single()["ids"])
+        v98 = set(session.run(
+            "MATCH (l:LintRule {odoo_version:$v}) RETURN collect(l.rule_id) AS ids",
+            v=_SECOND_VERSION,
+        ).single()["ids"])
+    assert stale not in v99 and kept in v99, f"v99 after prune: {sorted(v99)}"
+    assert stale in v98, "prune must NOT cross versions (W8140@98.0 was wiped)"
+
+
+def test_prune_cli_commands_version_scoped(writer, neo4j_driver, clean_second_version):
+    """prune_cli_commands deletes a removed command name at the run's version only."""
+    stale, kept = "obsolete-cmd", "server"
+    writer.write_cli_commands([
+        CLICommandInfo(stale, TEST_VERSION),
+        CLICommandInfo(kept, TEST_VERSION),
+    ])
+    writer.write_cli_commands([CLICommandInfo(stale, _SECOND_VERSION)])
+
+    deleted = writer.prune_cli_commands(TEST_VERSION, {kept})
+    assert deleted == 1
+
+    with neo4j_driver.session() as session:
+        v99 = set(session.run(
+            "MATCH (c:CLICommand {odoo_version:$v}) RETURN collect(c.name) AS n",
+            v=TEST_VERSION,
+        ).single()["n"])
+        v98 = set(session.run(
+            "MATCH (c:CLICommand {odoo_version:$v}) RETURN collect(c.name) AS n",
+            v=_SECOND_VERSION,
+        ).single()["n"])
+    assert stale not in v99 and kept in v99, f"v99 after prune: {sorted(v99)}"
+    assert stale in v98, "prune must NOT cross versions"
+
+
+def test_prune_cli_flags_version_scoped_composite_key(
+    writer, neo4j_driver, clean_second_version,
+):
+    """prune_cli_flags keys on the (flag_name|command_name) COMPOSITE.
+
+    The SAME flag_name can appear under DIFFERENT commands (distinct CLIFlag
+    nodes), so a prune that keyed on flag_name alone would wrongly conflate them.
+    Here '--port' exists under both 'neo4j' (removed upstream) and 'server'
+    (kept): the prune must delete ONLY '--port|neo4j' and spare '--port|server'.
+    Also version-scoped: the stale key at another version survives.
+
+    NOTE: command_name is never NULL in the stored graph — Neo4j MERGE forbids a
+    null key property and parse_cli_flags defaults it to the command name
+    ('server' for the global config flags), so there is no bare-null node to
+    test; the prune's coalesce(command_name,'') is defensive belt-and-suspenders.
+    """
+    writer.write_cli_flags([
+        CLIFlagInfo("--port", "neo4j", TEST_VERSION),        # stale (removed)
+        CLIFlagInfo("--port", "server", TEST_VERSION),       # kept (same name!)
+        CLIFlagInfo("--http-port", "server", TEST_VERSION),  # kept
+    ])
+    # Same stale key at another version — must survive a 99.0 prune.
+    writer.write_cli_flags([CLIFlagInfo("--port", "neo4j", _SECOND_VERSION)])
+
+    # live_keys built exactly as pipeline.index_core does.
+    live_keys = {"--port|server", "--http-port|server"}
+    deleted = writer.prune_cli_flags(TEST_VERSION, live_keys)
+    assert deleted == 1, "only --port|neo4j (removed) must be deleted"
+
+    def _keys(session, v):
+        return set(session.run(
+            "MATCH (f:CLIFlag {odoo_version:$v}) "
+            "RETURN collect(f.flag_name + '|' + coalesce(f.command_name,'')) AS ks",
+            v=v,
+        ).single()["ks"])
+
+    with neo4j_driver.session() as session:
+        v99 = _keys(session, TEST_VERSION)
+        v98 = _keys(session, _SECOND_VERSION)
+    assert "--port|neo4j" not in v99
+    assert "--port|server" in v99, (
+        "same-named flag under a DIFFERENT command must survive — the prune must "
+        "key on the composite flag_name|command_name, not flag_name alone"
+    )
+    assert "--http-port|server" in v99
+    assert "--port|neo4j" in v98, "prune must NOT cross versions"
+
+
+def test_prune_lint_rules_empty_live_never_wipes(writer, neo4j_driver):
+    """Empty-guard: an empty live set NEVER deletes (a degraded/transient parse
+    that produced no rows must never wipe a version's curated rules)."""
+    writer.write_lint_rules([
+        LintRuleInfo("W8140", TEST_VERSION, "pylint-odoo"),
+        LintRuleInfo("E8502", TEST_VERSION, "pylint-odoo"),
+    ])
+    deleted = writer.prune_lint_rules(TEST_VERSION, set())
+    assert deleted == 0
+    with neo4j_driver.session() as session:
+        n = session.run(
+            "MATCH (l:LintRule {odoo_version:$v}) RETURN count(l) AS n",
+            v=TEST_VERSION,
+        ).single()["n"]
+    assert n == 2, "empty live set must NEVER delete (degraded-parse guard)"
+
+
+def test_prune_cli_flags_empty_live_never_wipes(writer, neo4j_driver):
+    """Empty-guard on the CLIFlag family too (shares the guard, exercised here)."""
+    writer.write_cli_commands([CLICommandInfo("server", TEST_VERSION)])
+    writer.write_cli_flags([
+        CLIFlagInfo("--http-port", "server", TEST_VERSION),
+        CLIFlagInfo("--data-dir", "server", TEST_VERSION),
+    ])
+    deleted = writer.prune_cli_flags(TEST_VERSION, set())
+    assert deleted == 0
+    with neo4j_driver.session() as session:
+        n = session.run(
+            "MATCH (f:CLIFlag {odoo_version:$v}) RETURN count(f) AS n",
+            v=TEST_VERSION,
+        ).single()["n"]
+    assert n == 2, "empty live set must NEVER delete a CLIFlag"
+
+
+def test_prune_soft_drop_gate_refuses_mass_delete(writer, neo4j_driver):
+    """Soft-drop gate: a prune that would delete more than half of a version's
+    nodes is SKIPPED with a warning (ADR-0005 / gc_stale_modules parity) — this
+    is the guard against a checkout that silently lost its source
+    (e.g. odoo/addons/test_lint/tests/) before it can wipe the version.
+    """
+    ids = [f"W90{i}" for i in range(6)]
+    writer.write_lint_rules([
+        LintRuleInfo(r, TEST_VERSION, "pylint-odoo") for r in ids
+    ])
+    # Keeping only 2 of 6 would delete 4 (~67% > 50%) → gate trips, deletes none.
+    deleted = writer.prune_lint_rules(TEST_VERSION, {ids[0], ids[1]})
+    assert deleted == 0, "soft-drop gate must refuse deleting >50% of a version"
+    with neo4j_driver.session() as session:
+        n = session.run(
+            "MATCH (l:LintRule {odoo_version:$v}) RETURN count(l) AS n",
+            v=TEST_VERSION,
+        ).single()["n"]
+    assert n == 6, "no node may be deleted when the soft-drop gate trips"
+
+
+def test_no_prune_core_symbols_method_exists():
+    """CoreSymbol is prune-EXEMPT (ADR-0055).
+
+    Its cross-version lifecycle (added_in/removed_in/deprecated_in properties +
+    REPLACED_BY edges) is exactly what api_version_diff / find_deprecated_usage /
+    lookup_core_api consume; pruning stale-version CoreSymbol nodes would destroy
+    that history. Guard that no one ever adds a prune_core_symbols method.
+    """
+    from src.indexer.writer_neo4j import Neo4jWriter
+    assert not hasattr(Neo4jWriter, "prune_core_symbols"), (
+        "CoreSymbol must remain prune-exempt (ADR-0055) — do NOT add a "
+        "prune_core_symbols method to Neo4jWriter"
+    )
+
+
 # --- USES_CORE_SYMBOL edge tests (M4.5 WI6) -----------------------------
 
 
