@@ -451,6 +451,25 @@ class Neo4jWriter:
         unset. Safety: an empty *patterns* list NEVER prunes (early return
         below) — a transient empty load can never wipe the catalogue.
 
+        Concurrency (analogous to the two safety properties documented on
+        :meth:`prune_framework_test_helpers`): PatternExample has no per-profile
+        scoping, so ``--profile-workers N`` can run several full-catalogue
+        reseeds concurrently — one per profile finishing its own
+        ``index_profile()`` pass (each profile's auto-reseed always loads the
+        FULL catalogue; see ``pipeline.py``'s call into ``seed_patterns.run()``).
+        Because every concurrent reseed loads the SAME source-of-truth
+        (``_load_patterns_source`` with no version filter), each computes an
+        identical ``live_ids`` set, so the MERGE+prune is idempotent across
+        them — the only cost is duplicate work, never data loss. The one
+        narrow window this does NOT cover: an admin CRUD insert
+        (``src/web_ui/routes/admin_patterns.py``) landing in Postgres between
+        two concurrent reseeds' loads could have its brand-new row DETACH
+        DELETEd by whichever reseed loaded before that insert committed — this
+        self-heals on the very next content-changed reseed cycle (the sha256
+        sentinel gate re-triggers a full write once the DB content differs from
+        what's stored), so it can only ever delay a new pattern's appearance,
+        never permanently lose it.
+
         Returns the number of stale PatternExample nodes pruned (0 when
         ``prune=False``, when the incoming list is empty, or when nothing was
         stale).
