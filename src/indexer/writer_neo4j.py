@@ -416,19 +416,70 @@ class Neo4jWriter:
                     SET cs.deprecated_in = $deprecated_in
                 """, qn=sym.qualified_name, v=sym.odoo_version, deprecated_in=to_version)
 
-    def write_pattern_examples(self, patterns: list[PatternExample]) -> None:
+    def write_pattern_examples(
+        self, patterns: list[PatternExample], *, prune: bool = False,
+    ) -> int:
         """Persist PatternExample nodes (idempotent MERGE on `pattern_id`).
 
         USES_CORE_SYMBOL edges to CoreSymbol nodes are silently skipped when
         the target does not exist — M4.5 graceful skip per ADR-0003 §5.
         Batched at 200/transaction (smaller than CoreSymbol's 500 because
         each pattern can fan-out N edge MERGEs).
+
+        *prune* (default False): after MERGE-ing the incoming catalogue, DETACH
+        DELETE every PatternExample node whose ``pattern_id`` is NOT in
+        *patterns*. This is the R1 orphan-on-rename fix (issue #362 follow-up):
+        PatternExample is MERGE-keyed on ``pattern_id`` ALONE, so a renamed or
+        removed id (e.g. the #364 ``owl2-component-v15`` ->
+        ``owl1-component-v15`` rename) otherwise leaves the OLD node reachable
+        forever via the ``odoo://{version}/pattern/{pattern_id}`` resource. The
+        MERGE-only write never deletes; the pgvector side is already a clean
+        DELETE-then-INSERT (``seed_patterns._write_pgvector_with_embedder``), so
+        this closes the Neo4j-only gap and mirrors
+        :meth:`prune_framework_test_helpers` for style, logging and idempotence.
+
+        CONTRACT — ``prune=True`` is safe ONLY when *patterns* is the FULL
+        catalogue. PatternExample has no version/profile/repo in its identity, so
+        the prune is necessarily GLOBAL (delete-not-in-incoming across the whole
+        label). A caller that writes a PARTIAL batch (e.g. a version-filtered
+        ``seed-patterns --version 15.0`` run, which loads only patterns whose
+        ``odoo_version_min`` matches) MUST pass ``prune=False`` — a global prune
+        there would delete every live pattern of the OTHER versions. The two
+        production callers gate on exactly this: ``seed_patterns.run()`` prunes
+        only when ``odoo_version_min_filter is None`` and the ``seed-patterns``
+        CLI (``seed_patterns._write_neo4j``) prunes only when ``--version`` is
+        unset. Safety: an empty *patterns* list NEVER prunes (early return
+        below) — a transient empty load can never wipe the catalogue.
+
+        Returns the number of stale PatternExample nodes pruned (0 when
+        ``prune=False``, when the incoming list is empty, or when nothing was
+        stale).
         """
         if not patterns:
-            return
+            return 0
         with self.driver.session() as session:
             for batch in _chunked(patterns, 200):
                 session.execute_write(_write_pattern_examples_batch, batch)
+            if not prune:
+                return 0
+            live_ids = [p.pattern_id for p in patterns]
+            row = session.run(
+                """
+                MATCH (pe:PatternExample)
+                WHERE NOT pe.pattern_id IN $live_ids
+                DETACH DELETE pe
+                RETURN count(pe) AS deleted
+                """,
+                live_ids=live_ids,
+            ).single()
+            deleted = row["deleted"] if row is not None else 0
+            if deleted > 0:
+                _logger.info(
+                    "write_pattern_examples: pruned %d stale PatternExample "
+                    "node(s) not in the current %d-pattern catalogue",
+                    deleted, len(live_ids),
+                )
+            return deleted
 
     def write_stylesheets(
         self,

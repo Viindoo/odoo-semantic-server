@@ -157,7 +157,21 @@ class IndexWriterProtocol(Protocol):
     ) -> None: ...
 
     # --- Pattern layer -------------------------------------------------------
-    def write_pattern_examples(self, patterns: list[PatternExample]) -> None: ...
+    def write_pattern_examples(
+        self, patterns: list[PatternExample], *, prune: bool = False,
+    ) -> int:
+        """Persist PatternExample nodes (idempotent MERGE on ``pattern_id``).
+
+        *prune* (default False): after MERGE-ing, DETACH DELETE every
+        PatternExample whose ``pattern_id`` is NOT in *patterns* (the R1
+        orphan-on-rename fix, issue #362 follow-up — mirrors
+        :meth:`prune_framework_test_helpers`). Because PatternExample is keyed on
+        ``pattern_id`` alone the prune is GLOBAL, so ``prune=True`` is safe ONLY
+        on the FULL-catalogue write path; a partial (version-filtered) batch MUST
+        pass ``prune=False`` or it would delete every other version's patterns.
+        An empty *patterns* list never prunes. Returns the count pruned.
+        """
+        ...
 
     # --- Stylesheet + violation writers (ADR-0025) ---------------------------
     def write_stylesheets(
