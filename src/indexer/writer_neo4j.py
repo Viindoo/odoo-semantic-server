@@ -30,6 +30,15 @@ from .models import (
 
 _logger = logging.getLogger(__name__)
 
+# Soft-drop gate for the version-scoped spec prunes (LintRule/CLICommand/CLIFlag,
+# issue #364 follow-up). If a single index-core would delete MORE than this
+# fraction of a version's existing nodes, the prune is SKIPPED with a WARNING
+# instead of applied — mirroring gc_stale_modules's skip-and-warn guard and
+# ADR-0005's ">20% CoreSymbol drop = suspect path refactor". This protects
+# against a degraded parse (e.g. a checkout missing odoo/addons/test_lint/tests/)
+# silently wiping a whole version's curated rows. See ADR-0055.
+_PRUNE_SOFT_DROP_MAX_FRACTION = 0.5
+
 
 def _profile_union_set(alias: str) -> str:
     """Cypher fragment for ON MATCH SET union-add of profile names (write-side).
@@ -341,6 +350,159 @@ class Neo4jWriter:
                 _write_cli_flag_replacements,
                 replaced, command_name, from_version, to_version,
             )
+
+    def _prune_versioned_spec_nodes(
+        self,
+        *,
+        label: str,
+        odoo_version: str,
+        key_expr: str,
+        live_values: list[str],
+        method_name: str,
+    ) -> int:
+        """Shared version-scoped prune for the MERGE-only spec writers (#364).
+
+        DETACH DELETE every ``label`` node at ``odoo_version`` whose identity
+        (``key_expr``, a Cypher expression over the matched node ``n``) is NOT in
+        ``live_values`` — the set produced by THIS run's full write for THIS
+        version.  Two safety guards, both mandatory:
+
+        * **EMPTY-GUARD:** an empty ``live_values`` NEVER deletes (returns 0). A
+          transient/degraded parse that produced no rows must never wipe a
+          version. Mirrors the ``write_pattern_examples`` empty-guard.
+        * **SOFT-DROP GATE:** if the prune would delete more than
+          :data:`_PRUNE_SOFT_DROP_MAX_FRACTION` of the version's existing nodes,
+          it is SKIPPED with a WARNING and returns 0 — mirroring
+          ``gc_stale_modules``'s skip-and-warn guard and ADR-0005's ">20%
+          CoreSymbol drop = suspect path refactor". This catches a checkout that
+          silently lost its source (e.g. ``odoo/addons/test_lint/tests/``) before
+          it can delete the whole version's curated set.
+
+        Version-scoped by construction: the MATCH is bound to ``odoo_version`` and
+        the delete predicate only ever compares within that version, so a prune
+        for one version can never touch another (each version is written +
+        pruned with its own live set). CoreSymbol is deliberately NOT pruned by
+        any method (its cross-version lifecycle — added_in/removed_in/
+        deprecated_in + REPLACED_BY — must be preserved; see ADR-0055).
+
+        Returns the number of nodes deleted (0 when either guard fired).
+        """
+        if not live_values:
+            _logger.warning(
+                "%s: empty live set for version %s — skipping prune (refusing to "
+                "delete every %s node for the version; suspected degraded parse)",
+                method_name, odoo_version, label,
+            )
+            return 0
+        with self.driver.session() as session:
+            counts = session.run(
+                f"""
+                MATCH (n:{label} {{odoo_version: $v}})
+                WITH count(n) AS total,
+                     sum(CASE WHEN NOT ({key_expr}) IN $live THEN 1 ELSE 0 END) AS stale
+                RETURN total, stale
+                """,
+                v=odoo_version,
+                live=live_values,
+            ).single()
+            total = counts["total"] if counts is not None else 0
+            stale = (counts["stale"] or 0) if counts is not None else 0
+            if total == 0 or stale == 0:
+                return 0
+            if stale > total * _PRUNE_SOFT_DROP_MAX_FRACTION:
+                _logger.warning(
+                    "%s: would delete %d of %d %s node(s) for version %s "
+                    "(> %.0f%%) — SKIPPING as a suspected degraded parse "
+                    "(ADR-0005 / gc_stale_modules skip-and-warn guard). Re-run a "
+                    "--full index-core against a verified checkout to prune.",
+                    method_name, stale, total, label, odoo_version,
+                    _PRUNE_SOFT_DROP_MAX_FRACTION * 100,
+                )
+                return 0
+            row = session.run(
+                f"""
+                MATCH (n:{label} {{odoo_version: $v}})
+                WHERE NOT ({key_expr}) IN $live
+                DETACH DELETE n
+                RETURN count(n) AS deleted
+                """,
+                v=odoo_version,
+                live=live_values,
+            ).single()
+            deleted = row["deleted"] if row is not None else 0
+            if deleted:
+                _logger.info(
+                    "%s: deleted %d stale %s node(s) for version %s",
+                    method_name, deleted, label, odoo_version,
+                )
+            return deleted
+
+    def prune_lint_rules(
+        self, odoo_version: str, live_rule_ids: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale LintRule nodes at ``odoo_version`` (issue #364).
+
+        ``write_lint_rules`` is MERGE-only, so a rule_id REMOVED from a version's
+        curated set (e.g. #364 dropped ``W8140`` from v14-v19) otherwise survives
+        forever. ``index_core`` always writes the FULL rule set for the version,
+        so an unconditional prune with that run's live id set is correct.
+        Empty-guard + soft-drop gate apply (see :meth:`_prune_versioned_spec_nodes`).
+        """
+        return self._prune_versioned_spec_nodes(
+            label="LintRule",
+            odoo_version=odoo_version,
+            key_expr="n.rule_id",
+            live_values=list(live_rule_ids),
+            method_name="prune_lint_rules",
+        )
+
+    def prune_cli_commands(
+        self, odoo_version: str, live_names: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale CLICommand nodes at ``odoo_version`` (issue #364).
+
+        CLICommand is MERGE-keyed on (name, odoo_version); ``index_core`` writes
+        the full command set per version, so a command removed upstream is pruned
+        by comparing against this run's live ``name`` set. Empty-guard + soft-drop
+        gate apply.
+        """
+        return self._prune_versioned_spec_nodes(
+            label="CLICommand",
+            odoo_version=odoo_version,
+            key_expr="n.name",
+            live_values=list(live_names),
+            method_name="prune_cli_commands",
+        )
+
+    def prune_cli_flags(
+        self, odoo_version: str, live_keys: Iterable[str],
+    ) -> int:
+        """DETACH DELETE stale CLIFlag nodes at ``odoo_version`` (issue #364).
+
+        CLIFlag is MERGE-keyed on (flag_name, command_name, odoo_version). The
+        SAME ``flag_name`` can appear under DIFFERENT commands (distinct nodes),
+        so the prune identity MUST be the composite ``flag_name|command_name``,
+        not ``flag_name`` alone — otherwise a flag kept under one command would
+        wrongly protect (or be protected by) a same-named flag under another.
+        The caller builds ``live_keys`` the same way:
+        ``{f"{f.flag_name}|{f.command_name or ''}" for f in flags}``.
+
+        NOTE on the ``coalesce(command_name, '')``: ``command_name`` is never
+        actually NULL in the stored graph — Neo4j MERGE rejects a null key
+        property (``Neo.ClientError.Statement.SemanticError``), and
+        ``parse_cli_flags`` defaults it to the owning command name (``"server"``
+        for the global ``odoo/tools/config.py`` flags), so a bare global flag is
+        stored under ``command_name="server"``, not null. The ``coalesce`` (and
+        the caller's ``or ''``) are defensive belt-and-suspenders, not a live
+        path. Empty-guard + soft-drop gate apply.
+        """
+        return self._prune_versioned_spec_nodes(
+            label="CLIFlag",
+            odoo_version=odoo_version,
+            key_expr="n.flag_name + '|' + coalesce(n.command_name, '')",
+            live_values=list(live_keys),
+            method_name="prune_cli_flags",
+        )
 
     def fetch_core_symbols(self, odoo_version: str) -> list:
         """Fetch all CoreSymbolInfo for a version from Neo4j.

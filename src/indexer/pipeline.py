@@ -765,6 +765,17 @@ def index_core(
     )
     writer.write_lint_rules(rules)
     _logger.info("index_core: wrote %d LintRule nodes", len(rules))
+    # Prune-on-full-write (#364): index_core is the SOLE caller and always writes
+    # the FULL LintRule set for this version, so a rule_id removed upstream (e.g.
+    # #364 dropped W8140 from v14-v19) must be DETACH DELETEd — write_lint_rules
+    # is MERGE-only and never deletes. Empty-guard + soft-drop gate live in the
+    # writer. CoreSymbol is deliberately NOT pruned (lifecycle history). See ADR-0055.
+    lint_pruned = writer.prune_lint_rules(odoo_version, {r.rule_id for r in rules})
+    if lint_pruned:
+        _logger.info(
+            "index_core: pruned %d stale LintRule node(s) for version %s",
+            lint_pruned, odoo_version,
+        )
     lint_curate_status = _read_spec_curate_status(
         "lint_rules", odoo_version, static_data_dir,
     )
@@ -776,11 +787,31 @@ def index_core(
     commands = parse_cli_commands(source_root, odoo_version, static_data_dir=static_data_dir)
     writer.write_cli_commands(commands)
     _logger.info("index_core: wrote %d CLICommand nodes", len(commands))
+    # Prune-on-full-write (#364): same rationale as LintRule — full set per
+    # version, MERGE-only writer, so removed commands must be DETACH DELETEd.
+    cmd_pruned = writer.prune_cli_commands(odoo_version, {c.name for c in commands})
+    if cmd_pruned:
+        _logger.info(
+            "index_core: pruned %d stale CLICommand node(s) for version %s",
+            cmd_pruned, odoo_version,
+        )
 
     # 4. CLIFlag
     flags = parse_cli_flags(source_root, odoo_version, static_data_dir=static_data_dir)
     writer.write_cli_flags(flags)
     _logger.info("index_core: wrote %d CLIFlag nodes", len(flags))
+    # Prune-on-full-write (#364): CLIFlag identity is (flag_name, command_name,
+    # odoo_version) — the same flag_name can exist under different commands, so
+    # the live key is the joined "flag_name|command_name". command_name is never
+    # null in the graph (Neo4j MERGE forbids a null key; parse_cli_flags defaults
+    # it to "server"), so `or ''` here is defensive only. See prune_cli_flags.
+    flag_live_keys = {f"{f.flag_name}|{f.command_name or ''}" for f in flags}
+    flag_pruned = writer.prune_cli_flags(odoo_version, flag_live_keys)
+    if flag_pruned:
+        _logger.info(
+            "index_core: pruned %d stale CLIFlag node(s) for version %s",
+            flag_pruned, odoo_version,
+        )
 
     # 4b. Framework TestHelper seeding (WI-1, C1 wiring; prune WI-4/WI-5): seed the
     # built-in Odoo test base classes (TransactionCase, HttpCase, ...) as TestHelper
