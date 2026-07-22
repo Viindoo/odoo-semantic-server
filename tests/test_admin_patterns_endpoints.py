@@ -154,8 +154,8 @@ class TestCreateUniqueViolation:
             "reason": "test conflict check",
         }
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value="a" * 64,
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
         ):
             async with _client() as client:
                 resp = await client.post("/api/admin/patterns", json=payload)
@@ -167,10 +167,10 @@ class TestCreateUniqueViolation:
 # ---------------------------------------------------------------------------
 
 
-class TestCreateBumpsSentinel:
+class TestCreateInvalidatesSentinel:
     @pytest.mark.asyncio
-    async def test_create_bumps_sentinel(self, migrated_pg):
-        """POST /api/admin/patterns returns sentinel_sha in response."""
+    async def test_create_invalidates_sentinel(self, migrated_pg):
+        """POST /api/admin/patterns invalidates the reseed sentinel (ADR-0007 D6-CRUD)."""
         payload = {
             "pattern_id": "test-new-for-sentinel",
             "intent_keywords": ["sentinel", "test"],
@@ -179,14 +179,13 @@ class TestCreateBumpsSentinel:
             "gotchas": ["important"],
             "odoo_version_min": "17.0",
             "language": "python",
-            "reason": "test sentinel bump",
+            "reason": "test sentinel invalidate",
         }
-        fake_sha = "c" * 64
 
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=fake_sha,
-        ) as mock_bump:
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
+        ) as mock_invalidate:
             async with _client() as client:
                 resp = await client.post("/api/admin/patterns", json=payload)
 
@@ -194,9 +193,11 @@ class TestCreateBumpsSentinel:
         body = resp.json()
         assert body["created"] is True
         assert body["pattern_id"] == "test-new-for-sentinel"
-        assert "sentinel_sha" in body
-        # Sentinel recompute was called
-        mock_bump.assert_called_once()
+        # Response reports the sentinel was invalidated + reseed is pending.
+        assert body["sentinel_invalidated"] is True
+        assert body["reseed_status"] == "pending - next index_profile() run"
+        # The CRUD path invalidates (never stamps) the sentinel.
+        mock_invalidate.assert_called_once()
         # Verify row exists in DB
         with migrated_pg.cursor() as cur:
             cur.execute(
@@ -211,22 +212,21 @@ class TestCreateBumpsSentinel:
 # ---------------------------------------------------------------------------
 
 
-class TestPatchBumpsSentinel:
+class TestPatchInvalidatesSentinel:
     @pytest.mark.asyncio
-    async def test_patch_bumps_sentinel(self, migrated_pg):
-        """PATCH /api/admin/patterns/{id} updates row and bumps sentinel."""
+    async def test_patch_invalidates_sentinel(self, migrated_pg):
+        """PATCH /api/admin/patterns/{id} updates row and invalidates the sentinel."""
         _seed_pattern(migrated_pg, pattern_id="test-patch-sentinel")
 
         patch_payload = {
             "snippet_text": "# patched snippet",
-            "reason": "test patch bump",
+            "reason": "test patch invalidate",
         }
-        fake_sha = "d" * 64
 
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=fake_sha,
-        ) as mock_bump:
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
+        ) as mock_invalidate:
             async with _client() as client:
                 resp = await client.patch(
                     "/api/admin/patterns/test-patch-sentinel",
@@ -236,8 +236,9 @@ class TestPatchBumpsSentinel:
         assert resp.status_code == 200
         body = resp.json()
         assert body["updated"] is True
-        assert "sentinel_sha" in body
-        mock_bump.assert_called_once()
+        assert body["sentinel_invalidated"] is True
+        assert body["reseed_status"] == "pending - next index_profile() run"
+        mock_invalidate.assert_called_once()
 
         # Verify DB update
         with migrated_pg.cursor() as cur:
@@ -262,8 +263,8 @@ class TestSoftDeleteExcludesDefault:
         _seed_pattern(migrated_pg, pattern_id="test-soft-del")
 
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value="e" * 64,
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
         ):
             async with _client() as client:
                 del_resp = await client.delete("/api/admin/patterns/test-soft-del")
@@ -341,21 +342,25 @@ class TestNonAdmin403:
 class TestManualSentinelRecompute:
     @pytest.mark.asyncio
     async def test_manual_sentinel_recompute(self, migrated_pg):
-        """POST /api/admin/patterns/sentinel/recompute returns new sentinel_sha."""
-        fake_sha = "f" * 64
+        """POST /api/admin/patterns/sentinel/recompute invalidates the sentinel.
 
+        The route path is kept for compatibility but now FORCES a reseed by
+        invalidating the sentinel (ADR-0007 D6-CRUD), rather than stamping the
+        current SHA (which silently suppressed the reseed — the #F1 bug).
+        """
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=fake_sha,
-        ) as mock_bump:
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
+        ) as mock_invalidate:
             async with _client() as client:
                 resp = await client.post("/api/admin/patterns/sentinel/recompute")
 
         assert resp.status_code == 200
         body = resp.json()
         assert body["manual_recompute"] is True
-        assert body["sentinel_sha"] == fake_sha
-        mock_bump.assert_called_once()
+        assert body["sentinel_invalidated"] is True
+        assert body["reseed_status"] == "pending - next index_profile() run"
+        mock_invalidate.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -413,11 +418,9 @@ class TestCreateWithCategory:
             "category": "test",
             "reason": "test category create",
         }
-        fake_sha = "aa" * 32
-
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=fake_sha,
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
         ):
             async with _client() as client:
                 resp = await client.post("/api/admin/patterns", json=payload)
@@ -473,12 +476,11 @@ class TestPatchCategory:
             "category": "test",
             "reason": "promote to test category",
         }
-        fake_sha = "bb" * 32
 
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=fake_sha,
-        ) as mock_bump:
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
+        ) as mock_invalidate:
             async with _client() as client:
                 resp = await client.patch(
                     "/api/admin/patterns/test-patch-cat",
@@ -487,7 +489,7 @@ class TestPatchCategory:
 
         assert resp.status_code == 200
         assert resp.json()["updated"] is True
-        mock_bump.assert_called_once()
+        mock_invalidate.assert_called_once()
 
         async with _client() as client:
             get_resp = await client.get("/api/admin/patterns/test-patch-cat")
@@ -512,11 +514,10 @@ class TestPatchCategoryClearToNull:
         _seed_pattern(migrated_pg, pattern_id="test-patch-cat-null", category="test")
 
         patch_payload = {"category": None, "reason": "clear category"}
-        fake_sha = "cc" * 32
 
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=fake_sha,
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
         ):
             async with _client() as client:
                 resp = await client.patch(

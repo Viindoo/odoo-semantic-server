@@ -292,26 +292,33 @@ class TestCanonicalShaUnified:
 
 @pytest.mark.neo4j
 class TestRunReseedsOnceAfterCrud:
-    """WI-RV F-D — admin CRUD should trigger exactly one reseed, not perpetual.
+    """ADR-0007 D6-CRUD (issue #F1) — admin CRUD triggers exactly one reseed.
 
     Business intent:
-      Before F-D, every call to run() reseeded because the sentinel was
-      stamped with DB-content SHA but run() compared file-bytes SHA.
-      After F-D, the first call after a CRUD reseeds (sentinel SHA out of
-      date), updates the sentinel, and the SECOND call skips because the
-      sentinel now matches the canonical SHA.
+      After a CRUD write commits to Postgres, the CRUD path INVALIDATES the
+      _SeedMeta sentinel (invalidate_patterns_sentinel(), NOT a stamp of the
+      current SHA).  The next run() therefore sees drift and reseeds exactly
+      ONCE — writing the change into Neo4j and stamping the sentinel — after
+      which the following run() finds the sentinel back in sync and SKIPS.
+
+      The previous version of this test hand-forged a stale sentinel value with
+      a second _set_stored_patterns_sha(..., stale_sha) call to FORCE the reseed
+      branch, which masked the #F1 bug (the real CRUD side effect stamped the
+      current SHA, so run() would have skipped).  This version exercises the
+      REAL invalidate path with no fabricated sentinel manipulation, so it goes
+      RED on the pre-fix stamp-on-CRUD behaviour and GREEN on the fix.
     """
 
     def test_crud_then_run_then_skip_cycle(
         self, fresh_pg, clean_neo4j, monkeypatch,
     ):
-        """Admin CRUD -> 1st run() reseeds -> 2nd run() skips."""
+        """Admin CRUD invalidates sentinel -> 1st run() reseeds -> 2nd run() skips."""
         import os
 
         from src.indexer.seed_patterns import (
-            _set_stored_patterns_sha,
+            _get_stored_patterns_sha,
             compute_patterns_canonical_sha,
-            recompute_sentinel_sha,
+            invalidate_patterns_sentinel,
             run,
         )
         from src.indexer.writer_neo4j import Neo4jWriter
@@ -320,62 +327,66 @@ class TestRunReseedsOnceAfterCrud:
         # Postgres fixture provides rows; Neo4j fixture provides the sentinel store.
         _backfill_from_json(fresh_pg)
 
-        # Wipe stale sentinel nodes from prior tests.
+        # Wipe stale sentinel + pattern nodes from prior tests.
         with clean_neo4j.session() as session:
             session.run("MATCH (s:_SeedMeta) DELETE s")
+            session.run("MATCH (p:PatternExample) DELETE p")
 
-        # Simulate the post-upgrade scenario: a STALE file-bytes SHA already
-        # written to the sentinel by an older deployment.  After admin CRUD
-        # the canonical SHA is different -> run() must reseed exactly once.
-        stale_sha = "0" * 64  # not equal to anything real
         uri = os.getenv("NEO4J_TEST_URI", NEO4J_URI)
         user = os.getenv("NEO4J_TEST_USER", NEO4J_USER)
         password = os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD)
         writer = Neo4jWriter(uri, user, password)
         try:
-            _set_stored_patterns_sha(writer.driver, stale_sha, key="patterns_neo4j")
+            # Baseline seed: Neo4j holds the catalogue and BOTH the sentinel and
+            # the graph are in sync — exactly like a freshly reseeded deployment.
+            baseline = run(writer=writer, embedder=None, force=True)
+            assert baseline["skipped"] is False
+            baseline_sha = compute_patterns_canonical_sha()
+            assert (
+                _get_stored_patterns_sha(writer.driver, key="patterns_neo4j")
+                == baseline_sha
+            )
 
-            # CRUD path: the admin endpoint calls recompute_sentinel_sha() so
-            # the canonical SHA gets stamped.  We invoke directly so the test
-            # is hermetic w.r.t. the HTTP layer.
-            recompute_sentinel_sha()
+            # --- Admin CRUD: edit a real row, then the REAL post-fix side effect ---
+            with fresh_pg.cursor() as cur:
+                cur.execute(
+                    "UPDATE patterns SET snippet_text = %s WHERE pattern_id = ("
+                    "SELECT pattern_id FROM patterns ORDER BY pattern_id LIMIT 1"
+                    ")",
+                    ("# EDITED BY ADMIN (crud cycle)",),
+                )
+            fresh_pg.commit()
+            invalidate_patterns_sentinel(writer.driver)
+
+            # The sentinel is now cleared -> _get_stored_patterns_sha returns None.
+            assert (
+                _get_stored_patterns_sha(writer.driver, key="patterns_neo4j") is None
+            ), "CRUD invalidate must leave the sentinel absent"
 
             current_sha = compute_patterns_canonical_sha()
 
-            # 1st run after CRUD: should NOT skip — but our recompute_sentinel_sha
-            # already stamped current_sha, so to actually exercise the reseed branch
-            # we stamp a different stale SHA again to simulate a fresh CRUD delta.
-            _set_stored_patterns_sha(writer.driver, stale_sha, key="patterns_neo4j")
-
-            result_1 = run(
-                writer=writer,
-                embedder=None,
-                force=False,
-            )
+            # 1st run after CRUD: MUST reseed (drift), with NO hand-forged SHA.
+            result_1 = run(writer=writer, embedder=None, force=False)
             assert result_1["skipped"] is False, (
-                f"1st run after CRUD must reseed, got {result_1}"
+                f"1st run after CRUD must reseed (D6-CRUD), got {result_1}"
             )
             assert result_1["patterns"] >= 1
 
-            # 2nd run: sentinel now == canonical SHA, must skip.
-            result_2 = run(
-                writer=writer,
-                embedder=None,
-                force=False,
-            )
+            # 2nd run: sentinel re-stamped by run() -> must skip.
+            result_2 = run(writer=writer, embedder=None, force=False)
             assert result_2["skipped"] is True, (
                 f"2nd run after reseed must skip (sentinel matches), got {result_2}"
             )
             assert result_2["patterns"] == 0
 
-            # Sanity: stored SHA must equal canonical SHA.
+            # Sanity: stored SHA must equal the POST-edit canonical SHA.
             with writer.driver.session() as session:
                 row = session.run(
                     "MATCH (s:_SeedMeta {key: 'patterns_neo4j'}) RETURN s.sha256 AS sha LIMIT 1"
                 ).single()
             assert row is not None
             assert row["sha"] == current_sha, (
-                f"Stored sentinel must match canonical SHA: "
+                f"Stored sentinel must match post-edit canonical SHA: "
                 f"{row['sha']!r} != {current_sha!r}"
             )
         finally:

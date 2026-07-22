@@ -4,13 +4,17 @@
 Routes (admin-only):
 - GET    /api/admin/patterns                    list (paginated, filterable)
 - GET    /api/admin/patterns/{pattern_id}        single
-- POST   /api/admin/patterns                    create (bumps sentinel)
-- PATCH  /api/admin/patterns/{pattern_id}        update (bumps sentinel)
-- DELETE /api/admin/patterns/{pattern_id}        soft-delete (bumps sentinel)
-- POST   /api/admin/patterns/sentinel/recompute  manual sentinel refresh
+- POST   /api/admin/patterns                    create (invalidates sentinel)
+- PATCH  /api/admin/patterns/{pattern_id}        update (invalidates sentinel)
+- DELETE /api/admin/patterns/{pattern_id}        soft-delete (invalidates sentinel)
+- POST   /api/admin/patterns/sentinel/recompute  manual sentinel invalidate
 
-ADR-0007: any CRUD write recomputes _SeedMeta sentinel SHA -> next index_profile()
-run auto-reseeds pgvector chunks for changed patterns.
+ADR-0007 D6-CRUD (issue #F1): a CRUD write lands ONLY in the Postgres `patterns`
+table, so it INVALIDATES the _SeedMeta reseed sentinel (never stamps it) -> the
+next index_profile() run detects the SHA drift and propagates the change into
+Neo4j PatternExample nodes + pgvector chunks. Stamping the sentinel to the
+post-write SHA here would tell run() "already synced" before any Neo4j/pgvector
+write happened, and run() would skip forever (the #F1 bug).
 ADR-0009: minimum 80-pattern regression guard is preserved; soft-deleted rows do
 not count toward the minimum.
 """
@@ -71,24 +75,33 @@ class PatternPatch(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Sentinel bump helper
+# Sentinel invalidation helper (ADR-0007 D6-CRUD, issue #F1)
 # ---------------------------------------------------------------------------
 
 
-def _bump_sentinel() -> str:
-    """Recompute _SeedMeta sentinel SHA from current DB content.
+def _invalidate_sentinel() -> bool:
+    """Invalidate the _SeedMeta reseed sentinel so the next reseed propagates.
 
-    Delegates to recompute_sentinel_sha() in seed_patterns — that function
-    reads the live DB rows (or falls back to JSON when DB is empty) and
-    writes the new SHA to both Neo4j sentinel keys.
+    A CRUD write commits only to Postgres; the sentinel must be CLEARED (not
+    stamped to the current SHA) so seed_patterns.run()'s sha-diff gate detects
+    drift on the next index_profile() cycle and re-writes the changed patterns
+    into Neo4j + pgvector.  See ADR-0007 D6-CRUD and
+    seed_patterns.invalidate_patterns_sentinel() for the full rationale (why
+    stamping here is the #F1 self-defeating bug).
 
-    Returns the new SHA so the endpoint response can echo it.
+    Returns True when the sentinel store was reachable and cleared, False when
+    Neo4j is not configured (best-effort: the DB write already committed and a
+    later reseed self-heals — a CRUD request must not fail because Neo4j is down).
     """
-    from src.indexer.seed_patterns import recompute_sentinel_sha
+    from src.indexer.seed_patterns import invalidate_patterns_sentinel
 
-    new_sha = recompute_sentinel_sha()
-    log.info("Pattern sentinel SHA bumped to %s", new_sha[:12])
-    return new_sha
+    invalidated = invalidate_patterns_sentinel()
+    log.info(
+        "Pattern sentinel invalidated (reseed pending on next index_profile); "
+        "neo4j_reachable=%s",
+        invalidated,
+    )
+    return invalidated
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +233,7 @@ async def create_pattern(
     payload: PatternCreate,
     actor_id: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
-    """Create a new pattern. Bumps ADR-0007 sentinel SHA on success."""
+    """Create a new pattern. Invalidates the ADR-0007 reseed sentinel on success."""
     from src.db.pg import get_pool
 
     pool = get_pool()
@@ -264,11 +277,11 @@ async def create_pattern(
         finally:
             conn.autocommit = True
 
-    new_sha = _bump_sentinel()
+    sentinel_invalidated = _invalidate_sentinel()
     return {
         "pattern_id": payload.pattern_id,
         "created": True,
-        "sentinel_sha": new_sha[:16],
+        "sentinel_invalidated": sentinel_invalidated,
         "reseed_status": "pending - next index_profile() run",
     }
 
@@ -285,7 +298,7 @@ async def update_pattern(
     payload: PatternPatch,
     actor_id: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
-    """Update one or more fields of an existing pattern. Bumps sentinel SHA."""
+    """Update one or more fields of an existing pattern. Invalidates the reseed sentinel."""
     # Columns that are nullable in the DB - explicit null is allowed to clear them.
     # All other columns are NOT NULL; dropping their value would cause a DB error.
     _NULLABLE_FIELDS = {"category", "odoo_version_max"}
@@ -333,8 +346,13 @@ async def update_pattern(
         finally:
             conn.autocommit = True
 
-    new_sha = _bump_sentinel()
-    return {"pattern_id": pattern_id, "updated": True, "sentinel_sha": new_sha[:16]}
+    sentinel_invalidated = _invalidate_sentinel()
+    return {
+        "pattern_id": pattern_id,
+        "updated": True,
+        "sentinel_invalidated": sentinel_invalidated,
+        "reseed_status": "pending - next index_profile() run",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +366,7 @@ async def soft_delete_pattern(
     pattern_id: str,
     actor_id: int = Depends(require_admin_with_fresh_mfa),
 ) -> dict:
-    """Soft-delete a pattern (sets soft_deleted=TRUE). Bumps sentinel SHA."""
+    """Soft-delete a pattern (sets soft_deleted=TRUE). Invalidates the reseed sentinel."""
     from src.db.pg import get_pool
 
     pool = get_pool()
@@ -379,8 +397,13 @@ async def soft_delete_pattern(
         finally:
             conn.autocommit = True
 
-    new_sha = _bump_sentinel()
-    return {"pattern_id": pattern_id, "soft_deleted": True, "sentinel_sha": new_sha[:16]}
+    sentinel_invalidated = _invalidate_sentinel()
+    return {
+        "pattern_id": pattern_id,
+        "soft_deleted": True,
+        "sentinel_invalidated": sentinel_invalidated,
+        "reseed_status": "pending - next index_profile() run",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -393,11 +416,19 @@ async def soft_delete_pattern(
 async def recompute_sentinel(
     actor_id: int = Depends(require_admin),
 ) -> dict:
-    """Manually recompute _SeedMeta sentinel SHA from current DB content.
+    """Manually invalidate the _SeedMeta reseed sentinel to FORCE the next reseed.
 
-    Normally this is automatic after every CRUD write. Use this endpoint after
-    a direct DB intervention (e.g. ops/backfill_patterns.py run) to force
-    ADR-0007 auto-reseed on the next index_profile() run.
+    The route path is kept for backward compatibility, but the behaviour is now
+    invalidation (ADR-0007 D6-CRUD, issue #F1), matching what the name implies —
+    "force a reseed". Use this after a DIRECT DB intervention (e.g.
+    ops/backfill_patterns.py, a manual SQL edit, or ops/cleanup_*.cypher) so the
+    next index_profile() run re-propagates the current DB content into Neo4j +
+    pgvector. The previous implementation STAMPED the current-DB SHA here, which
+    silently SUPPRESSED the reseed instead of forcing it (the #F1 bug).
     """
-    new_sha = _bump_sentinel()
-    return {"sentinel_sha": new_sha, "manual_recompute": True}
+    sentinel_invalidated = _invalidate_sentinel()
+    return {
+        "sentinel_invalidated": sentinel_invalidated,
+        "manual_recompute": True,
+        "reseed_status": "pending - next index_profile() run",
+    }

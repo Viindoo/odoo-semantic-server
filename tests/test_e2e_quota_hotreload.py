@@ -165,19 +165,16 @@ class TestTenantQuotaIsolation:
 
 class TestPatternSentinelBump:
     @pytest.mark.asyncio
-    async def test_pattern_crud_bumps_sentinel(self, migrated_pg):
-        """POST /api/admin/patterns → response contains sentinel_sha that changes.
+    async def test_pattern_crud_invalidates_sentinel(self, migrated_pg):
+        """POST /api/admin/patterns → response reports the sentinel was invalidated.
 
-        We mock recompute_sentinel_sha to return two distinct hashes:
-        first call (before create) and second call (after create), then verify
-        the API response includes the new sentinel_sha.
-
-        This matches the WI-8 pattern (TestCreateBumpsSentinel) and confirms
-        the sentinel wiring is active end-to-end.
+        ADR-0007 D6-CRUD (issue #F1): a CRUD write INVALIDATES the reseed
+        sentinel (never stamps the current SHA), so the next index_profile()
+        run propagates the change into Neo4j + pgvector.  We mock
+        invalidate_patterns_sentinel so the test needs no Neo4j, then verify the
+        API response reports the invalidation and that the CRUD path invoked it
+        exactly once — confirming the sentinel wiring is active end-to-end.
         """
-        before_sha = "a" * 64
-        after_sha = "b" * 64
-
         # Remove any leftover row from a prior failed run (ON CONFLICT DO NOTHING won't help
         # if prior test already created the row and cleaned it up in a session that aborted)
         with migrated_pg.cursor() as cur:
@@ -185,11 +182,11 @@ class TestPatternSentinelBump:
                 "DELETE FROM patterns WHERE pattern_id = 'test-e2e-wi12-sentinel-001'"
             )
 
-        # POST new pattern — mock sentinel so test doesn't need Neo4j or real SHA compute
+        # POST new pattern — mock sentinel invalidate so test needs no Neo4j.
         with mock.patch(
-            "src.indexer.seed_patterns.recompute_sentinel_sha",
-            return_value=after_sha,
-        ) as mock_bump:
+            "src.indexer.seed_patterns.invalidate_patterns_sentinel",
+            return_value=True,
+        ) as mock_invalidate:
             async with _client() as client:
                 resp = await client.post(
                     "/api/admin/patterns",
@@ -203,7 +200,7 @@ class TestPatternSentinelBump:
                         "language": "python",
                         "core_symbol_names": [],
                         "metadata": {},
-                        "reason": "e2e sentinel bump test",
+                        "reason": "e2e sentinel invalidate test",
                     },
                 )
 
@@ -212,18 +209,12 @@ class TestPatternSentinelBump:
         )
         body = resp.json()
         assert body.get("created") is True
-        assert "sentinel_sha" in body, "Response must include sentinel_sha"
-        # Route truncates SHA to first 16 chars (admin_patterns.py line ~259)
-        assert body["sentinel_sha"] == after_sha[:16], (
-            f"Expected sentinel_sha[:16]={after_sha[:16]!r}, got {body['sentinel_sha']!r}"
+        assert body["sentinel_invalidated"] is True, (
+            "Response must report the reseed sentinel was invalidated"
         )
-        # The mock was called exactly once
-        mock_bump.assert_called_once()
-
-        # Verify the before_sha prefix is different from after_sha (sentinel DID change)
-        assert before_sha[:16] != after_sha[:16], (
-            "Test setup: before_sha and after_sha prefixes must differ"
-        )
+        assert body["reseed_status"] == "pending - next index_profile() run"
+        # The CRUD path invalidates (never stamps) the sentinel, exactly once.
+        mock_invalidate.assert_called_once()
 
         # Cleanup: remove the test pattern
         with migrated_pg.cursor() as cur:
