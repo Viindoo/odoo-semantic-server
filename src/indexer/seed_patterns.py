@@ -463,7 +463,13 @@ def run(
     n_patterns = 0
     if neo4j_needs_update:
         patterns = _load_patterns_source(patterns_path, odoo_version_min_filter)
-        writer.write_pattern_examples(patterns)
+        # R1 orphan-on-rename prune (issue #362 follow-up): drop stale
+        # PatternExample nodes whose pattern_id left the catalogue. Safe ONLY
+        # when we loaded the FULL catalogue — a version-filtered load is a
+        # PARTIAL batch and a global prune would wipe the other versions.
+        writer.write_pattern_examples(
+            patterns, prune=odoo_version_min_filter is None,
+        )
         n_patterns = len(patterns)
         # Neo4j sentinel updated after successful write.
         _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_neo4j")
@@ -560,7 +566,7 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
             conn.autocommit = True  # restore for pool reuse
 
 
-def _write_neo4j(patterns: list[PatternExample]) -> None:
+def _write_neo4j(patterns: list[PatternExample], *, prune: bool = False) -> None:
     uri = config.from_env_or_ini(
         "NEO4J_URI", "database", "neo4j_uri",
         fallback="bolt://localhost:7687",
@@ -582,7 +588,7 @@ def _write_neo4j(patterns: list[PatternExample]) -> None:
         # 3 PatternExample indexes, not the full ~33-statement schema setup that
         # only the full indexer (pipeline / index-core) needs on a fresh DB.
         writer.setup_pattern_indexes()
-        writer.write_pattern_examples(patterns)
+        writer.write_pattern_examples(patterns, prune=prune)
     finally:
         writer.close()
 
@@ -852,7 +858,11 @@ def main(argv: list[str] | None = None) -> int:
 
         _logger.info("Loaded %d patterns from source-of-truth chain", len(patterns))
 
-        _write_neo4j(patterns)
+        # R1 orphan-on-rename prune (issue #362 follow-up): only when this is a
+        # FULL-catalogue seed (no --version filter). A version-filtered run loads
+        # a PARTIAL batch, so a global prune-not-in-incoming would wrongly delete
+        # every other version's live PatternExample nodes.
+        _write_neo4j(patterns, prune=args.version is None)
         _logger.info("Neo4j: wrote %d PatternExample nodes", len(patterns))
 
         # Update the Neo4j sentinel after successful Neo4j write.
