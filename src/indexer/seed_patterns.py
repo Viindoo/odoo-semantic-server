@@ -218,7 +218,7 @@ def _delete_stored_patterns_sha(driver, key: str) -> None:
     """DELETE the _SeedMeta sentinel node for ``key`` (inverse of _set_stored_patterns_sha).
 
     After deletion :func:`_get_stored_patterns_sha` returns ``None`` for ``key``,
-    which :func:`run`'s gate reads as "changed" — forcing a full pattern write on
+    which :func:`run`'s gate reads as "changed" - forcing a full pattern write on
     the next reseed cycle.
     """
     with driver.session() as session:
@@ -229,7 +229,7 @@ def invalidate_patterns_sentinel(driver=None) -> bool:
     """Invalidate BOTH pattern reseed sentinels so the next ``run()`` re-propagates.
 
     ADR-0007 D6-CRUD: an admin pattern CRUD (create/update/soft-delete) only
-    lands the change in the Postgres ``patterns`` table — it does NOT touch
+    lands the change in the Postgres ``patterns`` table - it does NOT touch
     Neo4j ``PatternExample`` nodes or pgvector ``embeddings``.  Those stores are
     reconciled asynchronously by the next ``index_profile()`` reseed, whose gate
     fires only when the stored sentinel SHA differs from the current DB-content
@@ -238,15 +238,15 @@ def invalidate_patterns_sentinel(driver=None) -> bool:
     The CRUD path must therefore INVALIDATE (clear) the sentinel, never stamp it
     to the post-write SHA.  Stamping the current SHA before any Neo4j/pgvector
     write is the #F1 self-defeating bug: ``run()`` recomputes the identical SHA
-    from the identical DB rows, sees ``current == stored``, and SKIPS — so the
+    from the identical DB rows, sees ``current == stored``, and SKIPS - so the
     edit never reaches Neo4j/pgvector.  Clearing the sentinel makes
     :func:`_get_stored_patterns_sha` return ``None`` (drift), so ``run()`` does a
-    full write and — per ADR-0007 D6 — stamps the sentinel only AFTER that write
+    full write and - per ADR-0007 D6 - stamps the sentinel only AFTER that write
     succeeds.
 
     Clears all three keys: ``patterns_neo4j``, ``patterns_pgvector`` and the
     legacy single-key ``patterns`` sentinel (which ``patterns_neo4j`` falls back
-    to in :func:`_get_stored_patterns_sha`) — leaving any of them intact would
+    to in :func:`_get_stored_patterns_sha`) - leaving any of them intact would
     keep the reseed gate satisfied.
 
     Args:
@@ -255,7 +255,7 @@ def invalidate_patterns_sentinel(driver=None) -> bool:
         closed before returning.
 
     Returns ``True`` when the sentinel store was reachable and cleared, ``False``
-    when Neo4j is not configured (best-effort — mirrors
+    when Neo4j is not configured (best-effort - mirrors
     :func:`recompute_sentinel_sha`'s no-Neo4j behaviour so a CRUD request never
     fails just because Neo4j is down; the DB write already committed and a later
     reseed against the changed DB content self-heals).
@@ -266,7 +266,7 @@ def invalidate_patterns_sentinel(driver=None) -> bool:
         writer = _get_neo4j_writer()
         if writer is None:
             _logger.debug(
-                "invalidate_patterns_sentinel: Neo4j not configured — sentinel "
+                "invalidate_patterns_sentinel: Neo4j not configured - sentinel "
                 "NOT cleared (Neo4j password missing)"
             )
             return False
@@ -277,7 +277,7 @@ def invalidate_patterns_sentinel(driver=None) -> bool:
         return True
     except Exception as exc:
         _logger.warning(
-            "invalidate_patterns_sentinel: Neo4j sentinel delete failed (%s) — "
+            "invalidate_patterns_sentinel: Neo4j sentinel delete failed (%s) - "
             "reseed still self-heals once DB content differs from the stored SHA",
             exc,
         )
@@ -389,14 +389,14 @@ def recompute_sentinel_sha() -> str:
 
     Returns the new hex SHA-256 string (64 chars).
 
-    WARNING — do NOT call this from the admin CRUD / manual-recompute request
+    WARNING - do NOT call this from the admin CRUD / manual-recompute request
     path (issue #F1).  Stamping the sentinel to the CURRENT DB-content SHA marks
     Neo4j/pgvector as "already synced" for content that has NOT yet been written
     to them; ``run()``'s gate then recomputes the identical SHA from the identical
-    DB rows, sees a match, and SKIPS — the edit never reaches Neo4j/pgvector.
+    DB rows, sees a match, and SKIPS - the edit never reaches Neo4j/pgvector.
     ADR-0007 D6 requires the sentinel be stamped ONLY AFTER a successful seed
     (``run()`` does this at its Neo4j/pgvector write sites), and ADR-0007 D6-CRUD
-    requires the CRUD path to INVALIDATE the sentinel instead — use
+    requires the CRUD path to INVALIDATE the sentinel instead - use
     :func:`invalidate_patterns_sentinel`.  This function remains for the
     stamp-after-a-real-seed use case (and SHA diagnostics in tests); it is no
     longer wired into any pre-seed write path.
@@ -511,7 +511,7 @@ def run(
         return {"patterns": 0, "embeddings": 0, "skipped": True}
 
     # WI-RV F-D: canonical SHA over the source-of-truth (DB-primary, file
-    # fallback) — the SAME value this function stamps on the sentinel AFTER a
+    # fallback) - the SAME value this function stamps on the sentinel AFTER a
     # successful write (below), so a clean reseed leaves the gate satisfied.
     # An admin CRUD does NOT stamp this SHA; per ADR-0007 D6-CRUD it INVALIDATES
     # the sentinel (invalidate_patterns_sentinel), so this gate sees drift and

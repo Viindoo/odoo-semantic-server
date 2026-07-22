@@ -346,7 +346,7 @@ class TestManualSentinelRecompute:
 
         The route path is kept for compatibility but now FORCES a reseed by
         invalidating the sentinel (ADR-0007 D6-CRUD), rather than stamping the
-        current SHA (which silently suppressed the reseed — the #F1 bug).
+        current SHA (which silently suppressed the reseed - the #F1 bug).
         """
         with mock.patch(
             "src.indexer.seed_patterns.invalidate_patterns_sentinel",

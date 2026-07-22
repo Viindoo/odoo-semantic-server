@@ -1358,7 +1358,7 @@ def test_prune_lint_rules_version_scoped(writer, neo4j_driver, clean_second_vers
         LintRuleInfo(rule_id=stale, odoo_version=TEST_VERSION, kind="pylint-odoo"),
         LintRuleInfo(rule_id=kept, odoo_version=TEST_VERSION, kind="pylint-odoo"),
     ])
-    # Same stale id at a DIFFERENT version — must NOT be touched by a 99.0 prune.
+    # Same stale id at a DIFFERENT version - must NOT be touched by a 99.0 prune.
     writer.write_lint_rules([
         LintRuleInfo(rule_id=stale, odoo_version=_SECOND_VERSION, kind="pylint-odoo"),
     ])
@@ -1415,7 +1415,7 @@ def test_prune_cli_flags_version_scoped_composite_key(
     (kept): the prune must delete ONLY '--port|neo4j' and spare '--port|server'.
     Also version-scoped: the stale key at another version survives.
 
-    NOTE: command_name is never NULL in the stored graph — Neo4j MERGE forbids a
+    NOTE: command_name is never NULL in the stored graph - Neo4j MERGE forbids a
     null key property and parse_cli_flags defaults it to the command name
     ('server' for the global config flags), so there is no bare-null node to
     test; the prune's coalesce(command_name,'') is defensive belt-and-suspenders.
@@ -1425,7 +1425,7 @@ def test_prune_cli_flags_version_scoped_composite_key(
         CLIFlagInfo("--port", "server", TEST_VERSION),       # kept (same name!)
         CLIFlagInfo("--http-port", "server", TEST_VERSION),  # kept
     ])
-    # Same stale key at another version — must survive a 99.0 prune.
+    # Same stale key at another version - must survive a 99.0 prune.
     writer.write_cli_flags([CLIFlagInfo("--port", "neo4j", _SECOND_VERSION)])
 
     # live_keys built exactly as pipeline.index_core does.
@@ -1445,7 +1445,7 @@ def test_prune_cli_flags_version_scoped_composite_key(
         v98 = _keys(session, _SECOND_VERSION)
     assert "--port|neo4j" not in v99
     assert "--port|server" in v99, (
-        "same-named flag under a DIFFERENT command must survive — the prune must "
+        "same-named flag under a DIFFERENT command must survive - the prune must "
         "key on the composite flag_name|command_name, not flag_name alone"
     )
     assert "--http-port|server" in v99
@@ -1488,7 +1488,7 @@ def test_prune_cli_flags_empty_live_never_wipes(writer, neo4j_driver):
 
 def test_prune_soft_drop_gate_refuses_mass_delete(writer, neo4j_driver):
     """Soft-drop gate: a prune that would delete more than half of a version's
-    nodes is SKIPPED with a warning (ADR-0005 / gc_stale_modules parity) — this
+    nodes is SKIPPED with a warning (ADR-0005 / gc_stale_modules parity) - this
     is the guard against a checkout that silently lost its source
     (e.g. odoo/addons/test_lint/tests/) before it can wipe the version.
     """
@@ -1517,7 +1517,7 @@ def test_no_prune_core_symbols_method_exists():
     """
     from src.indexer.writer_neo4j import Neo4jWriter
     assert not hasattr(Neo4jWriter, "prune_core_symbols"), (
-        "CoreSymbol must remain prune-exempt (ADR-0055) — do NOT add a "
+        "CoreSymbol must remain prune-exempt (ADR-0055) - do NOT add a "
         "prune_core_symbols method to Neo4jWriter"
     )
 

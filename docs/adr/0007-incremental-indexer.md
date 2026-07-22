@@ -187,17 +187,17 @@ python -m src.indexer.seed_patterns --force
 ```
 This bypasses both sentinels, writes all patterns to Neo4j, embeds and writes to pgvector, then sets both split sentinels correctly.
 
-### D6-CRUD — Admin pattern CRUD INVALIDATES the sentinel; only a successful seed stamps it (issue #F1)
+### D6-CRUD - Admin pattern CRUD INVALIDATES the sentinel; only a successful seed stamps it (issue #F1)
 
-**Problem (#F1):** The admin pattern CRUD endpoints (`create`/`update`/`soft_delete` in `src/web_ui/routes/admin_patterns.py`) and the manual `POST /api/admin/patterns/sentinel/recompute` endpoint called `recompute_sentinel_sha()`, which computes the canonical SHA from the *just-committed* DB rows and STAMPS it onto both `patterns_neo4j` + `patterns_pgvector` sentinels — before any Neo4j/pgvector write. `run()`'s gate recomputes the identical SHA from the identical DB rows (`compute_patterns_canonical_sha` is a pure function of DB content), sees `current == stored`, and SKIPS. The admin's edit committed to Postgres but never reached Neo4j `PatternExample` / pgvector `embeddings`. This directly violated D6 ("sentinel updated AFTER successful seed") — the sentinel was stamped with NO seed having happened.
+**Problem (#F1):** The admin pattern CRUD endpoints (`create`/`update`/`soft_delete` in `src/web_ui/routes/admin_patterns.py`) and the manual `POST /api/admin/patterns/sentinel/recompute` endpoint called `recompute_sentinel_sha()`, which computes the canonical SHA from the *just-committed* DB rows and STAMPS it onto both `patterns_neo4j` + `patterns_pgvector` sentinels - before any Neo4j/pgvector write. `run()`'s gate recomputes the identical SHA from the identical DB rows (`compute_patterns_canonical_sha` is a pure function of DB content), sees `current == stored`, and SKIPS. The admin's edit committed to Postgres but never reached Neo4j `PatternExample` / pgvector `embeddings`. This directly violated D6 ("sentinel updated AFTER successful seed") - the sentinel was stamped with NO seed having happened.
 
-**Rule:** A CRUD write lands ONLY in the Postgres `patterns` table. The write side must **INVALIDATE** the sentinel (clear it), never stamp it. Only a real seed (`run()`, at its Neo4j/pgvector write sites) stamps the sentinel — preserving D6.
+**Rule:** A CRUD write lands ONLY in the Postgres `patterns` table. The write side must **INVALIDATE** the sentinel (clear it), never stamp it. Only a real seed (`run()`, at its Neo4j/pgvector write sites) stamps the sentinel - preserving D6.
 
 - CRUD create/update/soft-delete and the manual `/sentinel/recompute` endpoint call `seed_patterns.invalidate_patterns_sentinel()`, which DELETEs the `patterns_neo4j`, `patterns_pgvector`, and legacy `patterns` `_SeedMeta` nodes.
 - `_get_stored_patterns_sha` then returns `None` (drift), so the next `index_profile()` reseed does a full pattern write and stamps the sentinels afterward (D6).
 - Propagation latency is bounded by the nightly reseed timer (`docs/deploy/odoo-semantic-reindex.timer`); the endpoint response says `reseed_status: pending - next index_profile() run`, which is now truthful.
 - The write path adds NO synchronous embedder dependency (the embedder is VRAM-fragile). Invalidation is best-effort: if Neo4j is unreachable the CRUD still succeeds (the DB write committed) and the reseed self-heals once the stored SHA differs from DB content.
-- `recompute_sentinel_sha()` remains only for the stamp-after-a-real-seed use case and SHA diagnostics; it is no longer wired into any pre-seed write path. Do NOT reintroduce a stamp-on-CRUD call — that is the #F1 regression.
+- `recompute_sentinel_sha()` remains only for the stamp-after-a-real-seed use case and SHA diagnostics; it is no longer wired into any pre-seed write path. Do NOT reintroduce a stamp-on-CRUD call - that is the #F1 regression.
 
 ### D7 — `_SeedMeta` label is project-private
 

@@ -173,7 +173,7 @@ class TestPatternSentinelBump:
         run propagates the change into Neo4j + pgvector.  We mock
         invalidate_patterns_sentinel so the test needs no Neo4j, then verify the
         API response reports the invalidation and that the CRUD path invoked it
-        exactly once — confirming the sentinel wiring is active end-to-end.
+        exactly once - confirming the sentinel wiring is active end-to-end.
         """
         # Remove any leftover row from a prior failed run (ON CONFLICT DO NOTHING won't help
         # if prior test already created the row and cleaned it up in a session that aborted)
@@ -182,7 +182,7 @@ class TestPatternSentinelBump:
                 "DELETE FROM patterns WHERE pattern_id = 'test-e2e-wi12-sentinel-001'"
             )
 
-        # POST new pattern — mock sentinel invalidate so test needs no Neo4j.
+        # POST new pattern - mock sentinel invalidate so test needs no Neo4j.
         with mock.patch(
             "src.indexer.seed_patterns.invalidate_patterns_sentinel",
             return_value=True,

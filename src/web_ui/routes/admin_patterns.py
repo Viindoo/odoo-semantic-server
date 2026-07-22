@@ -91,7 +91,7 @@ def _invalidate_sentinel() -> bool:
 
     Returns True when the sentinel store was reachable and cleared, False when
     Neo4j is not configured (best-effort: the DB write already committed and a
-    later reseed self-heals — a CRUD request must not fail because Neo4j is down).
+    later reseed self-heals - a CRUD request must not fail because Neo4j is down).
     """
     from src.indexer.seed_patterns import invalidate_patterns_sentinel
 
@@ -419,7 +419,7 @@ async def recompute_sentinel(
     """Manually invalidate the _SeedMeta reseed sentinel to FORCE the next reseed.
 
     The route path is kept for backward compatibility, but the behaviour is now
-    invalidation (ADR-0007 D6-CRUD, issue #F1), matching what the name implies —
+    invalidation (ADR-0007 D6-CRUD, issue #F1), matching what the name implies -
     "force a reseed". Use this after a DIRECT DB intervention (e.g.
     ops/backfill_patterns.py, a manual SQL edit, or ops/cleanup_*.cypher) so the
     next index_profile() run re-propagates the current DB content into Neo4j +
