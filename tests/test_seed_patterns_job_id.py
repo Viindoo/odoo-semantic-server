@@ -69,12 +69,13 @@ class TestJobLifecycleWithPg:
     def _stub_neo4j(self, monkeypatch):
         """Stub out Neo4j so test doesn't need a running Neo4j instance.
 
-        Stubs accept the split-sentinel ``key`` keyword argument (ADR-0007 D6-split).
+        Stubs accept the split-sentinel ``key`` keyword argument (ADR-0007 D6-split)
+        and the ``prune`` keyword the R1 orphan-on-rename fix added to ``_write_neo4j``.
         """
         mock_writer = MagicMock()
         mock_writer.driver = MagicMock()
         monkeypatch.setattr(sp_mod, "_get_neo4j_writer", lambda: mock_writer)
-        monkeypatch.setattr(sp_mod, "_write_neo4j", lambda patterns: None)
+        monkeypatch.setattr(sp_mod, "_write_neo4j", lambda patterns, *, prune=False: None)
         monkeypatch.setattr(sp_mod, "_write_pgvector", lambda chunks: None)
         monkeypatch.setattr(
             sp_mod, "_get_stored_patterns_sha", lambda driver, key="patterns_neo4j": None
@@ -201,7 +202,7 @@ class TestJobLifecycleWithPg:
         self._stub_neo4j(monkeypatch)
         monkeypatch.setattr(
             sp_mod, "_write_neo4j",
-            lambda patterns: (_ for _ in ()).throw(RuntimeError("neo4j exploded"))
+            lambda patterns, *, prune=False: (_ for _ in ()).throw(RuntimeError("neo4j exploded"))
         )
 
         job_id = self._create_queued_job(migrated_pg)
