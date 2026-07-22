@@ -319,9 +319,9 @@ def test_first_seed_writes_sentinel_sha(clean_neo4j, tmp_path, monkeypatch):
     # WI-RV F-D: sentinel now stores the canonical SHA (parsed-list serialised
     # in canonical JSON form), NOT the raw file-bytes SHA, so the stamp the CLI
     # writes after a successful seed matches compute_patterns_canonical_sha()
-    # (the same value run()'s gate recomputes) — ending the perpetual reseed
+    # (the same value run()'s gate recomputes) - ending the perpetual reseed
     # loop.  (The admin CRUD path no longer stamps the sentinel; per ADR-0007
-    # D6-CRUD it INVALIDATES it — see invalidate_patterns_sentinel.)
+    # D6-CRUD it INVALIDATES it - see invalidate_patterns_sentinel.)
     expected_sha = compute_patterns_canonical_sha(patterns_file=patterns_file)
 
     writer = _get_neo4j_writer_for_test()

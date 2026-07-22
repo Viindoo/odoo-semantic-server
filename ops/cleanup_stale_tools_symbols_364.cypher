@@ -2,15 +2,15 @@
 // *corrections* (issue #364 follow-up).
 //
 // WHY: CoreSymbol is deliberately PRUNE-EXEMPT (ADR-0055 "Follow-up" section).
-// Its cross-version lifecycle — added_in / removed_in / deprecated_in properties
-// plus REPLACED_BY edges — is exactly what api_version_diff, find_deprecated_usage
+// Its cross-version lifecycle - added_in / removed_in / deprecated_in properties
+// plus REPLACED_BY edges - is exactly what api_version_diff, find_deprecated_usage
 // and lookup_core_api consume, so a standing "delete stale-version CoreSymbol"
 // prune (like the LintRule/CLICommand/CLIFlag prune added for #364 F2) would
 // DESTROY that history. There is therefore NO prune_core_symbols writer method,
 // and a regression test (test_no_prune_core_symbols_method_exists) guards that
 // there never is one. Do NOT turn this file into a standing prune.
 //
-// But #364 did not only add lifecycle events — it CORRECTED two flat
+// But #364 did not only add lifecycle events - it CORRECTED two flat
 // re-export names that a PRIOR index-core had already written to Neo4j under a
 // WRONG (qualified_name, odoo_version). Because index-core's CoreSymbol write is
 // MERGE-only and never deletes, and because these names were CURATED-only (never
@@ -25,17 +25,17 @@
 //
 //   1. odoo.tools.pycompat @ {8.0, 9.0, 10.0}
 //      odoo/tools/pycompat.py (and openerp/tools/pycompat.py) does NOT exist
-//      until v11 — the module was never importable pre-v11, so the flat curated
+//      until v11 - the module was never importable pre-v11, so the flat curated
 //      entry at v8-v10 was wrong. pycompat @ v11-v18 is CORRECT and is NOT
 //      touched here. (v19 dropped it from odoo.tools.__init__ and the curated
-//      set legitimately omits it there — that is a lifecycle removal, handled by
+//      set legitimately omits it there - that is a lifecycle removal, handled by
 //      re-index + omission, not by this cleanup.)
 //
 //   2. odoo.tools.image_process @ 19.0
 //      The flat re-export `from .image import image_process` was dropped from
 //      odoo/tools/__init__.py at v19, so `odoo.tools.image_process` no longer
 //      resolves at v19 - the real path is `odoo.tools.image.image_process`
-//      (now curated at v19, written fresh by re-index — no cleanup needed for
+//      (now curated at v19, written fresh by re-index - no cleanup needed for
 //      the correct node). The flat name @ v13-v18 is CORRECT (still re-exported
 //      there) and is NOT touched here.
 //
@@ -46,7 +46,7 @@
 //
 // WHEN: Run ONCE, during the deploy's re-index phase, AFTER a full index-core has
 // re-run for the affected versions with the corrected spec_data (so the correct
-// nodes — pycompat@v11+, odoo.tools.image.image_process@19.0 — already exist).
+// nodes - pycompat@v11+, odoo.tools.image.image_process@19.0 - already exist).
 // Running it is order-independent w.r.t. the correct nodes: it only ever deletes
 // the four wrong (name, version) pairs enumerated below.
 //

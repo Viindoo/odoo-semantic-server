@@ -3,13 +3,13 @@
 
 Contract under protection:
     An admin pattern edit that changes DB content MUST become visible in the
-    Neo4j PatternExample graph after the next auto-reseed cycle — the promise
+    Neo4j PatternExample graph after the next auto-reseed cycle - the promise
     admin_patterns.py's own response makes ("reseed_status: pending - next
     index_profile() run").
 
 Before the fix, the CRUD path STAMPED the _SeedMeta sentinel to the post-write
 canonical SHA (via recompute_sentinel_sha()).  run()'s gate recomputed the
-identical SHA from the identical DB rows, saw a match, and SKIPPED — so the
+identical SHA from the identical DB rows, saw a match, and SKIPPED - so the
 edit never propagated to Neo4j/pgvector.  After the fix the CRUD path
 INVALIDATES the sentinel (invalidate_patterns_sentinel()), so run() detects
 drift and re-writes.
@@ -82,9 +82,9 @@ class TestAdminEditVisibleAfterNextReseed:
 
         This holds WITHOUT any test-only sentinel manipulation.  On the pre-fix
         code (CRUD stamps the current SHA) run()['skipped'] comes back True and
-        the PatternExample still carries the OLD snippet_text — RED.  After the
+        the PatternExample still carries the OLD snippet_text - RED.  After the
         fix (CRUD invalidates the sentinel) run() reseeds and the node reflects
-        the edit — GREEN.
+        the edit - GREEN.
         """
         import os
 

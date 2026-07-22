@@ -767,7 +767,7 @@ def index_core(
     _logger.info("index_core: wrote %d LintRule nodes", len(rules))
     # Prune-on-full-write (#364): index_core is the SOLE caller and always writes
     # the FULL LintRule set for this version, so a rule_id removed upstream (e.g.
-    # #364 dropped W8140 from v14-v19) must be DETACH DELETEd — write_lint_rules
+    # #364 dropped W8140 from v14-v19) must be DETACH DELETEd - write_lint_rules
     # is MERGE-only and never deletes. Empty-guard + soft-drop gate live in the
     # writer. CoreSymbol is deliberately NOT pruned (lifecycle history). See ADR-0055.
     lint_pruned = writer.prune_lint_rules(odoo_version, {r.rule_id for r in rules})
@@ -787,7 +787,7 @@ def index_core(
     commands = parse_cli_commands(source_root, odoo_version, static_data_dir=static_data_dir)
     writer.write_cli_commands(commands)
     _logger.info("index_core: wrote %d CLICommand nodes", len(commands))
-    # Prune-on-full-write (#364): same rationale as LintRule — full set per
+    # Prune-on-full-write (#364): same rationale as LintRule - full set per
     # version, MERGE-only writer, so removed commands must be DETACH DELETEd.
     cmd_pruned = writer.prune_cli_commands(odoo_version, {c.name for c in commands})
     if cmd_pruned:
@@ -801,7 +801,7 @@ def index_core(
     writer.write_cli_flags(flags)
     _logger.info("index_core: wrote %d CLIFlag nodes", len(flags))
     # Prune-on-full-write (#364): CLIFlag identity is (flag_name, command_name,
-    # odoo_version) — the same flag_name can exist under different commands, so
+    # odoo_version) - the same flag_name can exist under different commands, so
     # the live key is the joined "flag_name|command_name". command_name is never
     # null in the graph (Neo4j MERGE forbids a null key; parse_cli_flags defaults
     # it to "server"), so `or ''` here is defensive only. See prune_cli_flags.

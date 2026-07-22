@@ -4,14 +4,14 @@
 ``pipeline.index_core()`` must invoke the three version-scoped spec prunes
 (``prune_lint_rules`` / ``prune_cli_commands`` / ``prune_cli_flags``) EXACTLY
 ONCE each, with the run's ``odoo_version``, right after the matching
-``write_*`` — closing the orphan-on-remove gap (e.g. #364 dropped ``W8140``
+``write_*`` - closing the orphan-on-remove gap (e.g. #364 dropped ``W8140``
 from v14-v19) end to end.
 
 Mirrors the R1 PatternExample prune wiring tests
 (``tests/test_writer_patterns_prune.py``): it drives the REAL ``index_core``
 (parsers monkeypatched to controlled outputs) and asserts the OBSERVABLE
-outcome — a stale node written before the run is DETACH DELETEd while kept
-nodes survive — not merely that a method name appears in the source. Because
+outcome - a stale node written before the run is DETACH DELETEd while kept
+nodes survive - not merely that a method name appears in the source. Because
 ``write_*`` is MERGE-only (never deletes), the disappearance of the pre-seeded
 stale node can ONLY be caused by the prune actually running.
 
@@ -26,7 +26,7 @@ from src.indexer.writer_neo4j import Neo4jWriter
 
 pytestmark = pytest.mark.neo4j
 
-# Dedicated test version — grep-unique across the suite's version literals.
+# Dedicated test version - grep-unique across the suite's version literals.
 WIRE_VERSION = "97.5"
 
 

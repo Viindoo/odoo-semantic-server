@@ -292,13 +292,13 @@ class TestCanonicalShaUnified:
 
 @pytest.mark.neo4j
 class TestRunReseedsOnceAfterCrud:
-    """ADR-0007 D6-CRUD (issue #F1) — admin CRUD triggers exactly one reseed.
+    """ADR-0007 D6-CRUD (issue #F1) - admin CRUD triggers exactly one reseed.
 
     Business intent:
       After a CRUD write commits to Postgres, the CRUD path INVALIDATES the
       _SeedMeta sentinel (invalidate_patterns_sentinel(), NOT a stamp of the
       current SHA).  The next run() therefore sees drift and reseeds exactly
-      ONCE — writing the change into Neo4j and stamping the sentinel — after
+      ONCE - writing the change into Neo4j and stamping the sentinel - after
       which the following run() finds the sentinel back in sync and SKIPS.
 
       The previous version of this test hand-forged a stale sentinel value with
@@ -338,7 +338,7 @@ class TestRunReseedsOnceAfterCrud:
         writer = Neo4jWriter(uri, user, password)
         try:
             # Baseline seed: Neo4j holds the catalogue and BOTH the sentinel and
-            # the graph are in sync — exactly like a freshly reseeded deployment.
+            # the graph are in sync - exactly like a freshly reseeded deployment.
             baseline = run(writer=writer, embedder=None, force=True)
             assert baseline["skipped"] is False
             baseline_sha = compute_patterns_canonical_sha()
