@@ -293,6 +293,18 @@ def _cmd_delete_webui_user(args, conn) -> int:
     """Delete a Web UI user by username.
 
     Prompts for interactive YES confirmation unless --yes is provided.
+
+    SAFETY (adversarial review of PR #371's ops/backfill_patterns.py prune):
+    a hard DELETE cascades via `patterns.updated_by REFERENCES webui_users(id)
+    ON DELETE SET NULL`, so deleting a user who owns LIVE patterns rows
+    (admin-created or admin-edited, updated_by = this user's id) would silently
+    flip those rows' updated_by to NULL. ops/backfill_patterns.py's SSOT prune
+    treats `updated_by IS NULL` as "curated, safe to soft-delete when the
+    pattern_id is absent from patterns.json" - so the NEXT backfill run would
+    wrongly soft-delete admin-owned pattern data. Block the delete instead of
+    letting that data-loss path open up; the operator must re-attribute (any
+    admin PATCH via /api/admin/patterns/{id} re-sets updated_by to whoever
+    saves it) or explicitly soft-delete those patterns first.
     """
     username = args.username.strip()
     if not _USERNAME_RE.match(username):
@@ -307,6 +319,33 @@ def _cmd_delete_webui_user(args, conn) -> int:
     if auth_store().get_user_password_hash(username) is None:
         print(f"✗ User '{username}' not found.", file=sys.stderr)
         return 2
+
+    user_id = auth_store().get_user_id_by_username(username)
+    if user_id is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pattern_id FROM patterns "
+                "WHERE updated_by = %s AND soft_deleted = FALSE "
+                "ORDER BY pattern_id",
+                (user_id,),
+            )
+            owned_patterns = [r[0] for r in cur.fetchall()]
+        if owned_patterns:
+            preview = ", ".join(owned_patterns[:20])
+            more = f" (+{len(owned_patterns) - 20} more)" if len(owned_patterns) > 20 else ""
+            print(
+                f"✗ User '{username}' owns {len(owned_patterns)} live pattern(s) "
+                f"(updated_by): {preview}{more}\n"
+                "  Deleting this user would set their updated_by to NULL "
+                "(ON DELETE SET NULL), which the next `ops/backfill_patterns.py` "
+                "run would treat as curated content - if any of these pattern_ids "
+                "is absent from patterns.json, it would be silently soft-deleted "
+                "(data loss). Have another admin re-save each pattern via "
+                "PATCH /api/admin/patterns/{pattern_id} (re-attributes updated_by), "
+                "or soft-delete them first, then retry.",
+                file=sys.stderr,
+            )
+            return 1
 
     if not args.yes:
         confirm = input(f"Delete Web UI user '{username}'? Type YES: ")
@@ -682,6 +721,12 @@ def main(argv: list[str] | None = None) -> int:
         epilog=textwrap.dedent("""
             Deletes a Web UI user by username.
             Requires interactive YES confirmation unless --yes is provided.
+
+            Blocked (exit 1, no bypass) if the user owns live pattern rows
+            (patterns.updated_by = this user, soft_deleted = FALSE): the FK is
+            ON DELETE SET NULL, and ops/backfill_patterns.py treats
+            updated_by IS NULL as curated content it may soft-delete on the
+            next run. Re-attribute or soft-delete those patterns first.
 
             Examples:
               python -m src.manager delete-webui-user testuser

@@ -256,6 +256,116 @@ class TestDeleteWebUIUser:
         assert res.returncode == 1, f"Expected exit 1, got {res.returncode}"
         assert "invalid" in res.stderr
 
+    def test_delete_webui_user_blocked_when_owns_live_pattern(
+        self, migrated_pg, tmp_path,
+    ):
+        """delete-webui-user MUST refuse when the user owns a live pattern row.
+
+        Root cause this guards: patterns.updated_by REFERENCES webui_users(id)
+        ON DELETE SET NULL. If the delete proceeded, the pattern's updated_by
+        would flip to NULL, and ops/backfill_patterns.py's SSOT prune treats
+        updated_by IS NULL as curated content it may soft-delete on the next
+        run - silently destroying admin-owned pattern data. RED on the
+        pre-fix CLI (no ownership check): the delete would succeed here.
+        """
+        env = _setup_db_conf(tmp_path)
+        pw = "test_password_123\ntest_password_123\n"
+
+        create_res = _run(
+            ["create-webui-user", "patternowner", "--admin"], env_extra=env, stdin_text=pw,
+        )
+        assert create_res.returncode == 0, create_res.stderr
+
+        import psycopg2
+        conn = psycopg2.connect(get_test_dsn())
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM webui_users WHERE username = %s", ("patternowner",),
+            )
+            user_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO patterns
+                    (pattern_id, intent_keywords, file_ref, snippet_text, gotchas,
+                     odoo_version_min, language, updated_by)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                """,
+                (
+                    "admin-owned-pattern-guard-test",
+                    ["seed"],
+                    "addons/foo/models/foo.py:1",
+                    "# admin-owned",
+                    "[]",
+                    "17.0",
+                    "python",
+                    user_id,
+                ),
+            )
+        conn.close()
+
+        res = _run(["delete-webui-user", "patternowner", "--yes"], env_extra=env)
+        assert res.returncode == 1, (
+            f"Expected exit 1 (blocked), got {res.returncode}: stdout={res.stdout!r}"
+        )
+        assert "admin-owned-pattern-guard-test" in res.stderr
+        assert "live pattern" in res.stderr
+
+        # Verify NOT deleted - the whole point of the guard.
+        conn = psycopg2.connect(get_test_dsn())
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT username FROM webui_users WHERE username = %s", ("patternowner",),
+            )
+            row = cur.fetchone()
+        conn.close()
+        assert row is not None, "user must NOT be deleted while owning a live pattern"
+
+    def test_delete_webui_user_allowed_after_pattern_soft_deleted(
+        self, migrated_pg, tmp_path,
+    ):
+        """Once the owned pattern is soft-deleted, delete-webui-user proceeds."""
+        env = _setup_db_conf(tmp_path)
+        pw = "test_password_123\ntest_password_123\n"
+
+        create_res = _run(
+            ["create-webui-user", "patternowner2", "--admin"], env_extra=env, stdin_text=pw,
+        )
+        assert create_res.returncode == 0, create_res.stderr
+
+        import psycopg2
+        conn = psycopg2.connect(get_test_dsn())
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM webui_users WHERE username = %s", ("patternowner2",),
+            )
+            user_id = cur.fetchone()[0]
+            cur.execute(
+                """
+                INSERT INTO patterns
+                    (pattern_id, intent_keywords, file_ref, snippet_text, gotchas,
+                     odoo_version_min, language, updated_by, soft_deleted)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, TRUE)
+                """,
+                (
+                    "admin-owned-pattern-soft-deleted",
+                    ["seed"],
+                    "addons/foo/models/foo.py:1",
+                    "# admin-owned, already soft-deleted",
+                    "[]",
+                    "17.0",
+                    "python",
+                    user_id,
+                ),
+            )
+        conn.close()
+
+        res = _run(["delete-webui-user", "patternowner2", "--yes"], env_extra=env)
+        assert res.returncode == 0, f"Expected success, got {res.returncode}: {res.stderr}"
+        assert "Deleted" in res.stdout
+
 
 class TestListWebUIUsers:
     """Test list-webui-users subcommand."""
