@@ -293,9 +293,12 @@ jobs:
           NEO4J_PASSWORD: password
           PG_DSN: postgresql://odoo_semantic:password@localhost:5432/odoo_semantic
 
-      - name: "LintRule code_pattern smoke — W8140 SQL injection pattern present (ADR-0048 D9)"
+      - name: "LintRule code_pattern smoke — E8501 SQL injection pattern present (ADR-0048 D9)"
         # Regression guard for #271: after index-core v17 (step smoke_v17_core above),
-        # LintRule nodes for W8140 must have a non-null code_pattern.
+        # LintRule nodes for E8501 must have a non-null code_pattern.
+        # #364: the SQL-injection rule was consolidated onto upstream E8501 for
+        # v14+ (W8140 removed v14-19, retained only v8-13 where no live E8501
+        # oracle is wired) - so the v17 smoke asserts E8501, NOT the old W8140.
         # NOTE: LintRule nodes come ONLY from index-core (not index-repo). The preceding
         # smoke_v17_core step guarantees they are present before this assertion runs.
         run: |
@@ -304,23 +307,23 @@ jobs:
           driver = GraphDatabase.driver('bolt://localhost:7687', auth=('neo4j', 'password'))
           with driver.session() as s:
               row = s.run(
-                  'MATCH (lr:LintRule {rule_id:"W8140", odoo_version:"17.0"}) '
+                  'MATCH (lr:LintRule {rule_id:"E8501", odoo_version:"17.0"}) '
                   'RETURN lr.code_pattern AS cp LIMIT 1'
               ).single()
           driver.close()
           assert row is not None, (
-              'W8140 LintRule MISSING in 17.0 after index-core — regression: '
+              'E8501 LintRule MISSING in 17.0 after index-core — regression: '
               'lint_rules_17.0.json guarantees this rule is seeded. A missing rule '
               'would silently drop SQL-injection detection, so this is a hard FAIL '
               '(not a SKIP).'
           )
           cp = row['cp']
           assert cp is not None and len(cp) > 0, (
-              f'W8140 code_pattern is null/empty: {cp!r} — '
+              f'E8501 code_pattern is null/empty: {cp!r} — '
               '#271 regression: static JSON patterns not being written to Neo4j. '
               'Check _apply_code_patterns_overlay + writer SET l.code_pattern.'
           )
-          print(f'W8140 code_pattern present: {cp!r}')
+          print(f'E8501 code_pattern present: {cp!r}')
           print('LintRule code_pattern smoke PASS')
           PYEOF
         env:
