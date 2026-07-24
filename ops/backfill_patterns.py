@@ -5,9 +5,30 @@ Idempotent: ON CONFLICT (pattern_id) DO UPDATE SET ... only when source-controll
 fields differ. Safe to run multiple times; second run produces 0 inserted, 0 updated
 when the DB already matches the JSON.
 
+The backfill IS the SSOT sync from the curated patterns.json into the Postgres
+`patterns` table (which is in turn the reseed source-of-truth for Neo4j
+PatternExample + pgvector, read by src.indexer.seed_patterns). Because the DB
+table - not patterns.json - is what the reseed reads, a curated pattern_id that
+is RENAMED or REMOVED from patterns.json (e.g. #362 renamed
+`odoo-module-owl2-component-v15` -> `odoo-module-owl1-component-v15`) would
+otherwise survive in the DB forever and keep re-propagating to Neo4j/pgvector on
+every reseed - the same orphan-on-rename class fixed one layer up in Neo4j (R1,
+writer_neo4j.write_pattern_examples prune) and in the version-scoped spec
+writers (F2). The upsert-only backfill was the remaining gap at the Postgres
+layer, and the R1 Neo4j prune cannot heal it because the DB still lists the
+stale id as live (WHERE soft_deleted = FALSE).
+
+This module therefore SOFT-DELETES (soft_deleted = TRUE) curated rows whose
+pattern_id left patterns.json, so the next reseed excludes them (R1 then drops
+the PatternExample; pgvector clean-replaces) while the row stays recoverable and
+auditable. The prune is SCOPED to `updated_by IS NULL` so it only ever touches
+backfill/curated-owned rows - admin-created or admin-edited rows
+(src/web_ui/routes/admin_patterns.py sets updated_by to the admin user id) are
+NEVER pruned. See :func:`_prune_curated_removed`.
+
 Usage:
     ~/.venv/odoo-semantic-mcp/bin/python ops/backfill_patterns.py
-    ~/.venv/odoo-semantic-mcp/bin/python ops/backfill_patterns.py --force
+    ~/.venv/odoo-semantic-mcp/bin/python ops/backfill_patterns.py --no-prune
 
 Run after `python -m src.db.migrate` to populate a fresh DB.
 
@@ -49,16 +70,73 @@ PATTERNS_JSON = _REPO_ROOT / "src" / "data" / "patterns.json"
 # ---------------------------------------------------------------------------
 
 
-def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
+def _prune_curated_removed(cur, json_ids: list[str]) -> tuple[int, list[str]]:
+    """Soft-delete curated rows whose pattern_id left patterns.json.
+
+    Runs after the upsert loop as part of the SSOT sync. Soft-delete (not
+    hard-delete) because the `patterns` table has a `soft_deleted` column and the
+    reseed reads `WHERE soft_deleted = FALSE` (src.indexer.seed_patterns.
+    _load_patterns_from_db), so flipping the flag excludes the row from the next
+    reseed - Neo4j R1 prune then removes its PatternExample and pgvector
+    clean-replaces - while the row stays recoverable and auditable.
+
+    SCOPE - `updated_by IS NULL` (mandatory admin-safety): backfill never writes
+    `updated_by` (its INSERT omits the column and its ON CONFLICT DO UPDATE does
+    not set it), so backfill/curated-owned rows have `updated_by IS NULL`. The
+    admin CRUD (src/web_ui/routes/admin_patterns.py create/update/soft_delete)
+    always sets `updated_by` to the admin user id (NOT NULL in production). A
+    naive unscoped `pattern_id NOT IN (json ids)` prune would soft-delete
+    admin-CREATED patterns (net-new ids that never appear in patterns.json) =
+    data loss, so the predicate is scoped to `updated_by IS NULL` and never
+    touches an admin-created or admin-edited row.
+
+    EMPTY-GUARD (mandatory): when *json_ids* is empty (a failed / empty
+    patterns.json load) prune NOTHING and return 0. `pattern_id <> ALL(ARRAY[])`
+    is vacuously TRUE for every row, so without this guard an empty id set would
+    soft-delete the WHOLE curated catalogue. Mirrors the R1
+    (write_pattern_examples) and F2 (_prune_versioned_spec_nodes) empty-guards.
+
+    Returns ``(pruned_count, sorted_pruned_ids)`` - the safety-log payload so an
+    operator sees exactly which curated patterns were retired.
+    """
+    if not json_ids:
+        return 0, []
+    cur.execute(
+        """
+        UPDATE patterns
+           SET soft_deleted = TRUE,
+               updated_at   = now()
+         WHERE updated_by IS NULL
+           AND soft_deleted = FALSE
+           AND pattern_id <> ALL(%(json_ids)s)
+        RETURNING pattern_id
+        """,
+        {"json_ids": json_ids},
+    )
+    pruned_ids = sorted(r[0] for r in cur.fetchall())
+    return len(pruned_ids), pruned_ids
+
+
+def backfill(
+    conn, *, patterns_path: Path = PATTERNS_JSON, prune: bool = True,
+) -> tuple[int, int, int]:
     """Backfill patterns from *patterns_path* into patterns table via *conn*.
 
     Args:
         conn: open psycopg2 connection (caller owns lifecycle + commit/rollback).
         patterns_path: path to patterns.json (default: src/data/patterns.json).
+        prune: when True (default - the backfill IS the SSOT sync), soft-delete
+            curated (``updated_by IS NULL``) rows whose pattern_id is no longer in
+            patterns.json. The ``--no-prune`` CLI flag sets this False as an escape
+            hatch for a partial / hand-edited patterns.json. See
+            :func:`_prune_curated_removed` for the admin-safety + empty-guard
+            contract.
 
     Returns:
-        (inserted_count, updated_count) tuple.
+        (inserted_count, updated_count, pruned_count) tuple.
         Rows with no diff are counted neither as inserted nor updated.
+        ``pruned_count`` is the number of curated rows soft-deleted (0 when
+        ``prune=False`` or the id set is empty).
 
     Raises:
         AssertionError: if patterns_path content is not a JSON array.
@@ -71,10 +149,13 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
 
     inserted = 0
     updated = 0
+    pruned = 0
+    json_ids: list[str] = []
 
     with conn.cursor() as cur:
         for p in raw:
             pid = p["pattern_id"]
+            json_ids.append(pid)
             intent_keywords = p.get("intent_keywords", [])
             file_ref = p["file_ref"]
             snippet_text = p["snippet_text"]
@@ -148,7 +229,21 @@ def backfill(conn, *, patterns_path: Path = PATTERNS_JSON) -> tuple[int, int]:
                 # xmax != 0 means the row was UPDATEd (existing transaction ID).
                 updated += 1
 
-    return inserted, updated
+        # SSOT sync: retire curated rows that left patterns.json (scoped to
+        # updated_by IS NULL so admin rows are never touched; empty-guard inside).
+        if prune:
+            pruned, pruned_ids = _prune_curated_removed(cur, json_ids)
+            if pruned:
+                # SAFETY LOG: name every soft-deleted curated pattern so an
+                # operator sees exactly what the SSOT sync retired this run.
+                log.info(
+                    "Backfill prune: soft-deleted %d curated pattern(s) removed "
+                    "from patterns.json (updated_by IS NULL scope): %s",
+                    pruned,
+                    ", ".join(pruned_ids),
+                )
+
+    return inserted, updated, pruned
 
 
 def _build_conn():
@@ -191,6 +286,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="(reserved for future use — backfill is always idempotent)",
     )
+    parser.add_argument(
+        "--no-prune",
+        action="store_true",
+        help=(
+            "Do NOT soft-delete curated rows removed from patterns.json. Prune is "
+            "ON by default because the backfill IS the SSOT sync; use this escape "
+            "hatch only for a partial / hand-edited patterns.json. Only "
+            "curated rows (updated_by IS NULL) are ever pruned - admin-owned "
+            "rows are always preserved."
+        ),
+    )
     args = parser.parse_args(argv)
 
     patterns_path = Path(args.patterns_file)
@@ -200,9 +306,15 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = _build_conn()
     try:
-        ins, upd = backfill(conn, patterns_path=patterns_path)
+        ins, upd, pruned = backfill(
+            conn, patterns_path=patterns_path, prune=not args.no_prune,
+        )
         conn.commit()
-        log.info("Backfill complete: %d inserted, %d updated (no-diff skipped).", ins, upd)
+        log.info(
+            "Backfill complete: %d inserted, %d updated, %d pruned "
+            "(no-diff skipped).",
+            ins, upd, pruned,
+        )
     except Exception:
         conn.rollback()
         raise
