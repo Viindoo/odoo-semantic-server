@@ -94,7 +94,7 @@ class TestBackfillInsertsAll:
     def test_inserts_all_patterns(self, fresh_pg):
         """Backfill must insert exactly as many rows as patterns.json has entries."""
         expected = len(json.loads(PATTERNS_JSON.read_text()))
-        ins, upd = backfill(fresh_pg)
+        ins, upd, pruned = backfill(fresh_pg)
         fresh_pg.commit()
 
         db_count = _count_patterns(fresh_pg)
@@ -106,6 +106,9 @@ class TestBackfillInsertsAll:
         assert db_count == expected, (
             f"DB has {db_count} rows, expected {expected}"
         )
+        # Fresh DB, every patterns.json id freshly inserted -> nothing curated to
+        # retire, so the SSOT prune must be a no-op on the first run.
+        assert pruned == 0, f"Expected 0 pruned on a fresh backfill, got {pruned}"
 
 
 # ---------------------------------------------------------------------------
@@ -187,12 +190,12 @@ class TestBackfillIdempotentZeroDiff:
         identifies that no field has changed between runs.
         """
         # First run - populate
-        ins1, upd1 = backfill(fresh_pg)
+        ins1, upd1, _ = backfill(fresh_pg)
         fresh_pg.commit()
         assert ins1 > 0, "First run should have inserted rows"
 
         # Second run - must be a no-op
-        ins2, upd2 = backfill(fresh_pg)
+        ins2, upd2, _ = backfill(fresh_pg)
         fresh_pg.commit()
 
         assert ins2 == 0, (
@@ -239,7 +242,7 @@ class TestBackfillDetectsDrift:
         assert db_before["snippet_text"] == "# CORRUPTED", "Corruption setup failed"
 
         # Re-run backfill - must correct the drifted row
-        ins, upd = backfill(fresh_pg)
+        ins, upd, _ = backfill(fresh_pg)
         fresh_pg.commit()
 
         db_after = _fetch_pattern(fresh_pg, target_id)
@@ -341,7 +344,7 @@ class TestBackfillCategory:
         assert db_before["category"] == corrupted_value, "Corruption setup failed"
 
         # Re-run backfill - must correct the drifted row
-        ins, upd = backfill(fresh_pg)
+        ins, upd, _ = backfill(fresh_pg)
         fresh_pg.commit()
 
         db_after = _fetch_pattern(fresh_pg, target_id)
@@ -360,15 +363,285 @@ class TestBackfillCategory:
         field when it hasn't changed, avoiding spurious updates.
         """
         # First run - populate
-        ins1, upd1 = backfill(fresh_pg)
+        ins1, upd1, _ = backfill(fresh_pg)
         fresh_pg.commit()
         assert ins1 > 0, "First run should have inserted rows"
 
         # Second run - must be a no-op for category field too
-        ins2, upd2 = backfill(fresh_pg)
+        ins2, upd2, _ = backfill(fresh_pg)
         fresh_pg.commit()
 
         assert upd2 == 0, (
             f"Second run should update 0 rows (category unchanged), got {upd2}. "
             "Drift detection falsely fired on identical category."
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 7: SSOT prune - curated rows removed from patterns.json are soft-deleted,
+#         admin-owned rows are NEVER touched (the orphan-on-rename fix)
+# ---------------------------------------------------------------------------
+#
+# Root cause (this fix): ops/backfill_patterns.py was UPSERT-ONLY, so a curated
+# pattern_id renamed or removed from patterns.json survived in the `patterns`
+# table forever. Since the DB table - not patterns.json - is the reseed
+# source-of-truth (src.indexer.seed_patterns._load_patterns_from_db reads
+# WHERE soft_deleted = FALSE), the stale row kept re-propagating to Neo4j
+# PatternExample + pgvector on every reseed. The Neo4j R1 prune could not heal
+# it because the DB still listed the id as live. This is the same
+# orphan-on-rename class as R1 (Neo4j) and F2 (spec writers), one layer down at
+# Postgres. These tests protect BEHAVIOR, not internals.
+
+
+def _valid_entry(pattern_id: str, **overrides) -> dict:
+    """A minimal, schema-valid patterns.json entry (backfill reads these keys).
+
+    backfill() does not run the jsonschema validator (that lives in
+    seed_patterns), but the DB has a CHECK on language and NOT NULL on
+    file_ref/snippet_text/odoo_version_min, so the defaults below keep the row
+    insertable.
+    """
+    entry = {
+        "pattern_id": pattern_id,
+        "intent_keywords": ["prune", "ssot"],
+        "file_ref": "addons/foo/models/foo.py:1",
+        "snippet_text": "class Foo(models.Model):\n    _name = 'foo'",
+        "gotchas": ["g1"],
+        "odoo_version_min": "17.0",
+        "odoo_version_max": None,
+        "category": None,
+        "language": "python",
+        "core_symbol_names": [],
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _write_json(tmp_path, entries: list[dict]):
+    """Write *entries* to a patterns.json fixture file and return its Path."""
+    path = tmp_path / "patterns_fixture.json"
+    path.write_text(json.dumps(entries), encoding="utf-8")
+    return path
+
+
+def _seed_curated_row(conn, pattern_id: str, *, soft_deleted: bool = False) -> None:
+    """Insert a CURATED (backfill-owned) row: updated_by IS NULL.
+
+    Mirrors exactly what ops/backfill_patterns.py writes - it never sets
+    updated_by - so this row is indistinguishable from a real backfill row and
+    is therefore in-scope for the prune.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO patterns
+                (pattern_id, intent_keywords, file_ref, snippet_text, gotchas,
+                 odoo_version_min, language, soft_deleted)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+            """,
+            (
+                pattern_id,
+                ["seed"],
+                "addons/foo/models/foo.py:1",
+                "# seeded curated row",
+                json.dumps([]),
+                "17.0",
+                "python",
+                soft_deleted,
+            ),
+        )
+    conn.commit()
+
+
+def _seed_admin_row(
+    conn, pattern_id: str, *, user_id: int = 4242, soft_deleted: bool = False,
+) -> int:
+    """Insert an ADMIN-owned row: updated_by = a real webui_users id (NOT NULL).
+
+    Reproduces what src/web_ui/routes/admin_patterns.py::create_pattern writes
+    (updated_by = the admin user id). The webui_users row is created first so the
+    updated_by FK (REFERENCES webui_users(id) ON DELETE SET NULL) is satisfied.
+    Returns the user_id used.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO webui_users (username, id, role) VALUES (%s, %s, 'admin') "
+            "ON CONFLICT (username) DO NOTHING",
+            (f"t-admin-{user_id}", user_id),
+        )
+        cur.execute(
+            """
+            INSERT INTO patterns
+                (pattern_id, intent_keywords, file_ref, snippet_text, gotchas,
+                 odoo_version_min, language, soft_deleted, updated_by)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+            """,
+            (
+                pattern_id,
+                ["seed"],
+                "addons/foo/models/foo.py:1",
+                "# seeded admin row",
+                json.dumps([]),
+                "17.0",
+                "python",
+                soft_deleted,
+                user_id,
+            ),
+        )
+    conn.commit()
+    return user_id
+
+
+def _soft_deleted(conn, pattern_id: str) -> bool | None:
+    """Return the soft_deleted flag for *pattern_id*, or None when absent."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT soft_deleted FROM patterns WHERE pattern_id = %s", (pattern_id,)
+        )
+        row = cur.fetchone()
+    return None if row is None else row[0]
+
+
+class TestBackfillPrunesRemovedCurated:
+    def test_curated_id_removed_from_json_is_soft_deleted(self, fresh_pg, tmp_path):
+        """Business rule: a curated pattern_id no longer in patterns.json MUST be
+        soft-deleted, while a curated id still in patterns.json stays live.
+
+        RED on the pre-fix (upsert-only, no prune) backfill: `stale` keeps
+        soft_deleted=FALSE and this assertion fails.
+        """
+        # A curated row that is NOT in the incoming catalogue.
+        _seed_curated_row(fresh_pg, "stale-curated-pattern")
+        # The incoming catalogue carries a DIFFERENT curated id.
+        json_path = _write_json(tmp_path, [_valid_entry("kept-curated-pattern")])
+
+        ins, upd, pruned = backfill(fresh_pg, patterns_path=json_path)
+        fresh_pg.commit()
+
+        assert _soft_deleted(fresh_pg, "stale-curated-pattern") is True, (
+            "curated id removed from patterns.json was not soft-deleted - the "
+            "orphan-on-rename bug at the Postgres layer is still open"
+        )
+        assert _soft_deleted(fresh_pg, "kept-curated-pattern") is False, (
+            "a curated id STILL in patterns.json was wrongly soft-deleted"
+        )
+        assert pruned == 1, f"expected exactly 1 row pruned, got {pruned}"
+        assert ins == 1, f"expected the kept id inserted, got ins={ins}"
+
+    def test_admin_created_row_is_preserved(self, fresh_pg, tmp_path):
+        """THE CRITICAL ONE: an admin-created pattern (updated_by NOT NULL) whose
+        pattern_id is absent from patterns.json MUST NOT be soft-deleted.
+
+        A naive unscoped prune (`pattern_id NOT IN (json ids)`) would soft-delete
+        this admin row = data loss. This test fails RED on that naive impl and
+        passes GREEN only when the prune is scoped to `updated_by IS NULL`.
+        """
+        _seed_admin_row(fresh_pg, "admin-net-new-pattern", user_id=4242)
+        # patterns.json does NOT contain the admin id.
+        json_path = _write_json(tmp_path, [_valid_entry("kept-curated-pattern")])
+
+        ins, upd, pruned = backfill(fresh_pg, patterns_path=json_path)
+        fresh_pg.commit()
+
+        assert _soft_deleted(fresh_pg, "admin-net-new-pattern") is False, (
+            "an admin-created pattern (updated_by NOT NULL) absent from "
+            "patterns.json was soft-deleted - the prune is not scoped to "
+            "updated_by IS NULL and is DESTROYING ADMIN DATA"
+        )
+        assert pruned == 0, (
+            f"admin row must be out of prune scope, but pruned={pruned}"
+        )
+
+    def test_admin_row_and_curated_stale_together(self, fresh_pg, tmp_path):
+        """Mixed table: given BOTH a stale curated row and a stale admin row
+        absent from patterns.json, the prune retires ONLY the curated one.
+        """
+        _seed_curated_row(fresh_pg, "stale-curated-pattern")
+        _seed_admin_row(fresh_pg, "admin-net-new-pattern", user_id=4242)
+        json_path = _write_json(tmp_path, [_valid_entry("kept-curated-pattern")])
+
+        _ins, _upd, pruned = backfill(fresh_pg, patterns_path=json_path)
+        fresh_pg.commit()
+
+        assert _soft_deleted(fresh_pg, "stale-curated-pattern") is True
+        assert _soft_deleted(fresh_pg, "admin-net-new-pattern") is False
+        assert pruned == 1, (
+            f"only the curated stale row should be pruned, got pruned={pruned}"
+        )
+
+    def test_empty_json_prunes_nothing(self, fresh_pg, tmp_path):
+        """EMPTY-GUARD: an empty patterns.json id set must soft-delete NOTHING.
+
+        `pattern_id <> ALL(ARRAY[])` is vacuously TRUE for every row, so without
+        the empty-guard an empty/failed load would wipe the whole curated
+        catalogue. RED on a no-empty-guard impl: the curated survivor gets
+        soft-deleted.
+        """
+        _seed_curated_row(fresh_pg, "curated-survivor")
+        empty_json = _write_json(tmp_path, [])
+
+        ins, upd, pruned = backfill(fresh_pg, patterns_path=empty_json)
+        fresh_pg.commit()
+
+        assert _soft_deleted(fresh_pg, "curated-survivor") is False, (
+            "empty patterns.json soft-deleted a live curated row - the mandatory "
+            "empty-guard is missing (would wipe the whole catalogue on a failed "
+            "load)"
+        )
+        assert pruned == 0, f"empty json must prune nothing, got pruned={pruned}"
+
+    def test_owl2_to_owl1_rename_transition(self, fresh_pg, tmp_path):
+        """The concrete #362 case: owl2 (curated, updated_by NULL) is renamed to
+        owl1 in patterns.json. The scoped prune soft-deletes owl2 with NO manual
+        step, and owl1 lands live.
+        """
+        old_id = "odoo-module-owl2-component-v15"
+        new_id = "odoo-module-owl1-component-v15"
+        # owl2 was seeded by an earlier backfill (curated, live).
+        _seed_curated_row(fresh_pg, old_id)
+        # patterns.json now carries the renamed id.
+        json_path = _write_json(tmp_path, [_valid_entry(new_id)])
+
+        _ins, _upd, pruned = backfill(fresh_pg, patterns_path=json_path)
+        fresh_pg.commit()
+
+        assert _soft_deleted(fresh_pg, old_id) is True, (
+            f"{old_id} (renamed away) must be soft-deleted with no manual step"
+        )
+        assert _soft_deleted(fresh_pg, new_id) is False, (
+            f"{new_id} (rename target) must be live after backfill"
+        )
+        assert pruned == 1
+
+    def test_no_prune_flag_disables_prune(self, fresh_pg, tmp_path):
+        """Escape hatch: prune=False (the --no-prune CLI flag) must leave a stale
+        curated row untouched - the upsert-only legacy behavior on demand.
+        """
+        _seed_curated_row(fresh_pg, "stale-curated-pattern")
+        json_path = _write_json(tmp_path, [_valid_entry("kept-curated-pattern")])
+
+        _ins, _upd, pruned = backfill(fresh_pg, patterns_path=json_path, prune=False)
+        fresh_pg.commit()
+
+        assert _soft_deleted(fresh_pg, "stale-curated-pattern") is False, (
+            "prune=False must not soft-delete anything"
+        )
+        assert pruned == 0, f"prune=False must report 0 pruned, got {pruned}"
+
+    def test_prune_is_idempotent(self, fresh_pg, tmp_path):
+        """Second run prunes 0: an already-soft-deleted curated row is excluded by
+        the `soft_deleted = FALSE` predicate, so a re-run is a no-op.
+        """
+        _seed_curated_row(fresh_pg, "stale-curated-pattern")
+        json_path = _write_json(tmp_path, [_valid_entry("kept-curated-pattern")])
+
+        _i1, _u1, pruned1 = backfill(fresh_pg, patterns_path=json_path)
+        fresh_pg.commit()
+        _i2, _u2, pruned2 = backfill(fresh_pg, patterns_path=json_path)
+        fresh_pg.commit()
+
+        assert pruned1 == 1, f"first run should prune the stale row, got {pruned1}"
+        assert pruned2 == 0, (
+            f"second run must prune nothing (idempotent), got {pruned2}"
+        )
+        assert _soft_deleted(fresh_pg, "stale-curated-pattern") is True
