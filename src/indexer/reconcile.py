@@ -379,11 +379,15 @@ class _Reconciler:
                 conn=self.conn,
             )
 
-    def _delete_embeddings(self, name: str, profiles: Iterable[str]) -> int:
+    def _delete_embeddings(
+        self, name: str, profiles: Iterable[str], *, expected: int | None = None,
+    ) -> int:
         from src.indexer.writer_pgvector import delete_module_embeddings
         n = _retrying(
             f"embeddings[{name}]",
-            lambda: delete_module_embeddings(self.conn, name, self.v, sorted(set(profiles))),
+            lambda: delete_module_embeddings(
+                self.conn, name, self.v, sorted(set(profiles)), expected=expected,
+            ),
         )
         self.report.embeddings_deleted += n
         return n
@@ -748,9 +752,9 @@ class _Reconciler:
         self.report.embedding_orphans = groups
         if not delete:
             return
-        for module, profile, _n in groups:
+        for module, profile, n in groups:
             try:
-                self._delete_embeddings(module, [profile])
+                self._delete_embeddings(module, [profile], expected=n)
             except Exception as exc:  # noqa: BLE001
                 self.report.errors[f"embeddings:{module}:{profile}"] = (
                     f"{type(exc).__name__}: {exc}"[:300]

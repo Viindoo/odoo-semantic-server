@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from psycopg2.extras import execute_values
@@ -687,6 +688,7 @@ def write_module_embeddings(
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
+                cur.execute(_WRITE_SCOPE_SQL)
                 _delete_module_embeddings_cur(cur, module, version, [profile_name])
                 rows = [
                     c.as_tuple(vecs[i], emb_model, emb_dim)
@@ -700,6 +702,43 @@ def write_module_embeddings(
         finally:
             conn.autocommit = True  # restore for pool reuse
     return embed_calls
+
+
+# The embeddings_tenant RLS policy (0001) admits a row only when
+# app.allowed_profiles is '*' or lists its profile. After ops/rls_cutover.sh the
+# table is FORCEd, so the policy binds the table owner too unless the owner is
+# a superuser / BYPASSRLS role (the docker-compose default). The indexer and the
+# Web UI never set the GUC, so on a deploy whose owner role does not bypass RLS
+# every DELETE / sweep read here would match 0 rows and silently keep ghost
+# embeddings (and every INSERT would fail its WITH CHECK). Write-side statements
+# therefore run with the unrestricted scope, transaction-local.
+_WRITE_SCOPE_SQL = "SELECT set_config('app.allowed_profiles', '*', true)"
+
+
+@contextmanager
+def _write_scope(conn) -> Generator[None, None, None]:
+    """Run the block with RLS scope '*' (every profile), transaction-local.
+
+    On an autocommit connection the block becomes one transaction (committed
+    on success); inside a caller transaction the scope lasts until the
+    caller's transaction ends and nothing is committed here.
+    """
+    if not conn.autocommit:
+        with conn.cursor() as cur:
+            cur.execute(_WRITE_SCOPE_SQL)
+        yield
+        return
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_WRITE_SCOPE_SQL)
+        yield
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.autocommit = True
 
 
 _DELETE_MODULE_EMBEDDINGS_SQL = (
@@ -719,6 +758,8 @@ def delete_module_embeddings(
     module: str,
     version: str,
     profile_names: Iterable[str],
+    *,
+    expected: int | None = None,
 ) -> int:
     """Delete the embeddings of *module* at *version* owned by *profile_names*.
 
@@ -731,17 +772,28 @@ def delete_module_embeddings(
       profiles".
     * ``GLOBAL_PROFILE`` ('__global__', the pattern catalogue) is dropped from
       *profile_names*; catalogue rows are owned by ``seed_patterns``.
-    * Runs on the caller's *conn* and never commits: with the pool default
-      (autocommit) the DELETE is durable when this returns; inside a caller
-      transaction it commits or rolls back with it.
+    * Runs on the caller's *conn* with the unrestricted RLS scope
+      (:func:`_write_scope`, so a FORCEd policy cannot hide the rows): on an
+      autocommit connection the DELETE is its own committed transaction;
+      inside a caller transaction it commits or rolls back with it.
+    * *expected*: the row count a prior read reported (orphan sweep). Fewer
+      rows deleted logs a WARNING - the rows were invisible or already gone.
 
     Returns the number of rows deleted.
     """
     profiles = sorted({p for p in profile_names if p and p != GLOBAL_PROFILE})
     if not profiles:
         return 0
-    with conn.cursor() as cur:
-        return _delete_module_embeddings_cur(cur, module, version, profiles)
+    with _write_scope(conn), conn.cursor() as cur:
+        deleted = _delete_module_embeddings_cur(cur, module, version, profiles)
+    if expected is not None and deleted < expected:
+        _logger.warning(
+            "embeddings delete for module=%s version=%s profiles=%s removed %d of "
+            "%d expected row(s); the rest were invisible to this session (RLS "
+            "scope) or deleted concurrently", module, version, ",".join(profiles),
+            deleted, expected,
+        )
+    return deleted
 
 
 def orphan_embedding_keys(
@@ -756,10 +808,12 @@ def orphan_embedding_keys(
     present rows. Returns ``[(module, profile_name, row_count), ...]`` sorted
     by module then profile for every group NOT in *live*. Catalogue rows
     (``profile_name = GLOBAL_PROFILE``) are never reported. Read-only; delete
-    a reported group with :func:`delete_module_embeddings`.
+    a reported group with :func:`delete_module_embeddings`. Reads with the
+    unrestricted RLS scope (:func:`_write_scope`): a tenant-scoped view would
+    report no orphans at all.
     """
     live_set = {(m, p) for m, p in live}
-    with conn.cursor() as cur:
+    with _write_scope(conn), conn.cursor() as cur:
         cur.execute(
             "SELECT module, profile_name, count(*) FROM embeddings "
             "WHERE odoo_version = %s AND profile_name <> %s "
