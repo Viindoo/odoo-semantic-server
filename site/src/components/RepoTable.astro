@@ -4,7 +4,7 @@ export interface Repo {
   id: number;
   url: string;
   branch: string;
-  local_path: string;
+  local_path: string | null;  // null for non-admin viewers (server path)
   odoo_version?: string;
   clone_status?: string;
   clone_error_msg?: string | null;
@@ -187,18 +187,9 @@ function truncate(text: string | null | undefined, maxLen: number): string {
         <label class="flex items-center gap-1.5 text-xs text-gray-600">
           <input
             type="checkbox"
-            data-testid="index-all-gc-checkbox"
-            class="w-4 h-4 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
-            title="Run GC (garbage-collect stale nodes)"
-          />
-          <span>GC</span>
-        </label>
-        <label class="flex items-center gap-1.5 text-xs text-gray-600">
-          <input
-            type="checkbox"
             data-testid="index-all-full-checkbox"
             class="w-4 h-4 rounded border-gray-300 text-viindoo-info focus:ring-2 focus:ring-viindoo-info"
-            title="Force full reindex — cleanup stale Module nodes after module rename/move (ADR-0007)"
+            title="Force full reindex: re-parse every module (backfills new index-time properties). Not needed to remove renamed or deleted modules: that runs on every index run (ADR-0056)"
           />
           <span>Full reindex</span>
         </label>
@@ -292,7 +283,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                 </td>
                 <td class="px-4 py-3 text-right">
                   <div class="flex items-center justify-end gap-2">
-                    <label class="flex items-center gap-1.5 text-xs text-gray-600" title="Force full reindex — cleanup stale Module nodes after module rename/move (ADR-0007)">
+                    <label class="flex items-center gap-1.5 text-xs text-gray-600" title="Force full reindex: re-parse every module (backfills new index-time properties). Not needed to remove renamed or deleted modules: that runs on every index run (ADR-0056)">
                       <input
                         type="checkbox"
                         data-testid={`index-repo-full-checkbox-${repo.id}`}
@@ -486,11 +477,10 @@ function truncate(text: string | null | undefined, maxLen: number): string {
     });
   });
 
-  // Index all button — W4 C: read actual worker values + gc toggle
+  // Index all button - W4 C: read actual worker values
   document.querySelector('[data-testid="index-all-button"]')?.addEventListener('click', async () => {
     if (!confirm('Trigger index for ALL profiles?')) return;
     const fullCheckbox = document.querySelector('[data-testid="index-all-full-checkbox"]') as HTMLInputElement | null;
-    const gcCheckbox = document.querySelector('[data-testid="index-all-gc-checkbox"]') as HTMLInputElement | null;
     const profileWorkersInput = document.querySelector('[data-testid="index-all-profile-workers"]') as HTMLInputElement | null;
     const maxWorkersInput = document.querySelector('[data-testid="index-all-max-workers"]') as HTMLInputElement | null;
     const body: Record<string, string> = {
@@ -499,9 +489,6 @@ function truncate(text: string | null | undefined, maxLen: number): string {
     };
     if (fullCheckbox?.checked) {
       body.full = '1';
-    }
-    if (gcCheckbox?.checked) {
-      body.gc = '1';
     }
     const r = await submitJson('/api/repos/index-all', { method: 'POST', body });
     const data = r.data as { job_id?: number };

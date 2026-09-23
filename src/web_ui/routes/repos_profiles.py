@@ -66,7 +66,8 @@ async def list_profiles(request: Request):
                 "tenant_id": profile_tenant_id,
                 "repos": repos,
             })
-        repos_module._attach_lifecycle(all_repos, is_admin=is_admin)
+        repos_module._attach_lifecycle(all_repos)
+        repos_module._redact_repo_rows(all_repos, is_admin=is_admin)
 
         # Fetch most recent bulk "all" job for top-of-page badge (admin-only usage)
         if scope is ALL_TENANTS:
@@ -75,7 +76,9 @@ async def list_profiles(request: Request):
                 all_job_id = all_job["id"]
                 all_job_status = all_job["status"]
     except Exception as e:
-        error = str(e)
+        _logger.warning("%s failed: %s", request.url.path, e)
+        # Raw exception text can name hosts/paths: admin only.
+        error = str(e) if is_admin else "Internal error loading repositories."
 
     return JSONResponse(_json_safe({
         "profiles": profiles,

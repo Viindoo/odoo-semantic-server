@@ -142,7 +142,7 @@ async def clone_status(request: Request, repo_id: int):
 
     Also the repo's module lifecycle view (``head_sha`` vs ``presence_head_sha``,
     ``lifecycle_attention[_at]``, ``lifecycle_counts``); the attention text is
-    redacted for non-admin the same way (``repos._attach_lifecycle``).
+    redacted for non-admin by the shared ``repos._redact_repo_rows``.
     """
     try:
         from src.db.pg import repo_store
@@ -160,7 +160,9 @@ async def clone_status(request: Request, repo_id: int):
 
     from src.web_ui.routes import repos as repos_module
 
-    lifecycle = repos_module._attach_lifecycle([dict(repo)], is_admin=is_admin)[0]
+    lifecycle = repos_module._redact_repo_rows(
+        repos_module._attach_lifecycle([dict(repo)]), is_admin=is_admin,
+    )[0]
     return JSONResponse(_json_safe({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
