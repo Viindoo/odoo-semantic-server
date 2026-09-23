@@ -15,7 +15,8 @@ Every read is tenant-scoped. Graph reads go through the ADR-0034 choke
 (``_scope`` / ``_scope_pred``); ledger reads always pass an explicit profile
 list, never the unscoped ``None`` (admin callers get the list of every existing
 profile). A ledger failure degrades to the single line
-:data:`LEDGER_UNAVAILABLE` and never turns into a tool error.
+:data:`LEDGER_UNAVAILABLE` and never turns into a tool error; it also marks the
+body degraded, so a resource read never caches it (``src.mcp.degraded``).
 
 The helpers take the MCP server hub (``srv``) as an explicit argument instead
 of binding it at import time, so the callers' ``_srv`` generation (and any test
@@ -42,6 +43,7 @@ from src.indexer.lifecycle import (
     GATE_SCAN_UNTRUSTED,
     GATE_TOTAL_WIPE,
 )
+from src.mcp.degraded import mark_degraded
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +201,7 @@ def read_ledger_rows(
             "module lifecycle ledger read failed for %r @ %s", name, version,
             exc_info=True,
         )
+        mark_degraded("module lifecycle ledger unreachable")
         return None
 
 

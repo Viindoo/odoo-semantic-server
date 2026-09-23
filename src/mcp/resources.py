@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.constants import STYLESHEET_RESOURCE_MAX_BYTES
+from src.mcp.degraded import collect_degradation, mark_degraded
 from src.mcp.orm import OrmQueryTimeout
 
 logger = logging.getLogger(__name__)
@@ -165,12 +166,20 @@ class ResourceCache:
         held during *compute_fn* (which may block on DB I/O) — concurrent
         callers for the same key may both compute, but only the second write
         survives.  Acceptable: handlers are read-only and idempotent.
+
+        A body *compute_fn* marked degraded (``src.mcp.degraded.mark_degraded``,
+        e.g. the module-lifecycle ledger was unreachable) is returned but not
+        stored, so the next read recomputes it.
         """
         cached = self.get(key)
         if cached is not None:
             return cached
-        value, mime_type = compute_fn()
-        self.put(key, value, mime_type)
+        with collect_degradation() as degraded:
+            value, mime_type = compute_fn()
+        if degraded:
+            logger.info("resource %s not cached: degraded (%s)", key, "; ".join(degraded))
+        else:
+            self.put(key, value, mime_type)
         return value, mime_type
 
     def clear(self) -> None:
@@ -574,6 +583,7 @@ def _render_stylesheet(
             "stylesheet resource unreadable on disk: %s/%s (%s)",
             module, file_path, v, exc_info=True,
         )
+        mark_degraded("stylesheet file unreadable")
         text = (
             f"stylesheet({module!r}/{file_path!r}, {v!r})\n"
             f"├─ indexed but file unreadable on this server.\n"
