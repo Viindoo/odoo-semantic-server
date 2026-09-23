@@ -429,7 +429,7 @@ async def delete_repo(
     return JSONResponse(_json_safe({
         "ok": True,
         "basename": basename,
-        **summary,
+        **repos._redact_removal_summary(summary, is_admin=is_admin_session(request)),
     }))
 
 

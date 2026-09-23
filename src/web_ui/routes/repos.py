@@ -64,7 +64,48 @@ def _get_neo4j_writer():
     return Neo4jWriter(uri=uri, user=user, password=password)
 
 
-def _attach_lifecycle(repos: list[dict], *, is_admin: bool) -> list[dict]:
+def _redact_repo_rows(repos: list[dict], *, is_admin: bool) -> list[dict]:
+    """Strip internal text and server paths from repo rows for a non-admin, in place.
+
+    The ONE redaction point for repo rows: every endpoint that sends repo rows
+    (or fields of one) to a viewer passes them through here after attaching
+    whatever it adds (``_attach_lifecycle``, ``last_job``).
+
+    ``repos.error_msg`` (indexer failure, ``str(e)``) and ``clone_error_msg``
+    (git/SSH failure) can carry server paths, repo URLs of other tenants and
+    stack traces (#237). A non-admin gets ``error_msg`` as the fixed
+    owner-facing category of :func:`jobs.sanitize_job_error` (the same rule as
+    ``/api/jobs/{id}/status``), ``clone_error_msg`` None (the same rule as
+    ``/repos/{id}/clone-status``) and an attached ``last_job['error_msg']``
+    sanitized likewise. ``local_path`` (the server-side checkout directory,
+    derived by ``default_clone_dir``, never user input) becomes None: it
+    discloses the server's filesystem layout. ``lifecycle_attention`` becomes
+    None: the text can name repos of other tenants (an undecidable retirement
+    lists the unsynced repos that block it); ``lifecycle_attention_at`` stays,
+    so a non-admin still sees that attention is needed (ADR-0034 fail-closed).
+    Keys are kept, so the JSON shape does not change. *is_admin* must come
+    from the DB-sourced scope (``resolve_read_scope``).
+    """
+    if is_admin:
+        return repos
+    from src.web_ui.routes.jobs import sanitize_job_error
+
+    for repo in repos:
+        if "error_msg" in repo:
+            repo["error_msg"] = sanitize_job_error(repo["error_msg"])
+        if "clone_error_msg" in repo:
+            repo["clone_error_msg"] = None
+        if "local_path" in repo:
+            repo["local_path"] = None
+        if "lifecycle_attention" in repo:
+            repo["lifecycle_attention"] = None
+        job = repo.get("last_job")
+        if isinstance(job, dict) and "error_msg" in job:
+            repo["last_job"] = {**job, "error_msg": sanitize_job_error(job["error_msg"])}
+    return repos
+
+
+def _attach_lifecycle(repos: list[dict]) -> list[dict]:
     """Add the module lifecycle view (ADR-0056) to repo rows, in place.
 
     Every row gets ``presence_head_sha`` (the HEAD the ledger last reflects;
@@ -74,10 +115,8 @@ def _attach_lifecycle(repos: list[dict], *, is_admin: bool) -> list[dict]:
     ``lifecycle_counts`` ``{present, excluded, retired, retire_pending,
     needs_rewrite}`` from the ledger (None when the ledger is unreadable).
 
-    The attention text can name repos of other tenants (an undecidable
-    retirement lists the unsynced repos that block it), so a non-admin gets
-    ``lifecycle_attention`` None and only the timestamp says attention is
-    needed (ADR-0034 fail-closed, same rule as ``clone_error_msg``).
+    Attaches unredacted values: callers pass the rows through
+    :func:`_redact_repo_rows` before sending them to a viewer.
     """
     counts: dict[int, dict[str, int]] | None
     try:
@@ -91,7 +130,7 @@ def _attach_lifecycle(repos: list[dict], *, is_admin: bool) -> list[dict]:
     for repo in repos:
         repo["presence_head_sha"] = repo.get("presence_head_sha")
         repo["lifecycle_attention_at"] = repo.get("lifecycle_attention_at")
-        repo["lifecycle_attention"] = repo.get("lifecycle_attention") if is_admin else None
+        repo["lifecycle_attention"] = repo.get("lifecycle_attention")
         repo["lifecycle_counts"] = counts.get(repo["id"]) if counts is not None else None
     return repos
 
@@ -228,6 +267,25 @@ def _reconcile_removed(
     finally:
         writer.close()
     return reports, None
+
+
+def _redact_removal_summary(summary: dict, *, is_admin: bool) -> dict:
+    """Hide other repos' identities and raw errors in a removal summary for a non-admin.
+
+    ``undecidable`` lists the unsynced repos (any tenant: basename + repo id)
+    that keep a name pending, and ``errors`` / ``deferred_reason`` carry raw
+    exception text. A non-admin keeps the names (its own modules) with an
+    empty blocker list, and a fixed message instead of the exception text.
+    """
+    if is_admin:
+        return summary
+    lifecycle = summary.get("lifecycle") or {}
+    if lifecycle.get("deferred_reason"):
+        lifecycle["deferred_reason"] = "reconcile deferred to the next index run"
+    for block in (lifecycle.get("versions") or {}).values():
+        block["undecidable"] = {name: [] for name in block.get("undecidable") or {}}
+        block["errors"] = {key: "internal error" for key in block.get("errors") or {}}
+    return summary
 
 
 def _removal_summary(
