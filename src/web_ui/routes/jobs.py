@@ -9,6 +9,7 @@ prefix="/api/jobs" fixes the URL mismatch without changing client code.
 import datetime as _dt
 import logging
 import os
+import re
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -40,26 +41,52 @@ def _is_pid_alive(pid: int) -> bool:
 
 # Owner-facing error categories (#237 follow-up). A job owner (tenant) legitimately
 # needs to know *why* their own index failed, but the raw error_msg is
-# ``str(e)[:1000]`` from the pipeline and can carry server file paths, repo URLs,
-# or stack traces. Each raw error maps to a FIXED, non-internal category string;
-# the raw text is NEVER echoed. Unrecognised errors fall to the generic default,
-# so the mapping is exhaustive-by-construction against current AND future error
-# producers — no raw detail can ever reach a non-admin owner.
+# ``str(e)[:1000]`` from the pipeline (or ``str(e)[:500]`` from the cloner) and
+# can carry server file paths, repo URLs, or stack traces. Each raw error maps to
+# a FIXED, non-internal category string; the raw text is NEVER echoed.
+#
+# Patterns are whole-token / anchored regexes for the phrases each category is
+# meant for, taken from what the producers actually write: git/ssh stderr
+# ("fatal: could not read from remote repository", "Permission denied
+# (publickey)", "Host key verification failed"), subprocess.CalledProcessError
+# ("Command '['git', ...]' returned non-zero exit status 128"),
+# subprocess.TimeoutExpired ("... timed out after N seconds"), psycopg2 / neo4j
+# driver connection errors, OSError ENOSPC ("No space left on device"), the OOM
+# killer (SIGKILL: "exit status -9", "Signals.SIGKILL", "Killed") and parser
+# failures (SyntaxError "invalid syntax", manifest files). A bare substring match
+# misclassified e.g. "boom" as out-of-memory and "last." as a parse error; an
+# unrecognised error falls to the generic default, so the mapping stays
+# exhaustive-by-construction and no raw detail can ever reach a non-admin owner.
 _JOB_ERROR_CATEGORIES = [
-    (("permission denied", "authentication failed", "auth fail", "publickey",
-      "deploy key", "could not read from remote", "host key", "ssh"),
+    ((r"\bpermission denied\b", r"\bauthentication failed\b", r"\bauth(entication)? fail",
+      r"\bpublickey\b", r"\bdeploy[ _-]key\b", r"\bcould not read from remote repository\b",
+      r"\bhost key verification failed\b", r"\bhost key\b", r"\bssh\b"),
      "Repository access failed (authentication / deploy-key). "
      "Verify the repo URL and deploy key."),
-    (("clone", "fetch", "git ", "reset --hard", "remote repository", "revision"),
+    ((r"\[\s*'git'\s*,", r"\bgit (clone|fetch|pull|reset|checkout|rev-parse|ls-files|log)\b",
+      r"^fatal:", r"\bfatal: ", r"\bnot a git repository\b", r"\bdubious ownership\b",
+      r"\b(clone|fetch) failed\b", r"\bfailed to (clone|fetch)\b", r"\breset --hard\b",
+      r"\bremote repository\b", r"\bunknown revision\b", r"\bbad revision\b"),
      "Git operation failed while cloning or updating the repository."),
-    (("timeout", "timed out"),
+    ((r"\btimed out\b", r"\btimeout\b", r"\btimeouterror\b", r"\btimeoutexpired\b"),
      "Indexing timed out — try again or narrow the scope."),
-    (("neo4j", "postgres", "psycopg", "connection refused", "pool", "database"),
+    ((r"\bneo4j\b", r"\bbolt://", r"\bpostgres(ql)?\b", r"\bpsycopg2?\b",
+      r"\bconnection refused\b", r"\bcould not connect to server\b",
+      r"\bcouldn't connect to\b", r"\bconnection pool\b", r"\bpoolerror\b",
+      r"\bserviceunavailable\b", r"\bserver closed the connection\b", r"\bdatabase\b"),
      "The indexing backend was temporarily unavailable — please retry shortly."),
-    (("no space", "disk full", "memoryerror", "out of memory", "oom", "killed"),
+    ((r"\bno space left on device\b", r"\bdisk (is )?full\b", r"\bmemoryerror\b",
+      r"\bout of memory\b", r"\boom\b", r"\boom-?kill(er|ed)?\b", r"\bsigkill\b",
+      r"\bexit status -9\b", r"\bkilled\b"),
      "The server hit a resource limit during indexing. Contact support if it persists."),
-    (("syntaxerror", "parse", "ast.", "manifest", "invalid python"),
+    ((r"\bsyntaxerror\b", r"\binvalid syntax\b", r"\bparse ?error\b",
+      r"\bfailed to parse\b", r"\bunparseable\b", r"__(manifest|openerp)__\.py\b",
+      r"\bmanifest\b", r"\binvalid python\b"),
      "A module failed to parse during indexing."),
+]
+_JOB_ERROR_PATTERNS = [
+    (re.compile("|".join(f"(?:{p})" for p in patterns), re.IGNORECASE | re.MULTILINE), summary)
+    for patterns, summary in _JOB_ERROR_CATEGORIES
 ]
 _JOB_ERROR_DEFAULT = (
     "Indexing failed due to an internal error. Contact support if it persists."
@@ -69,16 +96,17 @@ _JOB_ERROR_DEFAULT = (
 def sanitize_job_error(error_msg):
     """Map a raw indexer error to a fixed owner-facing category (no internal leak).
 
-    Returns ``None`` for an empty error. For a non-empty error, returns a fixed
-    category summary chosen by substring match, NEVER the raw text — so server
-    paths, repo URLs, and stack traces in ``error_msg`` cannot leak to a
-    non-admin job owner (#237). Unrecognised errors return the generic default.
+    Returns ``None`` for an empty error. For a non-empty error, returns the
+    fixed category summary of the first category whose whole-token pattern
+    matches, NEVER the raw text - so server paths, repo URLs, and stack traces
+    in ``error_msg`` cannot leak to a non-admin job owner (#237). Unrecognised
+    errors return the generic default.
     """
     if not error_msg:
         return None
-    low = str(error_msg).lower()
-    for needles, summary in _JOB_ERROR_CATEGORIES:
-        if any(n in low for n in needles):
+    text = str(error_msg)
+    for pattern, summary in _JOB_ERROR_PATTERNS:
+        if pattern.search(text):
             return summary
     return _JOB_ERROR_DEFAULT
 
