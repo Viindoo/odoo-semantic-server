@@ -40,7 +40,7 @@ on the TTL cache — explicit version eliminates that race.
 
 import sys
 
-from src.constants import VALID_CHUNK_TYPES
+from src.constants import LIST_PREVIEW_MAX_ITEMS, VALID_CHUNK_TYPES
 from src.indexer.framework_bases import (
     framework_base,
     framework_bases,
@@ -75,6 +75,7 @@ from src.mcp.test_render import (
     _format_base_class_not_available,
     _format_base_classes,
 )
+from src.mcp.tree_builder import render_list_block
 
 # Test chunk types (WI-1/WI-3, in VALID_CHUNK_TYPES via constants.py).
 _TEST_CHUNK_TYPES = [t for t in ("test_method", "test_class", "js_test") if t in VALID_CHUNK_TYPES]
@@ -82,6 +83,20 @@ _TEST_CHUNK_TYPES = [t for t in ("test_method", "test_class", "js_test") if t in
 # Fallback to list literal if constants not yet updated (resilience).
 if not _TEST_CHUNK_TYPES:
     _TEST_CHUNK_TYPES = ["test_method", "test_class", "js_test"]
+
+# test_class_inspect summary-mode preview caps (hierarchy mode uses LIST_PREVIEW_MAX_ITEMS).
+_TEST_CLASS_SUMMARY_SUBCLASS_CAP = 6
+_TEST_CLASS_SUMMARY_METHOD_CAP = 8
+
+
+def _format_test_method_row(m: dict) -> str:
+    suffix = ""
+    if m.get("asserts"):
+        suffix += f" (asserts:{m['asserts']})"
+    if m.get("line"):
+        suffix += f" :{m['line']}"
+    return f"{m['name']}{suffix}"
+
 
 # ---------------------------------------------------------------------------
 # Tool 1: find_test_examples
@@ -405,10 +420,14 @@ def _test_class_inspect(
     with driver.session() as session:
         v = _srv._resolve_version(odoo_version, session)
 
-    # H1 (ADR-0034): scope the TestClass + addon TestHelper candidates; framework
-    # helpers bypass the choke inside the builder (public Odoo source).
+    # H1 (ADR-0034): the builder scopes the candidates, the twin, every subclass
+    # and every method; framework helpers bypass the choke (public Odoo source).
+    subclass_cap = (
+        LIST_PREVIEW_MAX_ITEMS if method == "hierarchy" else _TEST_CLASS_SUMMARY_SUBCLASS_CAP
+    )
     cypher, params = build_test_class_inspect_query(
         name, v, module=module, file_path=file_path, scope_pred=_srv._scope_pred,
+        subclass_cap=subclass_cap,
     )
     params.update(_srv._scope(profile_name))
 
@@ -437,7 +456,7 @@ def _test_class_inspect(
 
     row = rows[0]
     node_name = row.get("name") or name
-    node_module = row.get("module") or "?"
+    node_module = row.get("module")
     node_file = row.get("file_path") or ""
     node_line = row.get("line")
     test_type = row.get("test_type") or "unknown"
@@ -448,6 +467,7 @@ def _test_class_inspect(
     all_bases = row.get("all_bases") or []
     methods_list = row.get("methods") or []
     subclassed_by = row.get("subclassed_by") or []
+    subclassed_total = row.get("subclassed_total") or 0
 
     kind_tag = " [helper]" if is_helper else ""
     commit_str = "No" if not commit_allowed else "Yes (@standalone only)"
@@ -456,17 +476,14 @@ def _test_class_inspect(
     header = f"{node_name} (Odoo {v}){kind_tag}"
     lines = [header]
 
-    if loc_str:
-        lines.append(f"├─ Defined in:   [{node_module}] {loc_str}")
-    else:
-        lines.append(f"├─ Defined in:   [{node_module}]")
+    defined_in = " ".join(p for p in (f"[{node_module}]" if node_module else "", loc_str) if p)
+    lines.append(f"├─ Defined in:   {defined_in}".rstrip())
 
     lines.append(f"├─ test_type:    {test_type}   commit_allowed: {commit_str}")
 
-    # Inheritance chain (summary display)
+    # Direct bases only (one INHERITS_TEST hop) - not an ancestor chain.
     if all_bases and method in ("summary", "hierarchy"):
-        bases_str = " -> ".join(all_bases[:5])
-        lines.append(f"├─ Inherits:     {bases_str}")
+        lines.append(f"├─ Inherits (direct): {', '.join(all_bases)}")
 
     # setUpClass fixtures
     if setup_summary and method in ("summary", "setup"):
@@ -477,31 +494,46 @@ def _test_class_inspect(
         doc_short = docstring[:80].replace("\n", " ")
         lines.append(f"├─ Docstring:    {doc_short}")
 
-    # Test methods
+    # Test methods: summary previews, 'methods' mode enumerates the whole class body.
     test_methods = [m for m in methods_list if (m.get("name") or "").startswith("test_")]
-    n_methods = len(test_methods)
-    lines.append(f"├─ Test methods: {n_methods}")
-    if method in ("summary", "methods") and test_methods:
-        for i, m in enumerate(test_methods[:8]):
-            conn = "└─" if i == len(test_methods) - 1 and not subclassed_by else "├─"
-            mname = m.get("name", "?")
-            asserts = m.get("asserts")
-            mln = m.get("line")
-            suffix = ""
-            if asserts:
-                suffix += f" (asserts:{asserts})"
-            if mln:
-                suffix += f" :{mln}"
-            lines.append(f"│  {conn} {mname}{suffix}")
+    lines.append(f"├─ Test methods: {len(test_methods)}")
+    if method == "methods" and not test_methods:
+        lines.extend(render_list_block(["(none)"]))
+    elif method in ("summary", "methods") and test_methods:
+        method_cap = (
+            len(test_methods) if method == "methods" else _TEST_CLASS_SUMMARY_METHOD_CAP
+        )
+        lines.extend(render_list_block(_srv._render_capped(
+            test_methods,
+            _format_test_method_row,
+            cap=method_cap,
+            more_hint=(
+                f"test_class_inspect(name='{node_name}', odoo_version='{v}',"
+                " method='methods') for the full list"
+            ),
+        )))
 
-    # Subclassed-by
-    if subclassed_by:
-        lines.append(f"├─ Subclassed by: {len(subclassed_by)} test classes")
-        for i, child in enumerate(subclassed_by[:6]):
-            conn = "└─" if i == len(subclassed_by) - 1 else "├─"
-            child_name = child.get("name") or "?"
-            child_module = child.get("module") or "?"
-            lines.append(f"│  {conn} [{child_module}] {child_name}")
+    # Subclassed-by: summary skips an empty section, hierarchy states it explicitly.
+    if subclassed_total or method == "hierarchy":
+        noun = "test class" if subclassed_total == 1 else "test classes"
+        lines.append(f"├─ Subclassed by: {subclassed_total} {noun}")
+        if not subclassed_total:
+            lines.extend(render_list_block(["(none)"]))
+        else:
+            more_hint = (
+                f"test_class_inspect(name='{node_name}', odoo_version='{v}',"
+                f" method='hierarchy') for the first {LIST_PREVIEW_MAX_ITEMS}"
+                if method != "hierarchy"
+                else f"find_test_examples(query='{node_name}', odoo_version='{v}')"
+                " to search the rest"
+            )
+            lines.extend(render_list_block(_srv._render_capped(
+                subclassed_by,
+                lambda child: f"[{child['module']}] {child['name']}",
+                cap=len(subclassed_by),
+                total=subclassed_total,
+                more_hint=more_hint,
+            )))
 
     next_line = format_next_step([
         f"test_base_classes(odoo_version='{v}') for framework base semantics",

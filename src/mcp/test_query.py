@@ -4,7 +4,9 @@
 
 All queries use flat per-hop OPTIONAL MATCH + collect(DISTINCT ...) — no VLP
 *1..N, no CALL { WITH } (ADR-0048, Neo4j 5.x deprecation).  Mirrors the style
-of src/mcp/orm_queries.py.
+of src/mcp/orm_queries.py.  Exception: ``build_test_class_inspect_query`` builds
+its lists with one-hop COLLECT subqueries, because collect(DISTINCT {..}) after
+an OPTIONAL MATCH that matches nothing yields a null-filled map (#373).
 
 Each builder returns (cypher_string, params_dict) so callers pass them directly
 to session.run(**params) under _bounded().
@@ -154,21 +156,43 @@ def build_test_class_inspect_query(
     module: str | None = None,
     file_path: str | None = None,
     scope_pred: ScopePred | None = None,
+    subclass_cap: int | None = None,
 ) -> tuple[str, dict]:
     """Return (cypher, params) for a TestClass or TestHelper node lookup.
 
-    Finds the class node with base chain (INHERITS_TEST), methods (BELONGS_TO_TEST),
-    and who subclasses it (reverse INHERITS_TEST).
+    Finds the class node with its direct bases (INHERITS_TEST), methods
+    (TestMethod rows of the same class + module), and who subclasses it
+    (reverse INHERITS_TEST). Returns at most one row.
 
-    Flat per-hop OPTIONAL MATCH — no VLP (ADR-0048).
+    Subclasses are searched from the resolved node AND its same-name, same-module
+    twin of the other label: ``finalize_is_helper`` MERGEs a TestHelper
+    projection for every promoted TestClass and ``reconcile_test_inherits``
+    resolves bases "TestHelper first", so inbound edges are split across the
+    pair. Each child ``(module, name)`` is reported once, ordered
+    ``module ASC, name ASC``.
 
-    scope_pred: ADR-0034 fail-closed tenant choke (H1) applied to BOTH the
-    TestClass (``tc``) and TestHelper (``th``) candidate nodes, so a tenant can
-    never inspect another tenant's private test class. Framework helpers carry
-    the shared/global profile, so they remain visible to every scoped tenant.
+    Returned columns beyond the node properties:
+      - ``all_bases``: distinct direct-base names, in declaration order.
+      - ``methods``: ``{name, line, asserts}`` maps ordered by line, name; ``[]``
+        when none (never a null-filled map).
+      - ``subclassed_by``: ``{name, module}`` maps, the first ``subclass_cap``
+        entries (all when ``subclass_cap`` is None); ``[]`` when none.
+      - ``subclassed_total``: number of visible subclasses, counted after the
+        tenant scope filter and before the cap.
+
+    scope_pred: ADR-0034 fail-closed tenant choke (H1) applied to the candidate
+    nodes (``tc``/``th``), the twin, every subclass and every TestMethod, so a
+    tenant can neither inspect nor enumerate another tenant's private test
+    classes. Framework-origin TestHelpers are public Odoo source and bypass the
+    choke, as they do on the ``th`` hop.
+
+    Every list is built by a COLLECT subquery rather than ``collect(DISTINCT
+    {..})`` after an OPTIONAL MATCH, which would yield a map of nulls when the
+    hop matches nothing (#373). Each subquery expands one hop from bound nodes;
+    no VLP (ADR-0048).
     """
     _sp = scope_pred or _default_scope_pred
-    params: dict = {"name": name, "version": odoo_version}
+    params: dict = {"name": name, "version": odoo_version, "subclass_cap": subclass_cap}
     module_pred = ""
     file_pred = ""
     if module:
@@ -181,40 +205,58 @@ def build_test_class_inspect_query(
     cypher = f"""
 // Try TestClass first, then TestHelper
 OPTIONAL MATCH (tc:TestClass {{name: $name, odoo_version: $version}})
-WHERE tc IS NOT NULL AND {_sp("tc")} {module_pred} {file_pred}
+WHERE {_sp("tc")} {module_pred} {file_pred}
 WITH tc
-ORDER BY tc.module ASC
+ORDER BY tc.module ASC, tc.file_path ASC
 LIMIT 1
 // Framework helpers (origin='framework') are PUBLIC Odoo source (like CoreSymbol)
 // and bypass the per-tenant choke; addon-promoted helpers stay scoped (H1).
 OPTIONAL MATCH (th:TestHelper {{name: $name, odoo_version: $version}})
-WHERE th.origin = 'framework' OR {_sp("th")}
+WHERE tc IS NULL AND (th.origin = 'framework' OR {_sp("th")})
+WITH tc, th
+ORDER BY th.module ASC
+LIMIT 1
 WITH coalesce(tc, th) AS node
 WHERE node IS NOT NULL
 
-// Collect base chain (one hop, flat)
-OPTIONAL MATCH (node)-[:INHERITS_TEST]->(base1:TestHelper)
-  WHERE base1.odoo_version = $version
-WITH node, collect(DISTINCT base1.name) AS helper_bases
+// Twin of the other label (same name + module) also receives INHERITS_TEST edges
+OPTIONAL MATCH (twin_h:TestHelper {{name: node.name, module: node.module, odoo_version: $version}})
+WHERE node:TestClass AND (twin_h.origin = 'framework' OR {_sp("twin_h")})
+OPTIONAL MATCH (twin_c:TestClass {{name: node.name, module: node.module, odoo_version: $version}})
+WHERE node:TestHelper AND {_sp("twin_c")}
+WITH node, [node] + collect(DISTINCT twin_h) + collect(DISTINCT twin_c) AS roots,
+     coalesce(node.base_classes_ordered, []) AS declared
 
-OPTIONAL MATCH (node)-[:INHERITS_TEST]->(base2:TestClass)
-  WHERE base2.odoo_version = $version
-WITH node, helper_bases, collect(DISTINCT base2.name) AS class_bases
-
-// Methods belonging to this class
-OPTIONAL MATCH (tm:TestMethod {{odoo_version: $version}})
-  WHERE tm.test_class = node.name AND tm.module = node.module
-WITH node, helper_bases, class_bases,
-     collect(DISTINCT {{name: tm.name, line: tm.line, asserts: tm.asserts_count}}) AS methods_list
-
-// Subclassed-by (reverse INHERITS_TEST)
-OPTIONAL MATCH (child:TestClass {{odoo_version: $version}})-[:INHERITS_TEST]->(node)
-WITH node, helper_bases, class_bases, methods_list,
-     collect(DISTINCT {{name: child.name, module: child.module}}) AS children_list
-
-OPTIONAL MATCH (child2:TestHelper {{odoo_version: $version}})-[:INHERITS_TEST]->(node)
-WITH node, helper_bases, class_bases, methods_list, children_list,
-     collect(DISTINCT {{name: child2.name, module: child2.module}}) AS helper_children
+WITH node, roots,
+     COLLECT {{
+        UNWIND roots AS r
+        MATCH (r)-[:INHERITS_TEST]->(b)
+        WHERE b.odoo_version = $version AND (b:TestHelper OR b:TestClass)
+        WITH DISTINCT b.name AS bname
+        RETURN bname
+        ORDER BY coalesce(
+            [i IN range(0, size(declared) - 1) WHERE declared[i] = bname][0],
+            size(declared)
+        ) ASC, bname ASC
+     }} AS all_bases,
+     COLLECT {{
+        MATCH (tm:TestMethod {{odoo_version: $version}})
+        WHERE tm.test_class = node.name AND tm.module = node.module
+          AND {_sp("tm")}
+        WITH DISTINCT tm.name AS mname, tm.line AS mline, tm.asserts_count AS masserts
+        RETURN {{name: mname, line: mline, asserts: masserts}}
+        ORDER BY mline ASC, mname ASC
+     }} AS methods_list,
+     COLLECT {{
+        UNWIND roots AS r
+        MATCH (child)-[:INHERITS_TEST]->(r)
+        WHERE child.odoo_version = $version
+          AND ((child:TestClass AND {_sp("child")})
+               OR (child:TestHelper AND (child.origin = 'framework' OR {_sp("child")})))
+        WITH DISTINCT child.module AS cmodule, child.name AS cname
+        RETURN {{name: cname, module: cmodule}}
+        ORDER BY cmodule ASC, cname ASC
+     }} AS children
 
 RETURN
     node.name               AS name,
@@ -227,9 +269,11 @@ RETURN
     node.docstring          AS docstring,
     node.base_classes       AS base_classes,
     node.setup_summary      AS setup_summary,
-    helper_bases + class_bases AS all_bases,
+    all_bases               AS all_bases,
     methods_list            AS methods,
-    children_list + helper_children AS subclassed_by
+    CASE WHEN $subclass_cap IS NULL THEN children
+         ELSE children[..$subclass_cap] END AS subclassed_by,
+    size(children)          AS subclassed_total
 """.strip()
 
     return cypher, params
