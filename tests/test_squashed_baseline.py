@@ -303,13 +303,22 @@ def test_prod_sim_no_reapply(pg_conn, _ephemeral_pg_db):
         f"stderr: {result.stderr[-2000:]}"
     )
 
-    # The _yoyo_migration table must still show exactly one applied migration
+    # Every migration on disk is recorded exactly once: the second run applied
+    # nothing new and re-applied nothing. The expected set is derived from the
+    # migrations/ directory (rollback companions excluded) instead of a pinned
+    # list, so adding migration 0003+ is not a golden edit here; the squash
+    # invariant (one 0001_initial baseline, never re-applied) is asserted below.
     yoyo_rows = _query(
         pg_conn,
         "SELECT migration_id FROM _yoyo_migration ORDER BY migration_id",
     )
     migration_ids = [r["migration_id"] for r in yoyo_rows]
-    assert migration_ids == ["0001_initial", "0002_add_category_to_patterns"], (
-        f"Expected ['0001_initial', '0002_add_category_to_patterns'] in _yoyo_migration "
-        f"after squash, got {migration_ids}"
+    migrations_dir = Path(__file__).parent.parent / "migrations"
+    on_disk = sorted(
+        p.stem for p in migrations_dir.glob("*.sql") if not p.stem.endswith(".rollback")
     )
+    assert migration_ids == on_disk, (
+        f"_yoyo_migration {migration_ids} != migration files on disk {on_disk}"
+    )
+    assert migration_ids[0] == "0001_initial"
+    assert "0003_module_presence" in migration_ids

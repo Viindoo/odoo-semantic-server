@@ -14,6 +14,7 @@
 --   * tenant scope/profile → SELECT profiles
 --   * session pinning      → SELECT/INSERT/UPDATE api_key_session_state (ADR-0029)
 --   * repo URL display     → SELECT repos
+--   * module lifecycle     → SELECT module_presence (RLS-filtered, ADR-0056)
 --   * usage + audit log    → INSERT usage_log / admin_audit_log (best-effort)
 --   * feedback router      → SELECT/INSERT pattern_feedback   (mounted on :8002, server.py)
 --   * deploy-key router    → SELECT/INSERT ssh_key_pairs      (mounted on :8002, server.py)
@@ -149,6 +150,18 @@ BEGIN
     IF EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') THEN
         GRANT SELECT ON TABLE subscriptions          TO osm_reader;
         GRANT SELECT ON TABLE billing_webhook_events TO osm_reader;
+    END IF;
+END $$;
+
+-- 0003_module_presence (ADR-0056): lifecycle ledger read by check_module_exists /
+-- describe_module. SELECT only (the indexer and FastAPI write as DB owner). The
+-- table carries its own module_presence_tenant RLS policy, so osm_reader sees
+-- only rows of the profiles in app.allowed_profiles. Guarded on the table so
+-- this file still runs on a DB that has not applied 0003 yet.
+DO $$
+BEGIN
+    IF to_regclass('public.module_presence') IS NOT NULL THEN
+        GRANT SELECT ON TABLE module_presence TO osm_reader;
     END IF;
 END $$;
 

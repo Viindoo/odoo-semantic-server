@@ -52,3 +52,13 @@ class PoolNotInitializedError(RuntimeError):
 
     HTTP mapping: 503 Service Unavailable + Retry-After header.
     """
+
+
+class LifecycleLockTimeout(RuntimeError):
+    """Raised when the per-version ``retire:<odoo_version>`` ledger lock could not be
+    acquired within the wait budget (``RETIRE_LOCK_WAIT_SECONDS``, ADR-0056).
+
+    The holder is a lifecycle reconcile of the same Odoo version (or a stuck
+    session). Callers treat it like any transient indexer failure: the repo is
+    not marked synced, so the next run re-evaluates it.
+    """

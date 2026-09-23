@@ -15,6 +15,7 @@ Anywhere else::
     with pool.checkout() as conn:
         row = pool.fetch_one(conn, "SELECT id FROM profiles WHERE name = %s", (name,))
 """
+import hashlib
 import logging
 import threading
 import time
@@ -301,15 +302,42 @@ def subscription_store() -> "SubscriptionStore":
 # Advisory lock context manager
 # ---------------------------------------------------------------------------
 
+def advisory_lock_id(key: str) -> int:
+    """Hash a namespaced lock key to a 31-bit advisory lock id.
+
+    Same md5-mod-2**31 scheme as the indexer's profile/repo lock ids
+    (``src.indexer.pipeline._profile_lock_id`` / ``_repo_lock_id``); callers
+    must prefix *key* with their own namespace so key spaces never collide.
+    """
+    return int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**31)
+
+
 @contextmanager
-def advisory_lock(conn: PgConn, lock_id: int) -> Generator[bool, None, None]:
+def advisory_lock(
+    conn: PgConn, lock_id: int, *, wait_seconds: float = 0.0,
+) -> Generator[bool, None, None]:
     """Attempt pg_try_advisory_lock(lock_id). Yields True if acquired, False if not.
 
-    Always releases the lock on exit (only if it was acquired).
+    With ``wait_seconds > 0`` the try is repeated (short backoff, capped at
+    1s) until the lock is acquired or the budget is spent. Polling instead of
+    a blocking ``pg_advisory_lock`` keeps the wait bounded without touching
+    the session's ``lock_timeout``.
+
+    The lock is session-level and re-entrant within one session: a nested
+    call on the SAME connection succeeds immediately and releases only its
+    own hold. Always releases the lock on exit (only if it was acquired).
     """
-    with conn.cursor() as cur:
-        cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
-        acquired = cur.fetchone()[0]
+    deadline = time.monotonic() + max(wait_seconds, 0.0)
+    delay = 0.05
+    while True:
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
+            acquired = cur.fetchone()[0]
+        remaining = deadline - time.monotonic()
+        if acquired or remaining <= 0:
+            break
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 1.0)
     try:
         yield acquired
     finally:

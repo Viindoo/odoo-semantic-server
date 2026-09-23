@@ -4,7 +4,8 @@
 #               adds tables requiring read-tier access for the MCP :8002 process.
 #               Re-executes ops/rls_create_osm_reader.sql (idempotent) and then
 #               reports the full current grant set for osm_reader.
-# Phase:        Run after any migration (m13_006/007/008, or future migrations).
+# Phase:        Run after any migration (m13_006/007/008, 0003_module_presence,
+#               or future migrations).
 #               Use whenever "python -m src.db.migrate" adds a new table that
 #               the MCP read tier needs to SELECT/INSERT.
 # Inputs:       None (reads osm_reader password from /home/odoo-semantic/etc/mcp.env)
