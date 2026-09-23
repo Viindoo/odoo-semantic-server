@@ -39,8 +39,9 @@ TWO LAYERS
    an alarm, it is theater.
 2. Dev-box layer (`test_curated_table_matches_real_checkout_per_version`) - the
    stronger, un-curated version of the same comparison, run against a real
-   `/home/tuan/git/odoo<N>` checkout when one is present on this machine (parent
-   dir overridable via `OSM_ODOO_CHECKOUTS` for portability, ETHOS #11). Marked
+   `odoo<N>` checkout when one is present on this machine (discovered via
+   `tests/_odoo_checkouts.py::checkout_root`, default parent `~/git`, overridable
+   via `OSM_ODOO_CHECKOUTS` for portability, ETHOS #11). Marked
    `@pytest.mark.odoo_source`; skips per version when the checkout is absent - that
    is expected and fine on CI, which is exactly why the CI layer above exists and
    is NOT allowed to skip.
@@ -77,24 +78,15 @@ as loosening the alarm.
 """
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
 import pytest
 
+from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
+
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "odoo_tests_headers"
 
-# Every major this feature surveys (api-contract.md "Authoritative menus per era",
-# E1 through E7 span 8..19 inclusive).
-SURVEYED_MAJORS = list(range(8, 20))
-
-# Real dev-box checkouts live at <parent>/odoo<major>. Default parent matches the
-# convention this project's own design docs use (phase4-solution.md §8, T7 row:
-# "/home/tuan/git/odoo<N> (or $OSM_ODOO_CHECKOUTS)"). The env override means this
-# file makes no hardcoded assumption on a machine without that exact layout - see
-# ETHOS #11 (portable): absence is handled by a per-version skip, never a failure.
-_CHECKOUTS_PARENT = Path(os.environ.get("OSM_ODOO_CHECKOUTS", "/home/tuan/git"))
 
 
 def _import_framework_bases():
@@ -139,13 +131,6 @@ def _materialize_source_root(tmp_path: Path, major: int) -> Path | None:
     if form_src.is_file():
         shutil.copyfile(form_src, tests_dir / "form.py")
     return tmp_path
-
-
-def _checkout_root(major: int) -> Path:
-    """Resolve one real dev-box checkout root. See _CHECKOUTS_PARENT for the
-    OSM_ODOO_CHECKOUTS override; absence is handled by a per-version pytest.skip
-    in the dev-box layer, never a hard failure (unlike the CI layer)."""
-    return _CHECKOUTS_PARENT / f"odoo{major}"
 
 
 def _curated_comparable_set(fb, version: str) -> set[tuple[str, str, str, bool]]:
@@ -240,10 +225,11 @@ def test_curated_table_matches_real_checkout_per_version(major):
     """
     fb = _import_framework_bases()
     version = f"{major}.0"
-    root = _checkout_root(major)
-    if not root.is_dir():
+    root = checkout_root(major)
+    if root is None:
         pytest.skip(
-            f"Odoo {major} checkout not found at {root} (set OSM_ODOO_CHECKOUTS to override)"
+            f"Odoo {major} checkout not found (see tests/_odoo_checkouts.py; "
+            "set OSM_ODOO_CHECKOUTS to override)"
         )
     parsed = fb.parse_framework_bases(root, version)
     assert parsed is not None, f"parse_framework_bases returned None for real checkout {root}"

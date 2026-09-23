@@ -40,8 +40,8 @@ import os
 from pathlib import Path
 
 # Every major this test suite's live-parser families survey (8.0 through
-# 19.0 inclusive) - mirrors SURVEYED_MAJORS in test_framework_bases_parity.py
-# so every live-parser test file shares one definition of "the full range."
+# 19.0 inclusive) - the one definition of "the full range" every live-parser
+# test file imports.
 SURVEYED_MAJORS: list[int] = list(range(8, 20))
 
 
