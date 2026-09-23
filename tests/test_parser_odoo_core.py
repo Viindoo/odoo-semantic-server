@@ -6,8 +6,6 @@ Allow-list 8 file approach (per ADR-0002 §6 — KISS, no full-source walk):
     odoo/tools/safe_eval.py, query.py, sql.py
     odoo/fields.py, models.py, api.py, sql_db.py, exceptions.py
 """
-import os
-from pathlib import Path
 
 import pytest
 
@@ -19,8 +17,12 @@ from src.indexer.parser_odoo_core import (
     _version_prefix,
     parse_odoo_core,
 )
+from tests._odoo_checkouts import checkout_root
 
-ODOO17_SRC = os.environ.get("ODOO17_SRC", "/nonexistent/odoo17")
+# Real-checkout discovery goes through tests/_odoo_checkouts.py (legacy
+# ODOO<N>_SRC still honoured there); see that module for the resolution order.
+_V17_ROOT = checkout_root(17)
+_V19_ROOT = checkout_root(19)
 
 
 def test_extract_function_symbol_top_level():
@@ -204,12 +206,12 @@ def test_core_files_allowlist_is_curated_and_matches_documented_set():
 
 
 @pytest.mark.skipif(
-    not Path(ODOO17_SRC + "/odoo/tools/safe_eval.py").exists(),
-    reason="Real Odoo 17 source not on disk (skipped in CI; runs locally)",
+    _V17_ROOT is None,
+    reason="Real Odoo 17 checkout not found (see tests/_odoo_checkouts.py)",
 )
 def test_parse_odoo_core_smoke_real_v17():
     """Smoke test against real Odoo 17 source on disk — extract sane number of symbols."""
-    out = parse_odoo_core(ODOO17_SRC, "17.0")
+    out = parse_odoo_core(str(_V17_ROOT), "17.0")
     # Heuristic lower bound — real Odoo 17 has hundreds of API entities across 8 files.
     assert len(out) >= 50, f"expected ≥50 symbols, got {len(out)}"
     # Must include at least the well-known safe_eval function.
@@ -1081,12 +1083,9 @@ def test_generic_field_subscript_attribute_classifies_as_field_type():
     )
 
 
-ODOO19_SRC = os.environ.get("ODOO19_SRC", "/nonexistent/odoo19")
-
-
 @pytest.mark.skipif(
-    not Path(ODOO19_SRC + "/odoo/orm/fields_numeric.py").exists(),
-    reason="Real Odoo 19 source not on disk (skipped in CI; runs locally with ODOO19_SRC=...)",
+    _V19_ROOT is None,
+    reason="Real Odoo 19 checkout not found (see tests/_odoo_checkouts.py)",
 )
 def test_parse_odoo_core_smoke_real_v19_field_types():
     """Smoke test against real Odoo 19 source: Integer, Many2one, Char → kind='field_type'.
@@ -1095,7 +1094,7 @@ def test_parse_odoo_core_smoke_real_v19_field_types():
     PEP-695-style generics (Field[int], _Relational[M], etc.) requiring the Subscript
     unwrap fix in _base_names() to classify correctly.
     """
-    out = parse_odoo_core(ODOO19_SRC, "19.0")
+    out = parse_odoo_core(str(_V19_ROOT), "19.0")
     assert len(out) >= 50, f"expected >=50 symbols from real v19 source, got {len(out)}"
 
     qnames = {s.qualified_name: s for s in out}

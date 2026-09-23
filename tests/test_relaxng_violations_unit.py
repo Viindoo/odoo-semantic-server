@@ -18,7 +18,6 @@ Coverage:
 RNG source: tests/fixtures/rng/ — self-contained, no external includes.
 CI: no ~/git/odoo* present → real-source gated tests are skipped.
 """
-import os
 import textwrap
 from pathlib import Path
 
@@ -26,6 +25,7 @@ import pytest
 
 from src.indexer.models import ModuleInfo
 from src.indexer.parser_xml import _validate_arch_relaxng, parse_file, parse_module
+from tests._odoo_checkouts import checkout_root
 
 # No pytestmark = neo4j here — these tests run without Docker.
 
@@ -36,14 +36,14 @@ from src.indexer.parser_xml import _validate_arch_relaxng, parse_file, parse_mod
 # Self-contained RNG fixtures under tests/fixtures/rng/ — no external includes.
 _FIXTURE_RNG_DIR = Path(__file__).parent / "fixtures" / "rng"
 
-# Real Odoo source RNG dirs for gated local-only tests. Resolved relative to
-# $HOME (developer-machine layout ~/git/odooNN); the tests that use these are
-# skipif-gated on .is_dir() so they no-op on CI and on machines without the
-# source checkouts. Override the base dir with OSM_ODOO_SRC_DIR if your repos
-# live elsewhere.
-_ODOO_SRC_DIR = Path(os.environ.get("OSM_ODOO_SRC_DIR", str(Path.home() / "git")))
-_ODOO17_RNG = _ODOO_SRC_DIR / "odoo17" / "odoo" / "addons" / "base" / "rng"
-_ODOO18_RNG = _ODOO_SRC_DIR / "odoo18" / "odoo" / "addons" / "base" / "rng"
+# Real Odoo source RNG dirs for gated local-only tests, discovered through
+# tests/_odoo_checkouts.py (OSM_ODOO_CHECKOUTS / legacy ODOO<N>_SRC). The tests
+# skip only when the checkout itself is absent; a present checkout missing its
+# rng dir is a failure, not a skip.
+_ODOO17_ROOT = checkout_root(17)
+_ODOO18_ROOT = checkout_root(18)
+_ODOO17_RNG = _ODOO17_ROOT / "odoo" / "addons" / "base" / "rng" if _ODOO17_ROOT else None
+_ODOO18_RNG = _ODOO18_ROOT / "odoo" / "addons" / "base" / "rng" if _ODOO18_ROOT else None
 
 # ---------------------------------------------------------------------------
 # Shared XML fixtures
@@ -432,8 +432,8 @@ def test_v18_tree_view_type_not_validated(tmp_path):
 
 
 @pytest.mark.skipif(
-    not _ODOO17_RNG.is_dir(),
-    reason="local ~/git/odoo17 not present — skipped in CI",
+    _ODOO17_ROOT is None,
+    reason="Real Odoo 17 checkout not found (see tests/_odoo_checkouts.py)",
 )
 def test_v17_real_source_resolves_tree_view_rng():
     """Version-exact: v17 real source has tree_view.rng (no list_view.rng)."""
@@ -453,8 +453,8 @@ def test_v17_real_source_resolves_tree_view_rng():
 
 
 @pytest.mark.skipif(
-    not _ODOO18_RNG.is_dir(),
-    reason="local ~/git/odoo18 not present — skipped in CI",
+    _ODOO18_ROOT is None,
+    reason="Real Odoo 18 checkout not found (see tests/_odoo_checkouts.py)",
 )
 def test_v18_real_source_resolves_list_view_rng():
     """Version-exact: v18 real source has list_view.rng (no tree_view.rng)."""
