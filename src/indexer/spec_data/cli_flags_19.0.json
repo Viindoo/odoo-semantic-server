@@ -822,7 +822,7 @@
       "status": "stable",
       "default": null,
       "type": "comma",
-      "help": "Enable developer features (comma-separated list, use   \"all\" for access,reload,qweb,xml). Available features: - access: log the traceback of access errors           - qweb: log the compiled xml with qweb errors          - reload: restart server on change in the source code  - replica: simulate a deployment with readonly replica - werkzeug: open a html debugger on http request error - xml: read views from the source code, and not the db ",
+      "help": "Enable developer features (comma-separated list, use   \"all\" for access,reload,qweb,xml). Available features: - access: log the traceback of access errors           - qweb: log the compiled xml with qweb errors          - reload: restart server on change in the source code  - replica: simulate a deployment with readonly replica - xml: read views from the source code, and not the db ",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
