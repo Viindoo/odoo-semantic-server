@@ -193,28 +193,34 @@ def build_test_class_inspect_query(
     """
     _sp = scope_pred or _default_scope_pred
     params: dict = {"name": name, "version": odoo_version, "subclass_cap": subclass_cap}
-    module_pred = ""
-    file_pred = ""
+    # module / file_path narrow BOTH candidates: the TestClass and the TestHelper
+    # fallback (framework helpers carry module '@framework').
     if module:
         params["module"] = module
-        module_pred = "AND tc.module = $module"
     if file_path:
         params["file_path"] = file_path
-        file_pred = "AND tc.file_path = $file_path"
+
+    def _filters(alias: str) -> str:
+        preds = []
+        if module:
+            preds.append(f"AND {alias}.module = $module")
+        if file_path:
+            preds.append(f"AND {alias}.file_path = $file_path")
+        return " ".join(preds)
 
     cypher = f"""
 // Try TestClass first, then TestHelper
 OPTIONAL MATCH (tc:TestClass {{name: $name, odoo_version: $version}})
-WHERE {_sp("tc")} {module_pred} {file_pred}
+WHERE {_sp("tc")} {_filters("tc")}
 WITH tc
 ORDER BY tc.module ASC, tc.file_path ASC
 LIMIT 1
 // Framework helpers (origin='framework') are PUBLIC Odoo source (like CoreSymbol)
 // and bypass the per-tenant choke; addon-promoted helpers stay scoped (H1).
 OPTIONAL MATCH (th:TestHelper {{name: $name, odoo_version: $version}})
-WHERE tc IS NULL AND (th.origin = 'framework' OR {_sp("th")})
+WHERE tc IS NULL AND (th.origin = 'framework' OR {_sp("th")}) {_filters("th")}
 WITH tc, th
-ORDER BY th.module ASC
+ORDER BY th.module ASC, th.file_path ASC
 LIMIT 1
 WITH coalesce(tc, th) AS node
 WHERE node IS NOT NULL

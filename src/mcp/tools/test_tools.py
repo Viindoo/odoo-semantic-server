@@ -87,6 +87,7 @@ if not _TEST_CHUNK_TYPES:
 # test_class_inspect summary-mode preview caps (hierarchy mode uses LIST_PREVIEW_MAX_ITEMS).
 _TEST_CLASS_SUMMARY_SUBCLASS_CAP = 6
 _TEST_CLASS_SUMMARY_METHOD_CAP = 8
+_TEST_CLASS_SUMMARY_SETUP_CAP = 6
 
 
 def _format_test_method_row(m: dict) -> str:
@@ -486,8 +487,20 @@ def _test_class_inspect(
         lines.append(f"├─ Inherits (direct): {', '.join(all_bases)}")
 
     # setUpClass fixtures
+    # 'setup' mode lists every fixture; summary previews the first few (ADR-0023 §3).
     if setup_summary and method in ("summary", "setup"):
-        lines.append(f"├─ setUpClass:   creates {', '.join(setup_summary[:6])}")
+        shown = (
+            setup_summary if method == "setup"
+            else setup_summary[:_TEST_CLASS_SUMMARY_SETUP_CAP]
+        )
+        setup_text = ", ".join(shown)
+        if len(setup_summary) > len(shown):
+            module_arg = f" module='{node_module}'," if node_module else ""
+            setup_text += (
+                f", ... and {len(setup_summary) - len(shown)} more (use test_class_inspect("
+                f"name='{node_name}',{module_arg} odoo_version='{v}', method='setup'))"
+            )
+        lines.append(f"├─ setUpClass:   creates {setup_text}")
 
     # Docstring (summary)
     if docstring and method == "summary":
