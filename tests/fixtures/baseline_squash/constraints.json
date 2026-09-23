@@ -228,6 +228,90 @@
     "def": "PRIMARY KEY (id)"
   },
   {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_excluded_has_reason",
+    "contype": "c",
+    "def": "CHECK (((state = 'excluded'::text) = (exclusion_reason IS NOT NULL)))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_exclusion_reason",
+    "contype": "c",
+    "def": "CHECK ((exclusion_reason = ANY (ARRAY['installable_false'::text, 'license_skip'::text, 'unparseable'::text])))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_pending_has_reason",
+    "contype": "c",
+    "def": "CHECK ((retire_pending = (retire_pending_reason IS NOT NULL)))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_pending_not_retired",
+    "contype": "c",
+    "def": "CHECK ((NOT (retire_pending AND (state = 'retired'::text))))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_resurrection_count",
+    "contype": "c",
+    "def": "CHECK ((resurrection_count >= 0))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_retire_pending_reason",
+    "contype": "c",
+    "def": "CHECK ((retire_pending_reason = ANY (ARRAY['absent'::text, 'repo_removed'::text, 'orphan_sweep'::text])))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_retire_reason",
+    "contype": "c",
+    "def": "CHECK ((retire_reason = ANY (ARRAY['absent'::text, 'repo_removed'::text, 'orphan_sweep'::text])))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_retired_has_reason",
+    "contype": "c",
+    "def": "CHECK (((state = 'retired'::text) = (retire_reason IS NOT NULL)))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_state",
+    "contype": "c",
+    "def": "CHECK ((state = ANY (ARRAY['present'::text, 'excluded'::text, 'retired'::text])))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_successor_pair",
+    "contype": "c",
+    "def": "CHECK (((successor_names IS NULL) = (successor_source IS NULL)))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "ck_module_presence_successor_source",
+    "contype": "c",
+    "def": "CHECK ((successor_source = ANY (ARRAY['git_rename'::text, 'old_technical_name'::text])))"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "module_presence_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (id)"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "module_presence_repo_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE SET NULL"
+  },
+  {
+    "table_name": "module_presence",
+    "conname": "module_presence_repo_name_key",
+    "contype": "u",
+    "def": "UNIQUE (repo_id, name)"
+  },
+  {
     "table_name": "pattern_feedback",
     "conname": "pattern_feedback_api_key_id_fkey",
     "contype": "f",

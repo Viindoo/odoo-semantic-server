@@ -275,6 +275,46 @@
     "indexdef": "CREATE UNIQUE INDEX login_attempts_pkey ON public.login_attempts USING btree (id)"
   },
   {
+    "tablename": "module_presence",
+    "indexname": "ix_module_presence_needs_rewrite",
+    "indexdef": "CREATE INDEX ix_module_presence_needs_rewrite ON public.module_presence USING btree (repo_id) WHERE needs_rewrite"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "ix_module_presence_pending",
+    "indexdef": "CREATE INDEX ix_module_presence_pending ON public.module_presence USING btree (odoo_version) WHERE retire_pending"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "ix_module_presence_profile",
+    "indexdef": "CREATE INDEX ix_module_presence_profile ON public.module_presence USING btree (profile_name)"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "ix_module_presence_repo_state",
+    "indexdef": "CREATE INDEX ix_module_presence_repo_state ON public.module_presence USING btree (repo_id, state)"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "ix_module_presence_successors",
+    "indexdef": "CREATE INDEX ix_module_presence_successors ON public.module_presence USING gin (successor_names)"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "ix_module_presence_version_name",
+    "indexdef": "CREATE INDEX ix_module_presence_version_name ON public.module_presence USING btree (odoo_version, name, state)"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "module_presence_pkey",
+    "indexdef": "CREATE UNIQUE INDEX module_presence_pkey ON public.module_presence USING btree (id)"
+  },
+  {
+    "tablename": "module_presence",
+    "indexname": "module_presence_repo_name_key",
+    "indexdef": "CREATE UNIQUE INDEX module_presence_repo_name_key ON public.module_presence USING btree (repo_id, name)"
+  },
+  {
     "tablename": "pattern_feedback",
     "indexname": "idx_pattern_feedback_node",
     "indexdef": "CREATE INDEX idx_pattern_feedback_node ON public.pattern_feedback USING btree (pattern_node_id)"

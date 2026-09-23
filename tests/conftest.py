@@ -1006,6 +1006,11 @@ _PG_TEST_TABLES = [
         # DROP TABLE api_keys CASCADE only drops the CONSTRAINT, NOT the data,
         # so we must explicitly DROP this table to avoid stale-row leakage.
         "api_key_session_state",
+        # 0003 (ADR-0056) - module_presence.repo_id FK→repos ON DELETE SET NULL.
+        # DROP TABLE repos CASCADE drops only the FK, not the ledger rows, so the
+        # rows would leak into the next test (and the migration's guarded FK
+        # re-add then fails on their dangling repo_ids). Drop BEFORE repos.
+        "module_presence",
         "repos",
         # api_keys.plan_id FK→plans → api_keys must drop BEFORE plans (m13_006).
         "api_keys",

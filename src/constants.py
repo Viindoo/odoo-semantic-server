@@ -488,3 +488,16 @@ def license_policy_action(license_value: str) -> str:
 # files while blocking accidental huge-file reads (ADR-0030 stylesheet resource;
 # output-gap G5).
 STYLESHEET_RESOURCE_MAX_BYTES: int = 131_072  # 128 KB
+
+# ---------------------------------------------------------------------------
+# Module lifecycle ledger (ADR-0056)
+# ---------------------------------------------------------------------------
+
+# RETIRE_LOCK_WAIT_SECONDS: how long a ledger write waits for the per-version
+# retire:<odoo_version> advisory lock (src/db/module_presence.py) before it
+# raises LifecycleLockTimeout. The per-version reconcile holds that lock across
+# its Neo4j/pgvector deletes, so a profile worker committing observations for
+# the same version legitimately waits for it; the ceiling only turns a stuck
+# holder into an error instead of an indefinite hang. Override via
+# RETIRE_LOCK_WAIT_SECONDS.
+RETIRE_LOCK_WAIT_SECONDS: float = float(os.getenv("RETIRE_LOCK_WAIT_SECONDS", "900"))
