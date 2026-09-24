@@ -626,3 +626,118 @@ def test_module_inspect_qweb_parent_no_cross_tenant_leak(world):
         out = _module_inspect(f"{_PFX}acme_mod", "qweb", V)
     assert f"{_PFX}globex_ptmpl" not in str(out), f"CROSS-TENANT QWEB PARENT LEAK: {out!r}"
 
+
+
+# ---------------------------------------------------------------------------
+# lane-mcpfix defect 6 - an admin narrowing by profile_name sees what a tenant
+# owning that profile sees (own + every shared profile), never wider.
+# ---------------------------------------------------------------------------
+
+def _probe_fields(world):
+    """(label, model, field) of each world node, with its profile[] in the label."""
+    return [
+        ("acme [acme_p, base_p]", "acme.secret", "acme_field"),
+        ("shared [base_p]", "shared.model", "shared_field"),
+        ("globex [globex_p, base_p]", "globex.secret", "globex_field"),
+    ]
+
+
+def _visible(model, field, profile_name) -> bool:
+    from src.mcp.server import _resolve_field
+
+    out = _resolve_field(model, field, V, profile_name=profile_name)
+    return "not found" not in out.lower()
+
+
+def _view(world, tenant_id, profile_name) -> dict[str, bool]:
+    with as_tenant(tenant_id):
+        return {label: _visible(model, field, profile_name)
+                for label, model, field in _probe_fields(world)}
+
+
+def test_admin_narrowed_to_a_profile_sees_exactly_what_its_tenant_sees(world):
+    """FIX: pre-fix an admin narrowing to acme_p got shared=[], so the tenant's
+    own [acme_p, base_p] field and the shared base field were 'not found' for
+    the admin only - while acme itself, narrowing the same way, sees both."""
+    tenant = _view(world, world["acme"], world["acme_p"])
+    admin = _view(world, None, world["acme_p"])
+    assert tenant == {
+        "acme [acme_p, base_p]": True,
+        "shared [base_p]": True,
+        "globex [globex_p, base_p]": False,
+    }, tenant
+    assert admin == tenant, f"admin {admin} != tenant {tenant}"
+
+
+def test_admin_narrowed_to_the_shared_base_sees_only_the_base(world):
+    """GUARD: narrowing to the shared base keeps both private nodes out."""
+    # GUARD: pre-existing behaviour
+    admin = _view(world, None, world["base_p"])
+    assert admin == {
+        "acme [acme_p, base_p]": False,
+        "shared [base_p]": True,
+        "globex [globex_p, base_p]": False,
+    }, admin
+
+
+def test_admin_narrowing_with_the_registry_down_is_narrower_never_wider(world):
+    """INVARIANT: the shared-profile list unreachable -> the admin's narrowed
+    view keeps only nodes stamped with the narrowed profile alone. It never
+    shows anything a tenant owning that profile would not see (globex stays out).
+    Not revert-provable: pre-fix admin narrowing was always this narrow."""
+    from unittest.mock import patch
+
+    from src.db.repo_registry import RepoStore
+
+    tenant = _view(world, world["acme"], world["acme_p"])
+
+    def _registry_down(self):
+        raise RuntimeError("could not connect to server: Connection refused")
+
+    with patch.object(RepoStore, "shared_profile_names", _registry_down, create=True):
+        admin = _view(world, None, world["acme_p"])
+    assert admin == {
+        "acme [acme_p, base_p]": False,
+        "shared [base_p]": False,
+        "globex [globex_p, base_p]": False,
+    }, admin
+    assert all(tenant[k] for k, seen in admin.items() if seen), (admin, tenant)
+
+
+def test_admin_pinned_resource_read_with_the_registry_down_heals_on_the_next_read(world):
+    """FIX (defects 4 + 6): an admin session pinned to acme_p reads
+    odoo://V/model/shared.model while the shared list is unreachable. The
+    narrowed answer (not found) is served but not cached, so the read after the
+    registry recovers finds the shared base model."""
+    from unittest.mock import patch
+
+    from src.db.repo_registry import RepoStore
+    from src.mcp import server as srv
+    from src.mcp import session as sess
+    from src.mcp.resources import ResourceCache, _render_model, _serve_resource_blocking
+
+    def _registry_down(self):
+        raise RuntimeError("could not connect to server: Connection refused")
+
+    def _read(cache):
+        return _serve_resource_blocking(
+            cache, V, "model", "shared.model",
+            lambda resolved: _render_model(resolved, "shared.model"))
+
+    api_key_id, mcp_session_id = "737373", "lt-admin-pin"
+    assert sess.set_active_profile_db(api_key_id, world["acme_p"], mcp_session_id)
+    tok_key = srv._api_key_id_var.set(api_key_id)
+    tok_sid = srv._mcp_session_id_var.set(mcp_session_id)
+    cache = ResourceCache(ttl=300)
+    try:
+        with as_tenant(None):
+            with patch.object(RepoStore, "shared_profile_names", _registry_down,
+                              create=True):
+                degraded = _read(cache)
+            healed = _read(cache)
+    finally:
+        srv._api_key_id_var.reset(tok_key)
+        srv._mcp_session_id_var.reset(tok_sid)
+        sess._cache_invalidate(api_key_id, mcp_session_id)
+    assert "not found" in degraded.lower(), degraded
+    assert "not found" not in healed.lower() and f"{_PFX}base_mod" in healed, healed

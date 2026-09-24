@@ -784,6 +784,64 @@ class TestLedgerUnreachable:
 
 
 # ---------------------------------------------------------------------------
+# lane-mcpfix defect 4 - a degraded resource body is served but never cached
+# ---------------------------------------------------------------------------
+
+def _read_module_resource(cache, name):
+    """odoo://99.0/module/<name> through the real serve path (key + cache + render)."""
+    from src.mcp.resources import _render_module, _serve_resource_blocking
+
+    return _serve_resource_blocking(
+        cache, V, "module", name, lambda resolved: _render_module(resolved, name))
+
+
+class TestDegradedModuleResourceIsNotCached:
+    """The module resource caches for 300s. A body rendered while the ledger is
+    down ("Lifecycle: unavailable") must not outlive the outage: the first read
+    after recovery shows the real lifecycle, well inside the TTL."""
+
+    def test_ledger_outage_heals_on_the_next_read(self, test_pylint_world, monkeypatch):
+        """FIX: pre-fix the degraded body stayed cached for the whole TTL."""
+        from src.mcp.resources import ResourceCache
+
+        cache = ResourceCache(ttl=300)
+        with monkeypatch.context() as mp:
+            _ledger_down(mp)
+            degraded = _read_module_resource(cache, "test_pylint")
+        assert "├─ Lifecycle: unavailable (ledger unreachable)" in _lines(degraded), degraded
+    
+        healed = _read_module_resource(cache, "test_pylint")
+        assert "Lifecycle: unavailable" not in healed, healed
+        assert f'│   ├─ Removing commit: 0240c6b77f 2026-09-11 "{RENAME_SUBJECT}"' in (
+            _lines(healed)), healed
+
+    def test_healthy_body_is_still_served_from_the_cache(self, test_pylint_world, monkeypatch):
+        """GUARD: a healthy body is cached - a later ledger outage does not reach it."""
+        # GUARD: pre-existing behaviour
+        from src.mcp.resources import ResourceCache
+
+        cache = ResourceCache(ttl=300)
+        healthy = _read_module_resource(cache, "test_pylint")
+        assert "Removing commit" in healthy, healthy
+        with monkeypatch.context() as mp:
+            _ledger_down(mp)
+            again = _read_module_resource(cache, "test_pylint")
+        assert again == healthy
+
+    def test_the_tool_call_is_unaffected_by_the_cache_rule(self, test_pylint_world, monkeypatch):
+        """GUARD: describe_module (a tool, never cached) renders the same degraded
+        body as the resource did - the fix changes caching, not rendering."""
+        # GUARD: pre-existing behaviour
+        from src.mcp.resources import ResourceCache
+
+        with monkeypatch.context() as mp:
+            _ledger_down(mp)
+            tool = _describe("test_pylint")
+            resource = _read_module_resource(ResourceCache(ttl=300), "test_pylint")
+        assert tool == resource, f"TOOL:\n{tool}\nRESOURCE:\n{resource}"
+
+
+# ---------------------------------------------------------------------------
 # R17 - describe_module NO branch
 # ---------------------------------------------------------------------------
 
@@ -957,3 +1015,218 @@ class TestTenantIsolation:
             if reader is not None:
                 reader.close()
             drop_osm_reader(clean_pg)
+
+
+# ---------------------------------------------------------------------------
+# Final review T1 / T2 and E2E-D2 - what a scoped key may read in a lifecycle row
+# ---------------------------------------------------------------------------
+#
+# T1: ``retire_blocked_by`` is operator text. An ``undecidable`` reason names the
+# unsynced repos of ANY tenant that may still ship the module (basename + repo
+# id), an ``error`` reason carries raw exception text. A scoped key sees only the
+# class of the reason; an admin key sees the reason in full.
+# T2: a successor recorded from a manifest ``old_technical_name`` may be another
+# tenant's private module; "Renamed to" and describe_module's "Next:" never name
+# a module the caller cannot see (a ``git_rename`` successor comes from the
+# retiring repo's own history and is always shown).
+# E2E-D2: a retired row renders "(recorded at HEAD <sha7> on <date>)",
+# "(recorded at HEAD <sha7>)" or "(recorded on <date>)" - never a "not stamped"
+# claim, never a doubled parenthesis.
+
+GLOBEX_REPO = "globex_private_addons"
+
+
+def _pending(store, repo_id, name, *, profile, blocked_by, at):
+    """acme's repo observed *name*, then flagged it for retirement, blocked."""
+    _observe(store, repo_id, profile, TVTMA_HEAD, [name], at=at)
+    assert store.mark_retire_pending(repo_id, [name], "absent", blocked_by=blocked_by) == [name]
+
+
+@pytest.fixture
+def blocked_world(hub, ledger, pg_conn):
+    """acme (tenant) retires names that are held back by reasons naming globex."""
+    acme = _tenant(pg_conn, "lr_acme")
+    globex = _tenant(pg_conn, "lr_globex")
+    acme_pid = _profile(pg_conn, "lr_acme_p", tenant_id=acme)
+    globex_pid = _profile(pg_conn, "lr_globex_p", tenant_id=globex)
+    r_acme = _repo(pg_conn, acme_pid, "acme_addons")
+    r_globex = _repo(pg_conn, globex_pid, GLOBEX_REPO)
+    at = datetime(2026, 9, 20, tzinfo=UTC)
+    reasons = {
+        # Written by reconcile.pending for a name an unsynced repo may ship.
+        "acme_undecidable": (
+            f"undecidable: acme_undecidable@{V} kept: repo(s) {GLOBEX_REPO} "
+            f"(repo id={r_globex}) [never synced] not synced"
+        ),
+        # Written by reconcile._error: the exception class and its raw message.
+        "acme_error": (
+            f"error: acme_error@{V} not retired (ServiceUnavailable: Couldn't connect to "
+            "10.20.30.40:7687 as neo4j_prod_admin)"
+        ),
+        "acme_gated": "gate:scan_incomplete,mass_retire",
+        "acme_odd_gate": f"gate:mass_retire,{GLOBEX_REPO}",
+        "acme_no_retire": "no_retire",
+        "acme_recent": "skipped_recent",
+    }
+    for name, reason in reasons.items():
+        _pending(ledger, r_acme, name, profile="lr_acme_p", blocked_by=reason, at=at)
+    return {"acme": acme, "globex": globex, "r_globex": r_globex, "reasons": reasons}
+
+
+def _pending_line(out: str) -> str:
+    lines = [ln for ln in _block(out, "├─ Lifecycle (") if "Retirement pending:" in ln]
+    assert len(lines) == 1, out
+    return lines[0]
+
+
+class TestScopedKeySeesOnlyTheBlockerKind:
+    """T1 (FIX): the reason a pending retirement waits for, per caller."""
+
+    @pytest.mark.parametrize(("name", "expected"), [
+        ("acme_undecidable",
+         "undecidable (another repository that may ship it is not synced yet)"),
+        ("acme_error", "error (retirement failed; retried by the next run)"),
+        ("acme_gated", "gate: scan_incomplete, mass_retire"),
+        ("acme_odd_gate", "gate"),
+        ("acme_no_retire", "no_retire (--no-retire run)"),
+        ("acme_recent", "skipped_recent (re-written by a concurrent run)"),
+    ])
+    def test_scoped_key_sees_the_class_of_the_reason_only(self, blocked_world, name, expected):
+        with as_tenant(blocked_world["acme"]):
+            out = _check(name)
+        _assert_adr0023_tree(out)
+        assert _pending_line(out).endswith(f"Retirement pending: absent (blocked by {expected})"), (
+            out)
+
+    @pytest.mark.parametrize("name", ["acme_undecidable", "acme_error", "acme_odd_gate"])
+    def test_no_foreign_repo_label_or_exception_text_reaches_a_scoped_key(
+            self, blocked_world, name):
+        r_globex = blocked_world["r_globex"]
+        for tool in (_check, _describe):
+            with as_tenant(blocked_world["acme"]):
+                out = tool(name)
+            assert "Retirement pending" in out, out  # positive control: the row is shown
+            for secret in (GLOBEX_REPO, f"repo id={r_globex}", "ServiceUnavailable",
+                           "10.20.30.40", "neo4j_prod_admin"):
+                assert secret not in out, f"{tool.__name__} leaked {secret!r}:\n{out}"
+
+    def test_admin_key_sees_the_full_operator_reason(self, blocked_world):
+        # GUARD: pre-existing behaviour (the reason was always rendered in full)
+        reasons = blocked_world["reasons"]
+        with as_tenant(None):
+            undecidable = _check("acme_undecidable")
+            error = _check("acme_error")
+        assert _pending_line(undecidable).endswith(
+            f"(blocked by {reasons['acme_undecidable']})"), undecidable
+        assert f"{GLOBEX_REPO} (repo id={blocked_world['r_globex']})" in undecidable
+        assert "ServiceUnavailable: Couldn't connect to 10.20.30.40:7687" in error, error
+
+
+@pytest.fixture
+def successor_world(hub, ledger, pg_conn):
+    """acme retired two names; globex's PRIVATE module declares one of the old names.
+
+    ``acme_old`` was recorded (by an orphan sweep before T2) with globex's
+    ``globex_new`` as its old_technical_name successor; ``acme_old2``'s recorded
+    successor ``acme_new2`` is acme's own module; ``acme_renamed`` was renamed
+    in acme's repo history to ``globex_named_copy`` (git rename)."""
+    acme = _tenant(pg_conn, "lr_acme")
+    globex = _tenant(pg_conn, "lr_globex")
+    acme_pid = _profile(pg_conn, "lr_acme_p", tenant_id=acme)
+    globex_pid = _profile(pg_conn, "lr_globex_p", tenant_id=globex)
+    r_acme = _repo(pg_conn, acme_pid, "acme_addons")
+    _repo(pg_conn, globex_pid, GLOBEX_REPO)
+    _module("globex_new", repo=GLOBEX_REPO, profiles=["lr_globex_p"],
+            old_technical_name="acme_old")
+    _module("acme_new2", repo="acme_addons", profiles=["lr_acme_p"],
+            old_technical_name="acme_old2")
+    at = datetime(2026, 9, 20, tzinfo=UTC)
+    _observe(ledger, r_acme, "lr_acme_p", PRE_RENAME_HEAD,
+             ["acme_old", "acme_old2", "acme_renamed"], at=at)
+    _retire(ledger, r_acme, "acme_old", head=TVTMA_HEAD, reason="orphan_sweep",
+            successors=["globex_new"], source="old_technical_name")
+    _retire(ledger, r_acme, "acme_old2", head=TVTMA_HEAD, reason="orphan_sweep",
+            successors=["acme_new2"], source="old_technical_name")
+    _retire(ledger, r_acme, "acme_renamed", head=TVTMA_HEAD, sha=RENAME_SHA,
+            when=RENAME_DATE, subject="[REF] acme_renamed: rename",
+            successors=["globex_named_copy"], source="git_rename")
+    return {"acme": acme, "globex": globex}
+
+
+class TestRenamedToStaysInScope:
+    """T2 (FIX) at render time: a recorded successor outside the caller's scope."""
+
+    def test_other_tenants_module_is_never_named_as_the_successor(self, successor_world):
+        with as_tenant(successor_world["acme"]):
+            check = _check("acme_old")
+            describe = _describe("acme_old")
+        for out in (check, describe):
+            _assert_adr0023_tree(out)
+            assert "Lifecycle (acme_addons" in out, out  # positive control: acme's row shows
+            assert "globex_new" not in out, out
+            assert "Renamed to" not in out, out
+        assert "describe_module(name='globex_new'" not in describe, describe
+
+    def test_own_successor_is_still_named_and_described_next(self, successor_world):
+        # GUARD: pre-existing behaviour (positive control of the scope cut)
+        with as_tenant(successor_world["acme"]):
+            check = _check("acme_old2")
+            describe = _describe("acme_old2")
+        assert "│   └─ Renamed to: acme_new2 (manifest old_technical_name)" in _lines(check), check
+        assert _lines(describe)[-1] == (
+            f"└─ Next: describe_module(name='acme_new2', odoo_version='{V}') "
+            "for the successor"), describe
+
+    def test_admin_sees_the_recorded_successor(self, successor_world):
+        # GUARD: pre-existing behaviour (admin is unscoped)
+        with as_tenant(None):
+            out = _check("acme_old")
+        assert "Renamed to: globex_new (manifest old_technical_name)" in out, out
+
+    def test_a_git_rename_successor_comes_from_the_repos_own_history_and_is_shown(
+            self, successor_world):
+        # GUARD: pre-existing behaviour (contract: git_rename successors are not filtered)
+        with as_tenant(successor_world["acme"]):
+            out = _check("acme_renamed")
+        assert "│   └─ Renamed to: globex_named_copy (git rename)" in _lines(out), out
+
+
+def _state_line(out: str) -> str:
+    [line] = [ln for ln in _block(out, "├─ Lifecycle (") if "State: " in ln]
+    return line
+
+
+def _balanced(text: str) -> bool:
+    depth = 0
+    for ch in text:
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+class TestRetiredStateNamesWhereItWasRecorded:
+    """E2E-D2 (FIX): the recorded-at clause of a retired row, for every stamp shape."""
+
+    def test_row_of_a_deleted_repo_without_a_head_reads_recorded_on_the_date(
+            self, hub, ledger, std, pg_conn):
+        """A row retired for a repo that no longer exists has no HEAD to record."""
+        _observe(ledger, std["tvtma"], STD, PRE_RENAME_HEAD, ["viin_gone"],
+                 at=datetime(2026, 9, 1, tzinfo=UTC))
+        _retire(ledger, std["tvtma"], "viin_gone", head=None)
+        day = _utc_day(_ledger_row(pg_conn, std["tvtma"], "viin_gone")["state_changed_at"])
+        out = _check("viin_gone")
+        line = _state_line(out)
+        assert line == f"│   ├─ State: retired - removed from branch {V} (recorded on {day})", out
+        assert "not stamped" not in out and _balanced(line), line
+
+    def test_row_with_a_head_reads_recorded_at_that_head(self, hub, ledger, std, pg_conn):
+        # GUARD: pre-existing behaviour (the HEAD + date shape was already right)
+        _observe(ledger, std["tvtma"], STD, PRE_RENAME_HEAD, ["viin_gone"],
+                 at=datetime(2026, 9, 1, tzinfo=UTC))
+        _retire(ledger, std["tvtma"], "viin_gone", head=TVTMA_HEAD)
+        day = _utc_day(_ledger_row(pg_conn, std["tvtma"], "viin_gone")["state_changed_at"])
+        line = _state_line(_check("viin_gone"))
+        assert line == (f"│   ├─ State: retired - removed from branch {V} "
+                        f"(recorded at HEAD 281607a on {day})"), line
+        assert _balanced(line)

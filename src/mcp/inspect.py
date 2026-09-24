@@ -8,6 +8,10 @@ deps (server.py will import from inspect.py via WI-D3).
 See docs/adr/0028-discriminator-consolidation.md.
 """
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Discriminator constants
 # ---------------------------------------------------------------------------
@@ -26,6 +30,9 @@ _PROFILE_METHODS = frozenset({"summary", "repos", "modules", "coverage"})
 # caller-supplied limit cannot exceed it (ADR-0023 §3 - "caps never raised").
 # Mirrors the min(limit, cap) clamp every _list_* path in server.py applies.
 _PROFILE_MODULES_CAP = 50
+
+# module_inspect(method='tests') preview: rows listed before "... and N more".
+_MODULE_TESTS_PREVIEW_CAP = 10
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -353,36 +360,39 @@ def _list_test_classes_for_module(
     # This ensures the session is always closed (no leaked pool connection).
     with srv._get_driver().session() as session:
         v = srv._resolve_version(odoo_version, session)
-        # OrmQueryTimeout is intentionally NOT caught here — it propagates to the
-        # @offload_neo4j-decorated module_inspect handler, which records the
-        # nonorm_query_timeout_total metric and returns the clean degraded string.
-        # Only genuine driver/unexpected errors fall back to rows=[] (graceful
-        # degradation so a one-off DB hiccup doesn't abort the whole tool output).
+        # OrmQueryTimeout propagates to the @offload_neo4j module_inspect handler
+        # (metric + clean degraded string). Any other failure renders an explicit
+        # "unavailable" line, marked degraded - never "No test classes indexed".
+        # The total is counted separately so the preview cap is disclosed exactly.
+        failed = False
+        total = 0
+        rows: list = []
         try:
-            rows = srv._data_bounded(
+            recs = srv._data_bounded(
                 session,
                 f"""
                 MATCH (tc:TestClass {{module: $module, odoo_version: $v}})
                 WHERE {srv._scope_pred("tc")}
-                RETURN
-                    tc.name          AS name,
-                    tc.file_path     AS file_path,
-                    tc.test_type     AS test_type,
-                    tc.is_helper     AS is_helper,
-                    tc.commit_allowed AS commit_allowed,
-                    size([x IN tc.profile WHERE x = x]) AS profile_count
-                ORDER BY tc.file_path ASC, tc.name ASC
-                LIMIT 200
+                WITH tc ORDER BY tc.file_path ASC, tc.name ASC
+                WITH count(tc) AS total,
+                     collect({{name: tc.name, file_path: tc.file_path,
+                              test_type: tc.test_type, is_helper: tc.is_helper}}) AS all_rows
+                RETURN total, all_rows[..$cap] AS rows
                 """,
                 f"module_inspect tests ({module})",
-                module=module,
-                v=v,
+                module=module, v=v, cap=_MODULE_TESTS_PREVIEW_CAP,
                 **srv._scope(profile_name),
             )
+            if recs:
+                total = recs[0].get("total") or 0
+                rows = list(recs[0].get("rows") or [])
         except OrmQueryTimeout:
             raise
-        except Exception:
-            rows = []
+        except Exception as exc:  # noqa: BLE001 - surfaced as an unavailable line
+            logger.warning("module_inspect tests query failed for %r @ %s: %s", module, v, exc)
+            from src.mcp.degraded import mark_degraded
+            mark_degraded("module_inspect tests query failed")
+            failed = True
 
     header = f"module_inspect(name='{module}', method='tests', odoo_version='{v}')"
     lines = [header]
@@ -390,20 +400,30 @@ def _list_test_classes_for_module(
     if is_test_integration:
         lines.append("├─ is_test_integration_module: True (module name starts with test_)")
 
-    if not rows:
+    if failed:
+        lines.append(
+            f"├─ Test classes: unavailable (the graph query failed; retry, this is"
+            f" not evidence that [{module}] has no tests at Odoo {v})"
+        )
+    elif not total:
         lines.append(f"├─ No test classes indexed for [{module}] at Odoo {v}.")
     else:
-        lines.append(f"├─ Test classes: {len(rows)}")
-        for i, r in enumerate(rows[:10]):
-            conn = "└─" if i == len(rows) - 1 else "├─"
+        lines.append(f"├─ Test classes: {total}")
+        shown = rows
+        hidden = total - len(shown)
+        for i, r in enumerate(shown):
+            conn = "└─" if i == len(shown) - 1 and not hidden else "├─"
             cls_name = r.get("name") or "?"
             fp = r.get("file_path") or ""
             tt = r.get("test_type") or "?"
             helper_tag = " [helper]" if r.get("is_helper") else ""
-            lines.append(f"│  {conn} {cls_name}{helper_tag}  [{tt}]  {fp}")
+            lines.append(f"│   {conn} {cls_name}{helper_tag}  [{tt}]  {fp}")
 
-        if len(rows) > 10:
-            lines.append(f"│  ... +{len(rows) - 10} more test classes")
+        if hidden:
+            lines.append(
+                f"│   └─ ... and {hidden} more (not listed; use test_class_inspect("
+                f"name='<ClassName>', module='{module}', odoo_version='{v}') for one)"
+            )
 
     next_line = format_next_step([
         f"test_class_inspect(name='<ClassName>', odoo_version='{v}')"
@@ -634,6 +654,22 @@ def _caller_boundary(srv) -> dict:
     return srv._scope(None, pin=False)
 
 
+def _ancestor_chain_or_self(name: str) -> list[str]:
+    """*name* then its ancestors (root last); ``[name]`` when the registry is down.
+
+    A registry failure is marked degraded (never cached) and logged: the
+    with-ancestors numbers then equal the own numbers.
+    """
+    from src.db.pg import repo_store
+    try:
+        return repo_store().get_ancestor_profile_names(name) or [name]
+    except Exception as exc:  # noqa: BLE001 - registry down degrades, never fails the tool
+        logger.warning("ancestor chain of profile %r unavailable: %s", name, exc)
+        from src.mcp.degraded import mark_degraded
+        mark_degraded("profile ancestor chain unavailable")
+        return [name]
+
+
 def _visible_profile_names(srv) -> set[str] | None:
     """Profile names this key may see (own + shared, pin ignored); None = admin (all).
 
@@ -663,6 +699,14 @@ def _chain_label(ancestors: list[str], visible: set[str] | None) -> str:
     return " -> ".join(shown) + _hidden_suffix(hidden, "ancestor profile")
 
 
+def _profile_not_visible(name: str, method: str) -> str:
+    return (
+        f"profile_inspect(name={name!r}, method={method!r})\n"
+        f"└─ Not found or not authorized: profile '{name}' is not visible to this key."
+        " Use list_available_profiles() to see accessible profiles."
+    )
+
+
 def _profile_summary(name: str, odoo_version: str, srv) -> str:
     """Render profile summary: ancestor chain, children, repos, module_count."""
     from src.db.pg import repo_store
@@ -670,11 +714,7 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
     # RBAC: check caller can see this profile at all.
     allowed = srv._effective_allowed(name)
     if allowed is not None and name not in allowed:
-        return (
-            f"profile_inspect(name={name!r}, method='summary')\n"
-            f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
-            "   Use list_available_profiles() to see accessible profiles."
-        )
+        return _profile_not_visible(name, 'summary')
 
     # Ancestors (self first, root last).
     ancestors = repo_store().get_ancestor_profile_names(name)
@@ -729,8 +769,24 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
                 **_caller_boundary(srv),
             )
             module_count = rec["cnt"] if rec else 0
+            chain_rec = srv._single_bounded(
+                neo_session,
+                f"""
+                MATCH (m:Module)
+                WHERE m.odoo_version = $v
+                  AND {srv._scope_pred('m')}
+                  AND any(__a IN m.profile WHERE __a IN $chain)
+                RETURN count(m) AS cnt
+                """,
+                f"module count for profile '{name}' incl. ancestors (Odoo {odoo_version})",
+                v=odoo_version,
+                chain=ancestors,
+                **_caller_boundary(srv),
+            )
+            chain_count = chain_rec["cnt"] if chain_rec else 0
     except Exception:
         module_count = None  # graceful degradation if Neo4j unavailable
+        chain_count = None
         # L1 fix: if odoo_version was not resolved before the exception
         # (e.g. driver down before line 536), normalize the sentinel so the
         # header never renders 'auto' literally.
@@ -764,26 +820,39 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
         lines.append("├─ Children: none")
 
     # Repos.
-    lines.append(f"├─ Repos ({len(unique_repos)} unique across ancestor chain):")
-    for i, r in enumerate(unique_repos):
-        prefix = "│  └─" if i == len(unique_repos) - 1 else "│  ├─"
+    shown_repos = [
+        r for r in unique_repos if visible is None or r["profile_name"] in visible
+    ]
+    hidden_repos = len(unique_repos) - len(shown_repos)
+    lines.append(
+        f"├─ Repos ({len(unique_repos)} unique across ancestor chain)"
+        f"{_hidden_suffix(hidden_repos, 'repo')}:"
+    )
+    for i, r in enumerate(shown_repos):
+        prefix = "│   └─" if i == len(shown_repos) - 1 else "│   ├─"
         depth_tag = " [own]" if r["depth"] == 0 else f" [inherited from {r['profile_name']}]"
         status = r.get("status", "unknown")
         lines.append(f"{prefix} {r['url']} @ {r['branch']}{depth_tag}  status:{status}")
 
-    # Module count: `$profile_name IN m.profile`. Nodes carry only the profile
-    # that owns their repo (ADR-0034 single-owner, pipeline_repo._owning_profiles),
-    # so parent-profile modules are NOT counted - the label says so, since the
-    # Repos block above does span the ancestor chain.
+    # Two counts so the reader knows where each part comes from. Nodes carry only
+    # the profile that owns their repo (ADR-0034 single-owner), so "this profile"
+    # is `$profile_name IN m.profile` and "with ancestors" is any profile of the
+    # ancestor chain. Both pass the caller's tenant choke, so ancestor modules a
+    # tenant may not see are not counted in its view.
+    footer = srv.hints_for("profile_inspect", name=name, ver=odoo_version)
+    # ADR-0023 §4.1: the Next footer is the root's last child, so the last data
+    # branch stays ├─ whenever a footer follows.
+    last = "├─" if footer else "└─"
     if module_count is not None:
+        sub = "│   " if footer else "    "
+        lines.append(f"{last} Module count (version {odoo_version}):")
+        lines.append(f"{sub}├─ Owned by this profile: {module_count}")
         lines.append(
-            f"└─ Module count (version {odoo_version}, inheritance-inclusive):"
-            f" {module_count}"
+            f"{sub}└─ Including ancestor profiles ({_chain_label(ancestors, visible)}):"
+            f" {chain_count}"
         )
     else:
-        lines.append("└─ Module count: unavailable")
-
-    footer = srv.hints_for("profile_inspect", name=name, ver=odoo_version)
+        lines.append(f"{last} Module count: unavailable")
     if footer:
         lines.append(footer)
     return "\n".join(lines)
@@ -804,11 +873,7 @@ def _profile_repos(
     if name:
         # Check access.
         if allowed is not None and name not in allowed:
-            return (
-                f"profile_inspect(name={name!r}, method='repos')\n"
-                f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
-                "   Use list_available_profiles() to see accessible profiles."
-            )
+            return _profile_not_visible(name, 'repos')
         visible = _visible_profile_names(srv)
         chain_repos = repo_store().get_ancestor_repos(name)
         repos_raw = [
@@ -859,7 +924,7 @@ def _profile_repos(
 
     lines.append(f"├─ Repos ({len(unique_repos)} unique){withheld}:")
     for i, r in enumerate(unique_repos):
-        prefix = "│  └─" if i == len(unique_repos) - 1 else "│  ├─"
+        prefix = "│   └─" if i == len(unique_repos) - 1 else "│   ├─"
         status = r.get("status", "unknown")
         clone = r.get("clone_status", "manual")
         profile_tag = f"  [profile: {r['profile_name']}]" if not name else ""
@@ -886,11 +951,7 @@ def _profile_modules(
     # RBAC: Neo4j choke via _scope.
     allowed = srv._effective_allowed(name)
     if name and allowed is not None and name not in allowed:
-        return (
-            f"profile_inspect(name={name!r}, method='modules')\n"
-            f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
-            "   Use list_available_profiles() to see accessible profiles."
-        )
+        return _profile_not_visible(name, 'modules')
 
     # H1 (#260): enforce the disclosed cap — a large caller limit must not
     # return more than _PROFILE_MODULES_CAP rows (ADR-0023 §3).
@@ -976,22 +1037,22 @@ def _profile_modules(
         f"├─ Showing rows {start_index + 1}-{page_end} of {total}:",
     ]
     for i, r in enumerate(rows):
-        prefix = "│  └─" if i == len(rows) - 1 else "│  ├─"
+        prefix = "│   └─" if i == len(rows) - 1 else "│   ├─"
         edition = r.get("edition") or "community"
         repo_tag = f"  [{r['repo']}]" if r.get("repo") else ""
         lines.append(f"{prefix} {r['name']}  ({edition}){repo_tag}")
 
+    footer = srv.hints_for("profile_inspect", name=name or "", ver=odoo_version)
+    last = "├─" if footer else "└─"
     if page_end < total:
         next_start = start_index + effective_limit
         more_hint = (
             f"profile_inspect(name={name!r}, method='modules',"
             f" odoo_version={odoo_version!r}, start_index={next_start})"
         )
-        lines.append(f"└─ ... and {total - page_end} more (use {more_hint})")
+        lines.append(f"{last} ... and {total - page_end} more (use {more_hint})")
     else:
-        lines.append(f"└─ End of list ({total} total).")
-
-    footer = srv.hints_for("profile_inspect", name=name or "", ver=odoo_version)
+        lines.append(f"{last} End of list ({total} total).")
     if footer:
         lines.append(footer)
     return "\n".join(lines)
@@ -1010,18 +1071,20 @@ def _profile_coverage(
     Rec.4 ("absence-in-index != absence-in-product"): a category breakdown alone
     only shows what IS indexed. To hint at what may be MISSING from this profile
     we add a data-driven (no curated SSOT) superset-diff: for each category we
-    compare ``in_profile`` (modules stamped with THIS profile) against the count
-    of modules of that category visible to the caller across the whole index
-    (``indexed_elsewhere`` = in-scope total minus in_profile). A non-zero
+    report ``own`` (modules stamped with THIS profile) and ``with_ancestors`` (any
+    profile of its ancestor chain), and compare the latter against the count of
+    modules of that category visible to the caller across the whole index
+    (``indexed_elsewhere`` = in-scope total minus with_ancestors). A non-zero
     ``indexed_elsewhere`` is a "may be incomplete" signal - a real one derived
     purely from Neo4j, never from a hand-maintained brand/domain table.
 
     Choke-point (M4, ADR-0034): both aggregations use the caller's tenant
     boundary without the session pin (``_caller_boundary``) + ``profile_name=name``
     exactly like ``_profile_summary``. Profile membership is
-    applied separately via ``$profile_name IN m.profile`` - the modules owned by
-    this profile only (single-owner stamping, ADR-0034), parent profiles
-    excluded. The caller-can-see check is done up front via
+    applied separately: ``$profile_name IN m.profile`` for ``own`` (single-owner
+    stamping, ADR-0034) and ``any(profile IN chain)`` for ``with_ancestors``; the
+    tenant choke still filters every node, so ancestor modules a tenant cannot
+    see are not counted. The caller-can-see check is done up front via
     ``_effective_allowed(name)``. Both queries are flat
     aggregations (ADR-0048 no-VLP) bounded by ``_data_bounded`` (ADR-0050).
     """
@@ -1033,13 +1096,10 @@ def _profile_coverage(
     # RBAC: caller must be allowed to see this profile at all.
     allowed = srv._effective_allowed(name)
     if allowed is not None and name not in allowed:
-        return (
-            f"profile_inspect(name={name!r}, method='coverage')\n"
-            f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
-            "   Use list_available_profiles() to see accessible profiles."
-        )
+        return _profile_not_visible(name, 'coverage')
 
     effective_limit = min(limit, _PROFILE_MODULES_CAP)
+    ancestors = _ancestor_chain_or_self(name)
 
     with srv._get_driver().session() as neo_session:
         odoo_version = srv._resolve_version(odoo_version, neo_session)
@@ -1062,6 +1122,24 @@ def _profile_coverage(
             **_caller_boundary(srv),
         )
 
+        # (1b) per-category count over this profile AND its ancestor chain.
+        chain_rows = srv._data_bounded(
+            neo_session,
+            f"""
+            MATCH (m:Module)
+            WHERE m.odoo_version = $v
+              AND {srv._scope_pred('m')}
+              AND any(__a IN m.profile WHERE __a IN $chain)
+            RETURN coalesce(m.category, '(uncategorized)') AS category,
+                   count(m) AS cnt
+            ORDER BY cnt DESC, category ASC
+            """,
+            f"coverage (with ancestors) for '{name}' (Odoo {odoo_version})",
+            v=odoo_version,
+            chain=ancestors,
+            **_caller_boundary(srv),
+        )
+
         # (2) per-category count across the WHOLE in-scope index (any profile).
         scope_rows = srv._data_bounded(
             neo_session,
@@ -1079,30 +1157,31 @@ def _profile_coverage(
         )
 
     in_profile = {r["category"]: r["cnt"] for r in in_profile_rows}
+    with_chain = {r["category"]: r["cnt"] for r in chain_rows}
     in_scope = {r["category"]: r["cnt"] for r in scope_rows}
 
-    if not in_profile:
+    if not with_chain:
         return (
             f"profile_inspect(name={name!r}, method='coverage',"
             f" odoo_version={odoo_version!r})\n"
-            "└─ No modules indexed in this profile. Verify the profile name, or call "
-            "list_available_profiles to see indexed scope."
+            "└─ No modules indexed in this profile or its ancestor profiles. Verify the"
+            " profile name, or call list_available_profiles to see indexed scope."
         )
 
-    # Merge every category seen in either aggregation. indexed_elsewhere is the
-    # in-scope total minus this profile's count (modules of that category visible
-    # to the caller but NOT carried by this profile) - clamped at 0 defensively.
-    categories = sorted(set(in_profile) | set(in_scope))
-    merged: list[tuple[str, int, int]] = []
+    # indexed_elsewhere = in-scope total minus the with-ancestors count: modules of
+    # that category visible to the caller that neither this profile nor any of its
+    # ancestors carries - clamped at 0 defensively.
+    categories = sorted(set(with_chain) | set(in_scope))
+    merged: list[tuple[str, int, int, int]] = []
     for cat in categories:
-        here = in_profile.get(cat, 0)
-        total = in_scope.get(cat, here)
-        elsewhere = max(total - here, 0)
-        merged.append((cat, here, elsewhere))
+        own = in_profile.get(cat, 0)
+        chain = with_chain.get(cat, 0)
+        total = in_scope.get(cat, chain)
+        merged.append((cat, own, chain, max(total - chain, 0)))
 
     # Surface the "may be incomplete" signal first: highest indexed_elsewhere,
-    # then largest in-profile presence, then alphabetical (deterministic).
-    merged.sort(key=lambda t: (-t[2], -t[1], t[0]))
+    # then largest with-ancestors presence, then alphabetical (deterministic).
+    merged.sort(key=lambda t: (-t[3], -t[2], t[0]))
 
     total_categories = len(merged)
     page = merged[start_index:start_index + effective_limit]
@@ -1111,18 +1190,20 @@ def _profile_coverage(
     lines = [
         f"profile_inspect(name={name!r}, method='coverage',"
         f" odoo_version={odoo_version!r})",
-        "├─ Indexed module coverage by category"
-        f" (version {odoo_version}, this profile only; parent profiles not counted):",
-        "│   in_profile = modules in this profile; indexed_elsewhere = modules of"
-        " that category visible to you but NOT in this profile (a 'may be"
-        " missing' signal).",
+        "├─ Legend: own = modules owned by this profile; with_ancestors = own plus"
+        f" modules of its ancestor profiles"
+        f" ({_chain_label(ancestors, _visible_profile_names(srv))});"
+        " indexed_elsewhere = modules of that category visible to you in neither"
+        " (a 'may be missing' signal).",
+        f"├─ Indexed module coverage by category (version {odoo_version}):",
     ]
     last_idx = len(page) - 1
-    for i, (cat, here, elsewhere) in enumerate(page):
+    for i, (cat, own, chain, elsewhere) in enumerate(page):
         conn = "│   └─" if (i == last_idx and page_end >= total_categories) else "│   ├─"
         flag = "  [may be incomplete]" if elsewhere > 0 else ""
         lines.append(
-            f"{conn} {cat}: in_profile={here}, indexed_elsewhere={elsewhere}{flag}"
+            f"{conn} {cat}: own={own}, with_ancestors={chain},"
+            f" indexed_elsewhere={elsewhere}{flag}"
         )
     if page_end < total_categories:
         next_start = start_index + effective_limit
