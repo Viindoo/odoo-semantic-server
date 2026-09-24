@@ -190,7 +190,10 @@ delete a `TestHelper` node: `write_framework_test_helpers` is pure `MERGE`+`SET`
 `gc_stale_test_nodes` DETACH DELETEs `TestClass`/`TestMethod` only, and
 `delete_module_subtree`'s per-module cascade explicitly enumerates its labels
 (`Model, Field, Method, View, QWebTmpl, Report, JSPatch, OWLComp`) and excludes
-`TestHelper`; framework helpers also carry no `DEFINED_IN` edge, so no `Module`
+`TestHelper` (2026-09-24, ADR-0056: replaced by `retire_modules`, whose
+`MODULE_CHILD_LABELS` cascade does delete ADDON TestHelpers but still never
+`module='@framework'` ones - `prune_framework_test_helpers` stays their only
+delete path); framework helpers also carry no `DEFINED_IN` edge, so no `Module`
 delete can reach them by cascade either. A class removed from an era (SavepointCase
 leaving the menu at v17+) would therefore survive on every already-indexed server
 forever, and a code-only deploy could never fix an already-populated graph. The writer

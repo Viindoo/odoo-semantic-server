@@ -24,6 +24,8 @@ When `repos.head_sha` exists but is not an ancestor of current HEAD, history was
 
 Behaviour: log warning, treat `last_head` as None → full reindex. The new HEAD becomes the new baseline. Old orphaned Module nodes (for files that no longer exist on the new history line) remain — see D5.
 
+> **2026-09-24 (ADR-0056):** they no longer remain. Which modules are gone is decided by comparing the git-tracked manifest scan with the lifecycle ledger, not by the diff, so a force-push retires the modules absent from the new history on the same run (under the ADR-0056 gates).
+
 `is_ancestor()` returns False on any git error (graceful) so non-repo, missing-sha, etc. all fall back to full reindex safely.
 
 **Edge case:** When `get_repo_head()` returns None (git error, no commits, detached
@@ -41,11 +43,30 @@ This is a one-direction state machine: head_sha can only advance, never roll bac
 
 ### D4 — `--full` flag is the operator's reset button
 
+> **Superseded as a cleanup tool (2026-09-24, ADR-0056 D5).** Retirement of
+> removed/renamed modules no longer needs `--full`: every index run reconciles
+> the module lifecycle ledger. `--full` stays the bypass of the skip + diff
+> filter, used to backfill a new index-time property and, as a side effect, to
+> let the entity prune and the complete-parse record cover every module at once.
+
 The CLI flag `--full` bypasses the skip-unchanged check + the diff filter — forcing a full reindex of every module the scanner finds. This is the documented escape hatch for D5 cleanup.
 
 `--full` does NOT reset head_sha to NULL — at the end of a successful `--full` run, head_sha advances to current HEAD just like an incremental run. Operationally, `--full` is "re-write what we have, then continue normally."
 
 ### D5 — Module rename: explicit `--gc` flag available (M7 C4) + placeholder cleanup (M13)
+
+> **Superseded (2026-09-24, ADR-0056, issue #378).** The text below is the
+> historical design. What replaced it: `gc_stale_modules` is removed; `--gc` is
+> a deprecated no-op (still accepted, logs a WARNING). No job ever passed
+> `--gc`, so renamed/deleted modules stayed "Yes" forever, and the Module-only
+> delete stranded every child and embedding. Now every index run observes the
+> git-tracked manifests into the `module_presence` ledger, and one per-version
+> reconcile retires what no repo ships any more through the
+> `retire_modules` cascade (Module + whole subtree + embeddings), under the
+> G-A / G-B gates; the orphan sweep removes the pre-ledger ghosts on the first
+> plain run after the deploy. `gc_unresolved_placeholders` and
+> `gc_null_repo_dep_stubs` run in that reconcile, not under `--gc`. The "risk
+> gate" below became G-B `total_wipe` / `mass_retire` (ADR-0056 D6).
 
 When `addons/stock` is renamed to `addons/inventory`, `git diff --name-only` shows both paths as changed. The scanner finds the new `addons/inventory` module → Module node MERGEd; the old `addons/stock` directory no longer exists → no scanner pass → its Module node remains in Neo4j as a stale orphan.
 
@@ -206,11 +227,11 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 ## Implementation references
 
 - `src/indexer/incremental.py` — D2/D3 helpers (get_repo_head, is_ancestor, compute_changed_module_paths, filter_modules_by_changed)
-- `src/indexer/pipeline.py::_index_repo` — D1/D2/D3/D4/D5 wiring
+- `src/indexer/pipeline_repo.py::_index_repo` - D1/D2/D3/D4 wiring (lifecycle observe path: ADR-0056)
 - `src/indexer/seed_patterns.py::_get_stored_patterns_sha` / `_set_stored_patterns_sha` — D6/D7
 - `src/indexer/scanner.py::get_module_commit_sha` — D1 per-module sha source
 - `src/indexer/writer_neo4j.py` Module MERGE SET — D1 last_commit_sha persistence
-- `src/indexer/writer_neo4j.py::Neo4jWriter.gc_stale_modules` — D5 GC implementation
+- ~~`src/indexer/writer_neo4j.py::Neo4jWriter.gc_stale_modules` - D5 GC implementation~~ removed by ADR-0056; see `Neo4jWriter.retire_modules` + `src/indexer/reconcile.py::reconcile_version`
 - `src/indexer/writer_neo4j.py::Neo4jWriter.gc_unresolved_placeholders` — D5 M13 placeholder gc
 - `src/indexer/writer_neo4j.py::Neo4jWriter.heal_resolved_unresolved_flags` — D5 Residual-2 heal
 - `ops/cleanup_resolved_unresolved_flags.cypher` — one-time prod heal for Residual-2
@@ -222,13 +243,13 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
 - `tests/test_pipeline_incremental.py` — D3 partial-failure + D4 --full + skip-unchanged + diff filter
 - `tests/test_seed_patterns.py` — D6 sentinel hash gating + D7 label + D6-split --no-embed behavior
 - `tests/test_pipeline_seed_integration.py` — D6 wired into index_profile
-- `tests/test_indexer_gc.py` — D5 GC flag: delete renamed module, risk gate, default-off
+- `tests/test_indexer_gc.py` - D5 successor (ADR-0056): `retire_modules` cascade, retirement without any flag, `--gc` no-op, `--no-retire` keeps pending
 - `tests/test_dual_store_integrity.py` — D6-split invariants: --no-embed sets only patterns_neo4j, embedder=None leaves patterns_pgvector absent, legacy sentinel fallback, divergence detection
 - `tests/test_gc_unresolved_placeholders.py` — D5 M13 extension: no shadow View after writer fix; `unresolved` flag cleared after real View/QWebTmpl write (residual-gap regression); gc_unresolved_placeholders removes placeholders, preserves real nodes, is idempotent, scoped by version; heal_resolved_unresolved_flags clears stale flags on real nodes/edges, preserves genuine placeholders, version-scoped, idempotent
 
 ## Out of scope (recorded for future ADRs)
 
-- Module rename garbage collection (D5 deferred to M7).
+- Module rename garbage collection (D5 deferred to M7; closed by ADR-0056).
 - ~~Cross-repo dependency change tracking~~ **Closed in M7 W14** — when an
   incremental run on repo A reports `changed_module_names`, `find_dependent_repos`
   queries Neo4j for Modules in other repos that have `DEPENDS_ON` edges into

@@ -34,7 +34,7 @@ Venv ở `~/.venv/odoo-semantic-mcp` - không bao giờ tạo `.venv/` trong rep
 ## Architecture invariants
 
 - **Pipeline một chiều:** `scanner → registry → resolver → parser → (writer_neo4j | embedder → writer_pgvector) → server`. Không cross-import ngang hàng (scanner không import parser; registry không import writer). Enforce bởi `tests/test_pipeline_import_discipline.py`.
-- **Neo4j C1 schema:** mỗi module một node Model riêng (không gộp theo tên); composite MERGE key cho Module/Model/Field/Method. `Model.is_definition` = ranking heuristic bậc 1, fallback `field_count DESC`. Same-name INHERITS = K×D edges extender→definition (writer W1 cần `tip.is_definition=true`), **không** K² mesh. → [`huong-dan-stack.md §Schema C1`](docs/huong-dan-stack.md#schema-c1), ADR-0013, ADR-0048.
+- **Neo4j C1 schema:** mỗi module một node Model riêng (không gộp theo tên); MERGE key: Module `(name, odoo_version)` (một node dù nhiều repo cùng ship tên đó - sở hữu theo repo nằm ở ledger `module_presence`, ADR-0056), Model `(name, module, odoo_version)`, Field/Method `(name, model, module, odoo_version)`. `Model.is_definition` = ranking heuristic bậc 1, fallback `field_count DESC`. Same-name INHERITS = K×D edges extender→definition (writer W1 cần `tip.is_definition=true`), **không** K² mesh. → [`huong-dan-stack.md §Schema C1`](docs/huong-dan-stack.md#schema-c1), ADR-0013, ADR-0048.
 - **Tool surface:** 31 MCP tools + 9 resources. `tests/test_tool_count_sync.py` enforce; bump phải sync `pyproject.toml` + `site/src/lib/constants.ts` (SITE_VERSION/TOOL_COUNT/RESOURCE_COUNT).
 - **`is_admin` DB-sourced** qua `is_admin_session(request)` (`src/web_ui/auth.py`) - KHÔNG `request.session.get("is_admin")` (key đó không được set; đọc trả `False` âm thầm, ẩn data của admin). ADR-0011/0026.
 - **Multi-tenant fail-closed:** read-side luôn qua choke-point filter + RLS trên embeddings; KHÔNG có `tenant_id` trong Neo4j MERGE key. ADR-0034.
@@ -71,7 +71,8 @@ TEST_VERSION = "99.0"               # data test, tránh đụng data thật
 
 ## Indexer ops (chi tiết ở ADR)
 
-- **Incremental:** so `git rev-parse HEAD` vs `repos.head_sha` (bằng→skip, force-push→full, else diff qua `incremental.compute_changed_module_paths()`); `--full` monthly dọn stale nodes. ADR-0007.
+- **Incremental:** so `git rev-parse HEAD` vs `repos.head_sha` (bằng→skip, force-push→full, else diff qua `incremental.compute_changed_module_paths()`). ADR-0007.
+- **Module lifecycle:** retirement chạy MỌI run qua ledger `module_presence` (scan = manifest git-tracked → `retire_pending` → `reconcile.reconcile_version` mỗi version xóa Module + cây con + embedding khi không repo nào còn ship; cổng G-A/G-B, exit 3 + `repos.lifecycle_attention`); `--full` chỉ để backfill property index-time, `--gc` là no-op deprecated, `--allow-mass-retire` KHÔNG bao giờ đặt trong timer; dry run `lifecycle-audit`. ADR-0056.
 - **Auto-reseed:** `_SeedMeta` sentinel lưu sha256 của `patterns.json` (skip re-embed khi unchanged; `--force` bypass). ADR-0007.
 - **Cross-profile parallel:** `--profile-workers N --max-workers M`, per-profile Postgres advisory lock. ADR-0006.
 - **SSH auto-clone:** `POST /profiles/{id}/clone-all` + `GET /repos/{id}/clone-status`; key qua `GIT_SSH_COMMAND` (NOT `-i`), `known_hosts` pre-pinned + `StrictHostKeyChecking=yes` (no TOFU), full clone, per-repo advisory lock, fetch+reset-hard refresh. ADR-0008 + ADR-0035.
@@ -88,6 +89,6 @@ TEST_VERSION = "99.0"               # data test, tránh đụng data thật
 | `docs/thiet-ke-kien-truc.md` | Schema Neo4j, pipeline, MCP tool spec |
 | `docs/huong-dan-stack.md` | Sâu: Neo4j patterns, AST gotchas, FastMCP tips |
 | `docs/adr/` | Architecture Decision Records - đọc ADR liên quan trước khi đụng schema/policy/auth |
-| `docs/adr/INDEX.md` | Lookup nhanh 50 ADR (1 dòng/ADR + amendments) |
+| `docs/adr/INDEX.md` | Lookup nhanh mọi ADR (1 dòng/ADR + amendments) |
 | `docs/deploy.md`, `docs/deploy/go-live-checklist.md` | Deploy + go-live ops |
 | `CONTRIBUTING.md` | Setup dev, tests, commit + release workflow |

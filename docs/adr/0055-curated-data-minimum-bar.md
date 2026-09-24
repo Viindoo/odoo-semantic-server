@@ -160,7 +160,8 @@ family filter). Two mandatory safety guards, both mirroring existing precedent:
   version) - same shape as the `write_pattern_examples` empty-guard.
 - **Soft-drop gate:** if a single run would delete more than a large fraction
   (`_PRUNE_SOFT_DROP_MAX_FRACTION`, 50%) of a version's existing nodes, the prune is SKIPPED with a
-  WARNING - mirroring `gc_stale_modules`'s skip-and-warn guard and this ADR's sibling ADR-0005
+  WARNING - mirroring the skip-and-warn guard of `gc_stale_modules` (removed by ADR-0056; its
+  successor is the G-B mass-retire gate, 50% AND >= 20) and this ADR's sibling ADR-0005
   (">20% CoreSymbol drop = suspect path refactor"). This protects against a checkout that silently
   lost its source (e.g. `odoo/addons/test_lint/tests/`) before it can delete the whole version.
 

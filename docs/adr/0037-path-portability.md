@@ -147,6 +147,15 @@ deleting it counts Module nodes with an absolute (`STARTS WITH '/'`) path for th
 repo+version, and if any exist it SKIPS GC, logs a warning, and returns 0 — so an
 incremental `--gc` run against a not-yet-migrated graph can never blast the repo.
 
+> **2026-09-24 (ADR-0056):** `gc_stale_modules` and its absolute-path guard are
+> gone; `--gc` is a no-op. Retirement no longer compares paths: it compares module
+> NAMES from the git-tracked manifest scan with the `module_presence` ledger, so a
+> mixed absolute/relative graph cannot make a live module look stale. A Module
+> node whose `path` differs from the registry winner (absolute, a shadowed copy, an
+> untracked `.odoo-ai` copy) is re-written by the next plain run
+> (`pipeline_repo.modules_needing_rewrite`, reason `path_drift`) and the old
+> directory's children are removed by the entity prune.
+
 ## Consequences
 
 - Output is portable and self-describing; clients map paths onto their checkout.

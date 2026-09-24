@@ -519,6 +519,46 @@ comment tại `src/web_ui/routes/dashboard.py::_count_embeddings`.
 → `'*'` branch = NULL, `ANY(string_to_array(NULL,','))` = NULL → chỉ branch `profile_name IS NULL`
 pass. Rows tenant-private bị chặn; chỉ shared/global (D3) hiển thị. KHÔNG fail-open.
 
+## Amendment 2026-09-24 (ADR-0056, issues #373 / #378) - ownership lifecycle, ledger RLS, write-side scope
+
+- **Union on write, exact reset on retire.** Writers keep stamping only the
+  owning profile of the node's repo and union it into `profile[]` on MATCH (D2,
+  single-owner provenance). A profile now also LEAVES a node, only through the
+  lifecycle reconcile: `Neo4jWriter.drop_module_owner` sets the Module and every
+  `MODULE_CHILD_LABELS` child to exactly the surviving owners' profiles (repo
+  moved, repo/profile removed, one of two co-owners dropped the module), and
+  `retire_modules` deletes the subtree when no repo ships the module. Embeddings
+  follow: only the departing profiles' rows are deleted. Before this, a node kept
+  a departed tenant's profile forever (visible to that tenant's keys).
+- **Ledger RLS.** `module_presence` (migration 0003) has policy
+  `module_presence_tenant`, same GUC shape as `embeddings_tenant` minus the
+  `'__global__'` branch (ledger rows are never global), ENABLE not FORCE,
+  `SELECT` to `osm_reader`. The MCP read (`src/mcp/lifecycle_read.py`) passes an
+  explicit profile list AND `SET LOCAL app.allowed_profiles`; it never passes
+  "all" for a tenant (`[]` = deny). Rows of a deleted profile are visible to
+  nobody through MCP.
+- **Write-side scope under FORCEd RLS.** The indexer and the Web UI use the owner
+  DSN and never set the GUC. On a deploy whose owner role is neither superuser nor
+  BYPASSRLS (managed / split-tier Postgres), every embeddings DELETE matched 0 rows
+  silently. `writer_pgvector._write_scope` now sets
+  `app.allowed_profiles = '*'` transaction-locally for the deletes, the orphan
+  read and the upsert; a short delete (`expected=`) logs a WARNING. The
+  canonical compose deploy (owner = superuser) was not affected.
+- **H6 (#373).** `test_class_inspect` subclass, twin, method hops now all apply
+  the scope predicate (framework-origin TestHelpers stay public), so a scoped key
+  no longer sees other tenants' private subclass names or counts.
+- **Web UI tenant surface.** GAP2's premise "web UI is admin-only" no longer holds
+  for `/api/dashboard/stats` and `/api/repos/profiles` (any signed-in tenant
+  member reaches them): both are now tenant-scoped like `/profiles`, and a shared
+  redactor (`repos._redact_repo_rows`) nulls `local_path`, `clone_error_msg` and
+  `lifecycle_attention` and maps `error_msg` to fixed categories for non-admins.
+  `profile_inspect` never names or lists a profile or repo outside the key's
+  scope; where an ancestor chain, the child profiles or the repo list are cut,
+  it states only how many entries were withheld (`+N ... not visible to this
+  key`), never which. The admin global counts are unchanged.
+- **No MERGE-key change.** Module stays keyed `(name, odoo_version)`; repo
+  ownership lives in the ledger, not in the graph key.
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).
