@@ -420,6 +420,8 @@ class LifecycleObservation:
     transitions: object
     gates: object
     attention: list[str] = field(default_factory=list)
+    # Indexed modules whose manifest does not parse, kept (lifecycle.unparseable_kept).
+    unparseable_kept: list[str] = field(default_factory=list)
 
 
 def observe_lifecycle(
@@ -429,12 +431,23 @@ def observe_lifecycle(
     current_head: str | None,
     *,
     allow_mass_retire: bool = False,
+    writer: IndexWriterProtocol | None = None,
+    owning_profile: str | None = None,
 ) -> LifecycleObservation:
     """Trust, classification and gates of one repo scan (ADR-0056, B5).
 
     Read-only: reads the repo's ledger rows through *presence* (None = no
-    ledger) and git, writes nothing. The per-repo index path and the dry-run
-    ``lifecycle-audit`` both decide through this function.
+    ledger), git and, through *writer*, the graph; writes nothing. The
+    per-repo index path and the dry-run ``lifecycle-audit`` both decide
+    through this function.
+
+    While the ledger has never reflected the repo (``presence_head_sha``
+    NULL: the first runs after the ledger was deployed, a new registration)
+    G-B is evaluated against the graph baseline
+    (``writer.repo_module_baseline`` for *owning_profile*) instead of the
+    ledger rows, which cannot tell what the repo shipped before. The scan's
+    unparseable names that have a graph node feed the ``manifest_unparseable``
+    signal (``lifecycle.unparseable_kept``).
     """
     from src.git_utils import head_matches_remote_branch, remote_branch_ref_exists
     from src.indexer import lifecycle
@@ -462,13 +475,30 @@ def observe_lifecycle(
         )
     rows: list[dict] = presence.rows_for_repo(repo["id"]) if lifecycle_on else []
     transitions = lifecycle.classify(rows, scan)
+    graph_baseline = None
+    if (
+        lifecycle_on and writer is not None
+        and presence.presence_head_sha(repo["id"]) is None
+    ):
+        graph_baseline = writer.repo_module_baseline(
+            repo.get("id"), repo_path.name,
+            owning_profile or repo.get("profile_name") or "",
+        )
+    unparseable = sorted(
+        n for n, ex in scan.excluded.items() if ex.reason == lifecycle.EXCLUSION_UNPARSEABLE
+    )
+    indexed_names: list[str] = []
+    if lifecycle_on and writer is not None and unparseable:
+        indexed_names = sorted(writer.module_identity(scan.odoo_version, unparseable))
     gates = lifecycle.apply_gates(
         transitions, scan, trusted=trusted, allow_mass_retire=allow_mass_retire,
+        graph_baseline=graph_baseline, indexed_names=indexed_names,
     )
     attention.extend(gates.reasons)
     return LifecycleObservation(
         trusted=trusted, lifecycle_on=lifecycle_on, rows=rows,
         transitions=transitions, gates=gates, attention=attention,
+        unparseable_kept=lifecycle.unparseable_kept(transitions, scan, indexed_names),
     )
 
 
@@ -1026,6 +1056,7 @@ def _index_repo(
     # === Lifecycle pre-write: trust, gates, self-heal (ADR-0056) ===
     observation = observe_lifecycle(
         repo, scan, presence, current_head, allow_mass_retire=allow_mass_retire,
+        writer=writer, owning_profile=owning_profile,
     )
     attention: list[str] = observation.attention
     lifecycle_on = observation.lifecycle_on

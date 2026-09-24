@@ -103,6 +103,7 @@ class ReadOnlyWriter:
         "module_profiles",
         "module_identity",
         "modules_by_old_technical_name",
+        "repo_module_baseline",
         "orphan_child_keys",
         "modules_without_profile",
     })
@@ -243,6 +244,7 @@ def _gate_dict(gates) -> dict:
         "reasons": list(gates.reasons),
         "n_soft_drop": gates.n_soft_drop,
         "n_present_before": gates.n_present_before,
+        "baseline": gates.baseline,
     }
 
 
@@ -313,7 +315,10 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
         branch=repo.get("branch"), repo_url=repo.get("url"), repo_id=repo["id"],
     )
     entry["odoo_version"] = scan.odoo_version
-    observation = observe_lifecycle(repo, scan, bound, current_head)
+    owning_profile = _owning_profiles(repo, repo.get("profile_name"), repo_path.name)[0]
+    observation = observe_lifecycle(
+        repo, scan, bound, current_head, writer=writer, owning_profile=owning_profile,
+    )
     present = scan.present_names()
     entry["scan"] = {
         "complete": scan.complete,
@@ -335,7 +340,6 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
         kinds.setdefault(t.kind, []).append(t.name)
     entry["transitions"] = {k: len(v) for k, v in sorted(kinds.items())}
 
-    owning_profile = _owning_profiles(repo, repo.get("profile_name"), repo_path.name)[0]
     deferred_head: str | None = None
     attention = observation.attention
     if observation.lifecycle_on and present and plan.mode == RUN_SKIP:

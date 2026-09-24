@@ -269,6 +269,9 @@ class IndexWriterProtocol(Protocol):
     def module_identity(
         self, odoo_version: str, names: Iterable[str],
     ) -> dict[str, dict]: ...
+    def repo_module_baseline(
+        self, repo_id: int | None, repo_basename: str, profile_name: str,
+    ) -> list[tuple[str, str]]: ...
     def modules_by_old_technical_name(
         self, odoo_version: str, old_names: Iterable[str],
     ) -> dict[str, list[str]]: ...
