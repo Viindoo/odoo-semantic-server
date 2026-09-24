@@ -220,3 +220,50 @@ class TestDeleteModulesScoped:
                 v=TEST_VERSION,
             ).single()["n"]
         assert remaining == 0, f"Expected 0 remaining modules, got {remaining}"
+
+
+class TestDeleteModulesScopedFullSubtree:
+    """ADR-0056 B6: the Web UI repo-delete path goes through the single retirement
+    cascade, so deleting a repo removes EVERY node its modules wrote (tests, JS test
+    suites, stylesheets, LintViolations, addon TestHelper twins ...), not only the
+    Module/Model/Field/View family - while shared framework nodes survive.
+
+    Real case: removing the repo that shipped viin_ai + viin_ai_rag from the Web UI.
+    """
+
+    def test_repo_delete_removes_every_child_label_and_keeps_shared_nodes(
+        self, tmp_path, clean_neo4j, writer, monkeypatch,
+    ):
+        from tests import _retirement_fixture as fx
+
+        driver = clean_neo4j
+        writer.setup_indexes()
+        fx.build_and_index(tmp_path, writer, monkeypatch, repo_name="viindoo_addons")
+
+        def _framework_and_placeholders():
+            with driver.session() as s:
+                return s.run(
+                    "MATCH (n) WHERE n.odoo_version = $v "
+                    "AND n.module IN ['@framework', '__unresolved__'] RETURN count(n) AS n",
+                    v=TEST_VERSION,
+                ).single()["n"]
+
+        shared_before = _framework_and_placeholders()
+        attributed_before = {
+            m: sum(fx.labels_with_module(driver, m).values()) for m in (fx.RETIRED, fx.SURVIVOR)
+        }
+        assert shared_before > 0 and all(attributed_before.values()), "positive control"
+        assert {"TestClass", "Stylesheet", "JsTestSuite", "TestHelper"} <= set(
+            fx.labels_with_module(driver, fx.RETIRED)
+        ), "positive control: fixture wrote the test/stylesheet surface"
+
+        result = writer.delete_modules_scoped("viindoo_addons", TEST_VERSION)
+
+        for mod in (fx.RETIRED, fx.SURVIVOR):
+            leftover = fx.labels_with_module(driver, mod)
+            leftover.pop("AssetBundle", None)  # version-global, reclaimed by its own GC
+            assert leftover == {}, f"{mod}: ghost children after repo delete: {leftover}"
+        assert fx.lint_violations_of(driver, fx.RETIRED) == 0
+        assert _framework_and_placeholders() == shared_before
+        assert result["modules"] == 2
+        assert result["children"] >= sum(attributed_before.values()) - 1  # minus AssetBundle

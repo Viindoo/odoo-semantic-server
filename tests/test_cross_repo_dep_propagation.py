@@ -346,7 +346,11 @@ class TestDepPropagationEndToEnd:
         w.write_results.return_value = None
         w.write_view_results.return_value = None
         w.write_js_graph_results.return_value = None
-        w.gc_stale_modules.return_value = 0
+        # ADR-0056 B6: gc_stale_modules was replaced by the retirement cascade.
+        w.orphan_module_names.return_value = []
+        w.retire_modules.return_value = {
+            "modules": 0, "children": 0, "by_label": {}, "retired": [], "skipped_recent": [],
+        }
         # driver is used by find_dependent_repos
         w.driver = MagicMock()
         return w

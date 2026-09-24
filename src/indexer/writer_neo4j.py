@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/writer_neo4j.py
 import logging
-from collections.abc import Iterable
+import time
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime
 
 from neo4j import GraphDatabase, NotificationMinimumSeverity
+from neo4j.exceptions import DriverError, Neo4jError
 
 from src.constants import (
     NEO4J_DELETE_BATCH_ROWS,
@@ -20,6 +23,7 @@ from .models import (
     JSGraphResult,
     LintRuleInfo,
     LintViolationInfo,
+    ModuleOwner,
     ParseResult,
     PatternExample,
     StylesheetInfo,
@@ -33,11 +37,109 @@ _logger = logging.getLogger(__name__)
 # Soft-drop gate for the version-scoped spec prunes (LintRule/CLICommand/CLIFlag,
 # issue #364 follow-up). If a single index-core would delete MORE than this
 # fraction of a version's existing nodes, the prune is SKIPPED with a WARNING
-# instead of applied - mirroring gc_stale_modules's skip-and-warn guard and
-# ADR-0005's ">20% CoreSymbol drop = suspect path refactor". This protects
+# instead of applied - the skip-and-warn shape of ADR-0005's ">20% CoreSymbol
+# drop = suspect path refactor". This protects
 # against a degraded parse (e.g. a checkout missing odoo/addons/test_lint/tests/)
 # silently wiping a whole version's curated rows. See ADR-0055.
 _PRUNE_SOFT_DROP_MAX_FRACTION = 0.5
+
+# --- Module retirement cascade (ADR-0056 D9) --------------------------------
+# Every node label the writers attach to ONE module at one version. This is the
+# single source of truth for the retirement cascade (retire_modules), the owner
+# reset (drop_module_owner) and the child-orphan finder (orphan_child_keys).
+# Membership rule: the label is written by a module's own index run and is
+# selected by a module-scoped predicate:
+#   * carries a ``module`` property naming the owning module (MERGE key or SET):
+#     Model, Field, Method, View, QWebTmpl, Report, JSPatch, OWLComp,
+#     Stylesheet, JsTestSuite, TestClass, TestMethod, TestHelper (addon helpers
+#     and finalize_is_helper projections - never module='@framework');
+#   * has NO ``module`` property but belongs to one of the module's Views:
+#     LintViolation, via ``view_xmlid`` or the (:View)-[:HAS_VIOLATION]-> edge.
+# A new label written with a ``module`` property must be added here or to
+# MODULE_SHARED_LABELS; the structural test compares both against the writers.
+MODULE_CHILD_LABELS: tuple[str, ...] = (
+    "LintViolation",
+    "Method",
+    "Field",
+    "Model",
+    "View",
+    "QWebTmpl",
+    "Report",
+    "JSPatch",
+    "OWLComp",
+    "Stylesheet",
+    "JsTestSuite",
+    "TestMethod",
+    "TestClass",
+    "TestHelper",
+)
+
+# Labels that carry a ``module`` property but are version-global and shared by
+# many modules; they are NEVER part of a per-module cascade. AssetBundle stores
+# its first contributor as ``module`` (ON CREATE only) - deleting it with that
+# module would cut every other contributor's CONTRIBUTES_TO edge. Reclaimed by
+# gc_orphan_asset_bundles once nothing references it.
+MODULE_SHARED_LABELS: tuple[str, ...] = ("AssetBundle",)
+
+# Sentinel ``module`` values owned by no repo: framework test bases
+# (TestHelper module='@framework', seeded per version) and forward-reference
+# placeholders (module='__unresolved__', reclaimed by gc_unresolved_placeholders).
+# The cascade and the orphan finders never select them.
+NON_RETIRABLE_MODULE_NAMES: frozenset[str] = frozenset({"@framework", "__unresolved__"})
+
+# Cypher predicate selecting the LintViolation nodes (bound as ``lv``) owned by
+# the modules in ``$names`` at ``$v``; ``$xmlids`` = those modules' View xmlids.
+# LintViolation has no ``module`` property: it belongs to the module whose View
+# it was raised on - by xmlid, by HAS_VIOLATION edge, or (View already gone) by
+# the ``<module>.`` prefix of ``view_xmlid``. Shared by retire_modules and
+# drop_module_owner so both act on the same set.
+_MODULE_LINT_VIOLATION_PREDICATE = """
+    lv.view_xmlid IN $xmlids
+    OR EXISTS {
+        MATCH (owner_view:View)-[:HAS_VIOLATION]->(lv)
+        WHERE owner_view.module IN $names
+    }
+    OR (split(coalesce(lv.view_xmlid, ''), '.')[0] IN $names
+        AND NOT EXISTS {
+            MATCH (:View {xmlid: lv.view_xmlid, odoo_version: $v})
+        })
+"""
+
+def _instant(expr: str) -> str:
+    """Cypher: the instant of DateTime *expr* in epoch milliseconds.
+
+    Every guard that orders a server stamp (``written_at``, ``last_seen_at``)
+    against a run start compares through this, never with ``<`` / ``>=`` on
+    the DateTime values: Cypher orders two DateTimes of the SAME instant by
+    their zone (``datetime()`` carries offset ``Z``, a Python UTC datetime
+    parameter arrives as zone id ``UTC``), so a stamp taken in the same
+    millisecond as the run start compared as earlier than it. Epoch
+    milliseconds are zone-free and match the resolution of the server's
+    statement clock (``datetime()``), so a stamp in the run's first
+    millisecond counts as at-or-after the start.
+    """
+    return f"{expr}.epochMillis"
+
+
+def _written_before_run(alias: str) -> str:
+    """Cypher predicate: child *alias* was not written at or after ``$run_at``.
+
+    The cascade guard of :meth:`Neo4jWriter.retire_modules`: a child a
+    concurrent run MERGEd (and stamped) after the retiring run started is
+    never deleted; one without ``written_at`` (derived projections, nodes
+    written before the stamp existed) counts as stale.
+    """
+    return (
+        f"({alias}.written_at IS NULL "
+        f"OR {_instant(f'{alias}.written_at')} < {_instant('$run_at')})"
+    )
+
+
+# Transient Neo4j failures (deadlock against a concurrent MERGE, leader switch,
+# lost connection) are retried per cascade step. Every step is an idempotent
+# DETACH DELETE / SET, so replaying a step after a partial commit is safe.
+_CASCADE_RETRY_ATTEMPTS = 4
+_CASCADE_RETRY_BACKOFF_S = 0.5
 
 
 def _profile_union_set(alias: str) -> str:
@@ -67,6 +169,59 @@ def _chunked(items, size):
     """Yield successive chunks of `items` of length up to `size`."""
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+
+def _require_aware_datetime(value, param: str) -> datetime:
+    """Return *value* as a timezone-aware ``datetime`` or raise ValueError.
+
+    The cascade guard compares ``Module.last_seen_at`` (a zoned Cypher
+    ``datetime()``) with this value. A naive Python datetime is sent as a
+    Cypher LocalDateTime, which has no instant - the guard would silently
+    match nothing (or everything, if negated). Accepts a neo4j ``DateTime``
+    too (``to_native()``). The result is converted to the fixed ``UTC``
+    offset, so a value stamped from it is stored in the same form as the
+    server's own ``datetime()``.
+    """
+    if hasattr(value, "to_native"):
+        value = value.to_native()
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(
+            f"{param} must be a timezone-aware datetime (got {value!r}); use "
+            "Neo4jWriter.server_now() so it shares the Neo4j server clock"
+        )
+    return value.astimezone(UTC)
+
+
+def _is_transient_neo4j_error(exc: BaseException) -> bool:
+    """True for errors a replay of the same idempotent statement can clear."""
+    if isinstance(exc, (Neo4jError, DriverError)) and exc.is_retryable():
+        return True
+    # A deadlock raised inside CALL {} IN TRANSACTIONS can reach the client
+    # wrapped in a non-transient outer status; the inner code survives in the
+    # message.
+    return "DeadlockDetected" in f"{getattr(exc, 'code', '')} {exc}"
+
+
+def _run_single_with_retry(session, what: str, query: str, **params):
+    """``session.run(query).single()`` retried on transient errors.
+
+    For auto-commit statements only (CALL {} IN TRANSACTIONS cannot run in a
+    managed transaction). Callers pass idempotent statements (DETACH DELETE /
+    SET / read), so a replay after a partially committed batch is safe.
+    """
+    for attempt in range(1, _CASCADE_RETRY_ATTEMPTS + 1):
+        try:
+            return session.run(query, **params).single()
+        except Exception as exc:  # noqa: BLE001 - re-raised unless transient
+            if attempt == _CASCADE_RETRY_ATTEMPTS or not _is_transient_neo4j_error(exc):
+                raise
+            delay = _CASCADE_RETRY_BACKOFF_S * (2 ** (attempt - 1))
+            _logger.warning(
+                "%s: transient Neo4j error (attempt %d/%d): %s - retrying in %.1fs",
+                what, attempt, _CASCADE_RETRY_ATTEMPTS, exc, delay,
+            )
+            time.sleep(delay)
+    return None  # unreachable: the last attempt returns or raises
 
 
 # PatternExample indexes (M4.6 pattern layer, ADR-0003) — single source of truth
@@ -195,6 +350,17 @@ class Neo4jWriter:
                 " ON (n.file_path, n.module, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:JsTestSuite)"
                 " ON (n.module, n.odoo_version, n.framework)",
+                # Module retirement cascade + child-orphan finder (ADR-0056):
+                # every MODULE_CHILD_LABELS member selected by `module` needs a
+                # (module, odoo_version) lookup, not a label scan.
+                *(
+                    f"CREATE INDEX IF NOT EXISTS FOR (n:{_label})"
+                    " ON (n.module, n.odoo_version)"
+                    for _label in (
+                        "Model", "Field", "Method", "View", "QWebTmpl",
+                        "Report", "JSPatch", "OWLComp", "TestHelper",
+                    )
+                ),
             ]:
                 session.run(stmt)
 
@@ -372,9 +538,9 @@ class Neo4jWriter:
           version. Mirrors the ``write_pattern_examples`` empty-guard.
         * **SOFT-DROP GATE:** if the prune would delete more than
           :data:`_PRUNE_SOFT_DROP_MAX_FRACTION` of the version's existing nodes,
-          it is SKIPPED with a WARNING and returns 0 - mirroring
-          ``gc_stale_modules``'s skip-and-warn guard and ADR-0005's ">20%
-          CoreSymbol drop = suspect path refactor". This catches a checkout that
+          it is SKIPPED with a WARNING and returns 0 - the skip-and-warn shape
+          of ADR-0005's ">20% CoreSymbol drop = suspect path refactor". This
+          catches a checkout that
           silently lost its source (e.g. ``odoo/addons/test_lint/tests/``) before
           it can delete the whole version's curated set.
 
@@ -413,7 +579,7 @@ class Neo4jWriter:
                 _logger.warning(
                     "%s: would delete %d of %d %s node(s) for version %s "
                     "(> %.0f%%) - SKIPPING as a suspected degraded parse "
-                    "(ADR-0005 / gc_stale_modules skip-and-warn guard). Re-run a "
+                    "(ADR-0005 skip-and-warn guard). Re-run a "
                     "--full index-core against a verified checkout to prune.",
                     method_name, stale, total, label, odoo_version,
                     _PRUNE_SOFT_DROP_MAX_FRACTION * 100,
@@ -716,158 +882,543 @@ class Neo4jWriter:
                     _write_lint_violations_batch, batch, _profiles, repo_root,
                 )
 
-    def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
-        """DETACH DELETE Module(s) matching (repo, odoo_version) + cascading child nodes.
+    # --- Module retirement cascade (ADR-0056 D9) -----------------------------
 
-        Child nodes (Model/Field/Method/View/QWebTmpl/Report/JSPatch/OWLComp) are
-        scoped by (module_name, odoo_version) — they're deleted ONLY if their
-        Module parent is being deleted in this call, to avoid orphan cleanup of
-        nodes that belong to other repos in the same version.
+    def server_now(self) -> datetime:
+        """Return the Neo4j server's current ``datetime()`` as an aware datetime.
 
-        Implementation note: steps 2 and 3 use CALL {} IN TRANSACTIONS (batched
-        implicit-transaction form) to avoid exceeding db.transaction.timeout on large
-        repos (odoo core 17.0 can have millions of child nodes). CALL IN TRANSACTIONS
-        must run in an auto-commit (implicit) session — this method already uses
-        self.driver.session() directly, so NO managed execute_write wrapper is used.
-        The per-repo Postgres advisory lock held by the caller (web_ui/routes/repos.py)
-        guarantees no concurrent writes to the same repo+version pair during deletion.
-
-        Outer-tx timeout caveat (verified Neo4j 5.26.25, 2026-06-10): batching bounds
-        each INNER transaction, but the OUTER coordinating transaction of
-        CALL IN TRANSACTIONS is itself subject to db.transaction.timeout. Deleting a
-        very large repo (millions of nodes, hundreds of batches) whose TOTAL elapsed
-        exceeds the configured timeout (600s, see docs/operations/timeouts.md) will
-        have its outer tx terminated part-way. This is recoverable — already-committed
-        batches persist and a re-run resumes the delete (idempotent DETACH DELETE) —
-        but the Web UI surfaces a TransactionTimedOut error. For an exceptionally
-        large repo delete, temporarily raise/disable db.transaction.timeout
-        (CALL dbms.setConfigValue('db.transaction.timeout','0')) per the same
-        guidance as ops/cleanup_same_name_inherits_mesh.cypher.
-
-        Returns: {"modules": N, "children": M} counts.
+        ``Module.last_seen_at`` is stamped with the server clock inside the
+        Module MERGE, so a ``run_started_at`` taken from the indexer host's
+        clock would be skewed against it on a split-tier deploy. Callers take
+        the run start from here. It is the same ``datetime()`` (statement
+        clock, millisecond resolution) every stamp uses, and every guard
+        compares it with a stamp through :func:`_instant`, so a stamp written
+        after this call is never ordered before it.
         """
         with self.driver.session() as session:
-            # Step 1: collect module names being deleted (lightweight point-lookup)
-            module_names_row = session.run(
-                """
-                MATCH (m:Module {repo: $repo, odoo_version: $version})
-                RETURN collect(m.name) AS names
-                """,
-                repo=repo_basename,
-                version=odoo_version,
-            ).single()
+            row = session.run("RETURN datetime() AS now").single()
+        return row["now"].to_native().astimezone(UTC)
 
-            if module_names_row is None or not module_names_row["names"]:
-                return {"modules": 0, "children": 0}
+    def retire_modules(
+        self,
+        odoo_version: str,
+        names: Iterable[str],
+        *,
+        run_started_at,
+    ) -> dict:
+        """Delete retired modules and every node they own at *odoo_version*.
 
-            module_names = module_names_row["names"]
+        The ONE module-deletion primitive (ADR-0056 D9). The caller has already
+        decided, from the lifecycle ledger, that no repo still ships these
+        names at this version; this method does not re-check ownership.
 
-            # Step 2: delete child nodes in batches (NEO4J_DELETE_BATCH_ROWS) to stay
-            # well under db.transaction.timeout (600s). CALL {} IN TRANSACTIONS requires
-            # an implicit (auto-commit) transaction — session.run() here, NOT execute_write.
-            # CALL (child) { ... } syntax required for Neo4j 5.23+ (5.x deprecates
-            # CALL { WITH <var> } in favour of CALL (<var>) { }; both work on 5.26.25).
-            # graph MED-1 / integration LOW: AssetBundle and Stylesheet are
-            # INTENTIONALLY excluded from this per-module cascade. Both are
-            # version-global, shared across modules (two modules contributing to
-            # web.assets_backend correctly share ONE AssetBundle node), so
-            # deleting one on a per-module scope would orphan OTHER live modules'
-            # CONTRIBUTES_TO / IMPORTS edges. They are reclaimed by a version-
-            # global orphan sweep instead (gc_orphan_asset_bundles, run in the
-            # --full GC path) — same class as CoreSymbol (also version-global,
-            # also not in this cascade).
-            children_row = session.run(
+        Guarantees:
+
+        * **Scope.** Only nodes at *odoo_version* whose owning module is in
+          *names*. Other versions, other module names, framework test bases
+          (``@framework``), ``__unresolved__`` placeholders, and labels outside
+          :data:`MODULE_CHILD_LABELS` (CoreSymbol, LintRule, CLICommand,
+          CLIFlag, SpecMetadata, PatternExample, AssetBundle) are never
+          touched. DETACH DELETE removes the edges other modules hold to the
+          deleted nodes (DEPENDS_ON, INHERITS, IMPORTS, INHERITS_TEST, ...).
+        * **Concurrent re-MERGE guard (H2).** A name whose Module node has
+          ``last_seen_at >= run_started_at`` was written by some run after the
+          caller started; it is reported in ``skipped_recent`` and NEITHER the
+          Module NOR any of its children are deleted. A Module without
+          ``last_seen_at`` (written before ADR-0056) counts as stale. The same
+          guard holds for every child during the cascade: a child whose
+          ``written_at`` is at or after ``run_started_at`` (a concurrent run
+          that does not hold ``retire:<v>`` re-MERGEd the module after the
+          first check) is kept, and the Module node itself is deleted only if
+          still stale at the final step; a name whose Module survived that
+          step is reported in ``skipped_recent`` too (so the caller neither
+          deletes its embeddings nor records it retired). Relationships go
+          only with a deleted endpoint, so a kept child keeps its
+          relationships.
+        * **Children without a Module node** (debris from the old Module-only
+          ``--gc``) are deleted for every name in *names* that is not
+          ``skipped_recent`` - the same call cleans both.
+        * **Order (M12):** LintViolation (by ``view_xmlid`` of the module's
+          Views, by ``HAS_VIOLATION`` edge from them, or dangling with a
+          ``<module>.`` xmlid prefix and no View) -> Method, Field, Model and
+          the other module-property children -> TestMethod, TestClass (by
+          ``module`` alone, every repo) -> non-framework TestHelper -> Module.
+          Views are deleted after their violations, because a View is the
+          only path to a LintViolation that has no ``module`` property.
+        * **Idempotent and resumable.** Each step is an auto-commit
+          ``CALL {} IN TRANSACTIONS OF NEO4J_DELETE_BATCH_ROWS ROWS`` retried
+          on transient errors (deadlock, leader switch); a re-run after a
+          failure deletes what is left and returns zero for what is gone.
+
+        Args:
+            odoo_version:   version label, e.g. ``'17.0'``.
+            names:          module technical names to retire.
+            run_started_at: timezone-aware start of the caller's run, from
+                            :meth:`server_now` (ValueError when naive).
+
+        Returns ``{"modules": int, "children": int, "by_label": {label: int},
+        "retired": [names whose Module or children were considered],
+        "skipped_recent": [names]}``; ``retired`` and ``skipped_recent`` are
+        sorted.
+        """
+        run_at = _require_aware_datetime(run_started_at, "run_started_at")
+        wanted = sorted({n for n in names if n and n not in NON_RETIRABLE_MODULE_NAMES})
+        result: dict = {
+            "modules": 0,
+            "children": 0,
+            "by_label": {label: 0 for label in MODULE_CHILD_LABELS},
+            "retired": [],
+            "skipped_recent": [],
+        }
+        if not wanted:
+            return result
+
+        with self.driver.session() as session:
+            recent_row = _run_single_with_retry(
+                session, "retire_modules[guard]",
                 f"""
-                MATCH (child)
-                WHERE child.module IN $names AND child.odoo_version = $version
-                  AND (child:Model OR child:Field OR child:Method OR child:View
-                       OR child:QWebTmpl OR child:Report OR child:JSPatch OR child:OWLComp)
-                CALL (child) {{
-                    DETACH DELETE child
-                }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
-                RETURN count(child) AS cc
+                UNWIND $names AS name
+                MATCH (m:Module {{name: name, odoo_version: $v}})
+                WHERE {_instant('m.last_seen_at')} >= {_instant('$run_at')}
+                RETURN collect(DISTINCT name) AS recent
                 """,
-                names=module_names,
-                version=odoo_version,
-            ).single()
-            children_deleted = children_row["cc"] if children_row is not None else 0
+                names=wanted, v=odoo_version, run_at=run_at,
+            )
+            recent = sorted(recent_row["recent"]) if recent_row is not None else []
+            if recent:
+                _logger.warning(
+                    "retire_modules: %d module(s) at version %s were re-written "
+                    "after this run started - NOT deleted (concurrent owner): %s",
+                    len(recent), odoo_version, ", ".join(recent),
+                )
+            targets = [n for n in wanted if n not in set(recent)]
+            result["skipped_recent"] = recent
+            result["retired"] = targets
+            if not targets:
+                return result
 
-            # Step 3: delete the Module nodes themselves (batched, same rationale)
-            modules_row = session.run(
+            by_label = result["by_label"]
+            by_label["LintViolation"] = self._delete_module_lint_violations(
+                session, odoo_version, targets, run_at=run_at,
+            )
+            for label in MODULE_CHILD_LABELS:
+                if label == "LintViolation":
+                    continue
+                row = _run_single_with_retry(
+                    session, f"retire_modules[{label}]",
+                    f"""
+                    MATCH (n:{label})
+                    WHERE n.module IN $names AND n.odoo_version = $v
+                      AND {_written_before_run('n')}
+                    CALL (n) {{
+                        DETACH DELETE n
+                    }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                    RETURN count(n) AS deleted
+                    """,
+                    names=targets, v=odoo_version, run_at=run_at,
+                )
+                by_label[label] = row["deleted"] if row is not None else 0
+
+            module_row = _run_single_with_retry(
+                session, "retire_modules[Module]",
                 f"""
-                MATCH (m:Module {{repo: $repo, odoo_version: $version}})
+                UNWIND $names AS name
+                MATCH (m:Module {{name: name, odoo_version: $v}})
+                WHERE m.last_seen_at IS NULL
+                   OR {_instant('m.last_seen_at')} < {_instant('$run_at')}
                 CALL (m) {{
                     DETACH DELETE m
                 }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
-                RETURN count(m) AS mc
+                RETURN count(m) AS deleted
+                """,
+                names=targets, v=odoo_version, run_at=run_at,
+            )
+            result["modules"] = module_row["deleted"] if module_row is not None else 0
+            late_row = _run_single_with_retry(
+                session, "retire_modules[late guard]",
+                """
+                UNWIND $names AS name
+                MATCH (m:Module {name: name, odoo_version: $v})
+                RETURN collect(DISTINCT name) AS late
+                """,
+                names=targets, v=odoo_version,
+            )
+            late = sorted(late_row["late"]) if late_row is not None else []
+            if late:
+                _logger.warning(
+                    "retire_modules: %d module(s) at version %s were re-written "
+                    "during the cascade - Module and fresh children kept "
+                    "(concurrent owner): %s",
+                    len(late), odoo_version, ", ".join(late),
+                )
+                result["skipped_recent"] = sorted(set(recent) | set(late))
+                result["retired"] = [n for n in targets if n not in set(late)]
+
+        result["children"] = sum(by_label.values())
+        _logger.info(
+            "retire_modules: version %s retired %d module(s) (%d Module node(s), "
+            "%d child node(s)) %s",
+            odoo_version, len(targets), result["modules"], result["children"],
+            {k: v for k, v in by_label.items() if v},
+        )
+        return result
+
+    @staticmethod
+    def _module_view_xmlids(session, odoo_version: str, names: list[str]) -> list[str]:
+        """xmlids of every View owned by *names* at *odoo_version*."""
+        row = _run_single_with_retry(
+            session, "module View xmlids",
+            """
+            MATCH (view:View)
+            WHERE view.module IN $names AND view.odoo_version = $v
+            RETURN collect(DISTINCT view.xmlid) AS xmlids
+            """,
+            names=names, v=odoo_version,
+        )
+        return list(row["xmlids"]) if row is not None else []
+
+    @classmethod
+    def _delete_module_lint_violations(
+        cls, session, odoo_version: str, names: list[str], *, run_at,
+    ) -> int:
+        """Cascade step 1: LintViolation nodes owned by *names* (M12).
+
+        Selection: :data:`_MODULE_LINT_VIOLATION_PREDICATE`, minus violations
+        written at or after *run_at* (the cascade guard). Runs before the
+        Views are deleted - a View is the only path to its violations.
+        """
+        xmlids = cls._module_view_xmlids(session, odoo_version, names)
+        row = _run_single_with_retry(
+            session, "retire_modules[LintViolation]",
+            f"""
+            MATCH (lv:LintViolation {{odoo_version: $v}})
+            WHERE ({_MODULE_LINT_VIOLATION_PREDICATE})
+              AND {_written_before_run('lv')}
+            CALL (lv) {{
+                DETACH DELETE lv
+            }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+            RETURN count(lv) AS deleted
+            """,
+            names=names, xmlids=xmlids, v=odoo_version, run_at=run_at,
+        )
+        return row["deleted"] if row is not None else 0
+
+    def drop_module_owner(
+        self,
+        odoo_version: str,
+        name: str,
+        owners: Iterable[ModuleOwner],
+    ) -> dict:
+        """Remove every non-surviving owner from module *name* and its subtree.
+
+        Used when one repo stops shipping a module another repo still ships
+        (cross-repo move, CE->EE, same-name fork). The node survives; its
+        ownership becomes EXACTLY *owners* (ADR-0034 amendment: union on write,
+        exact reset from the ledger on retire).
+
+        Effects at *odoo_version*:
+
+        * Module: ``profile`` = sorted distinct ``owners.profile_name``;
+          ``repos`` = sorted distinct ``owners.repo_basename``; ``repo`` /
+          ``path`` (and ``repo_id`` / ``repo_url`` when given) from the primary
+          owner = first owner by ``(profile_name, repo_basename)``. Other
+          identity properties (edition, license, summary, ...) stay until the
+          survivor rewrites the module (the caller marks ``needs_rewrite``).
+        * Every :data:`MODULE_CHILD_LABELS` node of the module - including
+          LintViolations of its Views and addon TestHelpers - gets the same
+          exact ``profile`` array (M4), so a tenant that only has a surviving
+          owner's profile sees the module's models, fields, views, tests.
+        * TestClass / TestMethod carry the shipping repo in their key: those
+          whose ``repo`` is not a surviving owner's basename are DELETED (the
+          retiring repo's copy); a surviving repo with the same basename keeps
+          its nodes (G7 same-slug).
+
+        Raises ValueError when *owners* is empty - with no survivor the module
+        must be retired with :meth:`retire_modules` instead.
+
+        Returns ``{"module": 0|1 matched, "children": nodes reset,
+        "tests_deleted": TestClass+TestMethod deleted}``.
+        """
+        owner_list = sorted(
+            {
+                (o.profile_name, o.repo_basename): o
+                for o in owners
+            }.values(),
+            key=lambda o: (o.profile_name, o.repo_basename),
+        )
+        if not owner_list:
+            raise ValueError(
+                f"drop_module_owner({odoo_version!r}, {name!r}): no surviving "
+                "owner - use retire_modules"
+            )
+        if name in NON_RETIRABLE_MODULE_NAMES:
+            return {"module": 0, "children": 0, "tests_deleted": 0}
+        profiles = sorted({o.profile_name for o in owner_list})
+        repos = sorted({o.repo_basename for o in owner_list})
+        primary = owner_list[0]
+        params = {
+            "name": name, "v": odoo_version, "profiles": profiles, "repos": repos,
+        }
+
+        with self.driver.session() as session:
+            module_row = _run_single_with_retry(
+                session, "drop_module_owner[Module]",
+                """
+                MATCH (m:Module {name: $name, odoo_version: $v})
+                SET m.profile = $profiles,
+                    m.repos = $repos,
+                    m.repo = $repo,
+                    m.path = $path,
+                    m.repo_id = coalesce($repo_id, m.repo_id),
+                    m.repo_url = coalesce($repo_url, m.repo_url)
+                RETURN count(m) AS matched
+                """,
+                repo=primary.repo_basename, path=primary.path,
+                repo_id=primary.repo_id, repo_url=primary.repo_url,
+                **params,
+            )
+            tests_deleted = 0
+            for label in ("TestMethod", "TestClass"):
+                row = _run_single_with_retry(
+                    session, f"drop_module_owner[{label} delete]",
+                    f"""
+                    MATCH (n:{label})
+                    WHERE n.module = $name AND n.odoo_version = $v
+                      AND NOT coalesce(n.repo, '') IN $repos
+                    CALL (n) {{
+                        DETACH DELETE n
+                    }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                    RETURN count(n) AS deleted
+                    """,
+                    **params,
+                )
+                tests_deleted += row["deleted"] if row is not None else 0
+
+            reset = 0
+            for label in MODULE_CHILD_LABELS:
+                if label == "LintViolation":
+                    row = _run_single_with_retry(
+                        session, "drop_module_owner[LintViolation]",
+                        f"""
+                        MATCH (lv:LintViolation {{odoo_version: $v}})
+                        WHERE {_MODULE_LINT_VIOLATION_PREDICATE}
+                        CALL (lv) {{
+                            SET lv.profile = $profiles
+                        }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                        RETURN count(lv) AS reset
+                        """,
+                        names=[name],
+                        xmlids=self._module_view_xmlids(session, odoo_version, [name]),
+                        **params,
+                    )
+                else:
+                    row = _run_single_with_retry(
+                        session, f"drop_module_owner[{label}]",
+                        f"""
+                        MATCH (n:{label})
+                        WHERE n.module = $name AND n.odoo_version = $v
+                        CALL (n) {{
+                            SET n.profile = $profiles
+                        }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                        RETURN count(n) AS reset
+                        """,
+                        **params,
+                    )
+                reset += row["reset"] if row is not None else 0
+
+        matched = module_row["matched"] if module_row is not None else 0
+        _logger.info(
+            "drop_module_owner: %s@%s now owned by %s (%d child node(s) reset, "
+            "%d test node(s) of departed repos deleted)",
+            name, odoo_version, repos, reset, tests_deleted,
+        )
+        return {"module": matched, "children": reset, "tests_deleted": tests_deleted}
+
+    def stamp_module_presence(
+        self,
+        odoo_version: str,
+        rows: Iterable[Mapping],
+        head: str | None,
+        now=None,
+    ) -> int:
+        """Stamp the ledger's view of presence onto existing Module nodes.
+
+        *rows*: one mapping per module name the stamping repo observed present
+        at its HEAD, with key ``name`` and optional ``repos`` (the ledger's
+        present owners for that name, all repos - L6). Per matched Module:
+        ``last_seen_sha = head``, ``last_seen_at = now`` (server ``datetime()``
+        when *now* is None), and ``repos = sorted(repos)`` when ``repos`` is
+        given (left unchanged otherwise).
+
+        MATCH only - never creates a Module node. The return value is the
+        number of Module nodes matched; a count below the number of rows means
+        some present names have no node (lost to a concurrent retire or a
+        failed write) and must be re-written (H2 self-heal).
+        """
+        now_value = None if now is None else _require_aware_datetime(now, "now")
+        payload = []
+        for r in rows:
+            name = r["name"]
+            repos = r.get("repos")
+            payload.append({
+                "name": name,
+                "repos": sorted(set(repos)) if repos is not None else None,
+            })
+        if not payload:
+            return 0
+        matched = 0
+        with self.driver.session() as session:
+            for batch in _chunked(payload, NEO4J_WRITE_BATCH_SIZE):
+                row = _run_single_with_retry(
+                    session, "stamp_module_presence",
+                    """
+                    UNWIND $rows AS r
+                    MATCH (m:Module {name: r.name, odoo_version: $v})
+                    SET m.last_seen_sha = $head,
+                        m.last_seen_at = coalesce($now, datetime()),
+                        m.repos = coalesce(r.repos, m.repos)
+                    RETURN count(m) AS matched
+                    """,
+                    rows=batch, v=odoo_version, head=head, now=now_value,
+                )
+                matched += row["matched"] if row is not None else 0
+        return matched
+
+    def orphan_module_names(
+        self,
+        odoo_version: str,
+        present_names: Iterable[str],
+        *,
+        repo: str | None = None,
+    ) -> list[str]:
+        """Module names at *odoo_version* that are indexed but not present.
+
+        A Module counts as indexed when it has an owner (non-empty ``profile``)
+        or a ``repo_id``; profile-less dependency stubs are excluded (they are
+        reclaimed by :meth:`gc_null_repo_dep_stubs`). *repo* narrows the scan
+        to ``Module.repo = repo``. Read-only; sorted by name.
+        """
+        repo_clause = "AND m.repo = $repo" if repo is not None else ""
+        with self.driver.session() as session:
+            row = _run_single_with_retry(
+                session, "orphan_module_names",
+                f"""
+                MATCH (m:Module {{odoo_version: $v}})
+                WHERE NOT m.name IN $present
+                  AND NOT m.name IN $sentinels
+                  AND (size(coalesce(m.profile, [])) > 0 OR m.repo_id IS NOT NULL)
+                  {repo_clause}
+                WITH m.name AS name ORDER BY name ASC
+                RETURN collect(DISTINCT name) AS names
+                """,
+                v=odoo_version, present=sorted(set(present_names)),
+                sentinels=sorted(NON_RETIRABLE_MODULE_NAMES), repo=repo,
+            )
+        return sorted(row["names"]) if row is not None else []
+
+    def module_profiles(
+        self, odoo_version: str, names: Iterable[str] | None = None,
+    ) -> dict[str, list[str]]:
+        """``{module name: sorted Module.profile}`` at *odoo_version*.
+
+        *names* None returns every Module with a non-empty ``profile`` (the
+        live (module, profile) pairs an embeddings-orphan sweep compares
+        against); otherwise only the given names that have a Module node
+        (possibly with an empty list). Read-only.
+        """
+        with self.driver.session() as session:
+            if names is None:
+                result = session.run(
+                    """
+                    MATCH (m:Module {odoo_version: $v})
+                    WHERE size(coalesce(m.profile, [])) > 0
+                    RETURN m.name AS name, coalesce(m.profile, []) AS profile
+                    ORDER BY name ASC
+                    """,
+                    v=odoo_version,
+                ).data()
+            else:
+                result = session.run(
+                    """
+                    UNWIND $names AS name
+                    MATCH (m:Module {name: name, odoo_version: $v})
+                    RETURN m.name AS name, coalesce(m.profile, []) AS profile
+                    ORDER BY name ASC
+                    """,
+                    names=sorted(set(names)), v=odoo_version,
+                ).data()
+        return {r["name"]: sorted(set(r["profile"])) for r in result}
+
+    def orphan_child_keys(self, odoo_version: str) -> dict[str, dict[str, int]]:
+        """Module-owned nodes whose Module node no longer exists (M6).
+
+        Returns ``{module name: {label: count}}`` (sorted by module name) for
+        every :data:`MODULE_CHILD_LABELS` node at *odoo_version* whose owning
+        module has no ``:Module {name, odoo_version}`` node. LintViolation is
+        attributed through its View, or - when that View is gone too - through
+        the ``<module>.`` prefix of ``view_xmlid``. ``@framework`` and
+        ``__unresolved__`` are never reported; labels outside
+        MODULE_CHILD_LABELS (CoreSymbol, LintRule, CLI*) are never scanned.
+        Read-only: pass the keys to :meth:`retire_modules` to delete them.
+        """
+        found: dict[str, dict[str, int]] = {}
+        sentinels = sorted(NON_RETIRABLE_MODULE_NAMES)
+        with self.driver.session() as session:
+            for label in MODULE_CHILD_LABELS:
+                if label == "LintViolation":
+                    query = """
+                        MATCH (lv:LintViolation {odoo_version: $v})
+                        OPTIONAL MATCH (view:View {xmlid: lv.view_xmlid, odoo_version: $v})
+                        WITH coalesce(view.module,
+                                      split(coalesce(lv.view_xmlid, ''), '.')[0]) AS module
+                        WHERE module <> '' AND NOT module IN $sentinels
+                        WITH module, count(*) AS n
+                        WHERE NOT EXISTS {
+                            MATCH (:Module {name: module, odoo_version: $v})
+                        }
+                        RETURN module, n ORDER BY module ASC
+                    """
+                else:
+                    query = f"""
+                        MATCH (c:{label} {{odoo_version: $v}})
+                        WHERE c.module IS NOT NULL AND NOT c.module IN $sentinels
+                        WITH c.module AS module, count(*) AS n
+                        WHERE NOT EXISTS {{
+                            MATCH (:Module {{name: module, odoo_version: $v}})
+                        }}
+                        RETURN module, n ORDER BY module ASC
+                    """
+                for rec in session.run(query, v=odoo_version, sentinels=sentinels).data():
+                    found.setdefault(rec["module"], {})[label] = rec["n"]
+        return {m: found[m] for m in sorted(found)}
+
+    def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
+        """Retire every module whose ``Module.repo`` is *repo_basename* at *odoo_version*.
+
+        Web UI repo/profile delete path, on the :meth:`retire_modules` cascade
+        (full MODULE_CHILD_LABELS subtree, same guards). The module names are
+        taken from ``Module.repo``, i.e. the repo that last wrote the node; a
+        name another repo still ships must be reconciled through the ledger
+        (drop_module_owner) by the caller before this runs.
+
+        Returns ``{"modules": N, "children": M}``.
+        """
+        with self.driver.session() as session:
+            names_row = session.run(
+                """
+                MATCH (m:Module {repo: $repo, odoo_version: $version})
+                RETURN collect(DISTINCT m.name) AS names
                 """,
                 repo=repo_basename,
                 version=odoo_version,
             ).single()
-            modules_deleted = modules_row["mc"] if modules_row is not None else 0
-
-        return {"modules": modules_deleted, "children": children_deleted}
-
-    def gc_stale_modules(
-        self, repo: str, odoo_version: str, live_paths: set[str],
-    ) -> int:
-        """Delete Module nodes for this repo+version whose 'path' is not in live_paths.
-
-        Returns count deleted. Uses DETACH DELETE so all edges (DEFINED_IN,
-        DEPENDS_ON, etc.) are removed along with the stale node.
-
-        Args:
-            repo:         m.repo value (repo root dir name, e.g. 'odoo_17.0').
-            odoo_version: Odoo version label, e.g. '17.0'.
-            live_paths:   Repo-relative module path strings for this repo in this
-                          run (ADR-0037: must match the relative form stored in
-                          Module.path).  Modules NOT in this set are stale.  The
-                          caller (pipeline) is responsible for relativizing the
-                          scanner output before passing it here — a mismatch
-                          (absolute live_paths vs relative Module.path) would
-                          mark every node stale and DETACH DELETE the graph.
-
-        Risk gate (enforced by caller): only called when len(live_paths) >= 1.
-
-        ADR-0037 mixed-graph guard: live_paths is now repo-RELATIVE.  If this
-        runs against a graph still holding pre-ADR-0037 ABSOLUTE Module.path
-        (starts with '/'), EVERY module would mismatch live_paths and be DETACH
-        DELETEd.  So before deleting, count absolute-path Module nodes for this
-        repo+version; if any exist the graph is mixed/legacy — SKIP GC, log a
-        warning, and return 0 so the operator runs a full ``--full`` reindex
-        first (per docs/deploy/reindex-v8-v19-runbook.md).
-        """
-        with self.driver.session() as session:
-            abs_count = session.run(
-                """
-                MATCH (m:Module {repo: $repo, odoo_version: $version})
-                WHERE m.path STARTS WITH '/'
-                RETURN count(m) AS n
-                """,
-                repo=repo,
-                version=odoo_version,
-            ).single()
-            if abs_count is not None and abs_count["n"] > 0:
-                _logger.warning(
-                    "Module GC skipped: %d Module node(s) for repo %s version %s "
-                    "still carry ABSOLUTE paths (pre-ADR-0037). Running relative-path "
-                    "GC against them would delete the whole repo. Run a full --full "
-                    "reindex first (see reindex-v8-v19-runbook.md).",
-                    abs_count["n"], repo, odoo_version,
-                )
-                return 0
-            row = session.run(
-                """
-                MATCH (m:Module {repo: $repo, odoo_version: $version})
-                WHERE NOT m.path IN $live_paths
-                DETACH DELETE m
-                RETURN count(m) AS n
-                """,
-                repo=repo,
-                version=odoo_version,
-                live_paths=list(live_paths),
-            ).single()
-        return row["n"] if row is not None else 0
+        names = list(names_row["names"]) if names_row is not None else []
+        if not names:
+            return {"modules": 0, "children": 0}
+        counts = self.retire_modules(
+            odoo_version, names, run_started_at=self.server_now(),
+        )
+        return {"modules": counts["modules"], "children": counts["children"]}
 
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE inert '__unresolved__' placeholder nodes for odoo_version.
@@ -940,13 +1491,13 @@ class Neo4jWriter:
         """DETACH DELETE orphaned :AssetBundle nodes for *odoo_version*.
 
         graph MED-1 / integration LOW: AssetBundle is version-global (shared
-        across modules), so it is deliberately NOT in the per-module
-        ``delete_modules_scoped`` cascade — deleting it per-module would orphan
-        other live modules' CONTRIBUTES_TO edges. Instead, after a --full reindex
-        (which re-writes every live module's contributions), any AssetBundle with
-        NO inbound CONTRIBUTES_TO and that participates in NO INCLUDES_BUNDLE /
-        EXTENDS_ASSET_BUNDLE edge is genuinely unreferenced — a leftover from a
-        bundle whose sole contributor module was removed — and can be reclaimed.
+        across modules, :data:`MODULE_SHARED_LABELS`), so it is deliberately NOT
+        in the per-module ``retire_modules`` cascade - deleting it per-module
+        would orphan other live modules' CONTRIBUTES_TO edges. Instead, any
+        AssetBundle with NO inbound CONTRIBUTES_TO and that participates in NO
+        INCLUDES_BUNDLE / EXTENDS_ASSET_BUNDLE edge is genuinely unreferenced - a
+        leftover from a bundle whose sole contributor module was retired - and
+        can be reclaimed.
 
         Safety:
         - Scoped strictly by ``odoo_version`` (cross-version data untouched).
@@ -954,9 +1505,9 @@ class Neo4jWriter:
           INCLUDES_BUNDLE (either direction) AND no inbound EXTENDS_ASSET_BUNDLE,
           so a forward-referenced or still-extended bundle is preserved.
         - Idempotent: a second run returns 0.
-        - Safe in incremental runs too, but most effective on --full (where all
-          live contributions have just been re-written, so survivors are real
-          orphans rather than not-yet-written nodes).
+        - Safe on incremental runs: CONTRIBUTES_TO edges of unchanged modules
+          persist between runs, so a live bundle always keeps an inbound edge;
+          only a retired module's DETACH DELETE removes one.
         """
         with self.driver.session() as session:
             row = session.run(
@@ -1194,8 +1745,9 @@ class Neo4jWriter:
         (write_parse_result) for ``module.depends`` entries that were never
         indexed under their own profile.  Their MERGE key is
         ``{name, odoo_version}`` only — no ``repo``, no ``repo_id``, no
-        ``DEFINED_IN`` children.  Because ``gc_stale_modules`` keys on a
-        concrete non-NULL ``repo`` string it never matches these stubs.
+        ``DEFINED_IN`` children.  They are not owned by any repo, so the
+        lifecycle ledger never retires them (``orphan_module_names`` skips
+        profile-less stubs too); this sweep is their only reclaim path.
 
         Safety:
         - Only deletes where ``m.repo_id IS NULL`` (absent) AND no
@@ -1308,8 +1860,9 @@ class Neo4jWriter:
         Without this method, no code path anywhere ever deletes a TestHelper:
         ``write_framework_test_helpers`` (``_write_test_helpers_batch``) is
         MERGE+SET only, ``gc_stale_test_nodes`` DETACH DELETEs TestMethod/TestClass
-        only, and the per-module cascade in ``delete_module_subtree`` never touches
-        TestHelper. A class removed from an era (e.g. SavepointCase leaving the
+        only, and the per-module ``retire_modules`` cascade deletes only addon
+        TestHelpers, never ``module='@framework'``. A class removed from an era
+        (e.g. SavepointCase leaving the
         menu at v17+) would otherwise survive on every already-indexed server
         forever.
 

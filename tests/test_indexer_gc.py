@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Module GC flag tests — ADR-0007 §D5 follow-up (M7 C4).
+"""Module GC flag tests - ADR-0007 §D5 follow-up (M7 C4), ported to ADR-0056 B6.
 
 Tests cover:
-- gc_stale_modules deletes renamed/removed module nodes (DETACH DELETE).
+- retire_modules (the single retirement cascade that replaced gc_stale_modules)
+  retires renamed/removed modules found by orphan_module_names.
 - Risk gate blocks GC when scanner returned 0 modules.
 - Default gc=False leaves stale nodes intact.
 """
@@ -44,113 +45,115 @@ def _module_exists(driver, name: str) -> bool:
     return (row["n"] > 0) if row else False
 
 
+def _writer():
+    from src.indexer.writer_neo4j import Neo4jWriter
+
+    return Neo4jWriter(
+        uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+        user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+        password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+    )
+
+
+def _profile_module(driver, name: str, repo: str = TEST_REPO) -> None:
+    """Give a seeded Module a profile: only indexed modules are retirement candidates."""
+    with driver.session() as session:
+        session.run(
+            "MATCH (m:Module {name: $name, odoo_version: $v}) "
+            "SET m.profile = ['gc_test_99'], m.repo = $repo",
+            name=name, v=TEST_VERSION, repo=repo,
+        )
+
+
+def _stale_then_retire(writer, present_names, repo=TEST_REPO) -> dict:
+    """The ported GC flow: stale = indexed modules of *repo* absent from the scan,
+    then the single retirement cascade (ADR-0056 B6 - replaces gc_stale_modules)."""
+    run_started_at = writer.server_now()
+    stale = writer.orphan_module_names(TEST_VERSION, present_names, repo=repo)
+    return writer.retire_modules(TEST_VERSION, stale, run_started_at=run_started_at)
+
+
 # ---------------------------------------------------------------------------
-# Test 1: gc_stale_modules deletes the renamed/removed module
+# Test 1: a renamed/removed module is retired (ported from gc_stale_modules)
 # ---------------------------------------------------------------------------
 
 class TestGcDeletesRenamedModule:
-    """gc_stale_modules removes Module nodes whose path is absent from live_paths."""
+    """Ported to retire_modules (ADR-0056 B6): gc_stale_modules was removed; the
+    protection is unchanged - a module the scan no longer sees is retired, a live one
+    is kept. Real shape: stock renamed to inventory."""
 
     def test_gc_deletes_renamed_module(self, clean_neo4j):
-        """Seed two Module nodes; GC with only one live path removes the stale one."""
-        from src.indexer.writer_neo4j import Neo4jWriter
-
+        """Seed two Module nodes; only 'inventory' is scanned, 'stock' is retired."""
         driver = clean_neo4j
-
-        # Seed two Module nodes — simulating pre-rename state.
-        # ADR-0037: Module.path + live_paths are repo-RELATIVE now.
         _create_module_node(driver, "stock", path="addons/stock")
         _create_module_node(driver, "inventory", path="addons/inventory")
+        _profile_module(driver, "stock")
+        _profile_module(driver, "inventory")
 
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
+        writer = _writer()
         try:
-            # Scanner only sees 'inventory' (stock was renamed → inventory)
-            live_paths = {"addons/inventory"}
-            deleted = writer.gc_stale_modules(TEST_REPO, TEST_VERSION, live_paths)
+            result = _stale_then_retire(writer, ["inventory"])
         finally:
             writer.close()
 
-        # stock should be gone; inventory should remain
-        assert deleted == 1, f"Expected 1 deleted, got {deleted}"
-        assert not _module_exists(driver, "stock"), (
-            "Module node 'stock' should have been DETACH DELETEd by gc_stale_modules"
-        )
-        assert _module_exists(driver, "inventory"), (
-            "Module node 'inventory' (live) must NOT be deleted"
-        )
+        assert result["modules"] == 1, f"Expected 1 retired, got {result}"
+        assert result["retired"] == ["stock"]
+        assert not _module_exists(driver, "stock"), "renamed-away 'stock' must be retired"
+        assert _module_exists(driver, "inventory"), "live 'inventory' must NOT be deleted"
 
     def test_gc_returns_zero_when_nothing_stale(self, clean_neo4j):
-        """gc_stale_modules returns 0 when all indexed modules are in live_paths."""
-        from src.indexer.writer_neo4j import Neo4jWriter
-
+        """Every indexed module is still scanned -> nothing is retired."""
         driver = clean_neo4j
-        # ADR-0037: Module.path + live_paths are repo-RELATIVE now.
         _create_module_node(driver, "sale", path="addons/sale")
         _create_module_node(driver, "purchase", path="addons/purchase")
+        _profile_module(driver, "sale")
+        _profile_module(driver, "purchase")
 
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
+        writer = _writer()
         try:
-            live_paths = {"addons/sale", "addons/purchase"}
-            deleted = writer.gc_stale_modules(TEST_REPO, TEST_VERSION, live_paths)
+            result = _stale_then_retire(writer, ["sale", "purchase"])
         finally:
             writer.close()
 
-        assert deleted == 0, f"Expected 0 deleted (all live), got {deleted}"
+        assert result["modules"] == 0 and result["children"] == 0, result
         assert _module_exists(driver, "sale")
         assert _module_exists(driver, "purchase")
 
 
 # ---------------------------------------------------------------------------
-# Test 1b (ADR-0037): mixed-graph guard skips GC when absolute paths linger
+# Test 1b (ADR-0037): path-form drift can no longer mass-delete a repo
 # ---------------------------------------------------------------------------
 
 class TestGcMixedGraphGuard:
-    """ADR-0037: GC must SKIP (not delete) when the graph still holds pre-ADR-0037
-    ABSOLUTE Module.path for this repo+version.  live_paths is now repo-relative;
-    running relative-path GC against absolute-keyed nodes would mark EVERY module
-    stale and DETACH DELETE the whole repo.
+    """Ported (ADR-0056 B6). The ADR-0037 hazard was that path-keyed GC compared
+    repo-RELATIVE live paths against legacy ABSOLUTE Module.path and so marked the
+    whole repo stale; gc_stale_modules had to skip. Retirement is now decided by
+    module NAME, so the same legacy graph must yield zero stale modules - the
+    protection (no mass delete from path-form drift) is kept by construction rather
+    than by a skip-and-warn guard.
     """
 
-    def test_gc_skips_when_absolute_paths_present(self, clean_neo4j, caplog):
-        """Seed legacy absolute Module.path; GC with relative live_paths must
-        delete NOTHING and warn the operator to run a full reindex first."""
-        from src.indexer.writer_neo4j import Neo4jWriter
-
+    def test_gc_skips_when_absolute_paths_present(self, clean_neo4j):
+        """Legacy absolute Module.path + both names scanned -> nothing is retired;
+        only the name the scan truly lost is stale."""
         driver = clean_neo4j
-        # Legacy state: absolute Module.path (pre-ADR-0037).
         _create_module_node(driver, "stock", path="/srv/clones/repo/addons/stock")
         _create_module_node(driver, "inventory", path="/srv/clones/repo/addons/inventory")
+        _profile_module(driver, "stock")
+        _profile_module(driver, "inventory")
 
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
+        writer = _writer()
         try:
-            with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
-                # Relative live_paths (new contract) — would mismatch every
-                # absolute node, but the guard must stop the delete.
-                deleted = writer.gc_stale_modules(
-                    TEST_REPO, TEST_VERSION, {"addons/inventory"},
-                )
+            result = _stale_then_retire(writer, ["stock", "inventory"])
+            assert writer.orphan_module_names(
+                TEST_VERSION, ["inventory"], repo=TEST_REPO,
+            ) == ["stock"]
         finally:
             writer.close()
 
-        assert deleted == 0, f"guard must skip GC (delete 0) on mixed graph, got {deleted}"
-        assert _module_exists(driver, "stock"), "absolute-path node must survive the guard"
-        assert _module_exists(driver, "inventory"), "absolute-path node must survive the guard"
-        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("ABSOLUTE" in m and "skipped" in m.lower() for m in warnings), (
-            f"expected a mixed-graph GC-skip warning; got: {warnings}"
-        )
+        assert result["modules"] == 0, f"path form must not make live modules stale: {result}"
+        assert _module_exists(driver, "stock"), "absolute-path node must survive"
+        assert _module_exists(driver, "inventory"), "absolute-path node must survive"
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +227,11 @@ class TestGcRiskGateBlocksWhenScannerEmpty:
 # ---------------------------------------------------------------------------
 
 class TestGcDisabledNoOp:
-    """When gc=False (default), _index_repo must NOT delete any Module nodes."""
+    """When gc=False (default), _index_repo must NOT delete any Module nodes.
+
+    NOTE (ADR-0056): left untouched in B6 on purpose - plan B9 rewrites this as T23
+    (retirement runs with no flag; --no-retire is the only way to keep a stale node).
+    """
 
     def test_gc_disabled_no_op(self, clean_neo4j, tmp_path):
         """Seed two Module nodes; scanner returns only one; gc=False → stale node survives."""
@@ -297,71 +304,28 @@ class TestGcDisabledNoOp:
 # ---------------------------------------------------------------------------
 
 class TestGcDoesNotDeleteOtherRepoModules:
-    """gc_stale_modules must be scoped to the repo being GC'd.
-
-    Note: Module composite key is (name, odoo_version) — two repos with the
-    SAME module name at the SAME version share one Neo4j node. Tests use
-    distinct module names per repo to properly isolate the scoping behavior.
-    """
+    """Ported to orphan_module_names(repo=) + retire_modules (ADR-0056 B6): a GC
+    pass scoped to repo_a must never retire repo_b's modules, even though repo_a's
+    scan does not list them."""
 
     def test_gc_does_not_delete_other_repo_modules(self, clean_neo4j):
-        """GC for repo_a must NOT delete Module nodes belonging to repo_b.
-
-        repo_a has 'gc_blast_mod_a' at path /repo_a/addons/gc_blast_mod_a.
-        repo_b has 'gc_blast_mod_b' at path /repo_b/addons/gc_blast_mod_b.
-        GC on repo_a with no live_paths deletes only repo_a's module.
-        """
-        from src.indexer.writer_neo4j import Neo4jWriter
-
+        """repo_a ships nothing any more; only repo_a's module is retired."""
         driver = clean_neo4j
+        _create_module_node(driver, "gc_blast_mod_a", path="addons/gc_blast_mod_a")
+        _create_module_node(driver, "gc_blast_mod_b", path="addons/gc_blast_mod_b")
+        _profile_module(driver, "gc_blast_mod_a", repo="repo_a_gc_blast")
+        _profile_module(driver, "gc_blast_mod_b", repo="repo_b_gc_blast")
 
-        # Create distinct Module nodes for two different repos
-        with driver.session() as session:
-            session.run(
-                """
-                MERGE (m:Module {name: $name, odoo_version: $v})
-                SET m.repo = $repo, m.path = $path
-                """,
-                name="gc_blast_mod_a", v=TEST_VERSION,
-                repo="repo_a_gc_blast",
-                path="addons/gc_blast_mod_a",
-            )
-            session.run(
-                """
-                MERGE (m:Module {name: $name, odoo_version: $v})
-                SET m.repo = $repo, m.path = $path
-                """,
-                name="gc_blast_mod_b", v=TEST_VERSION,
-                repo="repo_b_gc_blast",
-                path="addons/gc_blast_mod_b",
-            )
-
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
-        )
+        writer = _writer()
         try:
-            # Run GC for repo_a with empty live_paths (all of repo_a's modules removed)
-            deleted = writer.gc_stale_modules("repo_a_gc_blast", TEST_VERSION, live_paths=set())
+            result = _stale_then_retire(writer, [], repo="repo_a_gc_blast")
         finally:
             writer.close()
 
-        # repo_a's gc_blast_mod_a should be deleted (not in live_paths for repo_a)
-        with driver.session() as session:
-            row_a = session.run(
-                "MATCH (m:Module {name: $name, odoo_version: $v}) RETURN count(m) AS n",
-                name="gc_blast_mod_a", v=TEST_VERSION,
-            ).single()
-            row_b = session.run(
-                "MATCH (m:Module {name: $name, odoo_version: $v}) RETURN count(m) AS n",
-                name="gc_blast_mod_b", v=TEST_VERSION,
-            ).single()
-
-        assert deleted == 1, f"Expected 1 deleted from repo_a, got {deleted}"
-        assert row_a["n"] == 0, "repo_a Module{gc_blast_mod_a} should be deleted by GC"
-        assert row_b["n"] == 1, (
-            "repo_b Module{gc_blast_mod_b} must NOT be deleted — GC is scoped to repo_a only"
+        assert result["retired"] == ["gc_blast_mod_a"], result
+        assert not _module_exists(driver, "gc_blast_mod_a")
+        assert _module_exists(driver, "gc_blast_mod_b"), (
+            "repo_b Module{gc_blast_mod_b} must NOT be retired - GC is scoped to repo_a"
         )
 
 
@@ -376,8 +340,8 @@ class TestGcNullRepoDepStubs:
     These stubs are created by the dep-target MERGE in write_parse_result()
     for ``module.depends`` entries never indexed under their own profile.
     Their MERGE key is ``{name, odoo_version}`` only — no repo, no repo_id,
-    no DEFINED_IN children.  gc_stale_modules misses them because it keys on
-    a concrete non-NULL ``repo`` string.
+    no DEFINED_IN children.  Retirement (orphan_module_names) never considers
+    them because they carry no profile and no repo_id.
     """
 
     def test_gc_deletes_childless_null_repo_stub(self, clean_neo4j):
