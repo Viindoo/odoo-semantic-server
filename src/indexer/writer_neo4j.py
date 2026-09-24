@@ -494,6 +494,10 @@ class Neo4jWriter:
         self._run_id: str | None = None
         self._run_scope: str | None = None
         self._run_started_at: datetime | None = None
+        # Versions this writer marked dirty (it wrote or deleted there): its
+        # own post-pass always runs for them, whatever the shared stamp says
+        # (another run may have stamped clean while this one was writing).
+        self._post_pass_dirtied: set[str] = set()
 
     def close(self) -> None:
         self.driver.close()
@@ -1205,6 +1209,73 @@ class Neo4jWriter:
 
     # --- Module retirement cascade (ADR-0056 D9) -----------------------------
 
+    # --- version-wide post-pass state (E2E-D4) ------------------------------
+
+    def mark_post_pass_dirty(self, odoo_version: str) -> None:
+        """Record that the graph at *odoo_version* changed since its last post-pass.
+
+        Called BEFORE a repo's graph writes (``_index_repo``, any run that is
+        not the unchanged skip) and after every lifecycle delete or re-own
+        (``retire_modules``, ``drop_module_owner``, ``prune_module_children``),
+        so a crash between a write and the post-pass never leaves a clean stamp.
+        """
+        self._post_pass_dirtied.add(odoo_version)
+        with self.driver.session() as session:
+            _run_single_with_retry(
+                session, "mark_post_pass_dirty",
+                """
+                MERGE (s:PostPassState {odoo_version: $v})
+                SET s.dirty = true, s.dirty_at = datetime()
+                RETURN count(s) AS n
+                """,
+                v=odoo_version,
+            )
+
+    def post_pass_current(self, odoo_version: str, token: str) -> bool:
+        """True when the version-wide post-pass (same-name INHERITS, OWL edges,
+        test surface) already ran with code *token* on the graph as it is now:
+        the version's ``PostPassState`` exists, is not dirty and carries
+        *token*. Anything else (no state yet, a write or delete since, another
+        code version, a version THIS writer wrote) is False - the post-pass
+        must run."""
+        if odoo_version in self._post_pass_dirtied:
+            return False
+        with self.driver.session() as session:
+            row = session.run(
+                self._read_query("""
+                MATCH (s:PostPassState {odoo_version: $v})
+                RETURN coalesce(s.dirty, true) AS dirty, s.token AS token
+                """),
+                v=odoo_version,
+            ).single()
+        return row is not None and row["dirty"] is False and row["token"] == token
+
+    def record_post_pass(self, odoo_version: str, token: str, *, started) -> bool:
+        """Stamp *odoo_version*'s post-pass as done with code *token* (clean).
+
+        *started* (aware, :meth:`server_now` taken before the post-pass began):
+        a dirty mark that landed at or after it (a concurrent run wrote the
+        version meanwhile) keeps the state dirty, so the next run re-derives.
+        Returns True when the stamp was recorded clean.
+        """
+        started_at = utc_for_neo4j(started, "started")
+        self._post_pass_dirtied.discard(odoo_version)
+        with self.driver.session() as session:
+            row = _run_single_with_retry(
+                session, "record_post_pass",
+                f"""
+                MERGE (s:PostPassState {{odoo_version: $v}})
+                WITH s, (s.dirty_at IS NOT NULL
+                         AND {_instant('s.dirty_at')} >= {_instant('$started')}) AS late
+                SET s.token = CASE WHEN late THEN s.token ELSE $token END,
+                    s.dirty = late,
+                    s.recorded_at = datetime()
+                RETURN NOT late AS clean
+                """,
+                v=odoo_version, token=token, started=started_at,
+            )
+        return bool(row and row["clean"])
+
     def server_now(self) -> datetime:
         """Return the Neo4j server's current ``datetime()`` as an aware datetime.
 
@@ -1376,6 +1447,8 @@ class Neo4jWriter:
                 result["retired"] = [n for n in targets if n not in set(late)]
 
         result["children"] = sum(by_label.values())
+        if result["modules"] or result["children"]:
+            self.mark_post_pass_dirty(odoo_version)
         _logger.info(
             "retire_modules: version %s retired %d module(s) (%d Module node(s), "
             "%d child node(s)) %s",
@@ -1553,6 +1626,8 @@ class Neo4jWriter:
             "%d test node(s) of departed repos deleted)",
             name, odoo_version, repos, reset, tests_deleted,
         )
+        if matched or tests_deleted:
+            self.mark_post_pass_dirty(odoo_version)
         return {"module": matched, "children": reset, "tests_deleted": tests_deleted}
 
     def module_children_census(
@@ -1756,6 +1831,8 @@ class Neo4jWriter:
                 "%s its source no longer defines",
                 name, odoo_version, total, by_label, rels_total, rels_by_label,
             )
+        if total or rels_total:
+            self.mark_post_pass_dirty(odoo_version)
         return {"deleted": total, "by_label": by_label,
                 "rels_deleted": rels_total, "rels_by_label": rels_by_label}
 
