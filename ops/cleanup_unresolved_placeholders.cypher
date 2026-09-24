@@ -16,6 +16,9 @@
 // WHEN: Run ONCE against prod after deploying the writer fix in this PR.
 // The writer fix prevents new shadows going forward; --gc will clean up future
 // accumulation automatically.  This one-time ops script clears the existing backlog.
+// (2026-09-24, ADR-0056: --gc is a no-op now; gc_unresolved_placeholders runs in
+// the per-version lifecycle reconcile of every index run that scanned a repo of
+// that version, no flag needed.)
 //
 // IDEMPOTENT: safe to run multiple times; returns 0 on a clean graph.
 //

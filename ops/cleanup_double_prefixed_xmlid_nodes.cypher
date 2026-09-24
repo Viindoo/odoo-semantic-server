@@ -8,6 +8,10 @@
 // the correctly-keyed `M.rest` node is (re)created and children resolve to it; the
 // stale `M.M.rest` node is an orphan duplicate that --gc does NOT remove (it is not
 // an `__unresolved__` placeholder). This script deletes those phantoms.
+// (2026-09-24, ADR-0056: --gc is a no-op now. The intra-module entity prune removes
+// such a node when module M is re-parsed - its xmlid carries M's prefix and no
+// parse writes it any more - so a --full run clears them too; this script stays
+// the targeted cleanup for modules that are not re-parsed.)
 //
 // Safe: the `M.M.` prefix (module name repeated) uniquely identifies the bug
 // artifact — the correct qualifier never produces it. Idempotent. Run AFTER the

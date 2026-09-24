@@ -237,15 +237,16 @@ Expected: `remaining_abs_nodes = 0` AND `abs_embeddings = 0`.
 
 **Result:** [ ] stale Stylesheet/LintViolation = 0; embeddings with absolute path = 0
 
-> **Known constraint — Module GC is auto-disabled on a not-yet-migrated graph.**
-> ADR-0037 made GC's `live_paths` repo-relative. To prevent an incremental
-> `--gc` run from blasting an entire repo when the graph still holds pre-ADR-0037
-> absolute `Module.path` values, `gc_stale_modules` first counts absolute-path
-> Module nodes for the repo+version and SKIPS GC (returns 0, logs a warning) when
-> any exist. So you may see `Module GC skipped: N Module node(s) ... still carry
-> ABSOLUTE paths` in logs until the FULL `--full` reindex (§3) has rewritten
-> every Module.path to relative. This is expected and protective — run the full
-> reindex, then GC re-enables itself automatically on subsequent runs.
+> **Superseded (2026-09-24, ADR-0056): Module GC no longer compares paths.**
+> `gc_stale_modules` and its absolute-path guard are removed and `--gc` is a
+> no-op. Retirement compares module NAMES from the git-tracked manifest scan with
+> the `module_presence` ledger on every run, so a graph still holding pre-ADR-0037
+> absolute `Module.path` values cannot make a live module look stale. A Module
+> whose `path` is not the registry winner (absolute, shadowed or untracked copy)
+> is re-written by the next plain run (`path_drift` self-heal), and its old
+> directory's children are removed by the entity prune. The absolute-path
+> Stylesheet/LintViolation cleanup above is still the tool for nodes keyed by an
+> absolute `file_path`.
 
 ---
 

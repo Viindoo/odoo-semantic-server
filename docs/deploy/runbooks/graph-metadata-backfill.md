@@ -53,7 +53,7 @@ dùng `--no-embed` khi embeddings THỰC SỰ đã đổi sẽ để lại vecto
 
 ## Hiểu đúng ngữ nghĩa lệnh (vì sao KHÔNG phải "xóa rồi index lại")
 
-- **`--full` = UPSERT in-place, KHÔNG wipe.** Writer dùng `MERGE (f:Field {name,model,module,odoo_version})`
+- **`--full` = UPSERT in-place, KHÔNG wipe** (chỉ prune những gì source không còn định nghĩa, xem mục "Xóa stale node" bên dưới). Writer dùng `MERGE (f:Field {name,model,module,odoo_version})`
   rồi `SET ...` vô điều kiện (`src/indexer/writer_neo4j.py`). Node cũ được **tìm lại + cập nhật
   property**, không bị xóa. ADR-0007 D4: *"`--full` = re-write what we have, then continue"* — chỉ
   **bỏ qua cơ chế skip incremental**, không có `DETACH DELETE`/clear-database.
@@ -62,7 +62,18 @@ dùng `--no-embed` khi embeddings THỰC SỰ đã đổi sẽ để lại vecto
   property mới **không bao giờ được set**. ⇒ Bắt buộc `--full` để bypass skip.
 - **Không có shortcut Cypher** khi property mới là dữ liệu đọc từ source (vd `readonly`/`inverse`).
   Chỉ backfill được bằng cách re-parse → bắt buộc chạy indexer, không thể `SET` thuần từ graph hiện có.
-- **Xóa stale node** (rename/move) là cờ RIÊNG `--gc` (opt-in), KHÔNG bật mặc định, KHÔNG cần cho backfill.
+- **Xóa stale node** (rename/move/xóa module, field/method bị bỏ trong module còn sống) KHÔNG
+  cần cờ nào từ 0.19.0: mọi lượt `index-repo` đối soát ledger `module_presence` và retire / prune
+  dưới cổng an toàn (ADR-0056). `--gc` là no-op deprecated. Backfill `--full` cũng không xóa gì
+  node mà source hiện tại vẫn định nghĩa. Lưu ý từ 0.19.0: vì `--full` re-parse MỌI module,
+  entity prune (ADR-0056 D9) chạy trên mọi module một-chủ của repo: field/method/view/relationship
+  mà source không còn định nghĩa (nhưng vẫn nằm trong graph vì module chưa từng được re-parse
+  từ khi thay đổi) sẽ bị xóa ở lượt này thay vì ở lần module đó đổi. Việc xóa vẫn đi qua cổng
+  soft-prune (>50% và >=20 node của một module -> giữ lại, exit 3). Với `--no-embed` (từ 0.19.0,
+  G1): lượt đó không tính embedding MỚI, nhưng prune VẪN xóa embedding row của entity bị prune
+  (khớp theo chunk type + entity, đếm trước khi xóa; xóa không cần embedder). Nghĩa là backfill
+  `--full --no-embed` KHÔNG để pgvector nguyên vẹn tuyệt đối: row của entity mà source không còn
+  định nghĩa sẽ mất ở lượt này. Chạy `lifecycle-audit` trước nếu cần biết trước.
 
 ## Lệnh khuyến nghị (sau khi checklist xác nhận: embeddings KHÔNG đổi)
 
@@ -70,7 +81,8 @@ dùng `--no-embed` khi embeddings THỰC SỰ đã đổi sẽ để lại vecto
 # Neo4j-only backfill, KHÔNG re-embed pgvector:
 <VENV>/bin/python -m src.indexer index-repo --all --full --no-embed
 #   --full     → re-MERGE mọi module in-place → rải property mới lên mọi node (KHÔNG wipe)
-#   --no-embed → bỏ qua re-embed pgvector (embeddings byte-identical → re-embed là lãng phí thuần)
+#   --no-embed → không tính embedding mới (embeddings byte-identical → re-embed là lãng phí thuần);
+#                row của entity bị entity prune xóa vẫn bị xóa (G1, 0.19.0)
 # Tùy chọn song song: --max-workers N --profile-workers M
 ```
 

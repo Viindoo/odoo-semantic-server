@@ -10,6 +10,16 @@
 # Runs `index-repo --all` — M6 Wave 2 incremental: head_sha skip → zero-cost for
 # unchanged repos; git diff filters scan to changed modules only. See ADR-0007.
 #
+# Module lifecycle (ADR-0056): every run of this unit also retires modules no
+# repo ships any more (renamed, deleted, moved) with their subtree and
+# embeddings, through the module_presence ledger and one reconcile per Odoo
+# version, under safety gates. No flag is needed. Exit code 3 means the index
+# was written but the lifecycle needs an operator (a gate tripped, a name was
+# undecidable, the reconcile failed): OnFailure= fires; read the tail of the log
+# and repos.lifecycle_attention (deploy.md s3.6). NEVER add --allow-mass-retire
+# here or in a drop-in: it is a one-shot manual decision. Incident escape hatch:
+# a temporary drop-in with --no-retire (scan + write, delete nothing).
+#
 # WHY a systemd timer (not a bare cron.d entry): the indexer reads PG_DSN +
 # NEO4J_PASSWORD via config; a cron.d line does NOT load .env, so it would fail
 # auth unless the secrets happen to live in odoo-semantic.conf. EnvironmentFile=
@@ -34,8 +44,9 @@
 # Operators who want an air-gapped/no-fetch nightly run can pass `--no-fetch`
 # on ExecStart instead of provisioning the credential.
 #
-# Monthly `--full --gc` cleanup of stale Module nodes (renames/moves) stays a
-# separate/manual step — see deploy.md §3.6.
+# There is no monthly `--full --gc` step any more: --gc is a deprecated no-op
+# and --full is only a property backfill (deploy.md s3.6). Weekly drift
+# detection: odoo-semantic-lifecycle-audit.timer.
 #
 # Override container/worker knobs via .env ($POSTGRES_CONTAINER, ...).
 # Canonical layout = ADR-0027 (system-user odoo-semantic, /home/odoo-semantic/...).

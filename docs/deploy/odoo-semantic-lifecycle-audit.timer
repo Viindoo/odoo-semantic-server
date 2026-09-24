@@ -1,0 +1,23 @@
+# odoo-semantic-lifecycle-audit.timer - fires odoo-semantic-lifecycle-audit.service weekly
+# Place at: /etc/systemd/system/odoo-semantic-lifecycle-audit.timer
+#
+# Monday 08:00: well after the nightly 03:30 reindex, so the audit reads the
+# state that run left (an audit that overlaps a still-running reindex can
+# report findings the run is about to resolve - re-run it by hand then), and
+# early in the working week so a finding reaches a person the same day.
+# Enable only after the 0.19.0 rollout ran clean
+# (docs/deploy/runbooks/module-lifecycle-cleanup.md).
+#
+# Persistent=true: if the host was offline at the scheduled time, run once on
+# next boot instead of skipping the week.
+
+[Unit]
+Description=Weekly OSM module lifecycle audit (lifecycle-audit --all)
+
+[Timer]
+OnCalendar=Mon *-*-* 08:00:00
+Persistent=true
+Unit=odoo-semantic-lifecycle-audit.service
+
+[Install]
+WantedBy=timers.target
