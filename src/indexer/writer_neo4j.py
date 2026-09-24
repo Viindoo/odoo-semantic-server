@@ -5,7 +5,7 @@ import time
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 
-from neo4j import GraphDatabase, NotificationMinimumSeverity
+from neo4j import GraphDatabase, NotificationMinimumSeverity, Query
 from neo4j.exceptions import DriverError, Neo4jError
 
 from src.constants import (
@@ -259,9 +259,22 @@ class Neo4jWriter:
             auth=(user, password),
             notifications_min_severity=NotificationMinimumSeverity.WARNING,
         )
+        # Per-query timeout (seconds) of the lifecycle READ methods
+        # (orphan_module_names, module_profiles, module_identity,
+        # modules_by_old_technical_name, orphan_child_keys,
+        # modules_without_profile). None = bounded only by the
+        # server's db.transaction.timeout, as every indexer statement;
+        # ``lifecycle-audit`` sets LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS.
+        self.read_timeout_s: float | None = None
 
     def close(self) -> None:
         self.driver.close()
+
+    def _read_query(self, text: str) -> str | Query:
+        """*text* bounded by :attr:`read_timeout_s` when it is set."""
+        if self.read_timeout_s is None:
+            return text
+        return Query(text, timeout=self.read_timeout_s)
 
     def setup_indexes(self) -> None:
         with self.driver.session() as session:
@@ -361,6 +374,20 @@ class Neo4jWriter:
                         "Report", "JSPatch", "OWLComp", "TestHelper",
                     )
                 ),
+                # Version-wide lifecycle reads (orphan_child_keys, the orphan
+                # sweep, lifecycle-audit) select `{odoo_version: $v}` with
+                # `module IS NOT NULL`: a composite index is seekable only on
+                # its leading key, so these lead with odoo_version. A composite
+                # range index holds only nodes carrying every property, hence
+                # LintViolation (usually module-less) gets odoo_version alone.
+                *(
+                    f"CREATE INDEX IF NOT EXISTS FOR (n:{_label})"
+                    " ON (n.odoo_version, n.module)"
+                    for _label in MODULE_CHILD_LABELS
+                    if _label != "LintViolation"
+                ),
+                "CREATE INDEX IF NOT EXISTS FOR (n:LintViolation) ON (n.odoo_version)",
+                "CREATE INDEX IF NOT EXISTS FOR (n:Module) ON (n.odoo_version, n.name)",
             ]:
                 session.run(stmt)
 
@@ -1309,7 +1336,7 @@ class Neo4jWriter:
         with self.driver.session() as session:
             row = _run_single_with_retry(
                 session, "orphan_module_names",
-                f"""
+                self._read_query(f"""
                 MATCH (m:Module {{odoo_version: $v}})
                 WHERE NOT m.name IN $present
                   AND NOT m.name IN $sentinels
@@ -1317,7 +1344,7 @@ class Neo4jWriter:
                   {repo_clause}
                 WITH m.name AS name ORDER BY name ASC
                 RETURN collect(DISTINCT name) AS names
-                """,
+                """),
                 v=odoo_version, present=sorted(set(present_names)),
                 sentinels=sorted(NON_RETIRABLE_MODULE_NAMES), repo=repo,
             )
@@ -1336,22 +1363,22 @@ class Neo4jWriter:
         with self.driver.session() as session:
             if names is None:
                 result = session.run(
-                    """
+                    self._read_query("""
                     MATCH (m:Module {odoo_version: $v})
                     WHERE size(coalesce(m.profile, [])) > 0
                     RETURN m.name AS name, coalesce(m.profile, []) AS profile
                     ORDER BY name ASC
-                    """,
+                    """),
                     v=odoo_version,
                 ).data()
             else:
                 result = session.run(
-                    """
+                    self._read_query("""
                     UNWIND $names AS name
                     MATCH (m:Module {name: name, odoo_version: $v})
                     RETURN m.name AS name, coalesce(m.profile, []) AS profile
                     ORDER BY name ASC
-                    """,
+                    """),
                     names=sorted(set(names)), v=odoo_version,
                 ).data()
         return {r["name"]: sorted(set(r["profile"])) for r in result}
@@ -1370,13 +1397,13 @@ class Neo4jWriter:
             return {}
         with self.driver.session() as session:
             result = session.run(
-                """
+                self._read_query("""
                 UNWIND $names AS name
                 MATCH (m:Module {name: name, odoo_version: $v})
                 RETURN m.name AS name, m.repo AS repo, m.repo_id AS repo_id,
                        m.path AS path, coalesce(m.profile, []) AS profile
                 ORDER BY name ASC
-                """,
+                """),
                 names=wanted, v=odoo_version,
             ).data()
         return {
@@ -1398,13 +1425,13 @@ class Neo4jWriter:
             return {}
         with self.driver.session() as session:
             result = session.run(
-                """
+                self._read_query("""
                 MATCH (m:Module {odoo_version: $v})
                 WHERE m.old_technical_name IN $old AND m.old_technical_name <> m.name
                   AND size(coalesce(m.profile, [])) > 0
                 RETURN m.old_technical_name AS old, m.name AS name
                 ORDER BY old ASC, name ASC
-                """,
+                """),
                 old=wanted, v=odoo_version,
             ).data()
         out: dict[str, list[str]] = {}
@@ -1451,9 +1478,36 @@ class Neo4jWriter:
                         }}
                         RETURN module, n ORDER BY module ASC
                     """
-                for rec in session.run(query, v=odoo_version, sentinels=sentinels).data():
+                for rec in session.run(
+                    self._read_query(query), v=odoo_version, sentinels=sentinels,
+                ).data():
                     found.setdefault(rec["module"], {})[label] = rec["n"]
         return {m: found[m] for m in sorted(found)}
+
+    def modules_without_profile(self, odoo_version: str) -> list[dict]:
+        """Module nodes with a real ``path`` but an empty ``profile`` list.
+
+        The read side's existence rule is ``size(profile) > 0`` (a dependency
+        stub has no path and no profile), so such a node - a real module whose
+        owner list was lost - answers "Indexed: No" although it was indexed
+        (rollout check F24). ``[{name, path, repo, repo_id, children}]`` sorted
+        by name, ``children`` = its ``DEFINED_IN`` child count. Read-only.
+        """
+        with self.driver.session() as session:
+            result = session.run(
+                self._read_query("""
+                MATCH (m:Module {odoo_version: $v})
+                WHERE size(coalesce(m.profile, [])) = 0
+                  AND m.path IS NOT NULL AND trim(toString(m.path)) <> ''
+                  AND NOT m.name IN $sentinels
+                RETURN m.name AS name, m.path AS path, m.repo AS repo,
+                       m.repo_id AS repo_id,
+                       COUNT { (m)<-[:DEFINED_IN]-() } AS children
+                ORDER BY name ASC, path ASC
+                """),
+                v=odoo_version, sentinels=sorted(NON_RETIRABLE_MODULE_NAMES),
+            ).data()
+        return [dict(r) for r in result]
 
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
         """Retire every module whose ``Module.repo`` is *repo_basename* at *odoo_version*.

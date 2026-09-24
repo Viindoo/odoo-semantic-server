@@ -5,11 +5,14 @@ Usage:
     python -m src.indexer index-repo --profile viindoo_17
     python -m src.indexer index-repo --all
     python -m src.indexer index-core --source ~/git/odoo_17.0 --version 17.0
+    python -m src.indexer lifecycle-audit --all --json --fail-on-findings
 
 Subcommands:
-    index-repo   Index one or all registered profiles into Neo4j and reconcile the
-                 module lifecycle (retire modules no repo ships any more).
-    index-core   Index Odoo core API symbols, lint rules, and CLI from a source checkout.
+    index-repo       Index one or all registered profiles into Neo4j and reconcile the
+                     module lifecycle (retire modules no repo ships any more).
+    index-core       Index Odoo core API symbols, lint rules, and CLI from a source checkout.
+    lifecycle-audit  Dry run of the module lifecycle: what the next index run would
+                     retire, orphans, and rollout checks. Writes nothing.
 """
 import argparse
 import logging
@@ -21,6 +24,7 @@ from datetime import UTC, datetime
 from src import config
 from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
+from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS
 from src.indexer.pipeline import (
     audit_repo_for_profile,
     index_all,
@@ -207,6 +211,36 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to write the JSON output file.",
     )
 
+    # --- lifecycle-audit subcommand (ADR-0056) --------------------------------
+    sub_lc = subparsers.add_parser(
+        "lifecycle-audit",
+        help=(
+            "Dry run of the module lifecycle (writes nothing): per repo the scan "
+            "verdict, what the next index run would retire and why, orphan "
+            "modules/children/embeddings, and rollout checks."
+        ),
+    )
+    lc_grp = sub_lc.add_mutually_exclusive_group(required=True)
+    lc_grp.add_argument("--profile", help="Audit the repos of one profile")
+    lc_grp.add_argument("--all", action="store_true", help="Audit every registered profile")
+    sub_lc.add_argument(
+        "--version", default=None,
+        help="Only repos keyed at this Odoo version (e.g. 17.0) and its reconcile.",
+    )
+    sub_lc.add_argument(
+        "--json", action="store_true",
+        help=f"Print the report as JSON (schema {AUDIT_SCHEMA}) instead of text.",
+    )
+    sub_lc.add_argument(
+        "--fail-on-findings", action="store_true",
+        help=(
+            f"Exit {EXIT_AUDIT_FINDINGS} when any finding count is non-zero: "
+            f"{', '.join(FINDING_KEYS)} (the report's 'findings'). The shared-module "
+            "bootstrap backlog is reported but is not a finding. The weekly drift "
+            "detector."
+        ),
+    )
+
     # --- seed-patterns subcommand (new in WI-W2-6) -------------------------
     sub_seed = subparsers.add_parser(
         "seed-patterns",
@@ -239,6 +273,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 EXIT_LIFECYCLE_ATTENTION = 3
+# lifecycle-audit --fail-on-findings: drift found (distinct from 1, a crash).
+EXIT_AUDIT_FINDINGS = 4
 
 
 def _lifecycle_exit_code(lifecycle: dict) -> int:
@@ -269,6 +305,34 @@ def _print_empty_profiles(summary, profile: str | None) -> None:
             + ", ".join(empty),
             file=sys.stderr,
         )
+
+
+def _run_lifecycle_audit(args) -> int:
+    """Execute lifecycle-audit: print the report; 0, or EXIT_AUDIT_FINDINGS
+    under ``--fail-on-findings`` when the report has findings."""
+    import json  # noqa: PLC0415
+
+    from src.indexer.lifecycle_audit import render_text, run_lifecycle_audit
+
+    try:
+        report = run_lifecycle_audit(
+            profile=args.profile, all_profiles=args.all, version=args.version,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=True, default=str))
+    else:
+        print(render_text(report))
+    if args.fail_on_findings and report["has_findings"]:
+        counts = ", ".join(f"{k}={n}" for k, n in report["findings"].items() if n)
+        print(
+            f"Lifecycle audit found drift (exit {EXIT_AUDIT_FINDINGS}): {counts}",
+            file=sys.stderr,
+        )
+        return EXIT_AUDIT_FINDINGS
+    return 0
 
 
 def _run_index_core(
@@ -477,6 +541,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Audit complete: {len(rows)} module(s) written to {output_path}")
         finally:
             pg.close()
+
+    elif args.subcommand == "lifecycle-audit":
+        return _run_lifecycle_audit(args)
 
     elif args.subcommand == "seed-patterns":
         from src.indexer import seed_patterns as seed_patterns_module

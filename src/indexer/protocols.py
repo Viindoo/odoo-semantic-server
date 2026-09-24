@@ -272,6 +272,7 @@ class IndexWriterProtocol(Protocol):
     def modules_by_old_technical_name(
         self, odoo_version: str, old_names: Iterable[str],
     ) -> dict[str, list[str]]: ...
+    def modules_without_profile(self, odoo_version: str) -> list[dict]: ...
 
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE '__unresolved__' placeholder nodes scoped to odoo_version."""

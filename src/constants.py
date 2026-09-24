@@ -501,3 +501,14 @@ STYLESHEET_RESOURCE_MAX_BYTES: int = 131_072  # 128 KB
 # holder into an error instead of an indefinite hang. Override via
 # RETIRE_LOCK_WAIT_SECONDS.
 RETIRE_LOCK_WAIT_SECONDS: float = float(os.getenv("RETIRE_LOCK_WAIT_SECONDS", "900"))
+
+# LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS: per-query server-side timeout
+# (neo4j.Query(timeout=...)) of every graph read ``lifecycle-audit`` makes. The
+# audit reads whole versions (orphan Modules, module-less children, profile-less
+# Modules), so the bound is wider than the MCP read path's
+# NEO4J_QUERY_TIMEOUT_SECONDS and stays below the server's 600s
+# db.transaction.timeout backstop. Override via
+# LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS.
+LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS: float = float(
+    os.getenv("LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS", "120")
+)

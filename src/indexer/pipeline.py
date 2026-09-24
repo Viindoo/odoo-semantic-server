@@ -171,11 +171,8 @@ def open_production_neo4j():
     )
 
 
-def open_production_pg():
-    """Open a psycopg2 connection + initialize centralized pool."""
-    import psycopg2  # lazy import — not available in all envs at module load time
-
-    from src.db.pg import get_pool, init_pool
+def production_pg_dsn() -> str:
+    """The PostgreSQL DSN of the production indexer (PG_DSN env, then config)."""
     dsn = config.from_env_or_ini(
         "PG_DSN", "database", "pg_dsn", fallback=None,
     )
@@ -184,6 +181,15 @@ def open_production_pg():
             "PostgreSQL DSN missing. Set PG_DSN env var OR pg_dsn "
             "in [database] section of odoo-semantic.conf."
         )
+    return dsn
+
+
+def open_production_pg():
+    """Open a psycopg2 connection + initialize centralized pool."""
+    import psycopg2  # lazy import - not available in all envs at module load time
+
+    from src.db.pg import get_pool, init_pool
+    dsn = production_pg_dsn()
     try:
         get_pool()
     except RuntimeError:
