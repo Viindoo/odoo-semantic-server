@@ -26,7 +26,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import subprocess
 from datetime import datetime, timedelta
 
 import pytest
@@ -301,6 +300,83 @@ def test_module_rewritten_after_run_started_is_kept_with_its_children(
     assert any(
         r.levelno == logging.WARNING and fx.RETIRED in r.getMessage() for r in caplog.records
     ), "a skipped retirement must be surfaced to the operator"
+
+
+def _python_only_copy(tmp_path, name: str = fx.RETIRED):
+    """The same module as another repo ships it: manifest + Python model only."""
+    repo_dir = tmp_path / "concurrent_repo"
+    mod = repo_dir / name
+    fx._write(mod / "__init__.py", "from . import models\n")
+    fx._write(mod / "__manifest__.py", fx._manifest(name, [fx.SURVIVOR]))
+    fx._write(mod / "models" / "__init__.py", "from . import ai_rag_source\n")
+    fx._write(mod / "models" / "ai_rag_source.py", fx._RAG_MODELS)
+    fx.git_init_commit(repo_dir)
+    return repo_dir
+
+
+@pytest.mark.parametrize("step", ["LintViolation", "Model", "Module"])
+def test_module_rewritten_during_the_cascade_keeps_every_node_the_concurrent_run_wrote(
+    tmp_path, writer, indexed, clean_neo4j, step,
+):
+    """Final review D2: the first race check passed (viin_ai_rag was stale), then
+    - while the cascade deletes children - a concurrent run of another profile
+    (which does not hold retire:<v>) re-MERGEs the module and its Python model.
+    Every node that run wrote survives, whichever delete step it lands before;
+    the Module survives and the name is reported ``skipped_recent`` (so the
+    caller keeps its embeddings and does not record it retired). Children the
+    concurrent run did not write are stale and still go. Deterministic: the
+    concurrent write runs in a hook on the named cascade statement."""
+    from src.indexer import writer_neo4j as wn
+
+    driver = clean_neo4j
+    concurrent_dir = _python_only_copy(tmp_path)
+    stale_labels = {"View", "Stylesheet", "JsTestSuite", "TestClass"}
+    assert stale_labels <= set(_retired_subtree_counts(driver)), "positive control"
+    run_started_at = writer.server_now()
+    real = wn._run_single_with_retry
+    written: dict = {}
+
+    def hook(session, name, *args, **kwargs):
+        if name == f"retire_modules[{step}]" and not written:
+            written["fired"] = True
+            w2 = Neo4jWriter(
+                uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+                user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+                password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+            )
+            try:
+                with pytest.MonkeyPatch.context() as mp:
+                    fx.index_repo_dir(w2, mp, concurrent_dir, profile="other_99",
+                                      repo_id=7802)
+            finally:
+                w2.close()
+            with driver.session() as s:
+                written["ids"] = set(s.run(
+                    "MATCH (n {odoo_version: $v, module: $m}) "
+                    "WHERE NOT n:Module AND 'other_99' IN coalesce(n.profile, []) "
+                    "RETURN collect(elementId(n)) AS ids", v=V, m=fx.RETIRED,
+                ).single()["ids"])
+        return real(session, name, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(wn, "_run_single_with_retry", hook)
+        result = writer.retire_modules(V, [fx.RETIRED], run_started_at=run_started_at)
+
+    assert written.get("fired"), f"the cascade never ran retire_modules[{step}]"
+    assert written["ids"], "precondition: the concurrent run wrote children"
+    with driver.session() as s:
+        left = set(s.run(
+            "MATCH (n) WHERE elementId(n) IN $ids RETURN collect(elementId(n)) AS ids",
+            ids=sorted(written["ids"]),
+        ).single()["ids"])
+    assert left == written["ids"], (
+        f"{len(written['ids'] - left)} node(s) written after the run started were deleted")
+    assert _module_exists(driver, fx.RETIRED)
+    assert result["skipped_recent"] == [fx.RETIRED], result
+    assert fx.RETIRED not in result["retired"], result
+    remaining = set(_retired_subtree_counts(driver))
+    assert not (stale_labels & remaining), (
+        f"children the concurrent run did not write are stale and must go: {remaining}")
 
 
 def test_presence_stamp_after_run_started_also_protects_the_module(
@@ -640,32 +716,51 @@ def test_drop_owner_on_sentinel_name_changes_nothing(writer, moved, clean_neo4j)
 
 
 # ---------------------------------------------------------------------------
-# --gc transitional shim: a removed module's subtree goes, not just its node
+# A plain index run after the module's deletion removes its whole subtree
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.postgres
 def test_gc_run_after_module_deletion_removes_the_module_subtree(
-    writer, indexed, clean_neo4j, monkeypatch,
+    clean_pg, clean_neo4j, tmp_path,
 ):
-    """The viin_ai_rag directory is deleted in a commit; the next --gc run must
+    """The viin_ai_rag directory is deleted in a commit; the next index run must
     retire the module AND its children (the old Module-only GC stranded models,
-    views, tests, stylesheets ... as ghosts), while viin_ai stays intact."""
-    driver = clean_neo4j
-    survivor_before = fx.labels_with_module(driver, fx.SURVIVOR)
-    shutil.rmtree(indexed / fx.RETIRED)
-    subprocess.run(["git", "-C", str(indexed), "add", "-A"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(indexed), "-c", "user.email=t@t", "-c", "user.name=t",
-         "commit", "-m", "merge viin_ai_rag into viin_ai"],
-        check=True, capture_output=True,
-    )
+    views, tests, stylesheets ... as ghosts), while viin_ai stays intact.
 
-    fx.index_repo_dir(writer, monkeypatch, indexed, profile="viindoo_99",
-                      repo_id=7801, gc=True)
+    PORTED (ADR-0056 B8/B9): this test drove the transitional per-repo ``--gc``
+    shim of ``_index_repo``, removed by design (F1: the per-repo path never
+    deletes - it could retire a module another repo still ships). The same
+    outcome is now produced by a PLAIN ``index_profile`` run (the per-version
+    reconcile), so the protection - every artifact kind of the deleted module
+    goes, the survivor is untouched - is kept, driven through that run.
+    """
+    from src.db.migrate import run_migrations
+    from tests._lifecycle_repo import GitRepo, register, run
+
+    driver = clean_neo4j
+    run_migrations(clean_pg)
+    repo = GitRepo(tmp_path, "viindoo_addons")
+    fx.write_viin_ai(repo.path)
+    fx.write_viin_ai_rag(repo.path)
+    # The RelaxNG schemas index_profile looks for in an Odoo core checkout, so
+    # the invalid list view yields a LintViolation as in the fixture's own run.
+    shutil.copytree(fx.RNG_DIR, repo.path / "odoo" / "addons" / "base" / "rng")
+    repo.commit("viin_ai + viin_ai_rag")
+    register("viindoo_99", repo)
+    run(clean_pg, "viindoo_99", embedder=None)
+    assert _retired_subtree_counts(driver), "precondition: viin_ai_rag wrote children"
+    assert fx.lint_violations_of(driver, fx.RETIRED) > 0, "precondition: a LintViolation"
+    survivor_before = fx.labels_with_module(driver, fx.SURVIVOR)
+    repo.rm(fx.RETIRED)
+    repo.commit("merge viin_ai_rag into viin_ai")
+
+    run(clean_pg, "viindoo_99", embedder=None)
 
     assert not _module_exists(driver, fx.RETIRED)
     assert _retired_subtree_counts(driver) == {}, (
         f"ghost children left: {_retired_subtree_counts(driver)}"
     )
+    assert fx.lint_violations_of(driver, fx.RETIRED) == 0
     assert fx.labels_with_module(driver, fx.SURVIVOR) == survivor_before
     assert _module_exists(driver, fx.SURVIVOR)

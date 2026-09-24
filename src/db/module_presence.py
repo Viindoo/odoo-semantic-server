@@ -812,7 +812,9 @@ class ModulePresenceStore:
         at this version had the name ``present``/``excluded``
         (``why='had_name'``), or when it has never been synced at all
         (``why='never_synced'``: no ledger rows and no presence head).
-        A non-empty result makes the name undecidable for this run.
+        A non-empty result makes the name undecidable for this run. Keys:
+        repo_id, repo_url, repo_basename, profile_name, head_sha,
+        presence_head_sha, local_path, why.
         """
         with self._conn(conn) as c:
             return self._fetch_all(
@@ -822,6 +824,7 @@ class ModulePresenceStore:
                        regexp_replace(regexp_replace(r.local_path, '/+$', ''), '^.*/', '')
                            AS repo_basename,
                        p.name AS profile_name, r.head_sha, r.presence_head_sha,
+                       r.local_path,
                        CASE WHEN mp.id IS NOT NULL THEN 'had_name' ELSE 'never_synced' END
                            AS why
                 FROM repos r
@@ -858,12 +861,142 @@ class ModulePresenceStore:
             )
         return {r["name"] for r in rows}
 
+    def excluded_names(
+        self,
+        odoo_version: str,
+        reasons: Iterable[str] = ("installable_false", "license_skip"),
+        *,
+        conn: PgConn | None = None,
+    ) -> set[str]:
+        """Names with an ``excluded`` row for one of *reasons* at the version.
+
+        A module positively observed as not indexable (``installable: False``,
+        license policy) whose node the orphan sweep removes; such removals are
+        exempt from the mass gate the same way the per-repo gate exempts them.
+        """
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                "SELECT DISTINCT name FROM module_presence "
+                "WHERE odoo_version = %s AND state = 'excluded' "
+                "AND exclusion_reason = ANY(%s)",
+                (odoo_version, sorted(set(reasons))),
+            )
+        return {r["name"] for r in rows}
+
+    def present_pairs(
+        self, odoo_version: str, *, conn: PgConn | None = None,
+    ) -> set[tuple[str, str]]:
+        """``(name, profile_name)`` of every ``present`` row at the version.
+
+        The ledger half of the live ``(module, profile)`` set an embeddings
+        orphan sweep keeps (M6).
+        """
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                "SELECT DISTINCT name, profile_name FROM module_presence "
+                "WHERE odoo_version = %s AND state = 'present'",
+                (odoo_version,),
+            )
+        return {(r["name"], r["profile_name"]) for r in rows}
+
+    def present_owner_basenames(
+        self, odoo_version: str, names: Iterable[str], *, conn: PgConn | None = None,
+    ) -> dict[str, list[str]]:
+        """``{name: sorted repo basenames}`` of the live repos with a ``present`` row.
+
+        The ``Module.repos`` value the presence stamp writes (L6): every repo that
+        ships the name, not only the stamping one. Names without a present row
+        are absent from the result.
+        """
+        wanted = sorted(set(names))
+        if not wanted:
+            return {}
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                "SELECT name, array_agg(DISTINCT repo_basename ORDER BY repo_basename) "
+                "AS repos FROM module_presence "
+                "WHERE odoo_version = %s AND state = 'present' AND repo_id IS NOT NULL "
+                "AND name = ANY(%s) GROUP BY name",
+                (odoo_version, wanted),
+            )
+        return {r["name"]: list(r["repos"]) for r in rows}
+
+    def presence_head_sha(
+        self, repo_id: int, *, conn: PgConn | None = None,
+    ) -> str | None:
+        """``repos.presence_head_sha``: the HEAD the ledger last fully reflected."""
+        with self._conn(conn) as c:
+            return self._repo_row(c, repo_id)["presence_head_sha"]
+
+    def record_orphan_retired(
+        self,
+        repo_id: int,
+        name: str,
+        *,
+        profile_name: str,
+        odoo_version: str,
+        path: str,
+        manifest_file: str,
+        last_seen_sha: str,
+        last_seen_at: datetime | str,
+        evidence: RetireEvidence | None = None,
+        successor: Successor | None = None,
+        head_sha: str | None = None,
+        conn: PgConn | None = None,
+    ) -> bool:
+        """Record a module the orphan sweep deleted as ``retired(orphan_sweep)``.
+
+        For graph nodes the ledger never observed (indexed before ADR-0056):
+        call ONLY after the delete succeeded. ``last_seen_sha`` / ``last_seen_at``
+        must be a git fact about the manifest (the parent of the removing
+        commit and that commit's date), not the time of the sweep. Inserts only
+        when *repo_id* has no row for the name (an existing row, whatever its
+        state, is history this method never overwrites). Returns True when a row
+        was inserted.
+        """
+        if not profile_name:
+            raise ValueError("profile_name is required")
+        with self._conn(conn) as c:
+            with self._write(c, [odoo_version]):
+                repo = self._repo_row(c, repo_id)
+                rows = self._fetch_all(
+                    c,
+                    "INSERT INTO module_presence ("
+                    " repo_id, repo_url, repo_basename, repo_branch, profile_name,"
+                    " odoo_version, name, path, manifest_file, state, retire_reason,"
+                    " first_seen_sha, first_seen_at, last_seen_sha, last_seen_at,"
+                    " state_changed_sha, state_changed_at,"
+                    " removing_commit_sha, removing_commit_date, removing_commit_subject,"
+                    " successor_names, successor_source, updated_at"
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'retired',"
+                    " 'orphan_sweep', %s, %s::timestamptz, %s, %s::timestamptz,"
+                    " %s, now(), %s, %s::timestamptz, %s, %s, %s, now()) "
+                    "ON CONFLICT (repo_id, name) DO NOTHING RETURNING id",
+                    (
+                        repo_id, repo["url"], repo["basename"], repo["branch"],
+                        profile_name, odoo_version, name, path, manifest_file,
+                        last_seen_sha, last_seen_at, last_seen_sha, last_seen_at,
+                        head_sha,
+                        evidence.sha if evidence else None,
+                        evidence.date if evidence else None,
+                        evidence.subject if evidence else None,
+                        list(successor.names) if successor else None,
+                        successor.source if successor else None,
+                    ),
+                )
+        return bool(rows)
+
     def repo_sync_state(
         self, odoo_version: str, *, conn: PgConn | None = None,
     ) -> list[dict]:
         """Registered repos at the version with their sync verdict (orphan attribution, H5b).
 
         ``synced`` is True only when ``presence_head_sha`` equals ``head_sha``.
+        Keys: repo_id, profile_name, repo_url, repo_basename, head_sha,
+        presence_head_sha, local_path, synced.
         """
         with self._conn(conn) as c:
             return self._fetch_all(
@@ -872,7 +1005,7 @@ class ModulePresenceStore:
                 SELECT r.id AS repo_id, p.name AS profile_name, r.url AS repo_url,
                        regexp_replace(regexp_replace(r.local_path, '/+$', ''), '^.*/', '')
                            AS repo_basename,
-                       r.head_sha, r.presence_head_sha,
+                       r.head_sha, r.presence_head_sha, r.local_path,
                        (r.presence_head_sha IS NOT NULL
                         AND r.presence_head_sha = r.head_sha) AS synced
                 FROM repos r JOIN profiles p ON p.id = r.profile_id

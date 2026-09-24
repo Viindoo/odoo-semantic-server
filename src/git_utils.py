@@ -405,6 +405,26 @@ def removing_commit(
     return sha, date, subject
 
 
+def rev_parse(local_path: Path | str, rev: str) -> str | None:
+    """Full commit sha that ``rev`` resolves to in ``local_path``, or None."""
+    out = _git_out(Path(local_path), "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+    return out.strip() if out and out.strip() else None
+
+
+def remote_branch_ref_exists(local_path: Path | str, branch: str | None) -> bool:
+    """True when ``refs/remotes/origin/<branch>`` exists in ``local_path``.
+
+    Without that ref :func:`head_matches_remote_branch` can only compare the
+    symbolic branch name, a weaker trust signal the operator should see.
+    """
+    if not branch:
+        return False
+    return _git_out(
+        Path(local_path), "rev-parse", "--verify", "--quiet",
+        f"refs/remotes/origin/{branch}^{{commit}}",
+    ) is not None
+
+
 def head_matches_remote_branch(local_path: Path | str, branch: str | None) -> bool:
     """True when the checked-out tree is the registered branch (scan trust, M8).
 

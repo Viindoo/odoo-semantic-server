@@ -4,12 +4,12 @@
 Tests cover:
 - retire_modules (the single retirement cascade that replaced gc_stale_modules)
   retires renamed/removed modules found by orphan_module_names.
-- Risk gate blocks GC when scanner returned 0 modules.
-- Default gc=False leaves stale nodes intact.
+- A scan that sees none of a repo's modules retires nothing (total-wipe gate).
+- T23: retirement runs on every run with no flag; --gc is a deprecated no-op;
+  only --no-retire keeps a stale node (pending).
 """
 import logging
 import os
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -157,146 +157,119 @@ class TestGcMixedGraphGuard:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: risk gate blocks GC when scanner returned 0 modules
+# Test 2: a scan that finds no module never retires anything
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def lifecycle_pg(clean_pg, clean_neo4j):
+    from src.db.migrate import run_migrations
+
+    run_migrations(clean_pg)
+    return clean_pg
+
+
+@pytest.mark.postgres
 class TestGcRiskGateBlocksWhenScannerEmpty:
-    """_index_repo with gc=True skips GC and logs warning when scanner finds 0 modules."""
+    """Ported (ADR-0056 B7-B9). The old test drove the removed per-repo ``--gc``
+    shim and expected its "GC skipped, 0 modules" WARNING. The protection is the
+    same and now holds on EVERY run: when the scanner sees none of the repo's
+    modules (here every manifest became unparseable - the scanner-failure
+    shape), the total-wipe gate trips, nothing is retired, and a
+    ``lifecycle gate:`` WARNING names the reason."""
 
-    def test_gc_risk_gate_blocks_when_scanner_empty(
-        self, clean_neo4j, tmp_path, caplog
-    ):
-        """Seed two Module nodes; scanner mock returns {}; both nodes must survive."""
-        from src.indexer.pipeline import _index_repo
-        from src.indexer.writer_neo4j import Neo4jWriter
+    def test_gc_risk_gate_blocks_when_scanner_empty(self, lifecycle_pg, neo4j_driver,
+                                                    tmp_path, caplog):
+        from tests._lifecycle_repo import GitRepo, module_node, register, run, write_module
 
-        driver = clean_neo4j
+        repo = GitRepo(tmp_path, "addons")
+        write_module(repo, "mod_a")
+        write_module(repo, "mod_b")
+        repo.commit("add")
+        register("gc_gate_99", repo)
+        run(lifecycle_pg, "gc_gate_99", embedder=None)
+        for name in ("mod_a", "mod_b"):
+            (repo.path / name / "__manifest__.py").write_text("{'name': broken(\n")
+        repo.commit("corrupt every manifest")
 
-        # Seed two Module nodes in Neo4j
-        _create_module_node(driver, "mod_a", path=str(tmp_path / "mod_a"))
-        _create_module_node(driver, "mod_b", path=str(tmp_path / "mod_b"))
+        with caplog.at_level(logging.WARNING, logger="src.indexer"):
+            summary = run(lifecycle_pg, "gc_gate_99", embedder=None)
 
-        # Create a minimal directory so local_path exists (FileNotFoundError guard)
-        local_path = str(tmp_path)
-
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        assert module_node(neo4j_driver, "mod_a") is not None, (
+            "mod_a must NOT be deleted when the scanner saw 0 modules (risk gate)"
         )
-        writer.setup_indexes()
-
-        repo = {
-            "id": 9901,
-            "local_path": local_path,
-            "odoo_version": TEST_VERSION,
-            "url": "file://gc-test-repo",
-        }
-
-        # Mock build_registry to return empty (simulating scanner failure)
-        # Mock incremental helpers to skip git operations
-        with (
-            patch("src.indexer.pipeline.build_registry", return_value={}),
-            patch("src.indexer.pipeline._incremental.get_repo_head", return_value=None),
-            caplog.at_level(logging.WARNING, logger="src.indexer.pipeline"),
-        ):
-            _index_repo(repo, writer, gc=True)
-
-        writer.close()
-
-        # Both nodes must still be present — risk gate prevented GC
-        assert _module_exists(driver, "mod_a"), (
-            "mod_a must NOT be deleted when scanner returned 0 modules (risk gate)"
+        assert module_node(neo4j_driver, "mod_b") is not None, (
+            "mod_b must NOT be deleted when the scanner saw 0 modules (risk gate)"
         )
-        assert _module_exists(driver, "mod_b"), (
-            "mod_b must NOT be deleted when scanner returned 0 modules (risk gate)"
-        )
-
-        # Warning log must be emitted
-        warning_lines = [
-            r.message for r in caplog.records
-            if r.levelno == logging.WARNING and "GC" in r.message
+        assert (summary.get("lifecycle") or {}).get("needs_attention")
+        gate_lines = [
+            r.getMessage() for r in caplog.records
+            if r.levelno == logging.WARNING and "lifecycle gate" in r.getMessage()
         ]
-        assert any("skipping" in m.lower() or "0 modules" in m.lower() for m in warning_lines), (
-            f"Expected a GC risk-gate warning log line; got: {warning_lines}"
+        assert any("2 of 2" in m for m in gate_lines), (
+            f"Expected a lifecycle-gate WARNING naming the 2-of-2 drop; got: {gate_lines}"
         )
 
 
 # ---------------------------------------------------------------------------
-# Test 3: gc=False (default) leaves stale nodes intact
+# Test 3 (T23): retirement needs no flag; --gc is a no-op; --no-retire holds
 # ---------------------------------------------------------------------------
 
-class TestGcDisabledNoOp:
-    """When gc=False (default), _index_repo must NOT delete any Module nodes.
+@pytest.mark.postgres
+class TestRetirementNeedsNoFlag:
+    """T23 - REWRITTEN from ``TestGcDisabledNoOp``.
 
-    NOTE (ADR-0056): left untouched in B6 on purpose - plan B9 rewrites this as T23
-    (retirement runs with no flag; --no-retire is the only way to keep a stale node).
+    The old test asserted that with ``gc=False`` (the default) a module the scan
+    no longer sees must SURVIVE. Default-off retirement is the #378 root cause:
+    no timer ever passed ``--gc``, so renamed/removed modules answered "Yes"
+    forever. The owner decision (08-approved-plan, decision 2) makes retirement
+    part of every run; ``--gc`` is a deprecated no-op; the only legitimate way to
+    keep a stale node is the explicit ``--no-retire`` escape hatch, which leaves
+    it pending for the next plain run.
     """
 
-    def test_gc_disabled_no_op(self, clean_neo4j, tmp_path):
-        """Seed two Module nodes; scanner returns only one; gc=False → stale node survives."""
-        from src.indexer.pipeline import _index_repo
-        from src.indexer.writer_neo4j import Neo4jWriter
+    @staticmethod
+    def _stale_repo(tmp_path, pg):
+        from tests._lifecycle_repo import GitRepo, register, run, write_module
 
-        driver = clean_neo4j
+        repo = GitRepo(tmp_path, "addons")
+        write_module(repo, "stale_mod")
+        write_module(repo, "live_mod")
+        repo.commit("add")
+        (rid,) = register("t23_99", repo)
+        run(pg, "t23_99", embedder=None)
+        repo.rm("stale_mod")
+        repo.commit("remove stale_mod")
+        return rid
 
-        stale_path = str(tmp_path / "stale_mod")
-        live_path = str(tmp_path / "live_mod")
+    @pytest.mark.parametrize("gc", [False, True], ids=["no_flag", "deprecated_gc"])
+    def test_stale_module_is_retired_with_or_without_gc(
+        self, lifecycle_pg, neo4j_driver, tmp_path, gc,
+    ):
+        from tests._lifecycle_repo import ledger, module_node, run
 
-        _create_module_node(driver, "stale_mod", path=stale_path)
-        _create_module_node(driver, "live_mod", path=live_path)
+        rid = self._stale_repo(tmp_path, lifecycle_pg)
 
-        local_path = str(tmp_path)
+        run(lifecycle_pg, "t23_99", embedder=None, gc=gc)
 
-        writer = Neo4jWriter(
-            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
-            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
-            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        assert module_node(neo4j_driver, "stale_mod") is None, (
+            "a module git no longer ships must be retired by a plain run"
         )
-        writer.setup_indexes()
+        assert module_node(neo4j_driver, "live_mod") is not None
+        assert ledger(lifecycle_pg, rid, "stale_mod")["state"] == "retired"
 
-        repo = {
-            "id": 9902,
-            "local_path": local_path,
-            "odoo_version": TEST_VERSION,
-            "url": "file://gc-noop-test-repo",
-        }
+    def test_no_retire_is_the_only_way_to_keep_a_stale_node(
+        self, lifecycle_pg, neo4j_driver, tmp_path,
+    ):
+        from tests._lifecycle_repo import ledger, module_node, run
 
-        # Scanner returns only live_mod — if gc were enabled, stale_mod would be deleted
-        live_module_info = MagicMock()
-        live_module_info.name = "live_mod"
-        live_module_info.odoo_version = TEST_VERSION
-        live_module_info.path = live_path
-        live_module_info.repo = tmp_path.name
-        live_module_info.depends = []
+        rid = self._stale_repo(tmp_path, lifecycle_pg)
 
-        fake_registry = {TEST_VERSION: {"live_mod": live_module_info}}
+        run(lifecycle_pg, "t23_99", embedder=None, retire=False)
+        assert module_node(neo4j_driver, "stale_mod") is not None
+        assert ledger(lifecycle_pg, rid, "stale_mod")["retire_pending"] is True
 
-        with (
-            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
-            patch("src.indexer.pipeline._incremental.get_repo_head", return_value=None),
-            patch("src.indexer.pipeline.topological_sort", return_value=[]),
-            patch("src.indexer.pipeline.parser_python.parse_module", return_value=MagicMock(
-                module=live_module_info, models=[],
-            )),
-            patch("src.indexer.pipeline.parser_xml.parse_module", return_value=MagicMock(views=[])),
-            patch("src.indexer.pipeline.parser_qweb.parse_module", return_value=MagicMock(qweb=[])),
-            patch("src.indexer.pipeline.parser_js.parse_module_graph", return_value=MagicMock(
-                patches=[], components=[],
-            )),
-        ):
-            # gc defaults to False — stale node must survive
-            _index_repo(repo, writer)
-
-        writer.close()
-
-        # stale_mod must still be present — gc was not requested
-        assert _module_exists(driver, "stale_mod"), (
-            "stale_mod must NOT be deleted when gc=False (default off)"
-        )
-        assert _module_exists(driver, "live_mod"), (
-            "live_mod must still be present after indexing"
-        )
+        run(lifecycle_pg, "t23_99", embedder=None)
+        assert module_node(neo4j_driver, "stale_mod") is None
 
 
 # ---------------------------------------------------------------------------

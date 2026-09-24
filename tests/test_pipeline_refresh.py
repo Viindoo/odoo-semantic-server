@@ -99,16 +99,26 @@ class _FakeEmptyParseResult:
 
 
 def _install_inmemory_parsers(stack, registry):
-    """Patch build_registry / topological_sort / every parser used by the loop.
+    """Patch topological_sort / every parser used by the loop + the ledger.
 
-    Returns nothing - the caller uses ``registry`` to control which modules the
-    scan yields. All parsers return empty results so the writer (a MagicMock)
-    just records calls; there is zero DB / Neo4j / embedding activity.
+    ``registry`` documents the modules the scan must see; the scan itself is the
+    REAL ``build_registry_scan`` over the real tmp repo (ADR-0056 F16: patching
+    ``build_registry``, as this helper used to, no longer reaches ``_index_repo``).
+    All parsers return empty results so the writer (a MagicMock) just records
+    calls; there is zero DB / Neo4j / embedding activity.
+
+    The lifecycle ledger is stubbed out (``_presence_store`` -> None): these
+    tests pass a fake ``pg_conn``, and with a ``pg_conn`` ``_index_repo`` also
+    observes the ledger through the process-wide pool. In a combined run an
+    earlier PG test leaves that session-scoped pool initialized against a DB
+    whose tables ``clean_pg`` dropped, so the ledger read failed with
+    ``UndefinedTable repos`` - an order-dependent failure, not a refresh bug.
     """
     import src.indexer.pipeline as _pipeline
     import src.indexer.pipeline_repo as _pr
 
-    stack.enter_context(patch.object(_pipeline, "build_registry", return_value=registry))
+    del registry  # the real on-disk scan yields exactly these modules
+    stack.enter_context(patch.object(_pipeline, "_presence_store", return_value=None))
     stack.enter_context(
         patch.object(_pipeline, "topological_sort", side_effect=lambda mods: list(mods.keys()))
     )

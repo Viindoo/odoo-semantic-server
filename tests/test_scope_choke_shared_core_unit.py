@@ -522,6 +522,11 @@ def test_index_repo_feeds_same_owner_to_neo4j_and_pgvector(tmp_path, monkeypatch
     from unittest.mock import MagicMock
     monkeypatch.setattr("src.indexer.pipeline.repo_store",
                         lambda: MagicMock())
+    # With a pg_conn, _index_repo also observes the lifecycle ledger through the
+    # process-wide pool (ADR-0056). Stub it like repo_store: otherwise a pool left
+    # initialized by an earlier PG test (tables already dropped) makes this pure
+    # unit test fail with UndefinedTable, but only in a combined run.
+    monkeypatch.setattr("src.indexer.pipeline._presence_store", lambda: None)
 
     from src.indexer.pipeline import _index_repo
 

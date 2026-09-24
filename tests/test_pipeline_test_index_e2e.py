@@ -90,13 +90,20 @@ def test_embed_block_wires_test_chunk_makers():
 
     from src.indexer import pipeline_repo
 
-    src = _inspect.getsource(pipeline_repo._index_repo)
+    # The per-repo parse/write/embed block moved verbatim out of _index_repo into
+    # a helper of the same module (ADR-0056 B8, D9). The guard is about the
+    # per-repo indexing path as a whole, so it reads the module's code (comment
+    # lines stripped - a mention in a comment must not satisfy it).
+    src = "\n".join(
+        ln for ln in _inspect.getsource(pipeline_repo).splitlines()
+        if not ln.lstrip().startswith("#")
+    )
     assert "make_test_chunks(" in src, (
-        "C2 WIRING: _index_repo embed block must call make_test_chunks() so test "
+        "C2 WIRING: the per-repo embed block must call make_test_chunks() so test "
         "chunks reach pgvector."
     )
     assert "make_js_test_chunks(" in src, (
-        "C2 WIRING: _index_repo embed block must call make_js_test_chunks()."
+        "C2 WIRING: the per-repo embed block must call make_js_test_chunks()."
     )
 
 
@@ -252,6 +259,11 @@ def _run_real_pipeline(tmp_path, e2e_writer, monkeypatch, *, profile="odoo_99"):
             return 0
 
     monkeypatch.setattr("src.indexer.pipeline.repo_store", lambda: _StubRepoStore())
+    # With a pg_conn given, _index_repo also observes the lifecycle ledger
+    # (ADR-0056). This harness is Neo4j-only: no ledger, exactly like the
+    # stubbed repo_store (otherwise the result depends on whatever pool an
+    # earlier PG test left behind).
+    monkeypatch.setattr("src.indexer.pipeline._presence_store", lambda: None)
 
     repo = {
         "id": 7701,

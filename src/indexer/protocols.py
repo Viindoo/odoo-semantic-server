@@ -266,6 +266,12 @@ class IndexWriterProtocol(Protocol):
         self, odoo_version: str, names: Iterable[str] | None = None,
     ) -> dict[str, list[str]]: ...
     def orphan_child_keys(self, odoo_version: str) -> dict[str, dict[str, int]]: ...
+    def module_identity(
+        self, odoo_version: str, names: Iterable[str],
+    ) -> dict[str, dict]: ...
+    def modules_by_old_technical_name(
+        self, odoo_version: str, old_names: Iterable[str],
+    ) -> dict[str, list[str]]: ...
 
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE '__unresolved__' placeholder nodes scoped to odoo_version."""
@@ -278,8 +284,9 @@ class IndexWriterProtocol(Protocol):
     def gc_orphan_asset_bundles(self, odoo_version: str) -> int:
         """DETACH DELETE orphaned :AssetBundle nodes for odoo_version (WI-D).
 
-        Called once per version on --full after all live contributions are
-        re-written. Deletes only AssetBundle nodes with zero inbound
+        Called once per version by the lifecycle reconcile (every run, not
+        only --full: CONTRIBUTES_TO edges of unchanged modules persist across
+        incremental runs). Deletes only AssetBundle nodes with zero inbound
         CONTRIBUTES_TO and no INCLUDES_BUNDLE/EXTENDS_ASSET_BUNDLE edge.
         Idempotent (a second run returns 0).
         """
