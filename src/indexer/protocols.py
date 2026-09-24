@@ -114,7 +114,13 @@ class IndexWriterProtocol(Protocol):
         ...
 
     def reconcile_test_inherits(self, odoo_version: str) -> int:
-        """MERGE INHERITS_TEST edges (version-wide post-pass, idempotent)."""
+        """Make the TestClass INHERITS_TEST edges exactly the resolved bases.
+
+        Version-wide post-pass. A base resolves to the module its import
+        names, else the child's own module, an ``@framework`` helper, or the
+        nearest module in the child's dependency closure - never to an
+        unrelated module without import evidence. Returns edges created.
+        """
         ...
 
     def reconcile_test_coverage(self, odoo_version: str) -> int:

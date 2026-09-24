@@ -1083,7 +1083,12 @@ def test_write_js_graph_extends_only_when_match(writer, neo4j_driver):
 
 
 def test_write_js_graph_bound_to_model(writer, neo4j_driver):
-    """BOUND_TO edge is created when bound_model exists as a Model node."""
+    """BOUND_TO edge is created when bound_model exists as a Model node.
+
+    BOUND_TO is derived by the version-wide post-pass ``reconcile_owl_edges``
+    (F47b: the component binds the ONE defining Model node, whichever repo
+    writes it and in whatever order), which every index run executes after all
+    repos are written - so the test runs it, as the pipeline does."""
     # First seed the Model
     model_result = make_parse_result("sale", "sale.order")
     writer.write_results([model_result])
@@ -1098,6 +1103,7 @@ def test_write_js_graph_bound_to_model(writer, neo4j_driver):
     )
     result = JSGraphResult(module=module, components=[comp])
     writer.write_js_graph_results([result])
+    writer.reconcile_owl_edges(TEST_VERSION)
 
     with neo4j_driver.session() as session:
         rec = session.run("""

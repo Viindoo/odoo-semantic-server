@@ -270,10 +270,13 @@ def reconcile_test_surface(
          declares, e.g. SavepointCase once a version moves onto the v17+ era —
          issue #362 WI-4/WI-5; must run right after seeding so reconcile_test_inherits
          below never resolves an addon TestClass onto a class this era no longer has),
-      3. reconcile_test_inherits (builds INHERITS_TEST edges),
+      3. reconcile_test_inherits (derives INHERITS_TEST edges from the declared
+         bases, dependency-aware, and deletes the ones no longer derived),
       4. finalize_is_helper (counts inbound INHERITS_TEST edges - AFTER inherits),
-      5. reconcile_test_coverage (COVERS_* edges to is_definition nodes).
-    All passes are idempotent (MERGE / prune-by-name-set) and non-fatal on error.
+      5. reconcile_test_coverage (COVERS_* edges to is_definition nodes; the
+         ones the current TestMethod refs no longer derive are deleted).
+    All passes are idempotent (derived-set reconciliation / prune-by-name-set)
+    and non-fatal on error.
 
     ADR-0034 provenance: framework TestHelper nodes are stamped with the OWNING
     profile array of the run (mirrors every other node from the checkout). When the
