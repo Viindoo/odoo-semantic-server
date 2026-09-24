@@ -50,6 +50,10 @@ class ModuleParseHealth:
     embedded_keys: set[tuple] | None = None
     # True when the chunks were (re-)embedded and upserted this run.
     embeddings_written: bool = False
+    # True when a chunk of the module could not be embedded this run: its row
+    # keeps an older ``indexed_at``, so the rows cannot tell what this parse
+    # produced (the shared-module prune then leaves the embeddings alone).
+    embeddings_incomplete: bool = False
 
     @property
     def degraded(self) -> bool:
@@ -110,3 +114,10 @@ def note_unobserved(label: str) -> None:
     health = _CURRENT.get()
     if health is not None:
         health.unobserved_labels.add(label)
+
+
+def note_embeddings_incomplete() -> None:
+    """Record that some chunk of the tracked module was not (re-)embedded."""
+    health = _CURRENT.get()
+    if health is not None:
+        health.embeddings_incomplete = True

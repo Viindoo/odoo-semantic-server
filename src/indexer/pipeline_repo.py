@@ -40,6 +40,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src import constants as _constants
 from src.indexer import incremental as _incremental
 from src.indexer import (
     parse_health,
@@ -1051,6 +1052,9 @@ def _prune_reparsed_modules(
     module ``needs_rewrite`` and the next run re-parses and prunes it without
     a source change; ``shared`` is not retried (the reconcile flags the
     survivor once the other owner is gone, M5; so is ``shared_unsynced``).
+    What no owner of a shared module defines any more is pruned by the
+    version reconcile once every owner recorded a complete parse of its copy
+    (``_record_full_parses``, ``reconcile._Reconciler.prune_shared``).
     ``degraded`` is retried per
     source state by the caller (``_track_degraded_parses``: once after a
     transient failure, then only when the failing files change), which also
@@ -1473,6 +1477,100 @@ def _track_degraded_parses(
     return retry, attention
 
 
+def _record_full_parses(
+    presence,
+    writer: IndexWriterProtocol,
+    repo: dict,
+    *,
+    module_health: dict,
+    run_id: str | None,
+    scan_ok: bool,
+    head: str | None,
+    present_names: set[str],
+    embedded_at=None,
+) -> None:
+    """Ledger record of the copies this run parsed completely (B14, shared modules).
+
+    A present module parsed this run with every file read, under a run token
+    and a trusted scan, gets ``last_full_parse_at`` = the run start on the
+    Neo4j clock (every child the parse wrote is stamped at or after it) plus
+    the families it did not observe; any other parse of it (degraded, no
+    token, untrusted scan) forgets the record, since its children may not
+    all carry the stamp. A parse that also (re-)embedded every chunk of the
+    module records *embedded_at* (PostgreSQL time taken before the parse, see
+    ``_pg_clock``). The version post-pass prunes a module several repos
+    ship only while every present owner has a record
+    (``reconcile._Reconciler.prune_shared``).
+    """
+    record = getattr(presence, "record_full_parses", None)
+    forget = getattr(presence, "clear_full_parses", None)
+    if not module_health or not callable(record) or not callable(forget):
+        return
+    started = getattr(writer, "run_started_at", None)
+    complete_run = bool(run_id) and scan_ok and started is not None
+    full: dict[str, dict[str, list[str]]] = {}
+    embedded: dict[str, list[str]] = {}
+    partial: dict[str, list[str]] = {}
+    for (version, name), health in sorted(module_health.items()):
+        if name not in present_names:
+            continue
+        if complete_run and health is not None and not health.degraded:
+            full.setdefault(version, {})[name] = sorted(health.unobserved_labels)
+            if health.embeddings_written and not health.embeddings_incomplete:
+                embedded.setdefault(version, []).append(name)
+        else:
+            partial.setdefault(version, []).append(name)
+    for version, names in sorted(partial.items()):
+        forget(repo["id"], version, names)
+    for version, parses in sorted(full.items()):
+        record(
+            repo["id"], version, parses, parsed_at=started, head_sha=head,
+            embedded=embedded.get(version, ()), embedded_at=embedded_at, run_token=run_id,
+        )
+
+
+def shared_parse_backlog(presence, repo: dict, degraded_records: dict) -> tuple[int, list[str]]:
+    """``(remaining, batch)`` of the repo's shared-module bootstrap (B14).
+
+    The repo's present copies of modules another live repo also ships that
+    have no complete-parse record, minus the modules whose last parse by this
+    repo is recorded degraded (their re-parse waits for the failing files,
+    ``_degraded_state``); *batch* is at most
+    ``constants.shared_parse_bootstrap_per_run()`` of them, the ones whose other owners
+    are all recorded first. ``(0, [])`` without a ledger.
+    """
+    read = getattr(presence, "shared_parse_backlog", None)
+    if not callable(read) or repo.get("id") is None:
+        return 0, []
+    degraded = {name for (_v, name) in degraded_records}
+    return read(repo["id"], limit=_constants.shared_parse_bootstrap_per_run(), exclude=degraded)
+
+
+def shared_parse_bootstrap(presence, repo: dict, degraded_records: dict) -> list[str]:
+    """The names this run re-parses for the shared-module bootstrap (see
+    :func:`shared_parse_backlog`)."""
+    if _constants.shared_parse_bootstrap_per_run() <= 0:
+        return []
+    return shared_parse_backlog(presence, repo, degraded_records)[1]
+
+
+def _pg_clock(pg_conn):
+    """PostgreSQL's current time on the run connection, or None without one.
+
+    Taken before the parse: every embedding upsert of the parse runs in a
+    later transaction, so its ``indexed_at = NOW()`` is at or after it.
+    """
+    if getattr(pg_conn, "autocommit", None) is not True:
+        return None
+    try:
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT clock_timestamp()")
+            return cur.fetchone()[0]
+    except Exception:  # noqa: BLE001 - no clock only disables the shared embedding prune
+        _logger.warning("could not read the PostgreSQL clock", exc_info=True)
+        return None
+
+
 def _gc_stale_test_nodes(
     writer: IndexWriterProtocol,
     live_names_by_version: dict[str, list[str]],
@@ -1675,6 +1773,17 @@ def _index_repo(
     # disk since its degraded parse (edited, deleted, permission fixed) is
     # re-parsed now even when HEAD did not move.
     degraded_records, degraded_changed = _degraded_state(writer, repo, repo_path)
+    # Shared-module bootstrap (B14): a bounded batch of this repo's copies of
+    # shared modules without a complete-parse record is re-parsed like a
+    # needs_rewrite name (sync path when HEAD did not move).
+    bootstrap = shared_parse_bootstrap(presence, repo, degraded_records)
+    if bootstrap:
+        _logger.info(
+            "Repo %s: re-parsing %d shared module(s) without a complete-parse record "
+            "(bootstrap, budget %d per run): %s", url, len(bootstrap),
+            _constants.shared_parse_bootstrap_per_run(), ", ".join(bootstrap[:10]),
+        )
+        rewrite_names = sorted(set(rewrite_names) | set(bootstrap))
 
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
@@ -1784,6 +1893,7 @@ def _index_repo(
     if modules_by_version:
         run_id = _writer_run_id(writer)
         module_health: dict = {}
+        embedded_at = _pg_clock(pg_conn) if lifecycle_on else None
         counters, test_results = _parse_and_write(
             modules_by_version,
             writer=writer, repo=repo, repo_path=repo_path, rng_root=rng_root,
@@ -1835,6 +1945,13 @@ def _index_repo(
         )
         for name in sorted(prune_retry & present_names):
             presence.mark_needs_rewrite(repo["id"], name)
+        _record_full_parses(
+            presence, writer, repo,
+            module_health=module_health if modules_by_version else {},
+            run_id=run_id if modules_by_version else None,
+            scan_ok=gates.scan_ok, head=current_head, present_names=present_names,
+            embedded_at=embedded_at if modules_by_version else None,
+        )
         if prune_report is not None:
             lifecycle_counters["gates_tripped"].extend(prune_report["gates_tripped"])
             lifecycle_counters["entity_prune"] = {

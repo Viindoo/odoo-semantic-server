@@ -264,6 +264,26 @@ ON CONFLICT (repo_id, name) DO UPDATE SET
     successor_source        = NULL,
     needs_rewrite = CASE WHEN EXCLUDED.state = 'present'
                          THEN module_presence.needs_rewrite ELSE FALSE END,
+    last_full_parse_at = CASE
+        WHEN module_presence.state IS DISTINCT FROM EXCLUDED.state
+          OR module_presence.path IS DISTINCT FROM EXCLUDED.path
+        THEN NULL ELSE module_presence.last_full_parse_at END,
+    last_full_parse_sha = CASE
+        WHEN module_presence.state IS DISTINCT FROM EXCLUDED.state
+          OR module_presence.path IS DISTINCT FROM EXCLUDED.path
+        THEN NULL ELSE module_presence.last_full_parse_sha END,
+    last_full_parse_unobserved = CASE
+        WHEN module_presence.state IS DISTINCT FROM EXCLUDED.state
+          OR module_presence.path IS DISTINCT FROM EXCLUDED.path
+        THEN '{}' ELSE module_presence.last_full_parse_unobserved END,
+    last_full_parse_embedded_at = CASE
+        WHEN module_presence.state IS DISTINCT FROM EXCLUDED.state
+          OR module_presence.path IS DISTINCT FROM EXCLUDED.path
+        THEN NULL ELSE module_presence.last_full_parse_embedded_at END,
+    last_full_parse_run = CASE
+        WHEN module_presence.state IS DISTINCT FROM EXCLUDED.state
+          OR module_presence.path IS DISTINCT FROM EXCLUDED.path
+        THEN NULL ELSE module_presence.last_full_parse_run END,
     updated_at              = EXCLUDED.updated_at
 """
 
@@ -877,6 +897,199 @@ class ModulePresenceStore:
                 (odoo_version, exclude_repo_id, wanted),
             )
         return {r["name"] for r in rows}
+
+    def record_full_parses(
+        self,
+        repo_id: int,
+        odoo_version: str,
+        parses: Mapping[str, Iterable[str]],
+        *,
+        parsed_at: datetime,
+        head_sha: str | None,
+        embedded: Iterable[str] = (),
+        embedded_at: datetime | None = None,
+        run_token: str | None = None,
+        conn: PgConn | None = None,
+    ) -> int:
+        """Record that repo *repo_id* parsed each name of *parses* completely.
+
+        *embedded*: the names whose every chunk this parse (re-)embedded; they
+        get ``last_full_parse_embedded_at`` = *embedded_at* (PostgreSQL time
+        taken before the parse), the others NULL. *run_token* is the parse's
+        run token (``last_full_parse_run``, the ``written_run`` it stamped).
+
+        *parses* maps a name to the node families that parse did not look at
+        (``ModuleParseHealth.unobserved_labels``). *parsed_at* is the start of
+        the run on the Neo4j server clock: every graph child the parse wrote
+        carries ``written_at`` at or after it. Only ``present`` rows of the
+        repo at the version are updated. Returns the number of rows updated.
+        """
+        if parsed_at is None or getattr(parsed_at, "tzinfo", None) is None:
+            raise ValueError(f"parsed_at must be a timezone-aware datetime (got {parsed_at!r})")
+        items = sorted(parses.items())
+        if not items:
+            return 0
+        names = [n for n, _ in items]
+        unobserved = [",".join(sorted(set(u))) for _, u in items]
+        emb = set(embedded) if embedded_at is not None else set()
+        emb_flags = [n in emb for n in names]
+        with self._conn(conn) as c, self._tx(c), c.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE module_presence mp
+                   SET last_full_parse_at = %s,
+                       last_full_parse_sha = %s,
+                       last_full_parse_run = %s,
+                       last_full_parse_unobserved = CASE WHEN u.unobserved = ''
+                           THEN '{}'::text[] ELSE string_to_array(u.unobserved, ',') END,
+                       last_full_parse_embedded_at = CASE WHEN u.embedded
+                           THEN %s::timestamptz ELSE NULL END,
+                       updated_at = now()
+                  FROM unnest(%s::text[], %s::text[], %s::boolean[])
+                       AS u(name, unobserved, embedded)
+                 WHERE mp.repo_id = %s AND mp.odoo_version = %s
+                   AND mp.name = u.name AND mp.state = 'present'
+                """,
+                (parsed_at, head_sha, run_token, embedded_at, names, unobserved, emb_flags,
+                 repo_id, odoo_version),
+            )
+            return cur.rowcount
+
+    def clear_full_parses(
+        self,
+        repo_id: int,
+        odoo_version: str,
+        names: Iterable[str],
+        *,
+        conn: PgConn | None = None,
+    ) -> int:
+        """Forget the complete-parse record of *names* (their last parse was degraded)."""
+        wanted = sorted(set(names))
+        if not wanted:
+            return 0
+        with self._conn(conn) as c, self._tx(c), c.cursor() as cur:
+            cur.execute(
+                "UPDATE module_presence SET last_full_parse_at = NULL, "
+                "last_full_parse_sha = NULL, last_full_parse_unobserved = '{}', "
+                "last_full_parse_embedded_at = NULL, last_full_parse_run = NULL, "
+                "updated_at = now() "
+                "WHERE repo_id = %s AND odoo_version = %s AND name = ANY(%s) "
+                "AND last_full_parse_at IS NOT NULL",
+                (repo_id, odoo_version, wanted),
+            )
+            return cur.rowcount
+
+    def shared_module_owners(
+        self, odoo_version: str, *, conn: PgConn | None = None,
+    ) -> dict[str, list[dict]]:
+        """Names at the version that two or more live repos have ``present``.
+
+        Maps each such name to its owner rows (sorted by repo id): repo_id,
+        repo_basename, profile_name, path, local_path (of the repo, None when
+        unknown), needs_rewrite, retire_pending, last_full_parse_at,
+        last_full_parse_sha, last_full_parse_unobserved, last_full_parse_embedded_at,
+        last_full_parse_run.
+        """
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                """
+                SELECT mp.name, mp.repo_id, mp.repo_basename, mp.profile_name, mp.path,
+                       r.local_path, mp.needs_rewrite, mp.retire_pending,
+                       mp.last_full_parse_at, mp.last_full_parse_sha,
+                       mp.last_full_parse_unobserved, mp.last_full_parse_embedded_at,
+                       mp.last_full_parse_run
+                FROM module_presence mp
+                LEFT JOIN repos r ON r.id = mp.repo_id
+                WHERE mp.odoo_version = %(v)s AND mp.state = 'present'
+                  AND mp.repo_id IS NOT NULL
+                  AND mp.name IN (
+                      SELECT x.name FROM module_presence x
+                       WHERE x.odoo_version = %(v)s AND x.state = 'present'
+                         AND x.repo_id IS NOT NULL
+                       GROUP BY x.name HAVING count(DISTINCT x.repo_id) > 1
+                  )
+                ORDER BY mp.name, mp.repo_id
+                """,
+                {"v": odoo_version},
+            )
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            name = r.pop("name")
+            out.setdefault(name, []).append(r)
+        return out
+
+    def shared_parse_backlog(
+        self,
+        repo_id: int,
+        *,
+        limit: int,
+        exclude: Iterable[str] = (),
+        conn: PgConn | None = None,
+    ) -> tuple[int, list[str]]:
+        """This repo's copies of shared modules that lack a complete-parse record.
+
+        A ``present`` row of *repo_id* with no ``last_full_parse_at`` whose name
+        another live repo also has ``present`` at the same version, not already
+        flagged ``needs_rewrite`` and not in *exclude*. Returns ``(total,
+        batch)``: the backlog size and up to *limit* names to re-parse now,
+        those whose every other owner already has a record first (their
+        re-parse makes the module eligible for the shared prune at once), then
+        by name.
+        """
+        skip = sorted(set(exclude))
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                """
+                SELECT mp.name,
+                       bool_and(o.last_full_parse_at IS NOT NULL) AS others_ready
+                FROM module_presence mp
+                JOIN module_presence o
+                  ON o.name = mp.name AND o.odoo_version = mp.odoo_version
+                 AND o.state = 'present' AND o.repo_id IS NOT NULL
+                 AND o.repo_id <> mp.repo_id
+                WHERE mp.repo_id = %s AND mp.state = 'present'
+                  AND mp.last_full_parse_at IS NULL AND NOT mp.needs_rewrite
+                  AND NOT (mp.name = ANY(%s))
+                GROUP BY mp.name
+                ORDER BY others_ready DESC, mp.name
+                """,
+                (repo_id, skip),
+            )
+        names = [r["name"] for r in rows]
+        return len(names), names[:max(limit, 0)]
+
+    def excluded_co_owner_rows(
+        self, odoo_version: str, *, conn: PgConn | None = None,
+    ) -> list[dict]:
+        """``excluded`` rows of live repos whose name another live repo has ``present``.
+
+        A repo that stops indexing a module (``installable: False``, license
+        policy, unparseable) while another repo still ships it: the node stays
+        (the survivor owns it) but the excluded repo must leave it. Keys: id,
+        repo_id, repo_basename, profile_name, name, exclusion_reason; sorted by
+        name then repo id.
+        """
+        with self._conn(conn) as c:
+            return self._fetch_all(
+                c,
+                """
+                SELECT mp.id, mp.repo_id, mp.repo_basename, mp.profile_name, mp.name,
+                       mp.exclusion_reason
+                FROM module_presence mp
+                WHERE mp.odoo_version = %(v)s AND mp.state = 'excluded'
+                  AND mp.repo_id IS NOT NULL
+                  AND EXISTS (
+                      SELECT 1 FROM module_presence o
+                       WHERE o.odoo_version = mp.odoo_version AND o.name = mp.name
+                         AND o.state = 'present' AND o.repo_id IS NOT NULL
+                         AND o.repo_id <> mp.repo_id
+                  )
+                ORDER BY mp.name, mp.repo_id
+                """,
+                {"v": odoo_version},
+            )
 
     def present_names(
         self, odoo_version: str, *, conn: PgConn | None = None,
