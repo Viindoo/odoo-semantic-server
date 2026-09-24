@@ -518,13 +518,23 @@ class RepoStore:
             own_rows = self._pool.fetch_all(
                 conn, "SELECT name FROM profiles WHERE tenant_id = %s", (tenant_id,),
             )
-            shared_rows = self._pool.fetch_all(
-                conn, "SELECT name FROM profiles WHERE tenant_id IS NULL",
-            )
-        return (
-            sorted(r["name"] for r in own_rows),
-            sorted(r["name"] for r in shared_rows),
+            shared = self._shared_profile_names(conn)
+        return sorted(r["name"] for r in own_rows), shared
+
+    def shared_profile_names(self) -> list[str]:
+        """Names of the globally shared profiles (``tenant_id IS NULL``), sorted.
+
+        The same ``shared`` list :meth:`resolve_tenant_scope` returns to every
+        tenant; the MCP tier uses it when an admin narrows by ``profile_name``.
+        """
+        with self._pool.checkout() as conn:
+            return self._shared_profile_names(conn)
+
+    def _shared_profile_names(self, conn) -> list[str]:
+        rows = self._pool.fetch_all(
+            conn, "SELECT name FROM profiles WHERE tenant_id IS NULL",
         )
+        return sorted(r["name"] for r in rows)
 
     def resolve_allowed_profiles(self, tenant_id: int) -> list[str]:
         """Flat union ``own ∪ shared`` — for SINGLE-VALUE filters where each row

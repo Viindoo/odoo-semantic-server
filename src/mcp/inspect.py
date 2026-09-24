@@ -623,6 +623,46 @@ def _profile_inspect(
 # profile_inspect helpers
 # ---------------------------------------------------------------------------
 
+def _caller_boundary(srv) -> dict:
+    """The caller's full ADR-0034 boundary (``own``, ``shared``), without the session pin.
+
+    For reads about an EXPLICITLY named profile: a session pin (set_active_profile)
+    only defaults the profile when none is given, so it must not narrow - or zero -
+    another profile's counts. The tenant boundary still applies unchanged
+    (admin: unrestricted).
+    """
+    return srv._scope(None, pin=False)
+
+
+def _visible_profile_names(srv) -> set[str] | None:
+    """Profile names this key may see (own + shared, pin ignored); None = admin (all).
+
+    ADR-0034 fail-closed: profile_inspect renders another profile's NAME (ancestor
+    chain, children, "inherited from") or its repos only when it is in this set.
+    """
+    allowed = srv._session.resolve_allowed_profiles(srv._get_tenant_id())
+    return None if allowed is None else set(allowed)
+
+
+def _split_visible(names: list[str], visible: set[str] | None) -> tuple[list[str], int]:
+    """(names the key may see, in order; how many were withheld)."""
+    if visible is None:
+        return list(names), 0
+    shown = [n for n in names if n in visible]
+    return shown, len(names) - len(shown)
+
+
+def _hidden_suffix(hidden: int, noun: str) -> str:
+    if not hidden:
+        return ""
+    return f" (+{hidden} {noun}{'' if hidden == 1 else 's'} not visible to this key)"
+
+
+def _chain_label(ancestors: list[str], visible: set[str] | None) -> str:
+    shown, hidden = _split_visible(ancestors, visible)
+    return " -> ".join(shown) + _hidden_suffix(hidden, "ancestor profile")
+
+
 def _profile_summary(name: str, odoo_version: str, srv) -> str:
     """Render profile summary: ancestor chain, children, repos, module_count."""
     from src.db.pg import repo_store
@@ -663,16 +703,11 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
     try:
         with srv._get_driver().session() as neo_session:
             odoo_version = srv._resolve_version(odoo_version, neo_session)
-            # Use _scope(None) for the own+shared tenant boundary, FURTHER
-            # narrowed by any active session pin (ADR-0029 #251): _scope(None)
-            # injects the pinned profile via _resolve_profile(None) before the
-            # ADR-0034 narrowing, so a pinned session sees only the pinned
-            # profile here. Narrowing-only / fail-closed — the pin can never
-            # widen beyond own∪shared. We then filter by profile_name IN
-            # m.profile separately. _scope(name) would narrow own=[name] which
-            # breaks for modules stamped with the full ancestor chain (e.g.
-            # [child, parent_shared]). The caller-can-see-this-profile check is
-            # already done above via _effective_allowed(name).
+            # The caller's tenant boundary WITHOUT the session pin
+            # (_caller_boundary): name is explicit, so a pin to another profile
+            # must not zero this count. Profile membership is filtered
+            # separately; the caller-can-see-this-profile check is done above
+            # via _effective_allowed(name).
             # Routed through srv._single_bounded so a tx-timeout becomes
             # OrmQueryTimeout (clean English, no Cypher leaked). The surrounding
             # `except Exception` below catches it too — the count degrades to
@@ -691,7 +726,7 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
                 f"module count for profile '{name}' (Odoo {odoo_version})",
                 v=odoo_version,
                 profile_name=name,
-                **srv._scope(None),
+                **_caller_boundary(srv),
             )
             module_count = rec["cnt"] if rec else 0
     except Exception:
@@ -707,16 +742,24 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
     # Build tree output.
     lines = [f"profile_inspect(name={name!r}, method='summary', odoo_version={odoo_version!r})"]
 
+    # ADR-0034: names and repos of profiles outside this key's scope (another
+    # tenant's private ancestor or child) are withheld and disclosed as a count.
+    visible = _visible_profile_names(srv)
+
     # Ancestor chain.
     if len(ancestors) == 1:
         lines.append(f"├─ Ancestor chain: {name} (root, no parent)")
     else:
-        chain_str = " -> ".join(ancestors)
-        lines.append(f"├─ Ancestor chain: {chain_str}")
+        lines.append(f"├─ Ancestor chain: {_chain_label(ancestors, visible)}")
 
     # Children.
+    shown_children, hidden_children = _split_visible(children, visible)
     if children:
-        lines.append(f"├─ Children ({len(children)}): {', '.join(children)}")
+        listed = ", ".join(shown_children) or "none visible"
+        lines.append(
+            f"├─ Children ({len(children)}): {listed}"
+            f"{_hidden_suffix(hidden_children, 'child profile')}"
+        )
     else:
         lines.append("├─ Children: none")
 
@@ -728,14 +771,10 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
         status = r.get("status", "unknown")
         lines.append(f"{prefix} {r['url']} @ {r['branch']}{depth_tag}  status:{status}")
 
-    # Module count.
-    # M3 (#259/#260): the count uses `$profile_name IN m.profile`. Module nodes
-    # are stamped with the FULL ancestor chain (ADR-0016), so querying a parent
-    # profile matches every descendant-profile module that inherits it. That is
-    # the inheritance-RESOLVED semantics #259/#260 ask for (the same scope a
-    # check_module_exists answer reflects), so the count is intentionally
-    # inheritance-inclusive — the label says so to avoid the reader mistaking it
-    # for an own-profile-only tally.
+    # Module count: `$profile_name IN m.profile`. Nodes carry only the profile
+    # that owns their repo (ADR-0034 single-owner, pipeline_repo._owning_profiles),
+    # so parent-profile modules are NOT counted - the label says so, since the
+    # Repos block above does span the ancestor chain.
     if module_count is not None:
         lines.append(
             f"└─ Module count (version {odoo_version}, inheritance-inclusive):"
@@ -770,8 +809,15 @@ def _profile_repos(
                 f"└─ Not found or not authorized: profile '{name}' is not visible to this key.\n"
                 "   Use list_available_profiles() to see accessible profiles."
             )
-        repos_raw = repo_store().get_ancestor_repos(name)
+        visible = _visible_profile_names(srv)
+        chain_repos = repo_store().get_ancestor_repos(name)
+        repos_raw = [
+            r for r in chain_repos if visible is None or r["profile_name"] in visible
+        ]
+        withheld_repos = len({(r["url"], r["branch"]) for r in chain_repos}) - len(
+            {(r["url"], r["branch"]) for r in repos_raw})
     else:
+        withheld_repos = 0
         # All profiles visible to this caller.
         if allowed is None:
             # Admin: all repos.
@@ -806,11 +852,12 @@ def _profile_repos(
 
     scope_label = f"name={name!r}" if name else "all visible"
     lines = [f"profile_inspect({scope_label}, method='repos')"]
+    withheld = _hidden_suffix(max(withheld_repos, 0), "ancestor repo")
     if not unique_repos:
-        lines.append("└─ No repos found.")
+        lines.append(f"└─ No repos found{withheld}.")
         return "\n".join(lines)
 
-    lines.append(f"├─ Repos ({len(unique_repos)} unique):")
+    lines.append(f"├─ Repos ({len(unique_repos)} unique){withheld}:")
     for i, r in enumerate(unique_repos):
         prefix = "│  └─" if i == len(unique_repos) - 1 else "│  ├─"
         status = r.get("status", "unknown")
@@ -856,20 +903,16 @@ def _profile_modules(
         profile_clause = "AND $profile_name IN m.profile" if name else ""
         repo_clause = "AND m.repo_url CONTAINS $repo_filter" if repo_filter else ""
 
-        # Use _scope(None) for the own+shared tenant boundary, FURTHER narrowed
-        # by any active session pin (ADR-0029 #251): _scope(None) injects the
-        # pinned profile via _resolve_profile(None) before the ADR-0034
-        # narrowing, so a pinned session (name=None caller) sees only the pinned
-        # profile here. Narrowing-only / fail-closed — the pin can never widen
-        # beyond own∪shared, so this never leaks across tenants.
+        # name=None: _scope(None) - the tenant boundary narrowed by any session
+        # pin (ADR-0029 #251), so a pinned session lists only the pinned profile.
+        # Explicit name: the boundary WITHOUT the pin (_caller_boundary) - the pin
+        # only defaults a missing profile and must not empty another one's list.
         # Profile-specific filtering is applied separately via profile_clause
-        # ($profile_name IN m.profile). This avoids the all(...) predicate
-        # mismatch when modules carry the full ancestor chain in their profile[]
-        # (e.g. [child_profile, parent_shared]) — narrowing own=[name] would
-        # cause the predicate to deny modules that have a parent profile not in own.
+        # ($profile_name IN m.profile): the modules OWNED by that profile (nodes
+        # carry their single owning profile, ADR-0034), parent profiles excluded.
         # The caller-can-see-this-profile check is already done via
         # _effective_allowed(name) above.
-        scope_params = srv._scope(None)
+        scope_params = _caller_boundary(srv) if name else srv._scope(None)
 
         # Routed through srv._single_bounded / srv._data_bounded so a tx-timeout
         # becomes OrmQueryTimeout (clean English, no Cypher leaked). _profile_modules
@@ -973,12 +1016,13 @@ def _profile_coverage(
     ``indexed_elsewhere`` is a "may be incomplete" signal - a real one derived
     purely from Neo4j, never from a hand-maintained brand/domain table.
 
-    Choke-point (M4, ADR-0034): both aggregations use ``**srv._scope(None)`` +
-    ``profile_name=name`` exactly like ``_profile_summary`` - NOT ``_scope(name)``,
-    which would narrow ``own=[name]`` and wrongly drop modules stamped with the
-    full ancestor chain (e.g. [child, parent_shared]). Profile membership is
-    applied separately via ``$profile_name IN m.profile``. The caller-can-see
-    check is done up front via ``_effective_allowed(name)``. Both queries are flat
+    Choke-point (M4, ADR-0034): both aggregations use the caller's tenant
+    boundary without the session pin (``_caller_boundary``) + ``profile_name=name``
+    exactly like ``_profile_summary``. Profile membership is
+    applied separately via ``$profile_name IN m.profile`` - the modules owned by
+    this profile only (single-owner stamping, ADR-0034), parent profiles
+    excluded. The caller-can-see check is done up front via
+    ``_effective_allowed(name)``. Both queries are flat
     aggregations (ADR-0048 no-VLP) bounded by ``_data_bounded`` (ADR-0050).
     """
     if not name:
@@ -1015,7 +1059,7 @@ def _profile_coverage(
             f"coverage (in-profile) for '{name}' (Odoo {odoo_version})",
             v=odoo_version,
             profile_name=name,
-            **srv._scope(None),
+            **_caller_boundary(srv),
         )
 
         # (2) per-category count across the WHOLE in-scope index (any profile).
@@ -1031,7 +1075,7 @@ def _profile_coverage(
             """,
             f"coverage (in-scope total) for '{name}' (Odoo {odoo_version})",
             v=odoo_version,
-            **srv._scope(None),
+            **_caller_boundary(srv),
         )
 
     in_profile = {r["category"]: r["cnt"] for r in in_profile_rows}
@@ -1068,7 +1112,7 @@ def _profile_coverage(
         f"profile_inspect(name={name!r}, method='coverage',"
         f" odoo_version={odoo_version!r})",
         "├─ Indexed module coverage by category"
-        f" (version {odoo_version}, inheritance-inclusive):",
+        f" (version {odoo_version}, this profile only; parent profiles not counted):",
         "│   in_profile = modules in this profile; indexed_elsewhere = modules of"
         " that category visible to you but NOT in this profile (a 'may be"
         " missing' signal).",

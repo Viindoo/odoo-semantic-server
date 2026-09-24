@@ -894,9 +894,10 @@ def find_deprecated_usage(
     Args:
         kind: Optional filter — restrict to one CoreSymbol.kind
             (e.g. 'orm_method', 'function').
-        profile_name: Optional inheritance-resolved profile filter. When set,
-            narrows the scan to nodes visible in this profile (including
-            parent profiles via the ancestor chain). Default None scans all.
+        profile_name: Optional profile filter: this profile plus globally
+            shared base profiles (no ancestor-chain expansion of private
+            parent profiles). It can only narrow your accessible scope.
+            Default None scans every profile you can access.
 
     Returns:
         Tree text grouped by module → model.method → deprecated symbol →

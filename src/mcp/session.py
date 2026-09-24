@@ -31,12 +31,15 @@ Storage (#251):
 See ``docs/adr/0029-implicit-session-context.md`` for design rationale.
 """
 
+import logging
 import os
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -152,13 +155,64 @@ _scope_cache: dict[int, tuple[tuple[list[str], list[str]], float]] = {}
 _scope_lock = threading.Lock()
 
 
+# Globally shared profile names for an admin's profile_name narrowing (60s).
+_shared_cache: tuple[list[str], float] | None = None
+
+
 def invalidate_allowed_profiles(tenant_id: int | None = None) -> None:
-    """Drop the cached tenant scope for *tenant_id* (or all when None)."""
+    """Drop the cached tenant scope for *tenant_id* (or all when None).
+
+    The shared-profile list is dropped too: any profile change can move a
+    profile in or out of the shared set.
+    """
+    global _shared_cache
     with _scope_lock:
+        _shared_cache = None
         if tenant_id is None:
             _scope_cache.clear()
         else:
             _scope_cache.pop(tenant_id, None)
+
+
+def resolve_shared_profiles(
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> list[str]:
+    """Globally shared profile names (``tenant_id IS NULL``), cached 60s.
+
+    The ``shared`` half every tenant's :func:`resolve_tenant_scope` carries. An
+    admin narrowing by ``profile_name`` keeps it too, so the narrowed view is
+    the same one a tenant owning that profile gets (ADR-0034). Raises when the
+    profile registry is unreachable; the caller decides how to degrade.
+    """
+    global _shared_cache
+    now = now_fn()
+    with _scope_lock:
+        if _shared_cache is not None and _shared_cache[1] > now:
+            return list(_shared_cache[0])
+    from src.db.pg import repo_store  # lazy import - avoids circular dependency
+    shared = repo_store().shared_profile_names()
+    with _scope_lock:
+        _shared_cache = (list(shared), now + _CACHE_TTL_SEC)
+    return list(shared)
+
+
+def admin_narrowing_shared() -> list[str]:
+    """The ``shared`` list an admin's ``profile_name`` narrowing keeps (``server._scope``).
+
+    Registry unreachable -> ``[]``: the narrowed view shrinks, never widens, and
+    the body is marked degraded so a resource read does not cache it.
+    """
+    try:
+        return resolve_shared_profiles()
+    except Exception as exc:  # noqa: BLE001 - any registry failure degrades the same way
+        logger.warning(
+            "shared profile list unavailable (%s); admin profile_name narrowing"
+            " omits shared base profiles", exc,
+        )
+        from src.mcp.degraded import mark_degraded
+        mark_degraded("shared profile list unavailable")
+        return []
 
 
 def resolve_tenant_scope(
