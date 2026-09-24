@@ -370,10 +370,16 @@ def _seed_coverage_module(driver, *, name, category, profile):
 
 
 def test_coverage_superset_diff_and_caveat(clean_neo4j):
-    """method='coverage' shows in_profile vs indexed_elsewhere per category and the
-    'absence != absence' caveat. Admin caller (own=None) so the whole version is
-    in-scope: a category present elsewhere but absent here surfaces with
-    in_profile=0, and one under-represented here flags [may be incomplete]."""
+    """method='coverage' shows own / with_ancestors / indexed_elsewhere per
+    category and the 'absence != absence' caveat. Admin caller (own=None) so the
+    whole version is in-scope: a category present elsewhere but absent here
+    surfaces with own=0, and one under-represented here flags [may be incomplete].
+
+    Updated for the round-2 owner decision C3 (f7d4e22): the single
+    ``in_profile=N`` number became two labelled numbers, ``own`` and
+    ``with_ancestors``. id_cov_p has no ancestor profile, so with_ancestors
+    equals own; indexed_elsewhere keeps the same meaning (visible, in neither)
+    and the same values. Nothing is loosened: every number is still pinned."""
     P = "id_cov_p"
     OTHER = "id_cov_other"
     _seed_coverage_module(clean_neo4j, name="id_acc_a", category="Accounting", profile=[P])
@@ -388,11 +394,13 @@ def test_coverage_superset_diff_and_caveat(clean_neo4j):
     out = _profile_inspect(name=P, method="coverage", odoo_version=TEST_VERSION)
 
     # Accounting: 2 here, 1 elsewhere -> incomplete signal.
-    assert "Accounting: in_profile=2, indexed_elsewhere=1  [may be incomplete]" in out, out
+    assert ("Accounting: own=2, with_ancestors=2, indexed_elsewhere=1  [may be incomplete]"
+            in out), out
     # Sales: fully here.
-    assert "Sales: in_profile=1, indexed_elsewhere=0" in out, out
-    # Inventory: absent here but visible elsewhere -> in_profile=0 surfaced.
-    assert "Inventory: in_profile=0, indexed_elsewhere=1  [may be incomplete]" in out, out
+    assert "Sales: own=1, with_ancestors=1, indexed_elsewhere=0" in out, out
+    # Inventory: absent here but visible elsewhere -> own=0 surfaced.
+    assert ("Inventory: own=0, with_ancestors=0, indexed_elsewhere=1  [may be incomplete]"
+            in out), out
     # Caveat present, ASCII '!=' (M2), never the Unicode not-equal U+2260.
     assert "Absence from this list != absence from the product" in out
     assert "≠" not in out  # the banned Unicode not-equal sign must not ship
@@ -429,7 +437,11 @@ def test_coverage_tenant_leak_guard(clean_neo4j):
             return allowed
         return [profile_name] if profile_name in allowed else []
 
-    def _scope_owned(profile_name=None):
+    # Round 2 (C2, 0b4fda3): server._scope grew a keyword-only ``pin`` flag
+    # (``_scope(None, pin=False)`` = the caller's boundary without the session
+    # pin). The stand-in accepts it and returns the same owned-only boundary
+    # either way, so the leak assertion below keeps its full strength.
+    def _scope_owned(profile_name=None, *, pin=True):
         return {"own": ["id_cov_owned"], "shared": []}
 
     with patch.object(srv, "_effective_allowed", side_effect=_allow_owned), \

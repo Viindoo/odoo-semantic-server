@@ -20,6 +20,18 @@ log = logging.getLogger(__name__)
 
 _SOURCE_DATE = "2026-05-08"
 
+# ADR-0055 - why this list has no oracle: the guarded modules are Odoo
+# Enterprise (OEEL-1) source, which this repo does not read, so no parser can
+# re-derive which Odoo versions ship each name. Where a module IS indexed at a
+# version with an edition, that manifest-derived edition is the source of truth
+# and check_module_exists does not consult this list; the list only fills the
+# gap for names the index does not hold. ``since_version``
+# is therefore curated, unverified data: the first Odoo version (``"17.0"``)
+# that ships the module as Enterprise, set by an admin in the ee_modules table.
+# ``None`` means "not recorded" and the guard applies at every version. The
+# static fallback records no ``since_version`` for any row, on purpose - a
+# guessed first version would silently drop the warning at older versions.
+
 # ---------------------------------------------------------------------------
 # Static fallback — exact mirror of m13_011 INSERT (16 entries).
 # KHÔNG xóa khi DB-backed helper hoạt động; là safety net cho startup-without-DB.
@@ -117,6 +129,28 @@ def get_ee_modules(conn=None, *, force_refresh: bool = False) -> list[dict[str, 
 
     _cache = (rows, now + _CACHE_TTL)
     return rows
+
+
+def _version_key(version: str) -> tuple[int, ...] | None:
+    try:
+        return tuple(int(part) for part in version.split("."))
+    except (AttributeError, ValueError):
+        return None
+
+
+def ee_guard_applies(entry: dict[str, Any], odoo_version: str | None) -> bool:
+    """True when guard row *entry* covers *odoo_version*.
+
+    A row applies from its ``since_version`` onward (numeric compare, so
+    ``9.0 < 17.0``). A row without ``since_version``, or a version pair that is
+    not numeric, applies at every version - an unknown window keeps the warning
+    rather than hiding it.
+    """
+    since = _version_key(entry.get("since_version") or "")
+    current = _version_key(odoo_version or "")
+    if since is None or current is None:
+        return True
+    return current >= since
 
 
 def invalidate_ee_modules_cache() -> None:
