@@ -35,6 +35,7 @@ import functools
 import logging
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.indexer import incremental as _incremental
@@ -344,6 +345,131 @@ def _observed_modules(scan) -> list:
             shadowed_paths=tuple(scan.shadowed.get(name, ())),
         ))
     return observed
+
+
+RUN_SKIP = "skip"
+RUN_SYNC = "sync"
+RUN_INCREMENTAL = "incremental"
+RUN_FULL = "full"
+
+
+@dataclass(frozen=True)
+class RunPlan:
+    """How ``_index_repo`` treats a repo this run (shared with ``lifecycle-audit``).
+
+    ``mode``: ``skip`` (HEAD unchanged and the ledger reflects it), ``sync``
+    (HEAD unchanged but the ledger is behind: scan + ledger, no re-parse),
+    ``incremental`` (re-parse the modules changed since ``diff_base``) or
+    ``full`` (re-parse everything: ``--full``, first index, force-push).
+    """
+    mode: str
+    diff_base: str | None
+    head_unchanged: bool
+    force_push: bool
+
+
+def plan_repo_run(
+    repo_path: Path,
+    current_head: str | None,
+    last_head: str | None,
+    presence_head: str | None,
+    rewrite_names: list[str],
+    *,
+    full_reindex: bool,
+    ledger: bool,
+) -> RunPlan:
+    """Decide skip / sync / incremental / full for one repo (ADR-0007 + ADR-0056).
+
+    *ledger* False (no lifecycle ledger) keeps the pre-ledger rule: HEAD equal
+    to ``repos.head_sha`` skips.
+    """
+    head_unchanged = bool(current_head) and current_head == last_head
+    if not full_reindex and head_unchanged and (
+        not ledger or (presence_head == current_head and not rewrite_names)
+    ):
+        return RunPlan(RUN_SKIP, last_head, True, False)
+    diff_base: str | None = None if full_reindex else last_head
+    force_push = bool(
+        diff_base and current_head and not head_unchanged
+        and not _incremental.is_ancestor(repo_path, diff_base, current_head)
+    )
+    if force_push:
+        diff_base = None
+    if not full_reindex and head_unchanged:
+        mode = RUN_SYNC
+    elif diff_base is None:
+        mode = RUN_FULL
+    else:
+        mode = RUN_INCREMENTAL
+    return RunPlan(mode, diff_base, head_unchanged, force_push)
+
+
+@dataclass
+class LifecycleObservation:
+    """The lifecycle verdict of one repo scan before anything is written.
+
+    ``lifecycle_on``: the ledger is updated this run (a ledger, a git HEAD and
+    a registered branch). ``rows`` are the repo's ledger rows (empty when
+    lifecycle is off), ``transitions`` / ``gates`` the B5 classification and
+    gate verdict, ``attention`` the operator messages collected so far
+    (version rule, git trust, gate reasons).
+    """
+    trusted: bool
+    lifecycle_on: bool
+    rows: list[dict]
+    transitions: object
+    gates: object
+    attention: list[str] = field(default_factory=list)
+
+
+def observe_lifecycle(
+    repo: dict,
+    scan,
+    presence,
+    current_head: str | None,
+    *,
+    allow_mass_retire: bool = False,
+) -> LifecycleObservation:
+    """Trust, classification and gates of one repo scan (ADR-0056, B5).
+
+    Read-only: reads the repo's ledger rows through *presence* (None = no
+    ledger) and git, writes nothing. The per-repo index path and the dry-run
+    ``lifecycle-audit`` both decide through this function.
+    """
+    from src.git_utils import head_matches_remote_branch, remote_branch_ref_exists
+    from src.indexer import lifecycle
+
+    repo_path = Path(repo["local_path"])
+    branch: str | None = repo.get("branch")
+    attention: list[str] = list(scan.attention)
+    trusted = head_matches_remote_branch(repo_path, branch)
+    if scan.tracked_paths is None:
+        attention.append(
+            "git tracking unavailable (not a git work tree, no commit yet, or git "
+            "refused the repository, e.g. safe.directory ownership): scan untrusted, "
+            "no module retired"
+        )
+    elif branch and not remote_branch_ref_exists(repo_path, branch):
+        attention.append(
+            f"no origin/{branch} ref: scan trust falls back to the checked-out branch name"
+        )
+    lifecycle_on = presence is not None and bool(current_head) and bool(branch)
+    if presence is not None and not lifecycle_on:
+        attention.append(
+            "lifecycle ledger not updated: "
+            + ("no git HEAD" if not current_head else "no branch registered")
+            + "; no module retired"
+        )
+    rows: list[dict] = presence.rows_for_repo(repo["id"]) if lifecycle_on else []
+    transitions = lifecycle.classify(rows, scan)
+    gates = lifecycle.apply_gates(
+        transitions, scan, trusted=trusted, allow_mass_retire=allow_mass_retire,
+    )
+    attention.extend(gates.reasons)
+    return LifecycleObservation(
+        trusted=trusted, lifecycle_on=lifecycle_on, rows=rows,
+        transitions=transitions, gates=gates, attention=attention,
+    )
 
 
 REWRITE_NO_NODE = "no_node"
@@ -789,8 +915,6 @@ def _index_repo(
     # through it so that test patches applied to ``src.indexer.pipeline.<name>``
     # are honoured (see the module docstring). Deferred (function-local) import
     # keeps a cold ``import src.indexer.pipeline_repo`` cycle-free.
-    from src.git_utils import head_matches_remote_branch, remote_branch_ref_exists
-    from src.indexer import lifecycle
     from src.indexer import pipeline as _pipeline
 
     del gc  # deprecated: retirement is no longer opt-in (ADR-0056)
@@ -850,26 +974,24 @@ def _index_repo(
         presence_head = presence.presence_head_sha(repo["id"])
         rewrite_names = presence.needs_rewrite_names(repo["id"])
 
-    head_unchanged = bool(current_head) and current_head == last_head
-    if not full_reindex and head_unchanged and (
-        presence is None or (presence_head == current_head and not rewrite_names)
-    ):
+    plan = plan_repo_run(
+        repo_path, current_head, last_head, presence_head, rewrite_names,
+        full_reindex=full_reindex, ledger=presence is not None,
+    )
+    if plan.mode == RUN_SKIP:
         _logger.info(
             "Repo %s unchanged (HEAD %s) - skipping reindex", url, current_head[:8],
         )
         return dict(_EMPTY_COUNTERS)
 
-    diff_base: str | None = None if full_reindex else last_head
-    if diff_base and current_head and not head_unchanged and not _incremental.is_ancestor(
-        repo_path, diff_base, current_head
-    ):
+    diff_base: str | None = plan.diff_base
+    if plan.force_push:
         _logger.warning(
             "Repo %s: force-push or history rewrite detected "
             "(stored %s not ancestor of HEAD %s) - falling back to full reindex",
-            url, diff_base[:8], current_head[:8],
+            url, last_head[:8], current_head[:8],
         )
-        diff_base = None
-    sync_only = not full_reindex and head_unchanged
+    sync_only = plan.mode == RUN_SYNC
     if sync_only:
         _logger.info(
             "Repo %s: HEAD %s unchanged but the lifecycle ledger is behind it "
@@ -902,32 +1024,14 @@ def _index_repo(
     owning_profile: str = _profiles_arr[0]
 
     # === Lifecycle pre-write: trust, gates, self-heal (ADR-0056) ===
-    branch: str | None = repo.get("branch")
-    attention: list[str] = list(scan.attention)
-    trusted = head_matches_remote_branch(repo_path, branch)
-    if scan.tracked_paths is None:
-        attention.append(
-            "git tracking unavailable (not a git work tree, no commit yet, or git "
-            "refused the repository, e.g. safe.directory ownership): scan untrusted, "
-            "no module retired"
-        )
-    elif branch and not remote_branch_ref_exists(repo_path, branch):
-        attention.append(
-            f"no origin/{branch} ref: scan trust falls back to the checked-out branch name"
-        )
-    lifecycle_on = presence is not None and bool(current_head) and bool(branch)
-    if presence is not None and not lifecycle_on:
-        attention.append(
-            "lifecycle ledger not updated: "
-            + ("no git HEAD" if not current_head else "no branch registered")
-            + "; no module retired"
-        )
-    rows: list[dict] = presence.rows_for_repo(repo["id"]) if lifecycle_on else []
-    transitions = lifecycle.classify(rows, scan)
-    gates = lifecycle.apply_gates(
-        transitions, scan, trusted=trusted, allow_mass_retire=allow_mass_retire,
+    observation = observe_lifecycle(
+        repo, scan, presence, current_head, allow_mass_retire=allow_mass_retire,
     )
-    attention.extend(gates.reasons)
+    attention: list[str] = observation.attention
+    lifecycle_on = observation.lifecycle_on
+    rows = observation.rows
+    transitions = observation.transitions
+    gates = observation.gates
     for reason in gates.reasons:
         _logger.warning("Repo %s: lifecycle gate: %s", url, reason)
 

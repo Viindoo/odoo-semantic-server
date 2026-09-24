@@ -98,6 +98,15 @@ class ReconcileReport:
     ``orphans_deferred`` maps an orphan Module to the unsynced profiles that
     still claim it. ``gates_tripped`` holds ``orphan_sweep:<gate>`` when the
     sweep was stopped by G-B. ``needs_attention`` is what makes the CLI exit 3.
+
+    Also filled, executed or dry, for the operator and ``lifecycle-audit``:
+    ``owners_kept`` maps an owner-dropped name to the repos that keep it;
+    ``orphan_candidates`` / ``child_orphan_candidates`` are the orphans the
+    sweep (when it runs) found decidable before the mass gate (swept unless
+    G-B trips);
+    ``orphan_evidence`` (dry run only) maps an orphan Module to the git proof of
+    how it left its repo: ``{repo_id, removing_commit: {sha, date, subject},
+    successor: {names, source} | None}``.
     """
     odoo_version: str
     dry_run: bool = False
@@ -118,6 +127,10 @@ class ReconcileReport:
     errors: dict[str, str] = field(default_factory=dict)
     gc: dict[str, int] = field(default_factory=dict)
     presence_advanced: list[int] = field(default_factory=list)
+    owners_kept: dict[str, list[str]] = field(default_factory=dict)
+    orphan_candidates: list[str] = field(default_factory=list)
+    child_orphan_candidates: list[str] = field(default_factory=list)
+    orphan_evidence: dict[str, dict] = field(default_factory=dict)
     # Excluded co-owner drops waiting for unsynced repos that may ship the
     # module: name -> repo labels (re-evaluated every run; the node is untouched).
     excluded_owner_waiting: dict[str, list[str]] = field(default_factory=dict)
@@ -313,6 +326,9 @@ class _Reconciler:
         self.report = report
         self._attention: dict[int, list[str]] = {}
         self._owners = PotentialOwners(store, conn=conn)
+        # Dry run: repos whose presence head WOULD advance (step 1b), treated
+        # as synced by the sweep exactly like the executed mark_presence_synced.
+        self._assumed_synced: set[int] = set()
         self._heads: dict[int, str | None] | None = None
 
     # --- helpers -------------------------------------------------------------
@@ -469,6 +485,7 @@ class _Reconciler:
     def _drop_owner(self, name: str, rows: list[dict], owners: list[dict]) -> None:
         survivor_profiles = {o["profile_name"] for o in owners}
         gone_profiles = {r["profile_name"] for r in rows} - survivor_profiles
+        self.report.owners_kept[name] = sorted({_repo_label(o) for o in owners})
         if not self.execute:
             self.report.owner_dropped.append(name)
             return
@@ -550,15 +567,23 @@ class _Reconciler:
     # --- 1b. presence heads held back only by pending names -------------------
 
     def advance_presence(self, advance: Mapping[int, str]) -> None:
-        if not self.execute or not advance:
+        if not advance or not (self.execute or self.report.dry_run):
             return
-        still_pending = {
-            r["repo_id"] for r in self.store.pending_retirements(self.v, conn=self.conn)
-        }
+        pending_rows = self.store.pending_retirements(self.v, conn=self.conn)
+        if self.execute:
+            still_pending = {r["repo_id"] for r in pending_rows}
+        else:
+            # What step 1 would have resolved (retired / owner dropped) is no
+            # longer pending after an executed run.
+            resolved = set(self.report.retired) | set(self.report.owner_dropped)
+            still_pending = {r["repo_id"] for r in pending_rows if r["name"] not in resolved}
         for repo_id, head in sorted(advance.items()):
             if repo_id in still_pending or not head:
                 continue
-            self.store.mark_presence_synced(repo_id, head, conn=self.conn)
+            if self.execute:
+                self.store.mark_presence_synced(repo_id, head, conn=self.conn)
+            else:
+                self._assumed_synced.add(repo_id)
             self.report.presence_advanced.append(repo_id)
 
     # --- 2. orphan sweep -----------------------------------------------------
@@ -574,14 +599,23 @@ class _Reconciler:
         blocking repos get lifecycle_attention naming what waits for them.
         """
         sync_rows = self.store.repo_sync_state(self.v, conn=self.conn)
-        blocking = [r for r in sync_rows if not r["synced"]]
+        blocking = [
+            r for r in sync_rows
+            if not r["synced"] and r["repo_id"] not in self._assumed_synced
+        ]
         unsynced_profiles = {r["profile_name"] for r in blocking}
         unsynced_repo_ids = {r["repo_id"] for r in blocking}
         all_synced = not blocking
         repo_by_id = {r["repo_id"]: r for r in sync_rows}
 
-        present = self.store.present_names(self.v, conn=self.conn)
-        orphans = self.writer.orphan_module_names(self.v, present)
+        # Names step 1 retired: executed, their rows are retired and their
+        # nodes gone (no-op subtraction); in a dry run both still exist and
+        # must not be counted again as orphans.
+        retired = set(self.report.retired)
+        present = self.store.present_names(self.v, conn=self.conn) - retired
+        orphans = [
+            n for n in self.writer.orphan_module_names(self.v, present) if n not in retired
+        ]
         identity = self.writer.module_identity(self.v, orphans)
         decidable: list[str] = []
         for name in orphans:
@@ -622,7 +656,25 @@ class _Reconciler:
         # license-skipped are removals by design, not a mass event (real case:
         # 436 modules flipped installable False at tvtmaaddons 19.0).
         exempt = self.store.excluded_names(self.v, conn=self.conn)
-        indexed = self.writer.module_profiles(self.v)
+        indexed = set(self.writer.module_profiles(self.v)) - retired
+        self.report.orphan_candidates = sorted(decidable)
+        self.report.child_orphan_candidates = sorted(child_names)
+        if self.report.dry_run:
+            for name in orphans:
+                found = self._orphan_evidence(name, identity.get(name, {}), repo_by_id, present)
+                if found is not None:
+                    repo, _path, evidence, successor = found
+                    self.report.orphan_evidence[name] = {
+                        "repo_id": repo["repo_id"],
+                        "removing_commit": {
+                            "sha": evidence.sha, "date": evidence.date,
+                            "subject": evidence.subject,
+                        },
+                        "successor": (
+                            {"names": list(successor.names), "source": successor.source}
+                            if successor else None
+                        ),
+                    }
         n_swept = len((set(decidable) | set(child_names)) - exempt)
         n_before = len((set(indexed) | set(child_names)) - exempt)
         # Total wipe here = the sweep would empty the version while the ledger
@@ -692,26 +744,31 @@ class _Reconciler:
         self._embedding_orphans(present, unsynced_profiles, delete=True)
         return all_synced
 
-    def _record_orphan(
+    def _orphan_evidence(
         self, name: str, ident: Mapping, repo_by_id: Mapping[int, Mapping],
         present: set[str],
-    ) -> None:
-        """Ledger history for a swept node, when git can prove how it left."""
+    ):
+        """Git proof of how an orphan Module left the repo that last wrote it.
+
+        Returns ``(repo row, repo-relative path, RemovalEvidence, ledger
+        Successor | None)``, or None when the node has no registered repo with a
+        checkout, or git has no deleting commit with a parent for its manifest.
+        """
         repo = repo_by_id.get(ident.get("repo_id"))
         path = ident.get("path")
         if repo is None or not path or not repo.get("local_path"):
-            return
+            return None
         local_path = str(repo["local_path"])
         if Path(path).is_absolute():
             try:
                 path = str(Path(path).relative_to(local_path))
             except ValueError:
-                return
+                return None
         evidence, successor = removal_evidence(
             local_path, path, _MANIFEST_CANDIDATES, present,
         )
         if evidence is None or evidence.parent_sha is None:
-            return
+            return None
         ledger_successor = (
             LedgerSuccessor(successor.names, successor.source) if successor else None
         )
@@ -719,6 +776,17 @@ class _Reconciler:
             declared = self.writer.modules_by_old_technical_name(self.v, [name]).get(name)
             if declared:
                 ledger_successor = LedgerSuccessor(tuple(declared), SUCCESSOR_OLD_TECHNICAL_NAME)
+        return repo, path, evidence, ledger_successor
+
+    def _record_orphan(
+        self, name: str, ident: Mapping, repo_by_id: Mapping[int, Mapping],
+        present: set[str],
+    ) -> None:
+        """Ledger history for a swept node, when git can prove how it left."""
+        found = self._orphan_evidence(name, ident, repo_by_id, present)
+        if found is None:
+            return
+        repo, path, evidence, ledger_successor = found
         inserted = self.store.record_orphan_retired(
             repo["repo_id"], name,
             profile_name=repo["profile_name"],
@@ -853,7 +921,11 @@ def reconcile_version(
                            decided either way, and the INHERITS re-link runs
                            whenever a node was deleted or re-owned.
         dry_run:           compute the report without the lock, deleting and
-                           writing nothing.
+                           writing nothing. The decisions are those of an
+                           executed run: names step 1 would retire are not
+                           counted as orphans, and repos in *advance_presence*
+                           whose pending names would all be resolved count as
+                           synced for the sweep (``lifecycle-audit``).
         conn:              an autocommit connection the caller owns (not from
                            the shared pool) to hold the ledger lock and run
                            every ledger / embeddings statement on. None = one
