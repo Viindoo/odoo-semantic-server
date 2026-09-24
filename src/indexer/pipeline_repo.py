@@ -1846,6 +1846,12 @@ def _index_repo(
     )
     attention: list[str] = observation.attention
     lifecycle_on = observation.lifecycle_on
+    # Before the first graph write: the version-wide post-pass must re-run
+    # (E2E-D4), even if this run dies before reaching it.
+    mark_dirty = getattr(writer, "mark_post_pass_dirty", None)
+    if callable(mark_dirty):
+        for _v in sorted({odoo_version, scan.odoo_version} - {None, "", "unknown"}):
+            mark_dirty(_v)
     rows = observation.rows
     transitions = observation.transitions
     gates = observation.gates

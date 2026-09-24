@@ -362,6 +362,83 @@ def _finish_lifecycle(lc: dict) -> dict:
     return lc
 
 
+_POST_PASS_TOKEN: str | None = None
+# The code that derives the post-pass edges (writers, derivation rules,
+# curated framework bases): any change to it re-runs the post-pass once.
+_POST_PASS_SOURCES = (
+    "pipeline.py", "writer_neo4j.py", "writer_neo4j_ui.py", "writer_neo4j_orm.py",
+    "framework_bases.py", "parser_odoo_core.py",
+)
+
+
+def _post_pass_token() -> str:
+    """Code identity the version-wide post-pass state is stamped with.
+
+    A digest of the modules that derive the post-pass edges, so a deploy that
+    changes the derivation re-runs the post-pass on its first run even when
+    the package metadata version was not rebuilt.
+    """
+    global _POST_PASS_TOKEN
+    if _POST_PASS_TOKEN is None:
+        digest = hashlib.sha256()
+        here = Path(__file__).resolve().parent
+        for name in _POST_PASS_SOURCES:
+            try:
+                digest.update((here / name).read_bytes())
+            except OSError:
+                digest.update(name.encode())
+        _POST_PASS_TOKEN = f"src-{digest.hexdigest()[:16]}"
+    return _POST_PASS_TOKEN
+
+
+def post_pass_versions(writer: IndexWriterProtocol, versions) -> tuple[list[str], object]:
+    """``(versions whose post-pass must run, start instant)`` (E2E-D4).
+
+    The version-wide post-pass (same-name INHERITS, OWL edges, test surface)
+    derives edges from the graph alone. It is needed at a version unless the
+    version's ``PostPassState`` is clean and stamped with this code
+    (``writer.post_pass_current``): every repo run that is not the unchanged
+    skip marks its version dirty BEFORE writing, and so do the lifecycle
+    deletes / re-owns and ``index-core``. A writer that cannot tell (no such
+    method, or any answer but True) runs the post-pass - never skip on doubt.
+    The start instant (Neo4j clock) is taken before the check, for
+    :func:`record_post_pass`.
+    """
+    token = _post_pass_token()
+    started = writer.server_now() if callable(getattr(writer, "server_now", None)) else None
+    current = getattr(writer, "post_pass_current", None)
+    needed: list[str] = []
+    for v in sorted(set(versions)):
+        try:
+            clean = callable(current) and current(v, token) is True
+        except Exception:  # noqa: BLE001 - the state is an optimization only
+            _logger.warning("post-pass state of %s unreadable; running the post-pass", v,
+                            exc_info=True)
+            clean = False
+        if clean:
+            _logger.info(
+                "post-pass %s: skipped (nothing written or deleted at this version since "
+                "its last post-pass)", v,
+            )
+        else:
+            needed.append(v)
+    return needed, started
+
+
+def record_post_pass(writer: IndexWriterProtocol, versions, started) -> None:
+    """Stamp each version's post-pass clean; never fatal (a failure only means
+    the next run re-runs it)."""
+    record = getattr(writer, "record_post_pass", None)
+    if not callable(record) or started is None:
+        return
+    token = _post_pass_token()
+    for v in versions:
+        try:
+            record(v, token, started=started)
+        except Exception:  # noqa: BLE001
+            _logger.warning("post-pass state of %s not recorded", v, exc_info=True)
+
+
 def run_lifecycle_reconcile(
     writer: IndexWriterProtocol,
     versions,
@@ -708,7 +785,13 @@ def index_profile(
             # silent gap.  To resolve: re-run index_profile, or accept the miss (next full
             # reindex fills it).  See IndexWriterProtocol.reconcile_same_name_inherits docstring.
             _indexed_versions: set[str] = {r["odoo_version"] for r in repos}
-            for _rv in sorted(_indexed_versions):
+            # E2E-D4: the post-pass derives edges from the graph alone, so a
+            # version nothing wrote or deleted since its last post-pass (with
+            # this code) is skipped (post_pass_versions).
+            _post_versions, _post_started = post_pass_versions(
+                writer, _indexed_versions | set(lifecycle["versions"]),
+            )
+            for _rv in _post_versions:
                 writer.reconcile_same_name_inherits(_rv)
                 # OWLComp EXTENDS / BOUND_TO: the parent component or the bound
                 # model may be written by any repo of the version.
@@ -720,9 +803,10 @@ def index_profile(
             # exercises the SAME production code path (not a copy) - red-before-green.
             reconcile_test_surface(
                 writer,
-                sorted(_indexed_versions),
+                _post_versions,
                 framework_profiles=_profiles_for_run(repos, profile_name),
             )
+            record_post_pass(writer, _post_versions, _post_started)
             # === End test-surface reconciliation ===
 
             # === Lifecycle reconcile (ADR-0056): the only place modules retire ===
@@ -1014,6 +1098,9 @@ def index_core(
     # even though the index-core run itself reports success.
     framework_helpers = seed_framework_test_helpers(odoo_version, source_root)
     writer.write_framework_test_helpers(framework_helpers)
+    # The next profile run must re-run its post-pass (it unions the profile
+    # array into these helpers and re-derives INHERITS_TEST), skip night or not.
+    writer.mark_post_pass_dirty(odoo_version)
     _logger.info(
         "index_core: seeded %d framework TestHelper nodes (@framework)",
         len(framework_helpers),
