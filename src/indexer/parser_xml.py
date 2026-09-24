@@ -4,6 +4,7 @@ from pathlib import Path
 
 from lxml import etree as _lxml_etree
 
+from . import parse_health
 from ._xmlid import qualify_xmlid
 from .models import (
     LintViolationInfo,
@@ -99,7 +100,14 @@ def _get_relaxng_validator(
         except Exception:
             _logger.exception("Failed to load RelaxNG schema %r", rng_path)
             _RELAXNG_CACHE[cache_key] = None
-    return _RELAXNG_CACHE[cache_key]
+    validator = _RELAXNG_CACHE[cache_key]
+    if validator is None:
+        # The schema exists but could not be loaded: this view's violations
+        # were not computed, so the module's LintViolation set is incomplete.
+        parse_health.note_failure(
+            rng_path, "RelaxNG schema could not be loaded", transient=True,
+        )
+    return validator
 
 
 def _validate_arch_relaxng(
@@ -125,7 +133,8 @@ def _validate_arch_relaxng(
     # view.arch is the serialized <field name="arch" type="xml">...</field> element.
     try:
         arch_el = _lxml_etree.fromstring(view.arch.encode())
-    except _lxml_etree.XMLSyntaxError:
+    except _lxml_etree.XMLSyntaxError as exc:
+        parse_health.note_failure(view.file_path, f"arch of {view.xmlid} not valid XML: {exc}")
         return []
 
     # The arch element's children are the actual view root elements (e.g. <tree>/<list>).
@@ -532,11 +541,17 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[ViewInfo]:
     """Parse an XML file, return list of ViewInfo found.
 
     Uses lxml.etree.parse() so that elements carry .sourceline for A3 provenance.
-    Falls back to an empty list on any parse error.
+    Falls back to an empty list on any parse error (reported to parse_health).
     """
     try:
         tree = _lxml_etree.parse(filepath)
-    except (_lxml_etree.XMLSyntaxError, OSError):
+    except (_lxml_etree.XMLSyntaxError, OSError) as exc:
+        if isinstance(exc, _lxml_etree.XMLSyntaxError) and parse_health.empty_source(filepath):
+            return []
+        parse_health.note_failure(
+            filepath, f"XML not parsed: {exc}",
+            transient=isinstance(exc, OSError),
+        )
         return []
     root = tree.getroot()
     views = []
@@ -555,11 +570,18 @@ def parse_reports_file(filepath: str, module: ModuleInfo) -> list[ReportInfo]:
       2. v8-v13 ``<report .../>`` shorthand tags (never visited by
          ``root.iter("record")`` — handled via a separate ``root.iter("report")``).
 
-    Uses lxml.etree.parse() for .sourceline provenance. Empty list on parse error.
+    Uses lxml.etree.parse() for .sourceline provenance. Empty list on parse
+    error (reported to parse_health).
     """
     try:
         tree = _lxml_etree.parse(filepath)
-    except (_lxml_etree.XMLSyntaxError, OSError):
+    except (_lxml_etree.XMLSyntaxError, OSError) as exc:
+        if isinstance(exc, _lxml_etree.XMLSyntaxError) and parse_health.empty_source(filepath):
+            return []
+        parse_health.note_failure(
+            filepath, f"XML not parsed: {exc}",
+            transient=isinstance(exc, OSError),
+        )
         return []
     root = tree.getroot()
     reports: list[ReportInfo] = []
@@ -608,6 +630,10 @@ def parse_module(
 
     # RelaxNG validation — v15+ gate via VersionRegistry
     should_validate = _RELAXNG_GATE.resolve_version(module_info.odoo_version, default=False)
+    if should_validate and rng_root is None:
+        # No RelaxNG schema dir this run: violations were not looked for, so
+        # the existing LintViolation nodes are neither confirmed nor stale.
+        parse_health.note_unobserved("LintViolation")
     if should_validate:
         for view in result.views:
             violations = _validate_arch_relaxng(view, rng_root)

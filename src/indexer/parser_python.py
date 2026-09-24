@@ -6,8 +6,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import parse_health
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from .parser_util import parse_external_source
+from .version_registry import python3_source_expected
 
 _logger = logging.getLogger("src.indexer.parser")
 
@@ -1159,15 +1161,23 @@ def parse_file(
     ERROR. ``stats`` (when supplied by :func:`parse_module`) accumulates
     ``fallback`` and ``fallback_zero_models`` counts so the caller can emit one
     INFO summary per module instead of one line per file (#285 zero-noise).
+
+    Parse completeness (ADR-0056 B14): an unreadable file, a v11+ file that is
+    not valid Python 3, and a fallback that recovers no model despite model
+    tokens are reported to :mod:`parse_health`, which keeps the module out of
+    the intra-module entity prune for this run.
     """
     try:
         source = Path(filepath).read_text(encoding='utf-8', errors='ignore')
-    except OSError:
+    except OSError as exc:
+        parse_health.note_failure(filepath, f"unreadable: {exc}", transient=True)
         return []
 
     try:
         models = _parse_era2_ast(source, module_info, filename=filepath)
     except SyntaxError as exc:
+        if python3_source_expected(module_info.odoo_version):
+            parse_health.note_failure(filepath, f"not valid Python 3: {exc}")
         # Graceful degradation: a SyntaxError means ast.parse rejected the file
         # (Python-2 idioms in v8-v10 source). The text-regex fallback recovers
         # model identity rather than dropping the file (the #285 orphan bug).
@@ -1198,6 +1208,9 @@ def parse_file(
                     stats["fallback_zero_models_with_tokens"] = (
                         stats.get("fallback_zero_models_with_tokens", 0) + 1
                     )
+                parse_health.note_failure(
+                    filepath, "text-regex fallback recovered 0 models despite model tokens",
+                )
                 _logger.warning(
                     "parse_file: text-regex fallback recovered 0 models from %s "
                     "(Odoo %s) despite model-definition tokens "

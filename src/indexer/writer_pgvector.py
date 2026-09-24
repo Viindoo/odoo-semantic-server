@@ -614,8 +614,15 @@ def write_module_embeddings(
     chunks: list[EmbeddingChunk],
     embedder: EmbedderClient,
     profile_name: str | None = None,
+    *,
+    replace: bool = True,
 ) -> int:
     """Delete-then-insert embeddings for (module, version[, profile_name]) atomically.
+
+    ``replace=False`` upserts without the delete: rows of chunks the parse did
+    not produce are kept. The pipeline uses it for a module whose parse was
+    degraded (a file could not be read or parsed, ADR-0056 B14), so a chunk is
+    never dropped because its file was unreadable this run.
 
     profile_name scopes the delete to a single tenant's chunks so re-indexing
     profile A does not erase profile B's chunks for the same module/version.
@@ -689,7 +696,8 @@ def write_module_embeddings(
         try:
             with conn.cursor() as cur:
                 cur.execute(_WRITE_SCOPE_SQL)
-                _delete_module_embeddings_cur(cur, module, version, [profile_name])
+                if replace:
+                    _delete_module_embeddings_cur(cur, module, version, [profile_name])
                 rows = [
                     c.as_tuple(vecs[i], emb_model, emb_dim)
                     for i, c in enumerate(live_chunks)
@@ -786,6 +794,14 @@ def delete_module_embeddings(
         return 0
     with _write_scope(conn), conn.cursor() as cur:
         deleted = _delete_module_embeddings_cur(cur, module, version, profiles)
+    _warn_short_delete(module, version, profiles, deleted, expected)
+    return deleted
+
+
+def _warn_short_delete(
+    module: str, version: str, profiles: list[str], deleted: int, expected: int | None,
+) -> None:
+    """WARNING when a delete removed fewer rows than a prior read reported."""
     if expected is not None and deleted < expected:
         _logger.warning(
             "embeddings delete for module=%s version=%s profiles=%s removed %d of "
@@ -793,6 +809,75 @@ def delete_module_embeddings(
             "scope) or deleted concurrently", module, version, ",".join(profiles),
             deleted, expected,
         )
+
+
+def delete_module_embeddings_except(
+    conn,
+    module: str,
+    version: str,
+    profile_name: str,
+    keep_keys: Iterable[tuple],
+    *,
+    expected: int | None = None,
+    by_entity: bool = False,
+    delete: bool = True,
+) -> int:
+    """Delete *module*'s rows for *profile_name* whose chunk key is not in *keep_keys*.
+
+    The embedding half of the intra-module entity prune (ADR-0056 B14): the
+    pipeline upserts a module's chunks, and once the prune decided the
+    module may lose what its parse no longer produced, this removes the
+    remaining rows. A key is ``(chunk_type, entity_name, file_path,
+    chunk_idx)`` - the ``ux_embeddings_chunk`` identity within one module,
+    version and profile. An empty *keep_keys* deletes every row of the
+    module for that profile. ``GLOBAL_PROFILE`` is never touched. Runs on
+    the caller's *conn* with the unrestricted RLS scope and the same commit
+    rules and *expected* WARNING as :func:`delete_module_embeddings` (a
+    FORCEd policy must not hide the rows the prune decided to remove).
+
+    *by_entity*: a row is kept when its ``(chunk_type, entity_name)`` is among
+    *keep_keys*, whatever its file path or chunk index - the rule of a parse
+    that wrote no rows (``--no-embed``): only rows of entities the parse no
+    longer produces go, never a live entity's row that simply was not
+    re-embedded. *delete* False only counts.
+
+    Returns the number of rows deleted (counted).
+    """
+    if not profile_name or profile_name == GLOBAL_PROFILE:
+        return 0
+    keys = sorted(
+        {(str(k[0]), k[1], k[2], int(k[3])) for k in keep_keys},
+        key=lambda k: (k[0], k[1] or "", k[2] or "", k[3]),
+    )
+    match = (
+        "k.chunk_type = e.chunk_type AND k.entity_name IS NOT DISTINCT FROM e.entity_name"
+    )
+    if not by_entity:
+        match += (
+            " AND k.file_path IS NOT DISTINCT FROM e.file_path AND k.chunk_idx = e.chunk_idx"
+        )
+    verb = "DELETE FROM embeddings e" if delete else "SELECT count(*) FROM embeddings e"
+    with _write_scope(conn), conn.cursor() as cur:
+        cur.execute(
+            f"""
+            {verb}
+            WHERE e.module = %s AND e.odoo_version = %s AND e.profile_name = %s
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM unnest(%s::text[], %s::text[], %s::text[], %s::int[])
+                       AS k(chunk_type, entity_name, file_path, chunk_idx)
+                  WHERE {match}
+              )
+            """,
+            (
+                module, version, profile_name,
+                [k[0] for k in keys], [k[1] for k in keys],
+                [k[2] for k in keys], [k[3] for k in keys],
+            ),
+        )
+        deleted = cur.rowcount if delete else cur.fetchone()[0]
+    if delete:
+        _warn_short_delete(module, version, [profile_name], deleted, expected)
     return deleted
 
 

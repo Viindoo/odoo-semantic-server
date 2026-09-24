@@ -15,8 +15,9 @@ Responsibilities:
   5. EVERY ClassDef in a test file emits a TestClassInfo node (HIGH-1):
      TEST_BASE_CLASSES CLASSIFIES, never GATES emission.
 
-Import discipline: imports only models, parser_util, ast (never src.mcp / writer_* /
-resolver / registry). This satisfies tests/test_pipeline_import_discipline.py.
+Import discipline: imports only models, parser_util, framework_bases, parse_health,
+version_registry and ast (never src.mcp / writer_* / resolver / registry). This
+satisfies tests/test_pipeline_import_discipline.py.
 
 Reuse citations:
   - AST parse: parser_util.parse_external_source (parser_util.py:65)
@@ -33,9 +34,11 @@ import ast
 import re
 from pathlib import Path
 
+from . import parse_health
 from .framework_bases import framework_bases
 from .models import ModuleInfo, TestClassInfo, TestHelperInfo, TestMethodInfo, TestParseResult
 from .parser_util import parse_external_source
+from .version_registry import python3_source_expected
 
 # ---------------------------------------------------------------------------
 # Framework base classification (classifies, never gates emission - HIGH-1)
@@ -420,7 +423,11 @@ def _parse_era2_test_file(
     """
     try:
         tree = parse_external_source(source, filename=file_path)
-    except SyntaxError:
+    except SyntaxError as exc:
+        # v10 test files are often Python 2: skipping them is the stable,
+        # by-design outcome. On v11+ the file is broken and its tests unseen.
+        if python3_source_expected(module_info.odoo_version):
+            parse_health.note_failure(file_path, f"not valid Python 3: {exc}")
         return []
 
     result: list[TestClassInfo] = []
@@ -632,6 +639,7 @@ def parse_module(module_info: ModuleInfo) -> TestParseResult:
                 source = py_file.read_text(encoding="utf-8", errors="ignore")
             except OSError as exc:
                 _logger.warning("parser_test: cannot read %s: %s", fp_str, exc)
+                parse_health.note_failure(fp_str, f"unreadable: {exc}", transient=True)
                 continue
 
             try:
@@ -645,6 +653,7 @@ def parse_module(module_info: ModuleInfo) -> TestParseResult:
                     "parser_test: error parsing %s (era=%s): %s — skipping file",
                     fp_str, "era2" if use_era2 else "era1", exc,
                 )
+                parse_health.note_failure(fp_str, f"test parse error: {exc}")
                 continue
 
     return TestParseResult(

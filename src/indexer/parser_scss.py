@@ -29,6 +29,7 @@ import logging
 import re
 from pathlib import Path
 
+from . import parse_health
 from .models import ModuleInfo, SCSSChunk, StylesheetInfo
 
 _logger = logging.getLogger(__name__)
@@ -262,7 +263,8 @@ def parse_file(
     """
     try:
         raw = Path(filepath).read_bytes()
-    except OSError:
+    except OSError as exc:
+        parse_health.note_failure(filepath, f"unreadable: {exc}", transient=True)
         return [], StylesheetInfo(
             file_path=filepath, module=module_info.name,
             odoo_version=module_info.odoo_version, language="scss",

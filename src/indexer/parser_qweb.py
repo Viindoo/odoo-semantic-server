@@ -3,6 +3,7 @@ from pathlib import Path
 
 from lxml import etree as _lxml_etree
 
+from . import parse_health
 from ._xmlid import qualify_xmlid
 from .models import ModuleInfo, QWebInfo, ViewParseResult
 
@@ -128,11 +129,17 @@ def parse_file(filepath: str, module: ModuleInfo) -> list[QWebInfo]:
          see ``_parse_qweb_record``).
 
     Uses lxml.etree.parse() so that elements carry .sourceline for A3 provenance.
-    Returns empty list if XML is malformed.
+    Returns empty list if XML is malformed (reported to parse_health).
     """
     try:
         tree = _lxml_etree.parse(filepath)
-    except (_lxml_etree.XMLSyntaxError, OSError):
+    except (_lxml_etree.XMLSyntaxError, OSError) as exc:
+        if isinstance(exc, _lxml_etree.XMLSyntaxError) and parse_health.empty_source(filepath):
+            return []
+        parse_health.note_failure(
+            filepath, f"XML not parsed: {exc}",
+            transient=isinstance(exc, OSError),
+        )
         return []
 
     root = tree.getroot()

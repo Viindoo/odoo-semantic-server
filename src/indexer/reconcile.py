@@ -32,6 +32,10 @@ ownership under it and decides every pending name on its own (review H5):
    index path recorded (review C1). A name a concurrent run re-wrote after this
    run started (``skipped_recent``) stays pending.
 
+Entity prunes deferred for unsynced siblings (``shared_unsynced``) whose
+siblings synced without present-owning the module send the owner back to
+prune (``needs_rewrite``, :meth:`_Reconciler.resolve_prune_deferrals`).
+
 Then the orphan sweep (review M6, H5b) removes what the ledger never saw
 (nodes indexed before the ledger existed, debris of the old Module-only
 ``--gc``): Module nodes with no ``present`` row anywhere, attributed through
@@ -139,6 +143,9 @@ class ReconcileReport:
     orphan_candidates: list[str] = field(default_factory=list)
     child_orphan_candidates: list[str] = field(default_factory=list)
     orphan_evidence: dict[str, dict] = field(default_factory=dict)
+    # Modules whose owner re-parses them next run to prune: the siblings its
+    # shared_unsynced prune waited for synced without present-owning them.
+    prune_rewrites: list[str] = field(default_factory=list)
     # Excluded co-owner drops waiting for unsynced repos that may ship the
     # module: name -> repo labels (re-evaluated every run; the node is untouched).
     excluded_owner_waiting: dict[str, list[str]] = field(default_factory=dict)
@@ -601,6 +608,50 @@ class _Reconciler:
                 self._assumed_synced.add(repo_id)
             self.report.presence_advanced.append(repo_id)
 
+    # --- 1c. entity prunes deferred for unsynced siblings (F48) ---------------
+
+    def resolve_prune_deferrals(self) -> None:
+        """Send an owner back to prune a module its siblings turned out not to own.
+
+        A ``shared_unsynced`` prune skip is recorded on the Module node with the
+        never-synced repos it waited for (``prune_deferred_modules``). Once
+        each of them is synced (or gone): when no repo other than the owner
+        present-owns the module, the owner's row is flagged ``needs_rewrite``
+        (its next run re-parses and prunes); when one does, the module is
+        genuinely shared and the shared rule / M5 take over. Either way the
+        record is cleared; a later deferral records a new one.
+        """
+        read = getattr(self.writer, "prune_deferred_modules", None)
+        if not callable(read):
+            return
+        rows = read(self.v) or []
+        if not rows:
+            return
+        sync = {r["repo_id"]: r for r in self.store.repo_sync_state(self.v, conn=self.conn)}
+
+        def synced(repo_id) -> bool:
+            row = sync.get(repo_id)
+            return row is None or bool(row["synced"]) or repo_id in self._assumed_synced
+
+        settled: list[str] = []
+        for row in rows:
+            name, owner_id = row["name"], row["repo_id"]
+            if not all(synced(r) for r in row["waits_for"]):
+                continue
+            settled.append(name)
+            others = self.store.other_present_owners(
+                name, self.v, owner_id, conn=self.conn,
+            )
+            if others:
+                continue
+            self.report.prune_rewrites.append(name)
+            if self.execute and owner_id is not None:
+                self.store.mark_needs_rewrite(owner_id, name, conn=self.conn)
+        if settled and self.execute:
+            clear = getattr(self.writer, "clear_module_prune_deferred", None)
+            if callable(clear):
+                clear(self.v, settled)
+
     # --- 2. orphan sweep -----------------------------------------------------
 
     def sweep(self) -> bool:
@@ -1056,6 +1107,7 @@ def reconcile_version(
         )
         rec.pending()
         rec.advance_presence(advance_presence or {})
+        rec.resolve_prune_deferrals()
         if retire and sweep:
             all_synced = rec.sweep()
             rec.global_gcs(all_synced if global_gc is None else global_gc)
@@ -1063,7 +1115,7 @@ def reconcile_version(
         rec.flush_attention()
 
     for key in ("retired", "owner_dropped", "skipped_recent", "orphans_swept",
-                "child_orphans_swept"):
+                "child_orphans_swept", "prune_rewrites"):
         setattr(report, key, sorted(set(getattr(report, key))))
     _logger.info(
         "reconcile %s: retired %d, owner dropped %d, undecidable %d, blocked %d, "
@@ -1121,6 +1173,7 @@ def reconcile_removed_repos(
             dry_run=False, report=report,
         )
         rec.pending(only_names=set(names))
+        rec.resolve_prune_deferrals()
         rec.sweep_removed_repo_residue(
             set(basenames), set(removed_repo_ids), set(removed_profiles),
         )

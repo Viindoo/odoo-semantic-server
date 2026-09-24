@@ -37,7 +37,9 @@ whose node lost this profile). Every next run but the unchanged skip re-writes
 those (``would_rewrite``, the run's own ``self_heal_rewrites`` set, on sync,
 incremental and full alike; a module the run writes as new is not listed); a
 repo whose next run is the unchanged skip keeps them (``wrong_paths``, a
-finding).
+finding). Entity prunes the soft gate holds (recorded on the Module node by the
+index run, which exits 3 for them on every re-parse) are the ``held_prunes``
+finding.
 """
 from __future__ import annotations
 
@@ -56,6 +58,7 @@ from src.indexer.pipeline_repo import (
     RUN_SKIP,
     _commit_lifecycle,
     _ConnBoundStore,
+    _degraded_state,
     _owning_profiles,
     modules_needing_rewrite,
     observe_lifecycle,
@@ -68,7 +71,7 @@ from src.indexer.registry import build_registry_scan, resolve_repo_version
 
 _logger = logging.getLogger(__name__)
 
-AUDIT_SCHEMA = "osm.lifecycle-audit/1"
+AUDIT_SCHEMA = "osm.lifecycle-audit/2"
 
 # Finding categories, in report order. Any non-zero count is a finding
 # (``--fail-on-findings``).
@@ -77,6 +80,7 @@ FINDING_KEYS: tuple[str, ...] = (
     "would_drop_owner",
     "undecidable",
     "blocked",
+    "held_prunes",
     "orphan_modules",
     "child_orphans",
     "embedding_orphans",
@@ -106,6 +110,9 @@ class ReadOnlyWriter:
         "repo_module_baseline",
         "orphan_child_keys",
         "modules_without_profile",
+        "parse_degraded_modules",
+        "prune_held_modules",
+        "prune_deferred_modules",
     })
 
     def __init__(self, writer) -> None:
@@ -276,6 +283,7 @@ def _new_repo_entry(repo: dict) -> dict:
         "would_drop_owner": [],
         "undecidable": [],
         "blocked": [],
+        "held_prunes": [],
         "unparseable_kept": [],
         "error": None,
     }
@@ -304,9 +312,12 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     presence_head = bound.presence_head_sha(repo["id"])
     rewrite_names = bound.needs_rewrite_names(repo["id"])
     entry.update(head=current_head, head_sha=last_head, presence_head_sha=presence_head)
+    # B14: a degraded module whose failing files changed on disk makes the
+    # real run re-parse at an unchanged HEAD; predict the same mode.
+    _records, degraded_changed = _degraded_state(writer, repo, repo_path)
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
-        full_reindex=False, ledger=True,
+        full_reindex=False, ledger=True, degraded_changed=bool(degraded_changed),
     )
     entry["next_run"] = plan.mode
 
@@ -339,6 +350,9 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     for t in changed:
         kinds.setdefault(t.kind, []).append(t.name)
     entry["transitions"] = {k: len(v) for k, v in sorted(kinds.items())}
+    # A soft-gated entity prune stays held (the index run exits 3 on every
+    # re-parse) until a run prunes the module, e.g. with --allow-mass-retire.
+    entry["held_prunes"] = list(writer.prune_held_modules(repo["id"]))
 
     deferred_head: str | None = None
     attention = observation.attention
@@ -374,6 +388,17 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
                 and name in regular
             )
         ]
+    reparse = sorted((set(rewrite_names) | degraded_changed) & present)
+    if reparse and plan.mode != RUN_SKIP:
+        # The audit does not parse, so it cannot count what an entity prune
+        # (B14) would remove; it names the modules whose held, deferred or
+        # degraded prune the next run re-evaluates. Nothing is pruned here.
+        attention.append(
+            f"{len(reparse)} module(s) are re-parsed by the next run without a source "
+            "change (ledger needs_rewrite or changed degraded-parse files), which "
+            "re-evaluates their entity prune: " + ", ".join(reparse[:10])
+            + (f", ... {len(reparse) - 10} more" if len(reparse) > 10 else "")
+        )
     if plan.mode == RUN_SKIP:
         if kinds:
             entry["unapplied_changes"] = {k: sorted(v) for k, v in sorted(kinds.items())}
@@ -502,6 +527,7 @@ def _audit_version(
         ],
         "gates_tripped": report.gates_tripped,
         "orphans_unparseable": report.orphans_unparseable,
+        "prune_rewrites": report.prune_rewrites,
         "excluded_owner_waiting": {
             k: report.excluded_owner_waiting[k]
             for k in sorted(report.excluded_owner_waiting)
@@ -529,6 +555,7 @@ def _findings(repos: list[dict], versions: list[dict]) -> dict[str, int]:
         counts["errors"] += len(v["errors"])
     for r in repos:
         counts["would_rewrite"] += len(r["would_rewrite"])
+        counts["held_prunes"] += len(r["held_prunes"])
         counts["wrong_paths"] += len(r["wrong_paths"])
         counts["unapplied_changes"] += sum(len(n) for n in r["unapplied_changes"].values())
         counts["unparseable_kept"] += len(r.get("unparseable_kept") or [])
@@ -744,6 +771,13 @@ def render_text(report: dict) -> str:
             )
         for item in r["blocked"]:
             lines.append(f"  blocked: {item['name']} ({item['reason']})")
+        for item in r["held_prunes"]:
+            lines.append(
+                f"  entity prune held: {item['name']}@{item['odoo_version']} "
+                f"({item['stale']} of {item['total']} node(s) and {item['rels_stale']} of "
+                f"{item['rels_total']} relationship(s) no longer produced by its parse; "
+                "check the parse, then index with --allow-mass-retire)"
+            )
         if r.get("unparseable_kept"):
             lines.append(
                 "  manifest does not parse, module kept until it does: "
@@ -773,6 +807,11 @@ def render_text(report: dict) -> str:
         for name, waits in (v.get("excluded_owner_waiting") or {}).items():
             lines.append(
                 f"  excluding co-owner drop waits: {name} (for {', '.join(waits)})"
+            )
+        if v.get("prune_rewrites"):
+            lines.append(
+                "  deferred entity prune now decidable (owner re-parses and prunes): "
+                + ", ".join(v["prune_rewrites"])
             )
         for item in v["orphan_modules"]:
             if item["deferred_for"]:

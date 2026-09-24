@@ -20,7 +20,8 @@ MED-1 contract: NO JsTestSuite-[:COVERS_MODEL]->Model edge is emitted from mock_
   The mock_models field captures test-double model names only — they are hand-rolled
   fixtures, not real Odoo models. Writer must NOT emit a COVERS_MODEL edge for them.
 
-Import discipline: imports only models (never src.mcp / writer_* / resolver / registry).
+Import discipline: imports only models and parse_health (never src.mcp / writer_* /
+resolver / registry).
 This satisfies tests/test_pipeline_import_discipline.py.
 
 Parsing strategy: lightweight regex over JS source (no JS AST available in Python).
@@ -32,6 +33,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from . import parse_health
 from .models import JsTestSuiteInfo, ModuleInfo
 
 # ---------------------------------------------------------------------------
@@ -273,7 +275,8 @@ def parse_js_test_file(
 
     try:
         source = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except OSError as exc:
+        parse_health.note_failure(abs_path, f"unreadable: {exc}", transient=True)
         return None
 
     # Relativize path (ADR-0037)

@@ -812,9 +812,10 @@ class ModulePresenceStore:
         at this version had the name ``present``/``excluded``
         (``why='had_name'``), or when it has never been synced at all
         (``why='never_synced'``: no ledger rows and no presence head).
-        A non-empty result makes the name undecidable for this run. Keys:
-        repo_id, repo_url, repo_basename, profile_name, head_sha,
-        presence_head_sha, local_path, why.
+        These are candidates: ``reconcile.PotentialOwners`` narrows a
+        never-synced repo to the names its checkout actually tracks. Keys:
+        repo_id, repo_url, repo_basename, repo_branch, profile_name,
+        profile_version, head_sha, presence_head_sha, local_path, why.
         """
         with self._conn(conn) as c:
             return self._fetch_all(
@@ -823,8 +824,9 @@ class ModulePresenceStore:
                 SELECT r.id AS repo_id, r.url AS repo_url,
                        regexp_replace(regexp_replace(r.local_path, '/+$', ''), '^.*/', '')
                            AS repo_basename,
-                       p.name AS profile_name, r.head_sha, r.presence_head_sha,
-                       r.local_path,
+                       r.branch AS repo_branch, p.name AS profile_name,
+                       p.odoo_version AS profile_version, r.head_sha,
+                       r.presence_head_sha, r.local_path,
                        CASE WHEN mp.id IS NOT NULL THEN 'had_name' ELSE 'never_synced' END
                            AS why
                 FROM repos r
@@ -847,6 +849,34 @@ class ModulePresenceStore:
                 """,
                 {"name": name, "v": odoo_version, "ex": exclude_repo_id},
             )
+
+    def names_owned_elsewhere(
+        self,
+        odoo_version: str,
+        names: Iterable[str],
+        exclude_repo_id: int,
+        *,
+        conn: PgConn | None = None,
+    ) -> set[str]:
+        """Names of *names* another live repo still has ``present`` at the version.
+
+        The batched form of :meth:`other_present_owners` (a ``retire_pending``
+        row still counts). The intra-module entity prune (ADR-0056 B14) skips
+        such names: module children carry no repo, so one owner's re-parse
+        cannot tell another owner's entities from stale ones.
+        """
+        wanted = sorted(set(names))
+        if not wanted:
+            return set()
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                "SELECT DISTINCT name FROM module_presence "
+                "WHERE odoo_version = %s AND state = 'present' AND repo_id IS NOT NULL "
+                "AND repo_id <> %s AND name = ANY(%s)",
+                (odoo_version, exclude_repo_id, wanted),
+            )
+        return {r["name"] for r in rows}
 
     def present_names(
         self, odoo_version: str, *, conn: PgConn | None = None,

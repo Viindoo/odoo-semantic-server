@@ -16,6 +16,7 @@ from pathlib import Path
 import tree_sitter_javascript as _tsjs
 from tree_sitter import Language, Node, Parser
 
+from . import parse_health
 from .models import JSChunk, JSGraphResult, JSPatchInfo, ModuleInfo, OWLCompInfo
 from .version_registry import VersionRegistry
 
@@ -294,7 +295,8 @@ def parse_file(filepath: str, module_info: ModuleInfo) -> list[JSChunk]:
     """Parse a JS file, return JSChunks grouped by era and entity."""
     try:
         source = Path(filepath).read_bytes()
-    except OSError:
+    except OSError as exc:
+        parse_health.note_failure(filepath, f"unreadable: {exc}", transient=True)
         return []
 
     src_str = source.decode("utf-8", errors="ignore")
@@ -644,7 +646,8 @@ def _extract_graph_from_file(
 ) -> None:
     try:
         source = Path(filepath).read_bytes()
-    except OSError:
+    except OSError as exc:
+        parse_health.note_failure(filepath, f"unreadable: {exc}", transient=True)
         return
     src_str = source.decode("utf-8", errors="ignore")
     era = _detect_era(src_str)
