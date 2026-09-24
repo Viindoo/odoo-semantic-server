@@ -41,6 +41,8 @@ UNITS=(
     "odoo-semantic-webui.service"
     "odoo-semantic-astro.service"
     "odoo-semantic-backup.service"
+    "odoo-semantic-reindex.service"
+    "odoo-semantic-lifecycle-audit.service"
     "osm-ttl-cleanup.service"
 )
 

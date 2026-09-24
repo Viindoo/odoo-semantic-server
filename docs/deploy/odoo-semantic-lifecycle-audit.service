@@ -1,0 +1,63 @@
+# odoo-semantic-lifecycle-audit.service - weekly module lifecycle drift detector (ADR-0056)
+# Place at: /etc/systemd/system/odoo-semantic-lifecycle-audit.service
+# Companion timer: /etc/systemd/system/odoo-semantic-lifecycle-audit.timer
+#
+# After copying both files:
+#   sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic   # if missing
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now odoo-semantic-lifecycle-audit.timer
+# Enable it only AFTER the 0.19.0 rollout ran clean
+# (docs/deploy/runbooks/module-lifecycle-cleanup.md): until the first normal index
+# runs have retired the pre-ledger ghosts and drained the shared-module
+# bootstrap, the audit reports those as findings.
+#
+# What it runs: `lifecycle-audit --all --json --fail-on-findings` - a DRY RUN of
+# what the next `index-repo` would do (retire, drop owner, undecidable, blocked
+# by a gate, held or shared entity prunes, orphan modules / children /
+# embeddings, profile-less Module nodes, drifted paths, changes a skipped repo
+# never applies, audit errors). It writes NOTHING: the ledger half runs on a
+# session-private pg_temp copy in a READ ONLY session, Neo4j is read through a
+# read-only facade, no advisory lock is taken and no `git fetch` runs (it audits
+# the on-disk checkouts the nightly reindex refreshed). Each graph read is
+# bounded by LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS (default 120s, from .env).
+#
+# Exit codes: 0 = no finding; 4 = at least one finding (the unit fails, so
+# OnFailure=osm-alert@%n fires); 1 = crash (Neo4j / Postgres unreachable,
+# migration 0003 missing). Read the JSON report appended to the log below
+# (schema osm.lifecycle-audit/3; "findings" holds the counts per category) or
+# re-run by hand in text form:
+#   sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+#     -m src.indexer lifecycle-audit --all
+# How to act on each finding: deploy.md s3.6 and the lifecycle runbook.
+#
+# No FERNET_KEY: the audit neither fetches nor decrypts anything. It runs as
+# odoo-semantic because git must read the checkouts it owns (safe.directory).
+# Canonical layout = ADR-0027 (system-user odoo-semantic, /home/odoo-semantic/...).
+
+[Unit]
+Description=OSM weekly module lifecycle audit (lifecycle-audit --all --fail-on-findings)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+StartLimitBurst=3
+StartLimitIntervalSec=1800
+OnFailure=osm-alert@%n
+
+[Service]
+Type=oneshot
+User=odoo-semantic
+Group=odoo-semantic
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
+# Loads PG_DSN + NEO4J_PASSWORD (+ optional $POSTGRES_CONTAINER and the
+# LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS override) - same file as the other units.
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# Pre-flight: wait up to 60s for Postgres (the audit reads PG and Neo4j).
+ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
+ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer lifecycle-audit --all --json --fail-on-findings
+# A whole-index audit takes seconds to minutes; bound it well above that so a
+# hung read cannot hold the unit forever (each read is also bounded, see above).
+TimeoutStartSec=2h
+# Append to the relocated log dir (logrotate stanza covers /var/log/odoo-semantic/*.log).
+StandardOutput=append:/var/log/odoo-semantic/odoo-semantic-lifecycle-audit.log
+StandardError=append:/var/log/odoo-semantic/odoo-semantic-lifecycle-audit.log

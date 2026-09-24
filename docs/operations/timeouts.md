@@ -31,6 +31,15 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 | `EMBEDDER_RETRY_BACKOFF_BASE` | 2.0s | 2.0s | `src/constants.py` | Base delay for `Qwen3Embedder._embed_one` exponential backoff (delay = min(base * 2**i, max)). Lower on fast local Ollama (e.g. 0.5) to fail fast; raise on flaky LAN to avoid hammering. |
 | `EMBEDDER_RETRY_BACKOFF_MAX` | 30.0s | 30.0s | `src/constants.py` | Cap on a single retry sleep so a slow Ollama box doesn't stall the indexer for minutes between attempts. Raise on chronically overloaded GPU hosts. |
 
+### Module lifecycle ledger (ADR-0056)
+
+| Env var | Default | Was | File:line | Reasoning |
+|---------|---------|-----|-----------|-----------|
+| `RETIRE_LOCK_WAIT_SECONDS` | 900s | - | `src/constants.py` | How long an indexer ledger write waits for the per-version `retire:<version>` lock a reconcile holds across its deletes. After it the repo (or the version's reconcile) fails with `LifecycleLockTimeout` and the next run retries. |
+| `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` | 60 modules | - | `src/constants.py` | Budget, per repo per index run, of re-parses (no source change) of a repo's copy of a module another repo also ships that has no complete-parse record yet (after the ADR-0056 deploy). Measured on CE 17.0 (606 modules): ~1.2 s per module parse + graph write before embeddings, so ~75 s extra per repo per run; a CE clone converges in 11 daily runs. 0 disables it (shared-module residue then waits for the modules to change). |
+| `LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS` | 120s | - | `src/constants.py` | Per-query server-side timeout (`neo4j.Query(timeout=)`) of every graph read `lifecycle-audit` makes. The audit reads whole versions (orphan Modules, module-less children, profile-less Modules), so the bound is wider than the MCP `NEO4J_QUERY_TIMEOUT_SECONDS` and below the 600s `db.transaction.timeout` backstop. The index run and its reconcile set no per-query timeout. |
+| `WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS` | 20s | - | `src/constants.py` | How long a Web UI repo/profile delete or profile rename waits for each per-repo git lock (ADR-0035) and each `retire:<version>` ledger lock (the profile's indexer lock is tried once, not waited for). Kept well under nginx's default 60s `proxy_read_timeout` so the request answers instead of hanging behind an index run's reconcile. On timeout: HTTP 409 with `Retry-After`, nothing changed. |
+
 ### Neo4j writer
 
 | Env var | Default | Was | File:line | Reasoning |
@@ -89,12 +98,13 @@ longer a manual pre-deploy ops step.
 
 **Why 600s, not 60s:** The 30s per-query driver timeout (above) handles ORM tool runaway.
 The global `db.transaction.timeout` must accommodate legitimate long-running indexer transactions:
-- `delete_modules_scoped` is now batched with `CALL {} IN TRANSACTIONS OF 10000 ROWS` (this PR), so
-  each INNER batch stays well under 600s. BUT the OUTER coordinating transaction of
-  `CALL IN TRANSACTIONS` is itself subject to `db.transaction.timeout` (verified on Neo4j 5.26.25 —
+- `retire_modules` / `prune_module_children` (ADR-0056; they replaced the batched
+  `delete_modules_scoped` and `gc_stale_modules`) run every step as `CALL {} IN TRANSACTIONS OF
+  NEO4J_DELETE_BATCH_ROWS ROWS` (default 10000) with transient-error retry, so each INNER batch
+  stays well under 600s. BUT the OUTER coordinating transaction of `CALL IN TRANSACTIONS` is itself subject to `db.transaction.timeout` (verified on Neo4j 5.26.25 -
   see ADR-0048 D10 / M6): a very large repo delete whose TOTAL elapsed exceeds the timeout still has
-  its outer tx terminated part-way (recoverable + idempotent, but surfaces an error in the Web UI).
-- `gc_stale_modules` DETACH DELETEs module nodes in one transaction; can spike after large renames.
+  its outer tx terminated part-way (recoverable + idempotent: the next reconcile or a retried Web UI
+  delete removes what is left, and the ledger row stays `retire_pending` until the delete finished).
 - `_write_parse_result` is one transaction per ParseResult with hundreds of sequential `tx.run`
   calls; 60s is not safe under concurrent load.
 

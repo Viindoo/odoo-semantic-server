@@ -12,11 +12,16 @@
 //
 // WHY --gc DOES NOT FIX THESE
 // ----------------------------
-// gc_stale_modules (writer_neo4j.py) matches
+// (Historical: gc_stale_modules and --gc are gone since ADR-0056, 2026-09-24.)
+// gc_stale_modules (writer_neo4j.py) matched
 //   `MATCH (m:Module {repo: $repo, odoo_version: $version})`
 // using a concrete non-NULL repo value (the repo root name string, e.g.
-// "viindoo_15.0"). Dep-stubs have repo=NULL, so the GC query NEVER matches them
-// — they are invisible to the GC filter entirely.
+// "viindoo_15.0"). Dep-stubs have repo=NULL, so the GC query NEVER matched them
+// - they were invisible to the GC filter entirely. Today module retirement goes
+// through the module_presence ledger; a stub with a polluted (non-empty) profile[]
+// and no present ledger row is an orphan the lifecycle reconcile's orphan sweep
+// retires once every repo of those profiles is synced, and a childless
+// repo_id-NULL stub is removed by gc_null_repo_dep_stubs (below).
 //
 // Additionally, the post-#267 dep-MERGE no longer stamps profiles on dep targets
 // (ON CREATE leaves profile absent). However, ON MATCH still touches NOTHING on
@@ -60,13 +65,14 @@
 // the Phase A count grows.
 //
 // FOLLOW-UP: the durable GC function `gc_null_repo_dep_stubs` now exists in
-// Neo4jWriter (src/indexer/writer_neo4j.py) and is wired into index_all()
-// under the --gc flag (FUFU-1, PR #268 follow-up wave). It runs automatically
-// once per unique odoo_version after ALL profiles complete, collecting
-// childless repo_id-NULL stubs that accumulate between full runs.
-// This script is now an EXPEDITED ONE-TIME HEAL tool for existing prod stubs —
+// Neo4jWriter (src/indexer/writer_neo4j.py). Since ADR-0056 (2026-09-24) it runs
+// in the per-version lifecycle reconcile of EVERY index run, no flag: in
+// index-repo --all once per version after all profiles completed, and in a
+// single-profile run only when every repo of that version is synced. It collects
+// childless repo_id-NULL stubs that accumulate between runs.
+// This script is now an EXPEDITED ONE-TIME HEAL tool for existing prod stubs -
 // run it once (when no indexer job is active) to clear the current cruft
-// without waiting for the next scheduled --gc pass. It is no longer the only
+// without waiting for the next index run. It is no longer the only
 // cleanup mechanism.
 
 // ---------------------------------------------------------------------------

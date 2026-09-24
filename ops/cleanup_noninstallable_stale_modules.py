@@ -1,6 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Cleanup stale Module nodes that are now `installable=False`.
 
+DEPRECATED (ADR-0056, 2026-09-24) - do not run on a 0.19.0+ deploy
+-------------------------------------------------------------------
+Every `index-repo` run now observes each repo's git-tracked manifests into the
+`module_presence` ledger. A module whose manifest flips to `installable=False`
+becomes `excluded(installable_false)` there; once no repo has it `present`, its
+Module node is an orphan that the per-version lifecycle reconcile's orphan sweep
+retires through `retire_modules` (the Module AND its whole subtree - tests,
+stylesheets, LintViolations, TestHelpers - plus its embeddings). Such by-design
+exclusions never count toward the sweep's mass gate. This script predates that:
+it decides from disk alone (it cannot see a second repo shipping the same name)
+and cascades only a subset of the child labels. It is kept, unchanged in behaviour, for one release overlap so
+the owner can compare its dry-run output with `lifecycle-audit`; its removal is
+a separate decision. Use `python -m src.indexer lifecycle-audit --all` to see
+what the next index run will retire. The references to `gc_stale_modules` below
+are historical: that method was removed by ADR-0056.
+
 WHY THIS EXISTS
 ---------------
 A module that was `installable=True` in a PRIOR index has Module + Field/Method/

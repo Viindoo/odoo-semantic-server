@@ -804,19 +804,80 @@ sudo systemctl enable --now odoo-semantic-reindex.timer
 systemctl list-timers odoo-semantic-reindex.timer --no-pager   # verify lần chạy kế
 ```
 
-Incremental `index-repo --all` chạy hằng đêm 03:30. Monthly `--full --gc` (dọn stale Module
-nodes từ rename/move, per ADR-0007) chạy thủ công - dùng `osm-fernet-run` (KHÔNG bare
-`systemd-run`): `--full --gc` cũng chạy `refresh_before_scan` (post-#355) như nightly timer,
-nên fetch SSH repo riêng tư cần FERNET_KEY để decrypt SSH key. Bare `systemd-run` (không
-`LoadCredential=FERNET_KEY`) khiến lượt chạy monthly này im lặng fail-safe về on-disk-only
-giống hệt gap #355 mà `odoo-semantic-reindex.service` vừa được vá - `osm-fernet-run` đã wrap
-sẵn `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` + nạp `.env` (xem
-`docs/deploy/osm-fernet-run`):
+Incremental `index-repo --all` chạy hằng đêm 03:30. Từ 0.19.0 (ADR-0056) mỗi lượt chạy đó
+cũng là lượt dọn vòng đời module: scan = manifest git-tracked, module biến mất được flag
+`retire_pending` trong ledger `module_presence`, rồi reconcile theo version xóa Module + cây con
++ embedding khi không repo nào còn ship. **Không còn lượt monthly `--full --gc`:** `--gc` là
+no-op deprecated (vẫn được nhận, log WARNING), và `--full` KHÔNG cần cho dọn dẹp - chỉ dùng để
+backfill property index-time (xem ghi chú ADR-0053 bên dưới). Lượt chạy tay (backfill `--full`,
+`--allow-mass-retire` một lần) dùng `osm-fernet-run` (KHÔNG bare `systemd-run`): `index-repo`
+chạy `refresh_before_scan` (post-#355) như nightly timer, nên fetch SSH repo riêng tư cần
+FERNET_KEY để decrypt SSH key; `osm-fernet-run` đã wrap sẵn
+`LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` + nạp `.env` (xem `docs/deploy/osm-fernet-run`):
+
+```bash
+# Backfill property index-time sau một release cần nó (KHÔNG cần cho dọn module):
+sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+  -m src.indexer index-repo --all --full
+```
+
+**Cờ vòng đời (`index-repo`):**
+
+| Cờ | Ý nghĩa | Được đặt ở đâu |
+|---|---|---|
+| (không cờ) | scan, ghi, flag pending, reconcile retire dưới cổng G-A/G-B | nightly timer |
+| `--no-retire` | escape hatch sự cố: scan + ghi, KHÔNG xóa gì; tên chờ xóa giữ `retire_pending`, lượt chạy thường kế tiếp retire | drop-in tạm thời khi có sự cố, gỡ ngay sau đó |
+| `--allow-mass-retire` | bỏ qua cổng G-B (mass retire, total wipe, entity-prune soft gate) cho lượt chạy đó; KHÔNG bao giờ bỏ qua G-A | **một lần, bằng tay**, sau khi đọc `lifecycle_attention` và xác nhận bằng git |
+| `--gc` | deprecated, không tác dụng | không dùng |
+
+> **KHÔNG BAO GIỜ đặt `--allow-mass-retire` trong timer, cron hay drop-in.** Cổng G-B tồn tại để
+> chặn đúng tình huống một checkout hỏng (clone dở, `reset` nhầm branch, manifest bị xóa hàng
+> loạt) làm cả repo "biến mất" và bị retire. Cờ này chỉ dành cho một lần chạy có người quyết,
+> scope hẹp nhất có thể (`--profile <tên>`).
+
+**Đọc exit code 3 (lifecycle attention).** `index-repo` thoát **3** khi dữ liệu đã được index
+nhưng vòng đời module cần người xem: một cổng bị chặn, một tên không quyết được, hoặc reconcile
+lỗi. `OnFailure=osm-alert@%n` của unit bắn cảnh báo. Chi tiết nằm ở cuối log
+(`/var/log/odoo-semantic/odoo-semantic-reindex.log`, dòng `Lifecycle needs attention (exit 3):`
+kèm các dòng `gates_tripped: ...` / `undecidable: ...` / `errors: ...`) và ở cột
+`repos.lifecycle_attention` của từng repo:
+
+```bash
+psql "$PG_DSN" -c "SELECT id, url, branch, lifecycle_attention_at, lifecycle_attention
+                   FROM repos WHERE lifecycle_attention IS NOT NULL ORDER BY id;"
+```
+
+| Tín hiệu | Nghĩa | Việc cần làm |
+|---|---|---|
+| `scan_incomplete` / `scan_untrusted`, `git tracking unavailable`, `no origin/<branch> ref` | checkout không khớp branch tip, thiếu manifest được track, hoặc git từ chối repo (`safe.directory`) | sửa checkout (fetch + `reset --hard origin/<branch>`, quyền sở hữu thư mục). Không có cờ nào bỏ qua G-A. Lượt chạy kế tự retire |
+| `mass_retire` / `total_wipe` (`mass retire: N of M ...`) | hơn 50% (và >= 20) module của repo biến mất, hoặc không còn module nào | kiểm bằng `git log --diff-filter=D -- '*/__manifest__.py'` + `lifecycle-audit --profile <p>`; nếu đúng là xóa thật: một lần `index-repo --profile <p> --allow-mass-retire` qua `osm-fernet-run` |
+| `entity_prune:<module>@<v>` / `entity prune of M@v held` | re-parse module M không còn tạo ra quá nửa node/relationship cũ của nó | kiểm parse của M (file lỗi? thư mục đổi?); nếu thay đổi là thật: một lần `--allow-mass-retire` cho profile đó |
+| `undecidable: <module>@<v> kept: repo(s) ... not synced` | một repo có thể vẫn ship module chưa được index lại | index profile của repo đó (hoặc gỡ đăng ký repo không còn dùng); reconcile kế tiếp tự quyết |
+| `entity prune of M@v skipped: parse degraded` | file của M không đọc/parse được | sửa file; module được re-parse khi file đổi (lỗi đọc tạm thời: tự thử lại một lần) |
+| `errors: ...` (vd `LifecycleLockTimeout`) | reconcile không lấy được lock `retire:<v>` trong `RETIRE_LOCK_WAIT_SECONDS` hoặc lỗi Neo4j/PG | xem traceback trong log; lượt chạy kế tự làm lại, tên vẫn `retire_pending` |
+
+Không có gì bị xóa trong mọi trường hợp trên: dữ liệu được giữ lại cho tới khi lượt chạy sạch
+kế tiếp (hoặc lượt `--allow-mass-retire` có người quyết) xử lý.
+
+**Dry run bất kỳ lúc nào:** `lifecycle-audit` chạy đúng code quyết định của lượt index kế
+tiếp mà KHÔNG ghi gì (không lock, không `git fetch`):
 
 ```bash
 sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
-  -m src.indexer index-repo --all --full --gc
+  -m src.indexer lifecycle-audit --all            # text; --json cho schema osm.lifecycle-audit/3
 ```
+
+Detector hằng tuần: `docs/deploy/odoo-semantic-lifecycle-audit.{service,timer}` chạy
+`lifecycle-audit --all --json --fail-on-findings` (exit **4** khi có finding -> `OnFailure`
+alert). Chỉ bật SAU khi rollout 0.19.0 đã chạy sạch - xem
+[`docs/deploy/runbooks/module-lifecycle-cleanup.md`](deploy/runbooks/module-lifecycle-cleanup.md).
+
+**Env của vòng đời** (default + lý do: [`docs/operations/timeouts.md`](operations/timeouts.md)
+mục "Module lifecycle ledger"): `RETIRE_LOCK_WAIT_SECONDS` (900s, chờ lock `retire:<v>`),
+`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` (60 module/repo/lượt re-parse bootstrap cho module nhiều
+repo cùng ship; 0 = tắt), `LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS` (120s mỗi query của audit),
+`WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS` (20s, Web UI delete/rename; hết giờ -> HTTP 409, không đổi gì).
+Đặt qua `.env` (unit nạp bằng `EnvironmentFile=`).
 
 > **Alternative — cron.d** (CHỈ khi `odoo-semantic.conf` đã chứa `pg_dsn` + neo4j creds, vì cron
 > không load `.env`). Dùng đúng conf path prod + log đã relocate (followup #14):
@@ -829,7 +890,9 @@ sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
 > **M6 Wave 2 — incremental indexer:** `pipeline._index_repo` so sánh git HEAD với
 > `repos.head_sha` stored. Repo unchanged → zero-cost skip. Otherwise `git diff` để
 > filter scan results to changed modules only. `--profile-workers N` để index multi-version
-> đồng thời (per-profile lock đảm bảo safe). `--full` flag bypass skip cho periodic cleanup.
+> đồng thời (per-profile lock đảm bảo safe). `--full` flag bypass skip (backfill property;
+> dọn module không cần nó - ADR-0056). Skip zero-cost còn đòi `presence_head_sha == HEAD` và không
+> module nào `needs_rewrite`; nếu không, repo đi sync path (scan + ghi ledger, không re-parse).
 > Auto-reseed pattern catalogue cũng wire vào pipeline (sha256 sentinel — cheap khi unchanged).
 > See `docs/adr/0007-incremental-indexer.md` cho design decisions.
 
@@ -881,10 +944,10 @@ KHÔNG sai data, nhưng thiếu module cho đến khi reindex):
    **VERIFY (STEP 2) phải gần 0**; phần dư còn lại CHỈ nên là data-only/i18n module (0 child
    `DEFINED_IN`) — những module này backfill KHÔNG sửa được, cần bước 3.
 3. **Chạy `--full` reindex off-peak, từng version** (v17 trước, rồi v18/v19). Đây là remedy
-   chính thức theo ADR-0016: stamp `profile` cho cả data-only module mà backfill bỏ sót, và
-   dọn stale node:
+   chính thức theo ADR-0016: stamp `profile` cho cả data-only module mà backfill bỏ sót (node
+   stale được lượt chạy thường dọn theo ADR-0056, không cần `--gc`):
    ```bash
-   ... -m src.indexer index-repo --all --full --gc   # xem 3.6 cho systemd-run wrapper đầy đủ
+   ... -m src.indexer index-repo --all --full   # xem 3.6 cho osm-fernet-run wrapper đầy đủ
    ```
 
 > Tóm tắt thứ tự bắt buộc: **writer deploy → backfill (`ops/backfill_module_profile.cypher`)

@@ -12,3 +12,4 @@ Short, action-oriented playbooks for operator tasks. Read top-to-bottom; run com
 | [nginx-ratelimit-apply.md](nginx-ratelimit-apply.md) | Apply 4 nginx rate-limit zones (mcp/api/waitlist/install) |
 | [offsite-backup-bootstrap.md](offsite-backup-bootstrap.md) | rclone + S3-compat + systemd timer for offsite encrypted backup |
 | [neo4j-container-recreate.md](neo4j-container-recreate.md) | Recreate Neo4j container from canonical compose path (fix drift, pick up env-var changes) |
+| [module-lifecycle-cleanup.md](module-lifecycle-cleanup.md) | 0.19.0 rollout of the module lifecycle ledger (ADR-0056): pre-deploy F24/F7 checks, migrate 0003, preview with `lifecycle-audit`, first normal run retires the ghosts, verify, enable the weekly audit timer, rollback |
