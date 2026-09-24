@@ -163,7 +163,7 @@
 // the INPUT rows from the outer query into separate transactions.  (If the MATCH
 // were INSIDE the CALL with no outer driving clause, the input would be a single
 // unit row and the whole MERGE would run in ONE transaction — batching would be
-// a no-op.  See delete_modules_scoped in writer_neo4j.py for the same shape.)
+// a no-op.  See retire_modules in writer_neo4j.py for the same shape.)
 MATCH (ext:Model)
 WHERE NOT coalesce(ext.is_definition, false)
   AND ext.module <> '__unresolved__'

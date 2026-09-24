@@ -230,7 +230,6 @@ class IndexWriterProtocol(Protocol):
 
     # --- Maintenance / GC ----------------------------------------------------
     def fetch_core_symbols(self, odoo_version: str) -> list: ...
-    def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict: ...
 
     # --- Module retirement cascade (ADR-0056 D9) ------------------------------
     def server_now(self) -> Any:

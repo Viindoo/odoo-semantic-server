@@ -52,7 +52,7 @@
 //   ONLY way to correct an already-polluted profile[]. For a GENUINE cross-tenant
 //   collision (Phase 0 flags ≥2 distinct non-null tenants), do NOT collapse in
 //   place — instead delete the colliding nodes (web-UI repo delete →
-//   delete_modules_scoped) and re-index so the writer re-derives the correct
+//   ledger reconcile, reconcile_removed_repos) and re-index so the writer re-derives the correct
 //   UNION via ON CREATE. Reindex is still required AFTER this script to keep
 //   FUTURE writes correct under the WI-1 writer, but it does not perform the
 //   correction itself.
@@ -95,7 +95,7 @@
 //   0. Export $map (query above), then run PHASE 0 (read-only ADVISORY). If it
 //      flags ANY Module whose profile[] spans ≥2 distinct non-null tenants, do
 //      NOT run Phase 1 in place — instead delete the colliding nodes (web-UI repo
-//      delete uses delete_modules_scoped) and re-index so the writer re-derives
+//      delete reconciles through the ledger) and re-index so the writer re-derives
 //      the correct UNION via ON CREATE. A plain `--full` reindex will NOT fix a
 //      polluted array (union-only writer). Depender-pollution within ONE tenant
 //      hierarchy is safe

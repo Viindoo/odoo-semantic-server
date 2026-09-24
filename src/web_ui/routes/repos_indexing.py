@@ -139,6 +139,10 @@ async def clone_status(request: Request, repo_id: int):
     Security (IDOR sweep #237):
     - repos.tenant_id scopes visibility; out-of-scope → 404 (no oracle).
     - clone_error_msg redacted for non-admin (may contain filesystem paths / SSH errors).
+
+    Also the repo's module lifecycle view (``head_sha`` vs ``presence_head_sha``,
+    ``lifecycle_attention[_at]``, ``lifecycle_counts``); the attention text is
+    redacted for non-admin the same way (``repos._attach_lifecycle``).
     """
     try:
         from src.db.pg import repo_store
@@ -154,10 +158,18 @@ async def clone_status(request: Request, repo_id: int):
     if not read_access_allowed(is_admin, scope, repo.get("tenant_id")):
         return JSONResponse(_json_safe({"error": "not found"}), status_code=404)
 
+    from src.web_ui.routes import repos as repos_module
+
+    lifecycle = repos_module._attach_lifecycle([dict(repo)], is_admin=is_admin)[0]
     return JSONResponse(_json_safe({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
         "error_msg": repo.get("clone_error_msg") if is_admin else None,
+        "head_sha": repo.get("head_sha"),
+        "presence_head_sha": lifecycle["presence_head_sha"],
+        "lifecycle_attention": lifecycle["lifecycle_attention"],
+        "lifecycle_attention_at": lifecycle["lifecycle_attention_at"],
+        "lifecycle_counts": lifecycle["lifecycle_counts"],
     }))
 
 
@@ -246,7 +258,12 @@ async def index_repo(
             argv += ["--full"]
         if body.gc:
             # Deprecated no-op (ADR-0056): retirement runs on every index run.
-            # Forwarded so the job log carries the CLI's deprecation line.
+            # The site no longer sends it; accepted for older clients and
+            # forwarded so the job log carries the CLI's deprecation line.
+            _logger.warning(
+                "POST /repos/%s/index: 'gc' is deprecated and has no effect "
+                "(ADR-0056: cleanup runs on every index run)", repo_id,
+            )
             argv += ["--gc"]
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]
@@ -387,7 +404,12 @@ async def index_all(
         if body.full:
             argv += ["--full"]
         if body.gc:
-            # Deprecated no-op (ADR-0056), forwarded for the deprecation log line.
+            # Deprecated no-op (ADR-0056); the site no longer sends it. Accepted
+            # for older clients, forwarded for the CLI's deprecation log line.
+            _logger.warning(
+                "POST /repos/index-all: 'gc' is deprecated and has no effect "
+                "(ADR-0056: cleanup runs on every index run)",
+            )
             argv += ["--gc"]
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]

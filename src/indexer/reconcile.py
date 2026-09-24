@@ -47,6 +47,10 @@ edges of a retired definer, review L3).
 
 ``retire=False`` (CLI ``--no-retire``) and ``dry_run=True`` delete nothing and
 write nothing; the report still lists what would happen.
+
+:func:`reconcile_removed_repos` is the Web UI repo/profile delete variant: the
+same per-name decision for the removed repos' names, plus their Module nodes
+the ledger never recorded, without the version-wide sweep.
 """
 from __future__ import annotations
 
@@ -96,8 +100,10 @@ class ReconcileReport:
     ``blocked`` maps a pending name to the reason it was not evaluated (a repo
     gate trip, ``no_retire``);
     ``orphans_deferred`` maps an orphan Module to the unsynced profiles that
-    still claim it. ``gates_tripped`` holds ``orphan_sweep:<gate>`` when the
-    sweep was stopped by G-B. ``needs_attention`` is what makes the CLI exit 3.
+    still claim it. ``modules_deleted`` / ``children_deleted`` count the Neo4j
+    nodes the cascade removed (0 in a dry run). ``gates_tripped`` holds
+    ``orphan_sweep:<gate>`` when the sweep was stopped by G-B.
+    ``needs_attention`` is what makes the CLI exit 3.
 
     Also filled, executed or dry, for the operator and ``lifecycle-audit``:
     ``owners_kept`` maps an owner-dropped name to the repos that keep it;
@@ -121,6 +127,8 @@ class ReconcileReport:
     child_orphans_swept: list[str] = field(default_factory=list)
     embedding_orphans: list[tuple[str, str, int]] = field(default_factory=list)
     embeddings_deleted: int = 0
+    modules_deleted: int = 0
+    children_deleted: int = 0
     dependents_reset: int = 0
     ledger_orphan_rows: int = 0
     gates_tripped: list[str] = field(default_factory=list)
@@ -408,6 +416,10 @@ class _Reconciler:
         self.report.embeddings_deleted += n
         return n
 
+    def _count_deleted(self, result: Mapping) -> None:
+        self.report.modules_deleted += int(result.get("modules") or 0)
+        self.report.children_deleted += int(result.get("children") or 0)
+
     def _reset_dependents(self, names: set[str], exclude_basenames: set[str]) -> None:
         if not names:
             return
@@ -429,10 +441,12 @@ class _Reconciler:
 
     # --- 1. pending names ----------------------------------------------------
 
-    def pending(self) -> None:
+    def pending(self, only_names: set[str] | None = None) -> None:
         rows = self.store.pending_retirements(self.v, conn=self.conn)
         by_name: dict[str, list[dict]] = {}
         for r in rows:
+            if only_names is not None and r["name"] not in only_names:
+                continue
             by_name.setdefault(r["name"], []).append(r)
 
         to_retire: dict[str, list[dict]] = {}
@@ -534,6 +548,7 @@ class _Reconciler:
             for name in names:
                 self._error(name, to_retire[name], exc)
             return
+        self._count_deleted(result)
         skipped = set(result.get("skipped_recent") or [])
         for name in names:
             rows = to_retire[name]
@@ -715,6 +730,7 @@ class _Reconciler:
                 self.report.errors["orphan_sweep"] = f"{type(exc).__name__}: {exc}"[:300]
                 _logger.error("reconcile %s: orphan sweep failed: %s", self.v, exc)
                 return all_synced
+            self._count_deleted(result)
             skipped = set(result.get("skipped_recent") or [])
             for name in decidable:
                 if name in skipped:
@@ -842,6 +858,92 @@ class _Reconciler:
         from src.db.pg import get_pool
         with get_pool().checkout() as conn:
             yield conn
+
+    # --- 2b. residue of removed repos ----------------------------------------
+
+    def sweep_removed_repo_residue(
+        self, basenames: set[str], removed_repo_ids: set[int],
+        removed_profiles: set[str],
+    ) -> None:
+        """Retire Module nodes a removed repo wrote that the ledger never recorded.
+
+        A repo indexed before the ledger existed (or whose rows were lost) left
+        Module nodes with ``Module.repo`` = its basename and no ``present`` row
+        anywhere. A basename is a directory name and collides across profiles
+        (``<base>/<profile>/odoo``), so a node is residue of the removed repos
+        only when it also belongs to them: one of its ``Module.profile`` entries
+        is a removed repo's profile, or it has no profile and its ``repo_id`` is
+        a removed repo. Another tenant's node is never examined, retired or
+        reported. A residue node is retired when no repo that could still ship
+        it is unsynced (the orphan-sweep attribution rule, with the removed
+        repos themselves not counted as blockers); otherwise it is kept and
+        listed in ``orphans_deferred``. No G-B gate applies: removing every
+        module of the repo is what the operator asked for.
+        """
+        if not basenames or not (removed_profiles or removed_repo_ids):
+            return
+        sync_rows = self.store.repo_sync_state(self.v, conn=self.conn)
+        blocking = [
+            r for r in sync_rows
+            if not r["synced"] and r["repo_id"] not in removed_repo_ids
+        ]
+        unsynced_profiles = {r["profile_name"] for r in blocking}
+        blocking_by_id = {r["repo_id"]: r for r in blocking}
+
+        present = self.store.present_names(self.v, conn=self.conn)
+        orphans = sorted({
+            name
+            for basename in sorted(basenames)
+            for name in self.writer.orphan_module_names(self.v, present, repo=basename)
+        })
+        if not orphans:
+            return
+        identity = self.writer.module_identity(self.v, orphans)
+
+        def belongs(ident: Mapping) -> bool:
+            profiles = set(ident.get("profile") or [])
+            if profiles:
+                return bool(profiles & removed_profiles)
+            return ident.get("repo_id") in removed_repo_ids
+
+        orphans = [n for n in orphans if belongs(identity.get(n, {}))]
+        decidable: list[str] = []
+        for name in orphans:
+            ident = identity.get(name, {})
+            claims = set(ident.get("profile") or []) & unsynced_profiles
+            if ident.get("repo_id") in blocking_by_id:
+                claims.add(blocking_by_id[ident["repo_id"]]["profile_name"])
+            if claims:
+                self.report.orphans_deferred[name] = sorted(claims)
+            else:
+                decidable.append(name)
+        if not self.execute or not decidable:
+            self.report.orphans_swept.extend(decidable)
+            return
+        try:
+            self._reset_dependents(set(decidable), set())
+            result = _retrying(
+                "retire_modules[removed repo residue]",
+                lambda: self.writer.retire_modules(
+                    self.v, decidable, run_started_at=self.run_started_at,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.report.errors["removed_repo_residue"] = f"{type(exc).__name__}: {exc}"[:300]
+            _logger.error("reconcile %s: removed-repo residue not retired: %s", self.v, exc)
+            return
+        self._count_deleted(result)
+        skipped = set(result.get("skipped_recent") or [])
+        for name in decidable:
+            if name in skipped:
+                self.report.skipped_recent.append(name)
+                continue
+            try:
+                self._delete_embeddings(name, identity.get(name, {}).get("profile") or [])
+            except Exception as exc:  # noqa: BLE001
+                self.report.errors[name] = f"{type(exc).__name__}: {exc}"[:300]
+                continue
+            self.report.orphans_swept.append(name)
 
     # --- 3. version-wide GCs ---------------------------------------------------
 
@@ -971,5 +1073,67 @@ def reconcile_version(
         len(report.orphans_deferred), len(report.child_orphans_swept),
         len(report.embedding_orphans),
         " (dry run)" if dry_run else ("" if retire else " (--no-retire)"),
+    )
+    return report
+
+
+def reconcile_removed_repos(
+    odoo_version: str,
+    *,
+    writer: IndexWriterProtocol,
+    store: ModulePresenceStore,
+    conn,
+    run_started_at,
+    names: Iterable[str],
+    basenames: Iterable[str],
+    removed_repo_ids: Iterable[int],
+    removed_profiles: Iterable[str],
+) -> ReconcileReport:
+    """Decide the names of repos that are being removed (Web UI repo/profile delete).
+
+    The caller has flagged every ledger row of the removed repos
+    ``retire_pending`` (``ModulePresenceStore.mark_repo_removed``), holds
+    ``retire:<odoo_version>`` on *conn* (``store.version_lock``), and deletes the
+    repos rows only after this returns (review H3), so ownership is read from
+    the ledger while the rows still name their repo. Per name *names* (the
+    flagged names at this version), exactly as :func:`reconcile_version`
+    decides them: a name another repo still ships keeps its node with that
+    repo as the only owner (``drop_module_owner``; only the departing profiles'
+    embeddings are deleted); a name nobody else ships is retired with its
+    subtree and embeddings; a name an unsynced repo may still ship stays
+    pending (``undecidable``). Then :meth:`_Reconciler.sweep_removed_repo_residue`
+    retires the removed repos' Module nodes the ledger never recorded
+    (*basenames* = their ``Module.repo`` values, restricted to nodes of
+    *removed_profiles* / *removed_repo_ids* - basenames collide across profiles).
+
+    Unlike :func:`reconcile_version` there is no version-wide orphan sweep and
+    no version-wide GC (the request must stay short; the next index run at the
+    version does both); only the same-name INHERITS re-link runs when a node
+    was deleted (review L3). Rows left pending (undecidable, error,
+    ``skipped_recent``) keep their ``repo_removed`` reason and are decided by the
+    next reconcile, also after the repos row is gone (``repo_id`` NULL).
+    """
+    report = ReconcileReport(odoo_version=odoo_version)
+    with store.version_lock(odoo_version, conn=conn) as locked:
+        rec = _Reconciler(
+            odoo_version, writer=writer, store=store, conn=locked,
+            run_started_at=run_started_at, retire=True, allow_mass_retire=False,
+            dry_run=False, report=report,
+        )
+        rec.pending(only_names=set(names))
+        rec.sweep_removed_repo_residue(
+            set(basenames), set(removed_repo_ids), set(removed_profiles),
+        )
+        rec.relink_inherits()
+        rec.flush_attention()
+
+    for key in ("retired", "owner_dropped", "skipped_recent", "orphans_swept"):
+        setattr(report, key, sorted(set(getattr(report, key))))
+    _logger.info(
+        "reconcile %s (repo removal %s): retired %d, owner dropped %d, undecidable %d, "
+        "residue retired %d (deferred %d), errors %d",
+        odoo_version, ", ".join(sorted(set(basenames))), len(report.retired),
+        len(report.owner_dropped), len(report.undecidable), len(report.orphans_swept),
+        len(report.orphans_deferred), len(report.errors),
     )
     return report

@@ -163,7 +163,7 @@ IMPACT_RISK_MED_THRESHOLD: int = 4
 NEO4J_WRITE_BATCH_SIZE: int = int(os.getenv("NEO4J_WRITE_BATCH_SIZE", "500"))
 
 # NEO4J_DELETE_BATCH_ROWS: rows per inner transaction for CALL {} IN TRANSACTIONS
-# DELETE batches (delete_modules_scoped + cleanup scripts).
+# DELETE batches (retire_modules cascade + cleanup scripts).
 # Intentionally separate from NEO4J_WRITE_BATCH_SIZE: delete batches should be
 # much larger (each row is a single DELETE, not a multi-property MERGE) and are
 # auto-commit transactions that live outside the normal write batch semantics.
@@ -511,4 +511,17 @@ RETIRE_LOCK_WAIT_SECONDS: float = float(os.getenv("RETIRE_LOCK_WAIT_SECONDS", "9
 # LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS.
 LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS: float = float(
     os.getenv("LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS", "120")
+)
+
+# WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS: how long a Web UI repo/profile delete or a
+# profile rename waits for the locks it must hold before touching anything
+# (the per-repo git lock, ADR-0035, and the retire:<odoo_version> ledger lock).
+# An index run's reconcile can hold the ledger lock for minutes; a request must
+# not sit behind it until the reverse proxy gives up (nginx default
+# proxy_read_timeout 60s), so the budget stays well under that and leaves room
+# for the delete itself. On timeout the request fails with HTTP 409 and nothing
+# has been changed; the operator retries once the index run finished.
+# Override via WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS.
+WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS: float = float(
+    os.getenv("WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS", "20")
 )

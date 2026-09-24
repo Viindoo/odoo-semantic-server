@@ -227,3 +227,49 @@ class TestIndexOptionsFlags:
         body = resp.json()
         assert "error" in body
         mock_popen.assert_not_called()
+
+
+class TestDeprecatedGcStillAccepted:
+    """G4: the site no longer sends ``gc``; an older client that does still gets
+    its job (argv keeps ``--gc`` so the CLI logs its own deprecation line), and
+    the API logs a deprecation WARNING naming the option."""
+
+    @pytest.mark.asyncio
+    async def test_repo_index_accepts_gc_with_a_deprecation_warning(self, migrated_pg, caplog):
+        import logging
+
+        _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_gc")
+        app = create_app()
+        caplog.set_level(logging.WARNING, logger="src.web_ui.routes.repos_indexing")
+        with mock.patch(
+            "src.indexer.pipeline.indexer_is_running", return_value=False
+        ), mock.patch("subprocess.Popen") as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post(f"/api/repos/repos/{rid}/index", json={"gc": "on"})
+
+        assert resp.status_code == 200 and resp.json().get("ok") is True
+        assert "--gc" in mock_popen.call_args[0][0]
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("gc" in m and "deprecated" in m for m in warned), warned
+
+    @pytest.mark.asyncio
+    async def test_index_all_accepts_gc_with_a_deprecation_warning(self, migrated_pg, caplog):
+        import logging
+
+        from src.db.pg import repo_store
+
+        repo_store().add_profile(name="all_gc_profile", odoo_version="99.0")
+        app = create_app()
+        caplog.set_level(logging.WARNING, logger="src.web_ui.routes.repos_indexing")
+        with mock.patch(
+            "src.indexer.pipeline.indexer_is_running", return_value=False
+        ), mock.patch(
+            "src.web_ui.helpers.subprocess_runner.subprocess.Popen"
+        ) as mock_popen:
+            async with _async_client(app) as client:
+                resp = await client.post("/api/repos/index-all", json={"gc": "on"})
+
+        assert resp.status_code == 200
+        assert "--gc" in mock_popen.call_args[0][0]
+        warned = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("gc" in m and "deprecated" in m for m in warned), warned

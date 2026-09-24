@@ -5,6 +5,7 @@ from pathlib import Path
 
 import psycopg2.errors
 
+from src.constants import WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS
 from src.db.exceptions import (
     ProfileCycleError,
     ProfileIndexedError,
@@ -261,8 +262,12 @@ class RepoStore:
         name: str | None = None,
         version: str | None = None,
         description: str | None = None,
+        lock_wait_seconds: float = WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS,
     ) -> list[str]:
         """Update editable fields of a profile.
+
+        A rename also rewrites the module lifecycle ledger's ``profile_name``
+        in the same transaction (ADR-0056, review L7).
 
         Returns:
             List of field names that were actually changed.
@@ -273,6 +278,8 @@ class RepoStore:
             ProfileVersionMismatchError — new version conflicts with a descendant or ancestor.
             ProfileIndexedError — profile has indexed repos; name/version change blocked
                 until re-indexed (HTTP 409).
+            LifecycleLockTimeout - rename: a ledger lock was not obtained within
+                *lock_wait_seconds*; nothing changed (HTTP 409).
         """
         # Load current profile
         current = self.get_profile_by_id(profile_id)
@@ -365,11 +372,17 @@ class RepoStore:
 
         try:
             with self._pool.checkout() as conn:
-                rowcount = self._pool.execute(
-                    conn,
-                    f"UPDATE profiles SET {set_clause} WHERE id = %s",
-                    values,
-                )
+                if "name" not in updates:
+                    rowcount = self._pool.execute(
+                        conn,
+                        f"UPDATE profiles SET {set_clause} WHERE id = %s",
+                        values,
+                    )
+                else:
+                    rowcount = self._rename_with_ledger(
+                        conn, current["name"], updates["name"], set_clause, values,
+                        lock_wait_seconds=lock_wait_seconds,
+                    )
         except psycopg2.errors.UniqueViolation as e:
             raise ProfileNameConflictError(
                 f"Profile name {name!r} already exists"
@@ -379,6 +392,56 @@ class RepoStore:
             raise ProfileNotFoundError(f"profile id={profile_id} not found")
 
         return list(updates.keys())
+
+    def _rename_with_ledger(
+        self,
+        conn,
+        old_name: str,
+        new_name: str,
+        set_clause: str,
+        values: list,
+        *,
+        lock_wait_seconds: float,
+    ) -> int:
+        """UPDATE the profile and the ledger's denormalized ``profile_name`` in ONE transaction.
+
+        ``module_presence.profile_name`` is the ledger's tenant filter and RLS
+        column (review L7): renaming only ``profiles`` would hide the profile's
+        lifecycle history from its own tenant. The ``retire:<v>`` lock of every
+        version the ledger holds rows at is held until the transaction
+        committed, so no ledger writer interleaves with the rename. Raises
+        ``LifecycleLockTimeout`` (nothing changed) when a lock is not obtained
+        within *lock_wait_seconds*.
+        """
+        from contextlib import ExitStack
+
+        from src.db.module_presence import ModulePresenceStore
+
+        store = ModulePresenceStore(self._pool, lock_wait_seconds=lock_wait_seconds)
+        versions = sorted({
+            r["odoo_version"] for r in self._pool.fetch_all(
+                conn,
+                "SELECT DISTINCT odoo_version FROM module_presence WHERE profile_name = %s",
+                (old_name,),
+            )
+        })
+        with ExitStack() as locks:
+            for version in versions:
+                locks.enter_context(store.version_lock(version, conn=conn))
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(f"UPDATE profiles SET {set_clause} WHERE id = %s", values)
+                    rowcount = cur.rowcount
+                if rowcount:
+                    store.rename_profile(old_name, new_name, conn=conn)
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+        return rowcount
 
     def get_ancestor_profile_names(self, profile_name: str) -> list[str]:
         """Return profile names from *self* (index 0) up to root (last).

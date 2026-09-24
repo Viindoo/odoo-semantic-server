@@ -15,13 +15,12 @@ the pre-split routes. ``app.include_router(repos.router)`` is unchanged: this
 module still exposes a single ``router`` with ``prefix="/api/repos"`` whose
 ``router.routes`` is the union of all three sub-routers.
 
-The Neo4j + pgvector cleanup helpers stay defined HERE (not in a sibling
-module) for two reasons: (1) they call each other (``_collect_module_names_*``
-and ``_delete_neo4j_*`` both call ``_get_neo4j_writer``), so co-location keeps
-``mock.patch("...repos._get_neo4j_writer")`` effective across the whole chain;
-(2) the existing test patch surface is ``src.web_ui.routes.repos._*``. The
-endpoint modules call them via ``repos._delete_*`` (namespace lookup at call
-time) so that patch surface is preserved unchanged.
+The repo-removal helper (``_remove_repos_through_ledger``, ADR-0056 ledger
+first, then graph, then Postgres) and ``_get_neo4j_writer`` stay defined HERE
+(not in a sibling module) so ``mock.patch("...repos._get_neo4j_writer")`` is
+effective across the whole chain; the endpoint modules call them via
+``repos._*`` (namespace lookup at call time) so the test patch surface
+``src.web_ui.routes.repos._*`` works for every endpoint.
 
 ``import subprocess`` is also kept here because tests patch
 ``src.web_ui.routes.repos.subprocess.Popen``; the ``subprocess`` module is a
@@ -34,6 +33,8 @@ correctly. The original prefix "/api/repos" caused 404s for those paths.
 """
 import logging
 import subprocess  # noqa: F401  (kept: tests patch repos.subprocess.Popen — shared singleton)
+from collections.abc import Callable
+from pathlib import Path
 
 from fastapi import APIRouter
 
@@ -63,127 +64,211 @@ def _get_neo4j_writer():
     return Neo4jWriter(uri=uri, user=user, password=password)
 
 
-def _delete_neo4j_for_repos(repo_cleanup_pairs: list[dict]) -> tuple[int, int]:
-    """Delete Neo4j Module nodes + children for each (basename, version) pair.
+def _attach_lifecycle(repos: list[dict], *, is_admin: bool) -> list[dict]:
+    """Add the module lifecycle view (ADR-0056) to repo rows, in place.
 
-    Returns (total_modules_deleted, total_children_deleted).
+    Every row gets ``presence_head_sha`` (the HEAD the ledger last reflects;
+    differs from ``head_sha`` while the ledger lags the graph),
+    ``lifecycle_attention`` / ``lifecycle_attention_at`` (why the last index
+    run or reconcile needs an operator; NULL when clean) and
+    ``lifecycle_counts`` ``{present, excluded, retired, retire_pending,
+    needs_rewrite}`` from the ledger (None when the ledger is unreadable).
+
+    The attention text can name repos of other tenants (an undecidable
+    retirement lists the unsynced repos that block it), so a non-admin gets
+    ``lifecycle_attention`` None and only the timestamp says attention is
+    needed (ADR-0034 fail-closed, same rule as ``clone_error_msg``).
     """
-    total_modules = 0
-    total_children = 0
-    for pair in repo_cleanup_pairs:
-        basename = pair["basename"]
-        version = pair["version"]
-        try:
-            writer = _get_neo4j_writer()
-            if writer is None:
-                continue
-            try:
-                counts = writer.delete_modules_scoped(basename, version)
-                total_modules += counts.get("modules", 0)
-                total_children += counts.get("children", 0)
-            finally:
-                writer.close()
-        except Exception as e:
-            _logger.warning(
-                "Neo4j cleanup failed for repo %s version %s: %s", basename, version, e
-            )
-    return total_modules, total_children
-
-
-def _collect_module_names_for_repos(
-    repo_cleanup_pairs: list[dict],
-) -> dict[str, list[str]]:
-    """Query Neo4j for Odoo module names belonging to each (basename, version) pair.
-
-    Returns a dict mapping version → list of module names.
-    Must be called BEFORE _delete_neo4j_for_repos so the Module nodes still exist.
-    """
-    by_version: dict[str, list[str]] = {}
-    for pair in repo_cleanup_pairs:
-        version = pair["version"]
-        basename = pair["basename"]
-        try:
-            writer = _get_neo4j_writer()
-            if writer is None:
-                _logger.warning(
-                    "Neo4j unavailable — cannot resolve module names for repo %s v%s",
-                    basename,
-                    version,
-                )
-                continue
-            try:
-                with writer.driver.session() as session:
-                    result = session.run(
-                        "MATCH (m:Module {repo: $repo, odoo_version: $v}) "
-                        "RETURN m.name AS module_name",
-                        repo=basename,
-                        v=version,
-                    )
-                    names = [row["module_name"] for row in result]
-            finally:
-                writer.close()
-            by_version.setdefault(version, []).extend(names)
-        except Exception as e:
-            _logger.warning(
-                "Failed to collect module names for repo %s v%s: %s", basename, version, e
-            )
-    return by_version
-
-
-def _delete_embeddings_for_repos(
-    repo_cleanup_pairs: list[dict],
-    module_names_by_version: dict[str, list[str]] | None = None,
-) -> int:
-    """Delete pgvector embeddings for each (basename, version) repo pair.
-
-    Resolves the correct Odoo module names from ``module_names_by_version`` (a dict
-    produced by ``_collect_module_names_for_repos`` called BEFORE the Neo4j delete).
-    The embeddings table stores Odoo module names (e.g. ``sale``, ``account``), NOT
-    repo basenames — using basenames was a production bug that made every DELETE a
-    no-op.
-
-    If ``module_names_by_version`` is None or empty for a version, the DELETE is a
-    correct no-op (repo was never indexed → no embeddings to clean).
-
-    Returns total embeddings rows deleted.
-    """
-    if module_names_by_version is None:
-        module_names_by_version = {}
-
-    total = 0
-
-    # Collect all versions we need to clean (deduplicated)
-    versions_seen: set[str] = {pair["version"] for pair in repo_cleanup_pairs}
-    if not any(module_names_by_version.get(v) for v in versions_seen):
-        return 0  # nothing to delete
-
+    counts: dict[int, dict[str, int]] | None
     try:
+        from src.db.module_presence import ModulePresenceStore
         from src.db.pg import get_pool
 
-        for version in versions_seen:
-            module_list = module_names_by_version.get(version, [])
-            if not module_list:
-                continue  # repo never indexed → no embeddings to delete
-            try:
-                with get_pool().checkout() as conn:
-                    rowcount = get_pool().execute(
-                        conn,
-                        "DELETE FROM embeddings "
-                        "WHERE odoo_version = %s AND module = ANY(%s)",
-                        (version, module_list),
-                    )
-                    total += rowcount
-            except Exception as e:
-                _logger.warning(
-                    "pgvector cleanup failed for version %s modules %s: %s",
-                    version,
-                    module_list,
-                    e,
-                )
-    except Exception as e:
-        _logger.warning("PG connection unavailable — skipping embeddings cleanup: %s", e)
+        counts = ModulePresenceStore(get_pool()).lifecycle_counts(r["id"] for r in repos)
+    except Exception as e:  # noqa: BLE001 - the listing must not fail on the ledger
+        _logger.warning("Repo lifecycle counts unavailable: %s", e)
+        counts = None
+    for repo in repos:
+        repo["presence_head_sha"] = repo.get("presence_head_sha")
+        repo["lifecycle_attention_at"] = repo.get("lifecycle_attention_at")
+        repo["lifecycle_attention"] = repo.get("lifecycle_attention") if is_admin else None
+        repo["lifecycle_counts"] = counts.get(repo["id"]) if counts is not None else None
+    return repos
 
-    return total
+
+class RemovalBusy(Exception):
+    """A lock the removal must hold is taken; nothing was changed (HTTP 409)."""
+
+
+def _remove_repos_through_ledger[T](
+    repos: list[dict], *, profile_name: str, pg_delete: Callable[[], T],
+) -> tuple[T, dict]:
+    """Remove *repos* (rows of ``repo_store().get_repo_by_id`` shape) ledger-first.
+
+    Order (review H3): every lock first, then the ledger, then the graph, and
+    the Postgres delete last, so the ledger still names each row's repo when
+    ownership is decided and the ``repo_removed`` history survives the delete
+    (``module_presence.repo_id`` becomes NULL, ADR-0056):
+
+    1. On one dedicated connection (never a pool connection pinned for the
+       wait): the profile's indexer lock (try once: an index run of the
+       profile is in progress -> busy), each repo's git lock (ADR-0035) and the
+       ledger lock ``retire:<v>`` of every version the repos have rows at,
+       each waited for up to ``WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS``. A lock not
+       obtained raises :class:`RemovalBusy` before anything is written.
+    2. ``mark_repo_removed`` flags every non-retired row ``retire_pending``.
+    3. ``reconcile_removed_repos`` per version: a module another repo still
+       ships keeps its node, with that repo as the only owner; a module nobody
+       else ships is retired with its subtree and the departing profiles'
+       embeddings; residue the ledger never recorded is retired when no
+       unsynced repo can claim it. Skipped (rows stay pending for the next
+       index run's reconcile) when Neo4j is not configured or unreachable.
+    4. *pg_delete* runs while the locks are still held, so no index run can
+       re-observe the repo between its reconcile and its delete.
+
+    Returns ``(pg_delete(), summary)``; *summary* is JSON-ready (see
+    :func:`_removal_summary`).
+    """
+    from contextlib import ExitStack
+
+    import psycopg2
+
+    from src.constants import WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS
+    from src.db.exceptions import LifecycleLockTimeout
+    from src.db.module_presence import ModulePresenceStore
+    from src.db.pg import advisory_lock, get_pool
+    from src.indexer.pipeline import _profile_lock_id, _repo_lock_id
+
+    wait = WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS
+    pool = get_pool()
+    store = ModulePresenceStore(pool, lock_wait_seconds=wait)
+    conn = psycopg2.connect(pool.dsn)
+    conn.autocommit = True
+    try:
+        with ExitStack() as locks:
+            if not locks.enter_context(advisory_lock(conn, _profile_lock_id(profile_name))):
+                raise RemovalBusy(f"Cannot delete: indexer running for profile {profile_name}")
+            for repo in sorted(repos, key=lambda r: r["id"]):
+                if not locks.enter_context(
+                    advisory_lock(conn, _repo_lock_id(repo["id"]), wait_seconds=wait),
+                ):
+                    raise RemovalBusy(
+                        f"Cannot delete: a git operation is running for repo id={repo['id']} "
+                        f"(waited {wait:g}s); retry when it finished"
+                    )
+            versions = {r["odoo_version"] for r in repos if r.get("odoo_version")}
+            for repo in repos:
+                versions |= {
+                    row["odoo_version"] for row in store.rows_for_repo(repo["id"], conn=conn)
+                }
+            try:
+                for version in sorted(versions):
+                    locks.enter_context(store.version_lock(version, conn=conn))
+            except LifecycleLockTimeout as exc:
+                raise RemovalBusy(
+                    f"Cannot delete: a module lifecycle reconcile is running ({exc}); "
+                    "retry when the index run finished"
+                ) from exc
+
+            flagged: dict[str, set[str]] = {v: set() for v in versions}
+            for repo in repos:
+                for row in store.mark_repo_removed(repo["id"], conn=conn):
+                    flagged.setdefault(row["odoo_version"], set()).add(row["name"])
+
+            reports, deferred = _reconcile_removed(
+                repos, store, conn, flagged, profile_name=profile_name,
+            )
+            repo_ids = {r["id"] for r in repos}
+            still_pending = {
+                v: sorted({
+                    row["name"] for row in store.pending_retirements(v, conn=conn)
+                    if row["repo_id"] in repo_ids
+                })
+                for v in sorted(flagged)
+            }
+            result = pg_delete()
+        return result, _removal_summary(flagged, reports, deferred, still_pending)
+    finally:
+        conn.close()
+
+
+def _reconcile_removed(
+    repos: list[dict], store, conn, flagged: dict[str, set[str]], *, profile_name: str,
+) -> tuple[dict, str | None]:
+    """Run ``reconcile_removed_repos`` per version; returns ``(reports, deferred_reason)``."""
+    from src.indexer.reconcile import reconcile_removed_repos
+
+    writer = _get_neo4j_writer()
+    if writer is None:
+        _logger.warning(
+            "Repo removal: Neo4j not configured; %d ledger row(s) left pending for "
+            "the next index run's reconcile",
+            sum(len(n) for n in flagged.values()),
+        )
+        return {}, "neo4j not configured"
+    basenames = {Path(r["local_path"]).name for r in repos if r.get("local_path")}
+    repo_ids = {r["id"] for r in repos}
+    profiles = {profile_name} | {r["profile_name"] for r in repos if r.get("profile_name")}
+    reports: dict = {}
+    try:
+        run_started_at = writer.server_now()
+        for version in sorted(flagged):
+            reports[version] = reconcile_removed_repos(
+                version, writer=writer, store=store, conn=conn,
+                run_started_at=run_started_at, names=flagged[version],
+                basenames=basenames, removed_repo_ids=repo_ids,
+                removed_profiles=profiles,
+            )
+    except Exception as exc:  # noqa: BLE001 - rows stay pending; the delete proceeds
+        _logger.warning(
+            "Repo removal: reconcile incomplete (%s: %s); pending ledger rows are "
+            "decided by the next index run's reconcile", type(exc).__name__, exc,
+        )
+        return reports, f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        writer.close()
+    return reports, None
+
+
+def _removal_summary(
+    flagged: dict[str, set[str]],
+    reports: dict,
+    deferred: str | None,
+    still_pending: dict[str, list[str]],
+) -> dict:
+    """JSON-ready summary of a ledger-first removal.
+
+    ``neo4j_modules`` / ``neo4j_children`` / ``embeddings`` keep the meaning of
+    the pre-ledger response (what was deleted). Per version: ``retired`` (gone
+    with subtree + embeddings), ``owner_dropped`` (kept: another repo ships
+    them), ``residue_retired`` / ``residue_kept`` (nodes the ledger never
+    recorded), ``pending`` (ledger rows left for the next index run's
+    reconcile, with ``undecidable`` / ``errors`` saying why).
+    """
+    per_version = {}
+    for version in sorted(flagged):
+        rep = reports.get(version)
+        per_version[version] = {
+            "flagged": len(flagged[version]),
+            "retired": list(rep.retired) if rep else [],
+            "owner_dropped": list(rep.owner_dropped) if rep else [],
+            "residue_retired": list(rep.orphans_swept) if rep else [],
+            "residue_kept": sorted(rep.orphans_deferred) if rep else [],
+            "pending": still_pending.get(version, []),
+            "undecidable": dict(rep.undecidable) if rep else {},
+            "errors": dict(rep.errors) if rep else {},
+        }
+    reps = list(reports.values())
+    return {
+        "neo4j_modules": sum(r.modules_deleted for r in reps),
+        "neo4j_children": sum(r.children_deleted for r in reps),
+        "embeddings": sum(r.embeddings_deleted for r in reps),
+        "lifecycle": {
+            "reconciled": deferred is None,
+            "deferred_reason": deferred,
+            "versions": per_version,
+        },
+    }
 
 
 # Mount the three sub-routers onto this module's prefixed router. Order matches
