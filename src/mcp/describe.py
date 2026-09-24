@@ -36,6 +36,7 @@ from src.constants import (
     REL_DEPENDS_ON,
 )
 from src.mcp.hints import format_next_step
+from src.mcp.lifecycle_read import lifecycle_lines, one_line, owned_pred, read_module_lifecycle
 
 
 def _describe_module(
@@ -51,7 +52,11 @@ def _describe_module(
     Distinct from check_module_exists (1–3 lines, YES/NO + edition) — this
     tool returns the full architecture tree (~10–15 lines) per ADR-0023 §1.7.
     Runs 1 Module query + 4 aggregate queries (Models defined, Models
-    extended, Views by type, JS patches).
+    extended, Views by type, JS patches). The Module must be owned by a
+    profile visible to the caller (dependency stubs are not modules); when it
+    is not, the NO branch renders the lifecycle block (ledger history, reverse
+    old_technical_name lookup, other indexed versions) instead, and both
+    branches always end with a ``Next:`` footer.
 
     Each query is routed through ``_data_bounded`` / ``_single_bounded`` with
     its OWN sub-step label so a tx-timeout becomes OrmQueryTimeout (clean
@@ -78,10 +83,9 @@ def _describe_module(
         )
         mod_rec = _srv._single_bounded(
             session,
-            """
-            MATCH (m:Module {name: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
+            f"""
+            MATCH (m:Module {{name: $n, odoo_version: $v}})
+            WHERE {owned_pred(_srv, "m")}
             RETURN m.repo AS repo, m.path AS path, m.version_raw AS version_raw,
                    m.edition AS edition,
                    m.license AS license,
@@ -108,9 +112,10 @@ def _describe_module(
         )
 
         if not mod_rec:
-            return (
-                f"No module named '{name}' indexed for Odoo {odoo_version}."
+            lifecycle = read_module_lifecycle(
+                _srv, session, name, odoo_version, profile_name,
             )
+            return _format_not_indexed(name, odoo_version, lifecycle)
 
         # depends-list is intentionally NOT tenant-scoped (no _srv._scope_pred("d")).
         # It returns only d.name — dependency names from THIS module's own manifest.
@@ -197,8 +202,8 @@ def _describe_module(
     # (e.g. "E-Invoice - Misa meInvoice Integrator"), so surface it at the very
     # top, right under the technical-name header. Rendered only when non-NULL
     # (graceful degrade before the --full backfill).
-    if mod_rec.get("shortdesc"):
-        lines.append(f"├─ Display name: {mod_rec['shortdesc']}")
+    if shortdesc := one_line(mod_rec.get("shortdesc")):
+        lines.append(f"├─ Display name: {shortdesc}")
 
     # B1/ADR-0037: render repo identity + repo-relative path so agents can locate
     # the module in their OWN checkout. Prefer the portable git URL (Repo URL);
@@ -264,11 +269,11 @@ def _describe_module(
         edition_str += f" (Viindoo equivalent: {mod_rec['vvq']})"
     manifest_rows.append(("Edition", edition_str))
     # Issue #121 P2 - raw manifest author (identity signal), only when non-NULL.
-    if mod_rec.get("author"):
-        manifest_rows.append(("Author", mod_rec["author"]))
+    if author := one_line(mod_rec.get("author")):
+        manifest_rows.append(("Author", author))
     manifest_rows.append(("Version", mod_rec.get("version_raw") or "—"))
-    if mod_rec.get("summary"):
-        manifest_rows.append(("Summary", mod_rec["summary"]))
+    if summary := one_line(mod_rec.get("summary")):
+        manifest_rows.append(("Summary", summary))
     # Issue #121 (extended) - extra manifest metadata, each only when non-NULL.
     if mod_rec.get("website"):
         manifest_rows.append(("Website", mod_rec["website"]))
@@ -358,11 +363,41 @@ def _describe_module(
             " for module views",
         ]
     else:
-        # No models defined or extended — skip footer entirely (no useful drill-down).
-        next_hints = []
-    if footer := format_next_step(next_hints):
-        lines.append(footer)
+        # No model to drill into: the dependency closure is the next useful read,
+        # so the footer is always emitted (ADR-0023 §4.3).
+        next_hints = [
+            f"module_inspect(name='{name}', method='dependencies',"
+            f" odoo_version='{odoo_version}') for the dependency closure",
+        ]
+    lines.append(format_next_step(next_hints))
 
+    return "\n".join(lines)
+
+
+def _format_not_indexed(name: str, odoo_version: str, lifecycle) -> str:
+    """describe_module NO branch: the lifecycle block, always closed by a Next footer.
+
+    The footer never suggests check_module_exists (ADR-0023 §4.2): a known
+    successor -> describe it; else the newest other version where the name is
+    indexed; else list_available_profiles to see the indexed scope.
+    """
+    lines = [f"No module named '{name}' indexed for Odoo {odoo_version}."]
+    lines.extend(lifecycle_lines(lifecycle))
+    if lifecycle.successors:
+        hints = [
+            f"describe_module(name='{s}', odoo_version='{odoo_version}')"
+            " for the successor"
+            for s in lifecycle.successors
+        ]
+    elif lifecycle.other_versions:
+        other = lifecycle.other_versions[-1][0]
+        hints = [
+            f"describe_module(name='{name}', odoo_version='{other}')"
+            " for the newest version where it is indexed",
+        ]
+    else:
+        hints = ["list_available_profiles() to see the indexed scope"]
+    lines.append(format_next_step(hints))
     return "\n".join(lines)
 
 

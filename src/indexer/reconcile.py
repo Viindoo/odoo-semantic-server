@@ -773,7 +773,9 @@ class _Reconciler:
             LedgerSuccessor(successor.names, successor.source) if successor else None
         )
         if ledger_successor is None:
-            declared = self.writer.modules_by_old_technical_name(self.v, [name]).get(name)
+            declared = self.writer.modules_by_old_technical_name(
+                self.v, [name], profiles=[repo["profile_name"]],
+            ).get(name)
             if declared:
                 ledger_successor = LedgerSuccessor(tuple(declared), SUCCESSOR_OLD_TECHNICAL_NAME)
         return repo, path, evidence, ledger_successor

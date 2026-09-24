@@ -1453,9 +1453,19 @@ class Neo4jWriter:
     ) -> dict[str, list[str]]:
         """``{old name: sorted Module names}`` of indexed Modules at the version
         whose manifest ``old_technical_name`` is one of *old_names* (successor
-        evidence declared by the survivor). Read-only."""
+        evidence declared by the survivor). Read-only.
+
+        *profiles* scopes the survivors to Modules owned by at least one of
+        those profiles (the successor recorded on a tenant's ledger row must
+        never be a module only another tenant indexes); an empty list matches
+        nothing. None = every owned Module (operator reads only).
+        """
         wanted = sorted(set(old_names))
         if not wanted:
+            return {}
+        scoped = profiles is not None
+        allowed = sorted({p for p in (profiles or ()) if p})
+        if scoped and not allowed:
             return {}
         with self.driver.session() as session:
             result = session.run(
@@ -1466,7 +1476,7 @@ class Neo4jWriter:
                 RETURN m.old_technical_name AS old, m.name AS name
                 ORDER BY old ASC, name ASC
                 """),
-                old=wanted, v=odoo_version,
+                old=wanted, v=odoo_version, scoped=scoped, allowed=allowed,
             ).data()
         out: dict[str, list[str]] = {}
         for r in result:

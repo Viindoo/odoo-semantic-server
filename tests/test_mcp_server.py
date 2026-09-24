@@ -1577,7 +1577,11 @@ def test_describe_module_happy(neo4j_driver):
             fields=[FieldInfo("x_viin_field", "char")],
         )
         # had_explicit_name defaults to False — no override needed.
-        writer.write_results([ParseResult(module=viin, models=[sale_model, ext_model])])
+        # Owned like every indexed module; a profile-less Module is a dependency
+        # stub and describe_module answers its "not indexed" branch (#378 M7).
+        writer.write_results(
+            [ParseResult(module=viin, models=[sale_model, ext_model])], profiles=["w6_profile"],
+        )
         # is_definition flag is needed for "Defines models" Cypher in
         # _describe_module — set it explicitly for the definition model only.
         with neo4j_driver.session() as session:
@@ -1643,7 +1647,8 @@ def test_describe_module_truncation(neo4j_driver):
             )
             for i in range(22)
         ]
-        writer.write_results([ParseResult(module=mega_mod, models=models)])
+        # Owned: a profile-less Module is a dependency stub (#378 M7).
+        writer.write_results([ParseResult(module=mega_mod, models=models)], profiles=["w6_profile"])
         with neo4j_driver.session() as session:
             session.run(
                 "MATCH (m:Model {module:'mega_mod', odoo_version:$v}) "
@@ -1662,11 +1667,14 @@ def test_describe_module_truncation(neo4j_driver):
         _cleanup_version(neo4j_driver, W6_DESCRIBE_VERSION)
 
 
-def test_describe_module_no_models_skips_footer(neo4j_driver):
-    """ADR-0023 §4.4: describe_module with zero models defined/extended emits no Next: footer.
+def test_describe_module_with_no_models_still_ends_with_a_next_footer(neo4j_driver):
+    """ADR-0023 §4.3: every describe_module answer ends with a ``└─ Next:`` footer.
 
-    When a module has 0 defined models AND 0 extended models the server should
-    not emit the drill-down Next: hint, because there is nothing to drill into.
+    Rewritten (#378 R17): this test used to pin the absence of the footer for a
+    module that defines and extends no model. That was the reported gap (03b
+    §4), not a contract - a model-less module (a pure data / view / asset
+    module, e.g. ``l10n_*`` charts or theme modules) still has a dependency
+    closure to drill into, so the answer ends with a pointer to it.
     """
     _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
     try:
@@ -1676,19 +1684,20 @@ def test_describe_module_no_models_skips_footer(neo4j_driver):
             password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
         )
         writer.setup_indexes()
-        # Seed Module only — no models at all.
         empty_mod = ModuleInfo(
             "ww_empty_module", W6_DESCRIBE_NO_MODELS_VERSION,
             "test_repo", "/tmp", [], "17.0",
         )
-        writer.write_results([ParseResult(module=empty_mod, models=[])])
+        writer.write_results([ParseResult(module=empty_mod, models=[])], profiles=["w6_profile"])
         writer.close()
 
         srv = _import_server_module()
         out = srv._describe_module("ww_empty_module", W6_DESCRIBE_NO_MODELS_VERSION)
-        assert "Next:" not in out, (
-            f"Expected no Next: footer for a module with 0 models, got:\n{out!r}"
-        )
+        assert out.startswith(f"ww_empty_module (Odoo {W6_DESCRIBE_NO_MODELS_VERSION})"), out
+        assert out.rstrip().splitlines()[-1] == (
+            "└─ Next: module_inspect(name='ww_empty_module', method='dependencies', "
+            f"odoo_version='{W6_DESCRIBE_NO_MODELS_VERSION}') for the dependency closure"
+        ), out
     finally:
         _cleanup_version(neo4j_driver, W6_DESCRIBE_NO_MODELS_VERSION)
 
@@ -2543,8 +2552,10 @@ def grammar_seed(neo4j_driver):
                 FieldInfo("amount_total", "monetary", compute="_compute_amount")],
         methods=[MethodInfo("action_confirm")],
     )
+    # Owned like every indexed module; a profile-less `sale` would be a
+    # dependency stub, answered by check_module_exists's NO branch (#378 M7).
     writer.write_results(
-        [ParseResult(module=sale_mod, models=[sale_model])],
+        [ParseResult(module=sale_mod, models=[sale_model])], profiles=["grammar_profile"],
     )
     view = ViewInfo(
         xmlid="sale.view_order_form", name="form",
@@ -3510,7 +3521,9 @@ def b1_seed(neo4j_driver):
         )],
     )
     model.had_explicit_name = True
-    writer.write_results([ParseResult(module=mod, models=[model])])
+    # Owned like every indexed module: describe_module treats a profile-less
+    # Module as a dependency stub and answers its "not indexed" branch (#378 M7).
+    writer.write_results([ParseResult(module=mod, models=[model])], profiles=["b1_profile"])
 
     base_mod = ModuleInfo("sale", _B1_VERSION, "odoo_community",
                           "/opt/odoo/addons/sale", [], "17.0")

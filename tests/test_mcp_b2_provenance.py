@@ -112,6 +112,11 @@ class TestDescribeModuleProvenance:
 
     @pytest.fixture(autouse=True)
     def _seed(self, neo4j_driver, clean_neo4j):
+        """Owned modules, as the indexer writes them.
+
+        A profile-less Module is a dependency stub, and describe_module answers
+        its NO branch for a stub (#378 M7), so the seed carries a profile.
+        """
         writer = _make_writer()
         writer.setup_indexes()
 
@@ -133,7 +138,7 @@ class TestDescribeModuleProvenance:
         writer.write_results([
             ParseResult(module=mod_full, models=[]),
             ParseResult(module=mod_bare, models=[]),
-        ])
+        ], profiles=["b2_profile"])
         writer.close()
 
     def test_repo_url_rendered(self):
@@ -174,7 +179,7 @@ class TestDescribeModuleProvenance:
         _mcp_env()
         from src.mcp.server import _describe_module
         result = _describe_module("account_bare_b2", _B2_VERSION)
-        assert "account_bare_b2" in result
+        assert result.startswith(f"account_bare_b2 (Odoo {_B2_VERSION})"), result
         # Null-safe: none of these optional labels should appear
         assert "Repo URL:" not in result
         assert "Auto-install:" not in result

@@ -100,7 +100,9 @@ def f1_db(neo4j_driver):
             ),
         ],
     )
-    writer.write_results([ParseResult(module=module, models=[model])])
+    # Owned like every indexed module: a profile-less Module is a dependency
+    # stub and the module resource renders its "not indexed" branch (#378 M7).
+    writer.write_results([ParseResult(module=module, models=[model])], profiles=["f1_profile"])
     writer.close()
 
     yield neo4j_driver
