@@ -240,7 +240,7 @@ framework only exists from Odoo v14 onwards.
 
 ## References
 
-- `migrations/0003_profile_hierarchy.sql` — DDL for the FK column + index.
+- `migrations/0003_profile_hierarchy.sql` (pre-squash name; the FK column + index now live in the squashed `migrations/0001_initial.sql`. Today's `0003` is `0003_module_presence.sql`, ADR-0056 - unrelated) - DDL for the FK column + index.
 - `src/db/repo_registry.py` — `_validate_parent`, `set_profile_parent`,
   `get_ancestor_profile_names`, `get_ancestor_repos`.
 - `src/db/seed_master_data.py` — 4-tuple `_PROFILE_DEFS`, 2-pass
@@ -254,3 +254,25 @@ framework only exists from Odoo v14 onwards.
   `find_examples` (Neo4j rerank only; pgvector path is version-scoped).
 - ADR-0001: Schema Evolution Policy (Neo4j SET properties, idempotent MERGE).
 - ADR-0007: Incremental Indexer (head_sha tracking; full reindex flag).
+
+## Amendment 2026-09-24 (ADR-0056, issue #378) - what the code enforces today
+
+- **Repo uniqueness is per profile.** The constraint on `repos` is
+  `repos_url_branch_profile_key UNIQUE (url, branch, profile_id)`
+  (`migrations/0001_initial.sql`), not `UNIQUE (url, branch)` as the Context
+  section says. The same URL + branch can be registered under several profiles
+  (the CE clone of every profile of a version, with the same checkout basename
+  `odoo`). "Each profile owns only its delta repos" is therefore an operator
+  convention, not a database guarantee. ADR-0056 relies on this: module
+  ownership is decided per `(repo_id, name)` in the `module_presence` ledger,
+  never by `Module.repo` basename (the removed `delete_modules_scoped` deleted by
+  basename and would have retired the CE modules of every profile at a version).
+- **D5 "each run overwrites the list" is superseded.** Writers stamp only the
+  profile that owns the node's repo and union it into `profile[]` on MATCH
+  (ADR-0034 single-owner provenance, `pipeline_repo._owning_profiles`). A profile
+  leaves a node only through the lifecycle: `drop_module_owner` resets the Module
+  and every child to exactly the surviving owners, `retire_modules` removes the
+  subtree (ADR-0056 D8/D14).
+- **Existence on the read side** is `size(profile) > 0` plus the ADR-0034 choke
+  (`src/mcp/lifecycle_read.py::owned_pred`): a profile-less dependency stub
+  answers "not indexed" to every caller, admin included (ADR-0056 D13).

@@ -671,9 +671,11 @@ END LOOP;
 
 ## Incremental Indexer
 
-`pipeline._index_repo` so sánh `git rev-parse HEAD` với `repos.head_sha` để skip unchanged repos (zero-cost). Force-push detected qua `is_ancestor` fail → full reindex fallback. `head_sha` chỉ update sau full success. `Module.last_commit_sha` mutable property (NOT trong MERGE key).
+`pipeline_repo._index_repo` (re-export qua `pipeline`) so sánh `git rev-parse HEAD` với `repos.head_sha` để skip unchanged repos (zero-cost). Force-push detected qua `is_ancestor` fail → full reindex fallback. `head_sha` chỉ update sau full success. `Module.last_commit_sha` mutable property (NOT trong MERGE key).
 
-**Design rationale + edge cases (module rename, --full flag, auto-reseed sentinel):** [`docs/adr/0007-incremental-indexer.md`](adr/0007-incremental-indexer.md).
+**Vòng đời module (ADR-0056):** skip zero-cost chỉ khi thêm `repos.presence_head_sha == HEAD` và không module nào `needs_rewrite`; nếu không thì chạy sync path (scan + ghi ledger + stamp, không re-parse module không đổi). Scan sự thật = manifest git-tracked (`registry.build_registry_scan`); module biến mất khỏi scan được flag `retire_pending` trong ledger `module_presence`, rồi `reconcile.reconcile_version` (một lần mỗi version, lock `retire:<v>`) retire cả cây con + embedding khi không repo nào còn ship - mọi run, không cờ. `--full` không cần cho cleanup (dùng để backfill property index-time); `--gc` là no-op deprecated. Module re-parse còn bị prune entity/relationship không còn định nghĩa (run token `written_run` + `written_at`, so sánh `epochMillis`). Cổng an toàn G-A/G-B, exit 3 + `repos.lifecycle_attention`; dry run: `python -m src.indexer lifecycle-audit --all`.
+
+**Design rationale + edge cases (module rename, --full flag, auto-reseed sentinel):** [`docs/adr/0007-incremental-indexer.md`](adr/0007-incremental-indexer.md) + [`docs/adr/0056-module-lifecycle-ledger.md`](adr/0056-module-lifecycle-ledger.md).
 
 ---
 

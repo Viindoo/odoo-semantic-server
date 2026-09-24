@@ -169,7 +169,15 @@ no Cypher text leaked.
 via `CALL dbms.setConfigValue('db.transaction.timeout','600s')` and persisted in `neo4j.conf`.
 The 60s value was considered and rejected: it would kill indexer transactions (`delete_modules_scoped`,
 `gc_stale_modules`, `_write_parse_result`) that legitimately exceed 60s on large repos.
+(2026-09-24, ADR-0056: `delete_modules_scoped` and `gc_stale_modules` are removed; the module
+deletes are now `retire_modules` / `prune_module_children`, batched `CALL {} IN TRANSACTIONS`
+with transient-error retry - the same 600s reasoning applies to them.)
 600s kills zombie ORM hangs (19-24h) while leaving indexer headroom.
+
+**Same-name INHERITS after a retire (ADR-0056 L3):** DETACH DELETE of a retired definer drops its
+extenders' K×D edges; the lifecycle reconcile runs `reconcile_same_name_inherits` whenever it
+retired, re-owned or swept anything, so the extenders are re-linked to the remaining definer in the
+same run.
 
 **Semaphore (pool-drain guard):** An `asyncio.Semaphore(ORM_QUERY_MAX_CONCURRENCY)` (default 8)
 wraps the four ORM tool wrappers in `server.py` via the `offload_bounded` decorator, mirroring the
@@ -226,7 +234,7 @@ INHERITS edges between live nodes. The targeted script performs two batched step
 shape is an OUTER driving `MATCH` followed by `CALL { WITH <row> ... } IN TRANSACTIONS OF n ROWS`
 (`IN TRANSACTIONS` splits the INPUT rows of the outer query — a `MATCH` placed INSIDE the `CALL`
 with no outer driving clause would run everything in a SINGLE transaction, defeating batching; the
-same shape is used by `delete_modules_scoped` in `writer_neo4j.py`):
+same shape was used by `delete_modules_scoped` in `writer_neo4j.py`, now `retire_modules`, ADR-0056):
 
 1. **Backfill** (outer `MATCH` of (extender, definition, order) rows → `CALL { WITH ... MERGE ... }
    IN TRANSACTIONS OF 10000 ROWS`): for each extender missing the edge, create the correct
@@ -249,8 +257,9 @@ batches persisted, the in-flight batch rolled back. Therefore a full ~1.1M-edge 
 wall-clock exceeds the configured timeout will have its outer tx killed part-way. The script is
 idempotent (a re-run resumes), but to complete in one pass the operator MUST raise or disable the
 timeout first (`CALL dbms.setConfigValue('db.transaction.timeout','0')`, re-enable after) — Option A
-in the script header. The same caveat applies to `delete_modules_scoped` for very large repo
-deletes (now documented in its docstring).
+in the script header. The same caveat applied to `delete_modules_scoped` for very large repo
+deletes; since ADR-0056 it applies to `retire_modules` (a resumable, idempotent cascade: a
+re-run deletes what is left).
 
 ---
 

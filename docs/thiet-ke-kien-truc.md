@@ -228,6 +228,21 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
 
 ```
 (:Module   { name, odoo_version, repo, path, version_raw })
+           // KEY = (name, odoo_version) - một node cho mỗi tên module mỗi version,
+           // dù nhiều repo cùng ship tên đó; quyền sở hữu theo repo nằm ở ledger
+           // Postgres `module_presence` (ADR-0056), KHÔNG ở key.
+           // Property vòng đời (ADR-0056):
+           //   profile[]            profile sở hữu (union khi ghi; reset CHÍNH XÁC
+           //                        về owner còn lại khi drop owner / retire)
+           //   repos[]              basename mọi repo có dòng ledger `present`
+           //   last_seen_sha/at     HEAD + giờ server Neo4j của lần scan/ghi gần nhất
+           //   version_mismatch     manifest long-form lệch version theo branch
+           //   version_raw          chuỗi `version` nguyên văn của manifest
+           //   parse_degraded_*, prune_held_*, prune_deferred_*,
+           //   shared_prune_state   dấu vết prune/parse cho reconcile + audit
+           // Node con (MODULE_CHILD_LABELS) mang `written_run` + `written_at`
+           // (token run + giờ ghi) cho entity prune; relationship trong
+           // MODULE_CHILD_REL_TYPES cũng vậy.
 (:Model    { name, module, odoo_version, is_abstract, is_transient })
            // KEY = (name, module, odoo_version) — N nodes cho cùng model name
            // mỗi module define/extend model đó có 1 node riêng
@@ -248,6 +263,25 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
                                                     // language: css|scss
                                                     // mixin_count always 0 for CSS
 ```
+
+**Ledger vòng đời module (Postgres, ADR-0056) - không phải node Neo4j:**
+
+```
+module_presence (1 dòng / (repo_id, name))
+  state             present | excluded | retired
+  exclusion_reason  installable_false | license_skip | unparseable
+  retire_reason     absent | repo_removed | orphan_sweep
+  retire_pending    đã quyết retire nhưng chưa xóa (gate, --no-retire, crash)
+  needs_rewrite     run kế tiếp của repo phải re-parse module này
+  first/last_seen_*, state_changed_*, removing_commit_*, successor_names/source,
+  resurrection_count, shadowed_paths, version_raw/version_mismatch,
+  last_full_parse_*  (bản parse đầy đủ gần nhất của bản copy này - shared prune)
+  repo_url/basename/branch + profile_name denormalized; repo_id FK ON DELETE SET NULL
+repos += presence_head_sha, lifecycle_attention, lifecycle_attention_at
+```
+
+Chỉ `reconcile.reconcile_version` (một lần mỗi version, dưới lock `retire:<v>`)
+xóa module; đường index từng repo chỉ quan sát. Chi tiết: ADR-0056.
 
 **M4.5 (live) + M4.6 (planned) — see [ADR-0002](adr/0002-spec-schema-policy.md), [ADR-0003](adr/0003-pattern-example-storage.md):**
 
@@ -271,7 +305,8 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
                  line, status, replacement_qname, note })
                                   // KEY = (qualified_name, odoo_version)
                                   // kind: function|class|decorator|exception|field_type|orm_method|cursor_method
-                                  // status: stable|deprecated|removed|added
+                                  // status: stable|deprecated (removed/added = property
+                                  //   removed_in/added_in trên node version khác, ADR-0002 §2)
                                   // note: issue #364 C4 - written+rendered (lookup_core_api),
                                   //   but NOT populated by the tools_symbols static-JSON loader
                                   //   yet (see models.CoreSymbolInfo.note docstring)
@@ -438,7 +473,7 @@ flowchart TD
 | 2 | 12.0–15.0 | `odoo.define(` | `.include()` / AMD require |
 | 3 | 16.0+ | `/** @odoo-module */` | `patch()` / ES6 import |
 
-**Incremental re-index:** mỗi module lưu git commit hash tại thời điểm index. Lần sau chỉ re-parse module có hash thay đổi.
+**Incremental re-index:** mỗi repo lưu `repos.head_sha`; lần sau chỉ re-parse module có file đổi trong `git diff` (ADR-0007). Scan sự thật là tập manifest git-tracked; mỗi run so scan với ledger `module_presence`, flag module biến mất `retire_pending`, và reconcile theo version retire module (+ cây con + embedding) không repo nào còn ship - không cần `--full` hay `--gc` (ADR-0056).
 
 ---
 

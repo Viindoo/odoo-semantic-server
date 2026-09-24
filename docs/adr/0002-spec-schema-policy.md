@@ -39,6 +39,7 @@ Cần policy rõ ràng cho composite key, version-range representation (per-vers
    Cypher query lifecycle: `WHERE cs.added_in IS NOT NULL`, `WHERE cs.deprecated_in IS NOT NULL` — không cần traverse. Numeric version compare cho ORDER BY vẫn dùng `toFloat(cs.odoo_version) DESC` per gotcha `CLAUDE.md`.
 
 3. **`USES_CORE_SYMBOL` edge V0: chỉ bind khi `status ∈ {deprecated, removed}`.**
+   - **Update F47 (2026-09-24):** chỉ còn `status = 'deprecated'`. Edge bind tới CoreSymbol CÙNG version với Method; symbol bị removed ở version đó không có node tại version đó (removal ghi bằng `removed_in` trên node version cũ, xem mục 2), và không writer nào set `status = 'removed'` (AST core parse: `deprecated|stable`; `tools_symbols_*.json`: `deprecated|stable`) - nhánh `removed` là dead code nên đã bỏ khỏi writer (`writer_neo4j_orm`) và leg call của `find_deprecated_usage`. Hệ quả cho mục Consequences: `lookup_core_api("name_get", "18.0")` trả "not found" (không có node v18); "Removed in: 18.0" hiện trên node v17.
    - Edge: `(:Method|:Field)-[:USES_CORE_SYMBOL]->(:CoreSymbol)` — bind từ user code reference → Odoo core API
    - V0 scope hẹp giảm noise — full bind (mọi API call) defer M6 sau khi có data validate set.
    - Nếu CoreSymbol target không tồn tại → silent skip (không tạo placeholder, tránh ghost node giống pattern `:INHERITS {unresolved}` đã có).
@@ -65,6 +66,7 @@ Cần policy rõ ràng cho composite key, version-range representation (per-vers
 
 **Positive:**
 - Query per-version chính xác, không bị nhầm version (vd `lookup_core_api("name_get", "18.0")` trả `status: removed`, `lookup_core_api("name_get", "17.0")` trả `status: deprecated`).
+  - **Sửa 2026-09-24 (theo Update F47 ở mục 3):** ví dụ trên đã sai với code hiện tại. `lookup_core_api("name_get", "18.0")` trả "not found" (không có node v18 - symbol bị removed không có node ở version đó); `lookup_core_api("name_get", "17.0")` trả `status: deprecated` kèm dòng "Removed in: 18.0" khi node v17 mang property `removed_in`.
 - Diff giữa 2 version dễ via separate node lookup + diff_engine.
 - Schema agnostic v8-v19+ — không hardcode version range.
 - ADR-0001 compliant — không cần migration tool sớm hơn dự định.
