@@ -1326,7 +1326,7 @@ def test_write_cli_flag_replacement_creates_replaced_by_edge(writer, neo4j_drive
 # from v14-v19) is DETACH DELETEd at the run's version while kept ids survive;
 # (2) NOTHING leaks across versions; (3) an empty live set never wipes a version
 # (degraded-parse guard); (4) the soft-drop gate refuses a suspicious mass-delete
-# (ADR-0005 / gc_stale_modules parity); (5) CoreSymbol stays prune-exempt.
+# (ADR-0005 / module-retirement risk-gate parity); (5) CoreSymbol stays prune-exempt.
 
 _SECOND_VERSION = "98.0"  # manually cleaned; proves cross-version isolation
 
@@ -1488,7 +1488,7 @@ def test_prune_cli_flags_empty_live_never_wipes(writer, neo4j_driver):
 
 def test_prune_soft_drop_gate_refuses_mass_delete(writer, neo4j_driver):
     """Soft-drop gate: a prune that would delete more than half of a version's
-    nodes is SKIPPED with a warning (ADR-0005 / gc_stale_modules parity) - this
+    nodes is SKIPPED with a warning (ADR-0005 / module-retirement risk-gate parity) - this
     is the guard against a checkout that silently lost its source
     (e.g. odoo/addons/test_lint/tests/) before it can wipe the version.
     """

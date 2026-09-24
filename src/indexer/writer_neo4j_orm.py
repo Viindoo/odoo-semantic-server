@@ -2,11 +2,13 @@
 # src/indexer/writer_neo4j_orm.py
 """ORM-layer Neo4j writer — Module / Model / Field / Method (schema C1 core).
 
-Extracted from writer_neo4j.py (B5 structural split, no behaviour change). This
-module owns ``_write_parse_result``, the schema C1 LÕI: every Cypher MERGE here
-is byte-identical to the original — the composite MERGE keys for
+Extracted from writer_neo4j.py (B5 structural split). This module owns
+``_write_parse_result``, the schema C1 LÕI: the composite MERGE keys for
 Module/Model/Field/Method and the same-name INHERITS topology (ADR-0048 K×D
-extender→definition edges) are load-bearing and were copied verbatim.
+extender→definition edges) are load-bearing. The Module MERGE stamps
+``m.last_seen_at = datetime()`` (server clock) on every write, so the
+retirement cascade (``Neo4jWriter.retire_modules``, ADR-0056) can tell a node a
+concurrent run just re-wrote from a stale one.
 
 The shared ``_profile_union_set`` Cypher fragment (ADR-0034 SSOT) lives in
 ``writer_neo4j`` and is imported lazily inside the function body — a module-level
@@ -93,7 +95,8 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
             m.last_commit_sha = $commit_sha,
             m.license = $license,
             m.copyright_owner = $copyright_owner,
-            m.license_notice = $license_notice
+            m.license_notice = $license_notice,
+            m.last_seen_at = datetime()
     """, name=module.name, v=module.odoo_version,
          repo=module.repo, path=module.relative_path(module.path),
          version_raw=module.version_raw,

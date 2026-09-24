@@ -5,7 +5,7 @@
 #   - Import ONLY from .models - no concrete parser or writer imports (avoids circular deps)
 #   - All protocols use @runtime_checkable so isinstance() works in tests
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any, Protocol, runtime_checkable
 
 from .models import (
@@ -16,6 +16,7 @@ from .models import (
     LintRuleInfo,
     LintViolationInfo,
     ModuleInfo,
+    ModuleOwner,
     ParseResult,
     PatternExample,
     StylesheetInfo,
@@ -230,9 +231,41 @@ class IndexWriterProtocol(Protocol):
     # --- Maintenance / GC ----------------------------------------------------
     def fetch_core_symbols(self, odoo_version: str) -> list: ...
     def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict: ...
-    def gc_stale_modules(
-        self, repo: str, odoo_version: str, live_paths: set[str],
-    ) -> int: ...
+
+    # --- Module retirement cascade (ADR-0056 D9) ------------------------------
+    def server_now(self) -> Any:
+        """Store clock as an aware datetime; the ``run_started_at`` source."""
+        ...
+
+    def retire_modules(
+        self, odoo_version: str, names: Iterable[str], *, run_started_at: Any,
+    ) -> dict:
+        """Delete modules + their MODULE_CHILD_LABELS subtree (guarded, idempotent)."""
+        ...
+
+    def drop_module_owner(
+        self, odoo_version: str, name: str, owners: Iterable[ModuleOwner],
+    ) -> dict:
+        """Reset a surviving module's ownership to exactly *owners* (subtree-wide)."""
+        ...
+
+    def stamp_module_presence(
+        self,
+        odoo_version: str,
+        rows: Iterable[Mapping[str, Any]],
+        head: str | None,
+        now: Any = None,
+    ) -> int:
+        """Stamp last_seen_sha/at + repos on existing Module nodes; returns matched count."""
+        ...
+
+    def orphan_module_names(
+        self, odoo_version: str, present_names: Iterable[str], *, repo: str | None = None,
+    ) -> list[str]: ...
+    def module_profiles(
+        self, odoo_version: str, names: Iterable[str] | None = None,
+    ) -> dict[str, list[str]]: ...
+    def orphan_child_keys(self, odoo_version: str) -> dict[str, dict[str, int]]: ...
 
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE '__unresolved__' placeholder nodes scoped to odoo_version."""

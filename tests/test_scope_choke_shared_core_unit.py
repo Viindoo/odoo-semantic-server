@@ -437,8 +437,18 @@ class _CapturingWriter:
     def write_stylesheets(self, *_a, profiles=None, **_kw):
         self._rec(profiles=profiles)
 
-    def gc_stale_modules(self, *_a, **_kw):
-        return 0
+    # ADR-0056 B6: the --gc shim calls these instead of the removed gc_stale_modules.
+    def server_now(self):
+        from datetime import UTC, datetime
+
+        return datetime.now(UTC)
+
+    def orphan_module_names(self, *_a, **_kw):
+        return []
+
+    def retire_modules(self, *_a, **_kw):
+        return {"modules": 0, "children": 0, "by_label": {}, "retired": [],
+                "skipped_recent": []}
 
     def reconcile_same_name_inherits(self, *_a, **_kw):
         # Post-pass added by #273 - called once per version from index_profile,

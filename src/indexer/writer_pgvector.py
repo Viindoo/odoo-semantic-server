@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from psycopg2.extras import execute_values
 
-from src.constants import EMBEDDER_TOKEN_BUDGET
+from src.constants import EMBEDDER_TOKEN_BUDGET, GLOBAL_PROFILE
 
 from .embedder import EmbedderClient, estimate_tokens, split_by_token_budget
 from .models import (
@@ -686,12 +687,7 @@ def write_module_embeddings(
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "DELETE FROM embeddings "
-                    "WHERE module = %s AND odoo_version = %s "
-                    "AND profile_name IS NOT DISTINCT FROM %s",
-                    (module, version, profile_name),
-                )
+                _delete_module_embeddings_cur(cur, module, version, [profile_name])
                 rows = [
                     c.as_tuple(vecs[i], emb_model, emb_dim)
                     for i, c in enumerate(live_chunks)
@@ -704,3 +700,75 @@ def write_module_embeddings(
         finally:
             conn.autocommit = True  # restore for pool reuse
     return embed_calls
+
+
+_DELETE_MODULE_EMBEDDINGS_SQL = (
+    "DELETE FROM embeddings "
+    "WHERE module = %s AND odoo_version = %s AND profile_name = ANY(%s)"
+)
+
+
+def _delete_module_embeddings_cur(cur, module: str, version: str, profile_names: list[str]) -> int:
+    """Profile-scoped DELETE of one module's chunks on an open cursor."""
+    cur.execute(_DELETE_MODULE_EMBEDDINGS_SQL, (module, version, profile_names))
+    return cur.rowcount
+
+
+def delete_module_embeddings(
+    conn,
+    module: str,
+    version: str,
+    profile_names: Iterable[str],
+) -> int:
+    """Delete the embeddings of *module* at *version* owned by *profile_names*.
+
+    The same profile-scoped DELETE the write path uses before re-inserting a
+    module (``write_module_embeddings``), exposed for retirement: only rows
+    whose ``profile_name`` is in *profile_names* go, so retiring a module from
+    one tenant never erases another tenant's chunks for the same name.
+
+    * An empty *profile_names* deletes nothing (returns 0) - never "all
+      profiles".
+    * ``GLOBAL_PROFILE`` ('__global__', the pattern catalogue) is dropped from
+      *profile_names*; catalogue rows are owned by ``seed_patterns``.
+    * Runs on the caller's *conn* and never commits: with the pool default
+      (autocommit) the DELETE is durable when this returns; inside a caller
+      transaction it commits or rolls back with it.
+
+    Returns the number of rows deleted.
+    """
+    profiles = sorted({p for p in profile_names if p and p != GLOBAL_PROFILE})
+    if not profiles:
+        return 0
+    with conn.cursor() as cur:
+        return _delete_module_embeddings_cur(cur, module, version, profiles)
+
+
+def orphan_embedding_keys(
+    conn,
+    version: str,
+    live: Iterable[tuple[str, str]],
+) -> list[tuple[str, str, int]]:
+    """Embedding groups at *version* that no live owner accounts for (M6).
+
+    *live* is the set of ``(module, profile_name)`` pairs that may keep
+    embeddings: every live Module's ``profile`` entries plus the ledger's
+    present rows. Returns ``[(module, profile_name, row_count), ...]`` sorted
+    by module then profile for every group NOT in *live*. Catalogue rows
+    (``profile_name = GLOBAL_PROFILE``) are never reported. Read-only; delete
+    a reported group with :func:`delete_module_embeddings`.
+    """
+    live_set = {(m, p) for m, p in live}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT module, profile_name, count(*) FROM embeddings "
+            "WHERE odoo_version = %s AND profile_name <> %s "
+            "GROUP BY module, profile_name ORDER BY module, profile_name",
+            (version, GLOBAL_PROFILE),
+        )
+        rows = cur.fetchall()
+    return [
+        (module, profile, int(count))
+        for module, profile, count in rows
+        if (module, profile) not in live_set
+    ]

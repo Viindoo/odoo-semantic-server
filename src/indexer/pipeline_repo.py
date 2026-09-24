@@ -416,6 +416,9 @@ def _index_repo(
     }
     # Repo dir name (m.repo in Neo4j) — derived the same way registry.py does it.
     repo_root_name: str = Path(local_path).name
+    # Start of this run on the Neo4j server clock: the --gc shim's retire guard
+    # keeps any module another run re-wrote after this instant (ADR-0056 H2).
+    gc_run_started_at = writer.server_now() if gc else None
 
     # F4 — single source of truth for this repo's OWNING profile. Compute ONCE
     # here and feed BOTH the Neo4j writer (`profiles=`) AND the pgvector write
@@ -675,15 +678,33 @@ def _index_repo(
         repo_id=repo.get("id"),
     )
 
-    # === Module GC (M7 C4): delete stale Module nodes after successful writes ===
+    # === Module GC (M7 C4): retire stale modules after successful writes ===
+    # TRANSITIONAL SHIM (ADR-0056 B6): the opt-in --gc path now runs the single
+    # retirement cascade (writer.retire_modules: Module + full child subtree)
+    # instead of the removed Module-only gc_stale_modules. Stale = a module this
+    # repo last wrote (Module.repo) whose name is absent from the full scan.
+    # This whole block is replaced by the ledger reconcile (B7/B8).
     # Risk gate: only run when scanner found ≥1 module to avoid data loss when
     # scanner fails silently (e.g. filesystem permission error, empty repo).
     if gc:
         if len(live_paths) >= 1:
-            gc_deleted = writer.gc_stale_modules(repo_root_name, odoo_version, live_paths)
+            stale_names = writer.orphan_module_names(
+                odoo_version,
+                # Every scanned name, whatever version it resolved to - the old
+                # path-based GC compared against all live paths the same way.
+                sorted({
+                    n for names in live_module_names_by_version.values() for n in names
+                }),
+                repo=repo_root_name,
+            )
+            gc_deleted = 0
+            if stale_names:
+                gc_deleted = writer.retire_modules(
+                    odoo_version, stale_names, run_started_at=gc_run_started_at,
+                )["modules"]
             if gc_deleted > 0:
                 _logger.info(
-                    "Module GC: deleted %d stale Module nodes for repo %s version %s",
+                    "Module GC: retired %d stale Module nodes for repo %s version %s",
                     gc_deleted, repo_root_name, odoo_version,
                 )
             else:

@@ -108,6 +108,22 @@ class ModuleInfo:
         return to_repo_relative(abs_path, self.repo_root)
 
 
+@dataclass(frozen=True)
+class ModuleOwner:
+    """One repo that still ships a module at a version (ADR-0056 ledger owner).
+
+    Input to ``Neo4jWriter.drop_module_owner``: the SURVIVING owners after one
+    owner retired its copy. ``repo_basename`` is the repo dir name carried as
+    ``Module.repo`` / ``TestClass.repo``; ``path`` is repo-relative (ADR-0037).
+    """
+
+    profile_name: str
+    repo_basename: str
+    path: str | None = None
+    repo_id: int | None = None
+    repo_url: str | None = None
+
+
 @dataclass
 class FieldInfo:
     """Info for a single Odoo field."""

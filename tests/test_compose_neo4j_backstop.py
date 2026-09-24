@@ -139,7 +139,7 @@ def test_compose_neo4j_has_transaction_timeout_env():
     assert actual_seconds >= _EXPECTED_MIN_SECONDS, (
         f"NEO4J_db_transaction_timeout is {actual_seconds}s, expected >= {_EXPECTED_MIN_SECONDS}s. "
         f"600s is required to accommodate long-running indexer transactions "
-        f"(delete_modules_scoped, gc_stale_modules, _write_parse_result). "
+        f"(delete_modules_scoped, retire_modules, _write_parse_result). "
         f"See docs/operations/timeouts.md for rationale."
     )
 
