@@ -518,6 +518,10 @@ class OWLCompInfo:
     odoo_version: str
     template: str | None = None    # `static template = "..."` if found
     extends: str | None = None     # superclass name if extends Component
+    # Odoo module the superclass is imported from (``@web/...`` -> 'web',
+    # relative -> own module, a class of the same file -> own module); None
+    # when the file does not tell (e.g. ``@odoo/owl``).
+    extends_module: str | None = None
     bound_model: str | None = None  # heuristic from props/services usage
     file_path: str = ""
 
@@ -619,7 +623,9 @@ class CoreSymbolInfo:
     Composite key: (qualified_name, odoo_version) — see ADR-0002 §1.
     `kind` ∈ {function, class, decorator, exception, field_type, orm_method, cursor_method,
               tool_export}.
-    `status` ∈ {stable, deprecated, removed, added}.
+    `status` ∈ {stable, deprecated} - the symbol exists at this version. Removal
+    and addition are cross-version facts written as `removed_in` / `added_in`
+    (ADR-0002 §2); no writer produces status 'removed' or 'added'.
     `replacement_qname` non-null when this symbol is superseded by another.
     `note` - short human-readable lifecycle/misuse/gotcha note (see
     tools_symbol.schema.json's `note` property, issue #364 C4). Written to

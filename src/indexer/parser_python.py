@@ -149,7 +149,7 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
         ),
         # --- ACL rename family (issue #117): old names deprecated in 18, replaced by
         #     check_access / has_access / _filtered_access / _has_cycle. The edge only
-        #     MERGEs when a same-version CoreSymbol with status in {deprecated,removed}
+        #     MERGEs when a same-version CoreSymbol with status 'deprecated'
         #     exists, so these flag usage on the versions where the alias is still
         #     present-but-deprecated (v18) - and resolve to the underscore CoreSymbols
         #     that bug#2 (parser_odoo_core underscore-skip) now indexes. ---

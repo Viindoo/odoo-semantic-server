@@ -541,35 +541,20 @@ def _write_js_graph_result(
             ON MATCH  SET c.profile =
                 {_profile_union_set("c")}
             SET c.template = $template, c.extends = $extends,
+                c.extends_module = $extends_module,
                 c.bound_model = $bound_model, c.file_path = $file_path,
                 {_written_run_set("c")}
             MERGE (c)-[d:{REL_DEFINED_IN}]->(mod)
             SET {_written_run_set("d")}
         """, module_name=comp.module, v=comp.odoo_version,
              name=comp.name, template=comp.template, extends=comp.extends,
-             bound_model=comp.bound_model,
+             extends_module=comp.extends_module, bound_model=comp.bound_model,
              file_path=result.module.relative_path(comp.file_path),
              profiles=profiles, run=run_id)
 
-        # EXTENDS edge — only when parent OWLComp exists in same version (no placeholder)
-        if comp.extends:
-            tx.run(f"""
-                MATCH (child:OWLComp {{name: $name, module: $mod, odoo_version: $v}})
-                MATCH (parent:OWLComp {{name: $parent, odoo_version: $v}})
-                MERGE (child)-[r:EXTENDS]->(parent)
-                SET {_written_run_set("r")}
-            """, name=comp.name, mod=comp.module, v=comp.odoo_version,
-                 parent=comp.extends, run=run_id)
-
-        # BOUND_TO edge — only when Model exists; skip silently otherwise
-        if comp.bound_model:
-            tx.run(f"""
-                MATCH (c:OWLComp {{name: $name, module: $mod, odoo_version: $v}})
-                MATCH (m:Model {{name: $bound, odoo_version: $v}})
-                MERGE (c)-[r:BOUND_TO]->(m)
-                SET {_written_run_set("r")}
-            """, name=comp.name, mod=comp.module, v=comp.odoo_version,
-                 bound=comp.bound_model, run=run_id)
+        # EXTENDS / BOUND_TO are derived version-wide by
+        # Neo4jWriter.reconcile_owl_edges once every repo is written (the parent
+        # component or the bound model may live in a repo written later).
 
     # Write JSPatch nodes + PATCHES edges
     for patch in result.patches:

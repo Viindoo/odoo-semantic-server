@@ -189,6 +189,49 @@ class TestLookupCoreApi:
         out = spec_tools._lookup_core_api("definitely_not_a_real_symbol_xyz", v_from)
         assert "not found" in out.lower()
 
+    def test_description_status_claims_hold_for_a_symbol_removed_between_versions(
+        self, spec_tools, neo4j_driver,
+    ):
+        """GUARD for the lookup_core_api description (9c9e491): a symbol is
+        reported with its at-version status (``deprecated``), a symbol removed
+        at the queried version is "not found" there, and its last version's
+        node carries "Removed in: <version>" - written the way index_core
+        writes it (compute_diff + write_lifecycle_properties). No answer ever
+        reads "Status: removed"."""
+        # GUARD: pre-existing behaviour
+        from src.indexer.diff_engine import compute_diff
+        old_v, new_v = "93.0", "94.0"
+        name_get = CoreSymbolInfo(
+            qualified_name="odoo.models.BaseModel.name_get", kind="orm_method",
+            odoo_version=old_v, signature="name_get(self)", status="deprecated",
+        )
+        survivor = {"qualified_name": "odoo.models.BaseModel.display_name",
+                    "kind": "orm_method", "status": "stable"}
+        old = [name_get, CoreSymbolInfo(odoo_version=old_v, **survivor)]
+        new = [CoreSymbolInfo(odoo_version=new_v, **survivor)]
+        writer = Neo4jWriter(
+            uri=os.getenv("NEO4J_TEST_URI", "bolt://localhost:7687"),
+            user=os.getenv("NEO4J_TEST_USER", "neo4j"),
+            password=os.getenv("NEO4J_TEST_PASSWORD", "password"),
+        )
+        try:
+            writer.write_core_symbols(old + new)
+            writer.write_lifecycle_properties(
+                compute_diff(old, new), from_version=old_v, to_version=new_v,
+            )
+            at_old = spec_tools._lookup_core_api("name_get", old_v)
+            at_new = spec_tools._lookup_core_api("name_get", new_v)
+        finally:
+            with neo4j_driver.session() as s:
+                s.run("MATCH (n) WHERE n.odoo_version IN $vs DETACH DELETE n",
+                      vs=[old_v, new_v]).consume()
+            writer.close()
+
+        assert "├─ Status:      deprecated" in at_old, at_old
+        assert f"├─ Removed in:  {new_v}" in at_old, at_old
+        assert "not found" in at_new.lower(), at_new
+        assert "Status:      removed" not in at_old + at_new
+
     def test_partial_qualified_name_resolves_via_endswith(self, spec_tools, seeded_spec_neo4j):
         """Short name like 'safe_eval' resolves to qualified_name ending in '.safe_eval'."""
         v_from, _ = seeded_spec_neo4j
