@@ -367,15 +367,18 @@ def _write_parse_result(
                  sig=mth.signature, depends=mth.depends,
                  docstring=mth.docstring, profiles=profiles, run=run_id)
 
-            # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
-            # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
+            # M4.5 WI6: USES_CORE_SYMBOL edge - silent skip when target absent
+            # or not deprecated at this version (ADR-0002 §3 V0 scope). A symbol
+            # removed at a version has no CoreSymbol node there (removal is the
+            # older node's `removed_in`), so `deprecated` is the only status an
+            # at-version target can carry.
             for ref in mth.core_symbol_refs:
                 tx.run(f"""
                     MATCH (mth:Method {{name: $name, model: $model_name,
                                        module: $mod, odoo_version: $v}})
                     MATCH (cs:CoreSymbol {{odoo_version: $v}})
                     WHERE cs.qualified_name ENDS WITH '.' + $ref
-                      AND cs.status IN ['deprecated', 'removed']
+                      AND cs.status = 'deprecated'
                     MERGE (mth)-[r:{REL_USES_CORE_SYMBOL}]->(cs)
                     SET {_written_run_set("r")}
                 """, name=mth.name, model_name=model.name, mod=model.module,

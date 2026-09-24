@@ -554,6 +554,73 @@ def _detect_bound_model_from_class_body(body: Node, source: bytes) -> str | None
     return None
 
 
+def _js_spec_module(spec: str, own_module: str) -> str | None:
+    """Odoo module a JS import specifier points into, None when it names none.
+
+    ``@web/legacy/x`` -> ``web`` (the ``@<module>/`` alias of
+    ``<module>/static/src``); ``./x`` / ``../x`` -> *own_module*; a legacy
+    module id ``web.OwlCompatibility`` -> ``web``; ``@odoo/owl`` and other
+    libraries -> None.
+    """
+    if spec.startswith("."):
+        return own_module
+    if spec.startswith("@"):
+        head = spec[1:].split("/", 1)[0]
+        return None if not head or head == "odoo" else head
+    if "/" not in spec and "." in spec:
+        return spec.split(".", 1)[0] or None
+    return None
+
+
+def _js_import_origins(tree, source: bytes, own_module: str) -> dict[str, tuple[str, str | None]]:
+    """Local binding -> ``(imported name, Odoo module it comes from or None)``.
+
+    Covers ES ``import { A, B as C } from "<spec>"`` / ``import D from "<spec>"``
+    and the legacy ``const { A, B: C } = require("<spec>")`` destructuring.
+    """
+    def text(n: Node) -> str:
+        return source[n.start_byte:n.end_byte].decode("utf-8", errors="ignore")
+
+    origins: dict[str, tuple[str, str | None]] = {}
+    for node in _walk(tree.root_node):
+        if node.type == "import_statement":
+            spec_node = _find_first_child_by_type(node, "string")
+            spec = _extract_string_from_node(spec_node, source) if spec_node else None
+            clause = _find_first_child_by_type(node, "import_clause")
+            if spec is None or clause is None:
+                continue
+            module = _js_spec_module(spec, own_module)
+            for child in clause.children:
+                if child.type == "identifier":
+                    origins[text(child)] = (text(child), module)
+                elif child.type == "named_imports":
+                    for sp in _find_children_by_type(child, "import_specifier"):
+                        ids = _find_children_by_type(sp, "identifier")
+                        if ids:
+                            origins[text(ids[-1])] = (text(ids[0]), module)
+        elif node.type == "variable_declarator":
+            pattern = _find_first_child_by_type(node, "object_pattern")
+            call = _find_first_child_by_type(node, "call_expression")
+            if pattern is None or call is None:
+                continue
+            fn = _find_first_child_by_type(call, "identifier")
+            args = _find_first_child_by_type(call, "arguments")
+            spec_node = _find_first_child_by_type(args, "string") if args else None
+            if fn is None or text(fn) != "require" or spec_node is None:
+                continue
+            spec = _extract_string_from_node(spec_node, source) or ""
+            module = _js_spec_module(spec, own_module)
+            for child in pattern.children:
+                if child.type == "shorthand_property_identifier_pattern":
+                    origins[text(child)] = (text(child), module)
+                elif child.type == "pair_pattern":
+                    key = _find_first_child_by_type(child, "property_identifier")
+                    val = _find_first_child_by_type(child, "identifier")
+                    if key is not None and val is not None:
+                        origins[text(val)] = (text(key), module)
+    return origins
+
+
 def _extract_era3_components(
     tree, source: bytes, module_info: ModuleInfo, filepath: str, result: JSGraphResult
 ) -> None:
@@ -567,6 +634,16 @@ def _extract_era3_components(
     """
     if not _OWL_ENABLED_REGISTRY.resolve_version(module_info.odoo_version, default=False):
         return  # OWL framework only exists in v14+
+
+    origins = _js_import_origins(tree, source, module_info.name)
+    local_classes: set[str] = set()
+    for node in _walk(tree.root_node):
+        if node.type in ("class_declaration", "class"):
+            ident = _find_first_child_by_type(node, "identifier")
+            if ident is not None:
+                local_classes.add(
+                    source[ident.start_byte:ident.end_byte].decode("utf-8", errors="ignore")
+                )
 
     for node in _walk(tree.root_node):
         if node.type not in ("class_declaration", "class"):
@@ -627,6 +704,17 @@ def _extract_era3_components(
         # that tree-sitter classifies as class_declaration — they must NOT become OWLComp nodes.
         # Allow both direct Component and common OWL intermediate bases (LegacyComponent, etc.).
         # _OWL_BASE_NAMES is defined at module level (loop-invariant constant).
+        # The superclass as the file binds it: an import alias is read back to
+        # the exported name, and the module it is imported from is kept so the
+        # EXTENDS post-pass links that module's component; a class of this
+        # file resolves to this module.
+        extends_module: str | None = None
+        if extends_name is not None and "." not in extends_name:
+            if extends_name in origins:
+                extends_name, extends_module = origins[extends_name]
+            elif extends_name in local_classes:
+                extends_module = module_info.name
+
         if extends_name is None or extends_name not in _OWL_BASE_NAMES:
             continue
 
@@ -636,6 +724,7 @@ def _extract_era3_components(
             odoo_version=module_info.odoo_version,
             template=template_val,
             extends=extends_name,
+            extends_module=extends_module,
             bound_model=bound_model,
             file_path=filepath,
         ))

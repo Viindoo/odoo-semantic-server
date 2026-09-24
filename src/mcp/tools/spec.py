@@ -187,7 +187,7 @@ def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
                cs.note AS note
         // Ranking (issue #117 bug#4): an exact qualified-name match always wins;
         // otherwise, among bare-name homonyms, surface the migration-relevant
-        // deprecated/removed candidate BEFORE a stable homonym (a shorter stable
+        // deprecated candidate BEFORE a stable homonym (a shorter stable
         // qname like odoo.api.Transaction.flush was shadowing the deprecated
         // odoo.models.BaseModel.flush); shortest qname, then the qname itself,
         // are the final tiebreaks so LIMIT 1 is fully deterministic even when two
@@ -195,7 +195,7 @@ def _fetch_core_symbol(session, name: str, version: str) -> dict | None:
         // ORDER BY must always carry a deterministic tiebreak).
         ORDER BY
             CASE WHEN cs.qualified_name = $name THEN 0 ELSE 1 END,
-            CASE WHEN cs.status IN ['deprecated', 'removed'] THEN 0 ELSE 1 END,
+            CASE WHEN cs.status = 'deprecated' THEN 0 ELSE 1 END,
             size(cs.qualified_name) ASC,
             cs.qualified_name ASC
         LIMIT 1
@@ -256,7 +256,7 @@ def lookup_core_api(name: str, odoo_version: RequiredOdooVersion) -> str:
     "how to use Environment.ref()", "api.model decorator dùng thế nào", "giải
     thích BaseModel._inherit", "is name_get still valid in Odoo 18"
     PREFER over: reading Odoo source manually — returns structured symbol data
-    with version context, status (stable/deprecated/removed), and replacement
+    with version context, status (stable/deprecated), and replacement
     SKIP when: user wants to compare across versions → use api_version_diff;
     user wants to scan for deprecated usage → use find_deprecated_usage
 
@@ -269,12 +269,13 @@ def lookup_core_api(name: str, odoo_version: RequiredOdooVersion) -> str:
         Deprecated, Removed in, Source file location.
 
     Example:
-        lookup_core_api("name_get", "18.0")
-        → odoo.models.BaseModel.name_get (Odoo 18.0)
+        lookup_core_api("name_get", "17.0")
+        → odoo.models.BaseModel.name_get (Odoo 17.0)
           ├─ Kind:        orm_method
-          ├─ Status:      removed
-          ├─ Signature:   name_get(self)
-          └─ Replacement: odoo.models.BaseModel.display_name
+          ├─ Status:      deprecated
+          └─ Signature:   name_get(self)
+        A symbol removed at the queried version is "not found" there; its last
+        version's node carries "Removed in: <version>".
     """
     return _lookup_core_api(name, odoo_version)
 
@@ -372,7 +373,8 @@ def _find_deprecated_usage(
     """Scan user code for usage of deprecated/removed APIs.
 
     Two hit sources are merged: (1) Methods with a USES_CORE_SYMBOL edge to a
-    CoreSymbol whose status is deprecated/removed (calls in the body), and (2)
+    CoreSymbol deprecated at the queried version (calls in the body; a symbol
+    already removed at that version has no CoreSymbol node there to bind), and (2)
     GAP-1 — Methods carrying a version-removed decorator (``@api.multi`` /
     ``@api.one``) on ``Method.decorators``, which carry no edge. The decorator
     leg is version-gated: a decorator is only flagged once the queried version is
@@ -397,7 +399,7 @@ def _find_deprecated_usage(
             params["kind"] = kind
         leg_calls = f"""
             MATCH (mth:Method {{odoo_version: $v}})-[:{REL_USES_CORE_SYMBOL}]->(cs:CoreSymbol)
-            WHERE cs.status IN ['deprecated', 'removed']
+            WHERE cs.status = 'deprecated'
               AND {scope_guard}{kind_clause}
             RETURN mth.module AS module, mth.model AS model, mth.name AS method,
                    cs.qualified_name AS deprecated_symbol,

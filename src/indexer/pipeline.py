@@ -710,6 +710,9 @@ def index_profile(
             _indexed_versions: set[str] = {r["odoo_version"] for r in repos}
             for _rv in sorted(_indexed_versions):
                 writer.reconcile_same_name_inherits(_rv)
+                # OWLComp EXTENDS / BOUND_TO: the parent component or the bound
+                # model may be written by any repo of the version.
+                writer.reconcile_owl_edges(_rv)
             # === End post-pass reconciliation ===
 
             # === Post-pass test-surface reconciliation (WI-1, C1 wiring) ===

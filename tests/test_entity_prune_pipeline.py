@@ -147,11 +147,13 @@ def _node_key(alias: str) -> str:
 
 
 # Relationships the index derives in version-wide post-passes (not by a module's
-# parse): documented as never pruned per module. They converge across runs on
-# their own (INHERITS_TEST to an addon TestHelper projection appears only on the
-# run after the projection is created), so exact before/after comparisons of a
-# module's parse output leave them out unless asked.
-_POST_PASS_REL_TYPES = {"INHERITS_TEST", "COVERS_MODEL", "COVERS_FIELD", "COVERS_METHOD"}
+# parse): never pruned per module - each post-pass recomputes its own edges every
+# run and deletes the ones it no longer derives (reconcile_test_surface for the
+# test edges, reconcile_owl_edges for OWLComp EXTENDS / BOUND_TO). Exact
+# before/after comparisons of a module's parse output leave them out unless asked.
+_POST_PASS_REL_TYPES = {
+    "INHERITS_TEST", "COVERS_MODEL", "COVERS_FIELD", "COVERS_METHOD", "EXTENDS", "BOUND_TO",
+}
 
 
 def _rels(driver, module: str, *, post_pass: bool = False) -> Counter:
@@ -765,32 +767,53 @@ def test_module_shipped_by_another_present_repo_is_not_pruned_by_one_copy(
     assert _emb(pg, RAG, "pa_99") == a_emb
 
 
-def test_unsynced_repo_defers_the_prune_until_it_syncs(pg, neo4j_driver, tmp_path):
-    """A registered, cloned but never indexed fork might ship viin_ai_rag, so the
-    owner cannot be decided: the prune is deferred with an operator message and a
-    retry flag. Once the fork is indexed (it does not ship viin_ai_rag) the next
-    run of the owner - with no new commit - prunes."""
+def test_unsynced_repo_that_ships_the_module_defers_the_prune_until_it_syncs(
+    pg, neo4j_driver, tmp_path,
+):
+    """A registered, cloned but never indexed fork tracks its own copy of
+    viin_ai_rag (installable False), so it may still ship the module: the owner
+    cannot prune rag_count yet. That is a wait, not a fault: no retry flag (the
+    owner's next runs do zero work) and no operator message. Once the fork is
+    indexed - its copy is excluded, so it does not own viin_ai_rag - the
+    owner's copy is re-armed and its next run, with no new commit, prunes.
+
+    Rewritten for F48 (owner decision: per MODULE, not per repo): the old test
+    used a fork that did NOT ship viin_ai_rag and expected it to defer the
+    prune with attention + retry. Such a fork no longer blocks anything
+    (tests/test_module_owner_decision_pipeline.py); the deferral intent needs a
+    fork that tracks the module, and its resolution is the R2-2 re-arm. The
+    fail-safe attention path (a checkout git cannot read) is protected in
+    test_unreadable_sibling_checkout_stays_a_potential_owner_with_attention."""
     repo = _rag_repo(tmp_path / "main")
     fork = GitRepo(tmp_path / "fork", "customer_fork")
     _rel_module(fork, "fork_only", depends=["base"], models_py=_PULSE_MODELS.replace(
         '_inherit = "ai.assistant"', '_name = "fork.record"',
     ))
+    rf.write_viin_ai_rag(fork.path)
+    manifest = fork.path / RAG / "__manifest__.py"
+    manifest.write_text(manifest.read_text().replace(
+        "'installable': True", "'installable': False",
+    ))
+    assert "'installable': False" in manifest.read_text()
     fork.commit("fork")
     (rid,) = register("viindoo_99", repo)
-    register("fork_99", fork)
+    (fork_id,) = register("fork_99", fork)
     run(pg, "viindoo_99")
     _rag_models(repo, _RAG_MODELS_NO_RAG_COUNT)
     repo.commit(f"[REM] {RAG}: drop rag_count")
 
-    run(pg, "viindoo_99")
+    held = run(pg, "viindoo_99")
 
     assert _count(neo4j_driver, "Field", module=RAG, name="rag_count") == 1
     assert ("field", "ai.assistant.rag_count") in _emb(pg, RAG)
-    attention = _attention(pg, rid)
-    assert "deferred" in attention and "customer_fork" in attention, attention
-    assert ledger(pg, rid, RAG)["needs_rewrite"] is True
+    assert not needs_attention(held), lc(held)
+    assert "customer_fork" not in _attention(pg, rid)
+    assert ledger(pg, rid, RAG)["needs_rewrite"] is False
+    assert run(pg, "viindoo_99")["modules"] == 0
 
     run(pg, "fork_99")
+    assert ledger(pg, fork_id, RAG)["state"] == "excluded"
+    assert ledger(pg, rid, RAG)["needs_rewrite"] is True
     run(pg, "viindoo_99")
 
     assert _count(neo4j_driver, "Field", module=RAG, name="rag_count") == 0
@@ -1068,9 +1091,10 @@ def test_every_child_writer_and_relationship_writer_stamps_the_run_token(
         f"relationship types written from module nodes but never pruned: {unlisted}"
     )
     observed_types = {(r["label"], r["type"]) for r in prunable}
-    # Non-vacuity: the fixture really exercised these writers. Not exercised here
-    # (need a core index or JS shapes the parser binds): USES_CORE_SYMBOL,
-    # USES_FIELD, OWLComp EXTENDS / BOUND_TO.
+    # Non-vacuity: the fixture really exercised these writers. USES_CORE_SYMBOL
+    # and USES_FIELD need a core index / a same-module field read, and OWLComp
+    # EXTENDS / BOUND_TO are post-pass edges: all four are covered by the F47
+    # tests at the end of this file.
     assert {
         ("Module", "DEPENDS_ON"), ("Module", "CONTRIBUTES_TO"), ("Model", "INHERITS"),
         ("Model", "DELEGATES_TO"), ("Method", "DEPENDS_ON_FIELD"),
@@ -1111,3 +1135,300 @@ def test_delegation_patch_and_import_relations_a_module_stops_declaring_leave_th
     assert _has_rel(neo4j_driver, EXTRA, "IMPORTS") == 0
     assert _count(neo4j_driver, "Model", module=EXTRA, name="ai.delegate") == 1
     assert _count(neo4j_driver, "Stylesheet", module=EXTRA) == 2
+
+
+# ---------------------------------------------------------------------------
+# F47: the method-level and OWL relationship writers the fixtures above do not
+# reach - USES_CORE_SYMBOL, USES_FIELD (per-module, run-token stamped, B14
+# prune) and OWLComp EXTENDS / BOUND_TO (version-wide post-pass
+# reconcile_owl_edges) - exist when the source declares them and leave the
+# graph when it stops.
+# ---------------------------------------------------------------------------
+
+_X_BASE_MODELS = """\
+from odoo import fields, models
+
+
+class XThing(models.Model):
+    _name = "x.thing"
+    _description = "X Thing"
+
+    name = fields.Char()
+    note = fields.Char()
+
+    def action_label(self):
+        for rec in self:
+            rec.note = self.name
+        return self.name_get()
+"""
+_X_BASE_MODELS_NO_USES = _X_BASE_MODELS.replace(
+    "        for rec in self:\n            rec.note = self.name\n"
+    "        return self.name_get()\n",
+    "        return True\n",
+)
+assert "name_get" not in _X_BASE_MODELS_NO_USES and "self.name" not in _X_BASE_MODELS_NO_USES
+_X_EXT_MODELS = """\
+from odoo import fields, models
+
+
+class XThing(models.Model):
+    _inherit = "x.thing"
+
+    extra = fields.Char()
+"""
+# web/static/src/legacy/legacy_component.js shape (Odoo 16.0: a Component
+# subclass other components extend).
+_LEGACY_COMPONENT_JS = """\
+/** @odoo-module */
+import { Component } from "@odoo/owl";
+
+export class LegacyComponent extends Component {}
+"""
+_THING_PANEL_JS = """\
+/** @odoo-module */
+import { LegacyComponent } from "@web/legacy/legacy_component";
+
+export class ThingPanel extends LegacyComponent {
+    setup() {
+        this.orm.searchRead("x.thing", [], ["name"]);
+    }
+}
+"""
+_THING_PANEL_PLAIN_JS = """\
+/** @odoo-module */
+import { Component } from "@odoo/owl";
+
+export class ThingPanel extends Component {}
+"""
+# The deprecated core symbol the x.thing method calls, as index_core writes it
+# (odoo/models.py BaseModel.name_get, deprecated since 17.0).
+_NAME_GET = "odoo.models.BaseModel.name_get"
+
+
+def _manifest(mod: Path, name: str, depends: list[str]) -> None:
+    _write(mod / "__manifest__.py", repr({
+        "name": name, "version": f"{V}.1.0", "depends": depends,
+        "installable": True, "license": "LGPL-3",
+    }) + "\n")
+
+
+def _x_base(repo: GitRepo, models_py: str = _X_BASE_MODELS) -> None:
+    mod = repo.path / "x_base"
+    _manifest(mod, "x_base", ["base"])
+    _write(mod / "__init__.py", "from . import models\n")
+    _write(mod / "models" / "__init__.py", "from . import thing\n")
+    _write(mod / "models" / "thing.py", models_py)
+
+
+def _write_core_symbol(status: str = "deprecated") -> None:
+    import os
+
+    from src.indexer.models import CoreSymbolInfo
+    from src.indexer.writer_neo4j import Neo4jWriter
+    w = Neo4jWriter(
+        uri=os.environ["NEO4J_URI"], user=os.environ["NEO4J_USER"],
+        password=os.environ["NEO4J_PASSWORD"],
+    )
+    try:
+        w.write_core_symbols([CoreSymbolInfo(
+            qualified_name=_NAME_GET, kind="orm_method", odoo_version=V,
+            file_path="odoo/models.py", status=status,
+        )])
+    finally:
+        w.close()
+
+
+def _method_rels(driver, rel_type: str) -> list[dict]:
+    with driver.session() as s:
+        return s.run(
+            f"""
+            MATCH (m:Method {{name: 'action_label', module: 'x_base', odoo_version: $v}})
+                  -[r:{rel_type}]->(x)
+            RETURN coalesce(x.qualified_name, x.name) AS target,
+                   r.written_run AS rel_token, m.written_run AS node_token
+            """,
+            v=V,
+        ).data()
+
+
+def _deprecated_usage(monkeypatch, driver) -> str:
+    from src.mcp.tools import spec
+    monkeypatch.setattr(spec._srv, "_driver", driver)
+    return spec._find_deprecated_usage(odoo_version=V)
+
+
+def test_method_uses_of_a_core_symbol_and_a_field_are_stamped_and_leave_with_the_source(
+    pg, neo4j_driver, tmp_path, monkeypatch,
+):
+    """F47 (USES_CORE_SYMBOL, USES_FIELD): a method calling the deprecated
+    ``name_get`` and reading its own model's ``name`` gets both edges, stamped
+    with the run token its Method node carries, and find_deprecated_usage
+    reports the call. After the method stops doing both, ONE incremental run
+    removes both edges (B14 run-token prune) while the Method, the Field and the
+    CoreSymbol stay, and find_deprecated_usage no longer reports it."""
+    # GUARD: pre-existing behaviour (B14 prune of these types; a0df7ed keeps the
+    # deprecated-call result unchanged)
+    _write_core_symbol()
+    repo = GitRepo(tmp_path, "x_addons")
+    _x_base(repo)
+    repo.commit("add x_base")
+    register("x_99", repo)
+    run(pg, "x_99")
+
+    core = _method_rels(neo4j_driver, "USES_CORE_SYMBOL")
+    field = _method_rels(neo4j_driver, "USES_FIELD")
+    assert [r["target"] for r in core] == [_NAME_GET], core
+    assert [r["target"] for r in field] == ["name"], field
+    for r in core + field:
+        assert r["rel_token"] and r["rel_token"] == r["node_token"], r
+    report = _deprecated_usage(monkeypatch, neo4j_driver)
+    assert "action_label" in report and "name_get" in report, report
+
+    _x_base(repo, _X_BASE_MODELS_NO_USES)
+    repo.commit("[IMP] x_base: action_label no longer calls name_get nor reads name")
+    summary = run(pg, "x_99")
+
+    assert _method_rels(neo4j_driver, "USES_CORE_SYMBOL") == []
+    assert _method_rels(neo4j_driver, "USES_FIELD") == []
+    assert _count(neo4j_driver, "Method", module="x_base", name="action_label") == 1
+    assert _count(neo4j_driver, "Field", module="x_base", name="name") == 1
+    assert _count(neo4j_driver, "CoreSymbol", qualified_name=_NAME_GET) == 1
+    assert not needs_attention(summary), lc(summary)
+    report = _deprecated_usage(monkeypatch, neo4j_driver)
+    assert "action_label" not in report, report
+
+
+def _web_repo(parent: Path) -> GitRepo:
+    """web (LegacyComponent) + zz_legacy, an unrelated module shipping its own
+    same-named LegacyComponent (decoy: nothing depends on or imports it)."""
+    repo = GitRepo(parent, "web_addons")
+    _manifest(repo.path / "web", "web", [])
+    _write(repo.path / "web" / "__init__.py", "")
+    _write(repo.path / "web" / "static" / "src" / "legacy" / "legacy_component.js",
+           _LEGACY_COMPONENT_JS)
+    _manifest(repo.path / "zz_legacy", "zz_legacy", ["base"])
+    _write(repo.path / "zz_legacy" / "__init__.py", "")
+    _write(repo.path / "zz_legacy" / "static" / "src" / "legacy_component.js",
+           _LEGACY_COMPONENT_JS)
+    repo.commit("add web + zz_legacy")
+    return repo
+
+
+def _app_repo(parent: Path) -> GitRepo:
+    """x_base defines x.thing, x_ext extends it (a second x.thing Model node),
+    x_ui's ThingPanel extends web's LegacyComponent and reads x.thing."""
+    repo = GitRepo(parent, "app_addons")
+    _x_base(repo)
+    mod = repo.path / "x_ext"
+    _manifest(mod, "x_ext", ["x_base"])
+    _write(mod / "__init__.py", "from . import models\n")
+    _write(mod / "models" / "__init__.py", "from . import thing\n")
+    _write(mod / "models" / "thing.py", _X_EXT_MODELS)
+    _manifest(repo.path / "x_ui", "x_ui", ["web", "x_base"])
+    _write(repo.path / "x_ui" / "__init__.py", "")
+    _write(repo.path / "x_ui" / "static" / "src" / "thing_panel.js", _THING_PANEL_JS)
+    repo.commit("add x_base, x_ext, x_ui")
+    return repo
+
+
+def _owl_edges(driver) -> tuple[set, set]:
+    with driver.session() as s:
+        extends = {(r["cm"], r["cn"], r["pm"], r["pn"]) for r in s.run(
+            "MATCH (c:OWLComp {odoo_version: $v})-[:EXTENDS]->(p) "
+            "RETURN c.module AS cm, c.name AS cn, p.module AS pm, p.name AS pn", v=V)}
+        bound = {(r["cm"], r["cn"], r["mm"], r["mn"]) for r in s.run(
+            "MATCH (c:OWLComp {odoo_version: $v})-[:BOUND_TO]->(m) "
+            "RETURN c.module AS cm, c.name AS cn, m.module AS mm, m.name AS mn", v=V)}
+    return extends, bound
+
+
+_EXPECTED_EXTENDS = {("x_ui", "ThingPanel", "web", "LegacyComponent")}
+_EXPECTED_BOUND = {("x_ui", "ThingPanel", "x_base", "x.thing")}
+
+
+@pytest.mark.parametrize("app_first", [True, False], ids=["child-repo-first", "parent-repo-first"])
+def test_owl_component_extends_its_imported_parent_and_binds_the_defining_model(
+    pg, neo4j_driver, tmp_path, app_first,
+):
+    """F47a/F47b (FIX): ThingPanel extends exactly the LegacyComponent its file
+    imports (``@web/...`` -> web), never zz_legacy's same-named class, whether
+    the child's repo is written before or after the parent's; it is bound to
+    exactly ONE x.thing Model node - the definition in x_base, not x_ext's
+    extension node. A second run changes nothing."""
+    web, app = _web_repo(tmp_path), _app_repo(tmp_path)
+    register("owl_99", *((app, web) if app_first else (web, app)))
+    run(pg, "owl_99")
+
+    assert _owl_edges(neo4j_driver) == (_EXPECTED_EXTENDS, _EXPECTED_BOUND)
+    assert _count(neo4j_driver, "Model", name="x.thing") == 2, (
+        "positive control: two x.thing nodes exist, one per module"
+    )
+
+    run(pg, "owl_99")
+
+    assert _owl_edges(neo4j_driver) == (_EXPECTED_EXTENDS, _EXPECTED_BOUND)
+
+
+def _replace_thing_panel_with_a_plain_component(pg, driver, tmp_path) -> dict:
+    """Run 1 with ThingPanel(LegacyComponent) reading x.thing, then ThingPanel
+    re-declared on OWL's own Component with no model access, run 2."""
+    web, app = _web_repo(tmp_path), _app_repo(tmp_path)
+    register("owl_99", web, app)
+    run(pg, "owl_99")
+    assert _owl_edges(driver) == (_EXPECTED_EXTENDS, _EXPECTED_BOUND)
+
+    _write(app.path / "x_ui" / "static" / "src" / "thing_panel.js", _THING_PANEL_PLAIN_JS)
+    app.commit("[IMP] x_ui: ThingPanel is a plain Component")
+    summary = run(pg, "owl_99")
+    assert _count(driver, "OWLComp", module="x_ui", name="ThingPanel") == 1
+    assert not needs_attention(summary), lc(summary)
+    return summary
+
+
+def test_owl_bound_to_leaves_the_graph_when_the_component_stops_reading_the_model(
+    pg, neo4j_driver, tmp_path,
+):
+    """F47 (BOUND_TO): ThingPanel no longer reading x.thing loses its binding in
+    ONE run, while the component itself stays."""
+    _replace_thing_panel_with_a_plain_component(pg, neo4j_driver, tmp_path)
+
+    assert _owl_edges(neo4j_driver)[1] == set()
+
+
+def test_owl_extends_leaves_the_graph_when_the_component_changes_its_parent(
+    pg, neo4j_driver, tmp_path,
+):
+    """F47 / T1 (FIX 3ec5fd5; was xfail(strict) finding T1): ThingPanel
+    re-declared on OWL's Component (import origin '@odoo/owl' unknown, no
+    OWLComp node by that name) loses its EXTENDS edge to LegacyComponent in ONE
+    run - a parent the source no longer names is never kept."""
+    _replace_thing_panel_with_a_plain_component(pg, neo4j_driver, tmp_path)
+
+    assert _owl_edges(neo4j_driver)[0] == set()
+
+
+def test_owl_extends_of_a_pre_change_graph_keeps_the_still_declared_parent(
+    pg, neo4j_driver, tmp_path,
+):
+    """T1 keep rule: a graph written before import origins were recorded (no
+    ``extends_module`` on the component) whose declared parent has no
+    resolvable candidate keeps its recorded edge to THAT parent - it is not
+    guessed away. Recreated by removing the parent's module link (the parent
+    node lives in a module outside the child's closure, as a same-named
+    component written by an older resolver would) and the origin."""
+    # GUARD: pre-existing behaviour
+    web, app = _web_repo(tmp_path), _app_repo(tmp_path)
+    register("owl_99", web, app)
+    run(pg, "owl_99")
+    assert _owl_edges(neo4j_driver)[0] == _EXPECTED_EXTENDS
+    with neo4j_driver.session() as s:
+        # Pre-change graph: no recorded origin, and x_ui's manifest link to web
+        # absent - the edge cannot be re-derived, only kept or dropped.
+        s.run("MATCH (c:OWLComp {name: 'ThingPanel', odoo_version: $v}) "
+              "REMOVE c.extends_module", v=V).consume()
+        s.run("MATCH (:Module {name: 'x_ui', odoo_version: $v})-[r:DEPENDS_ON]->"
+              "(:Module {name: 'web', odoo_version: $v}) DELETE r", v=V).consume()
+
+    run(pg, "owl_99")  # no commit: the repos are skipped, the post-pass runs
+
+    assert _owl_edges(neo4j_driver)[0] == _EXPECTED_EXTENDS

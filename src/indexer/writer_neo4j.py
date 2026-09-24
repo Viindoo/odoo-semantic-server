@@ -129,7 +129,8 @@ _MODULE_LINT_VIOLATION_PREDICATE = """
 # hence never pruned here:
 #   * derived by version-wide post-passes, not by a module's parse:
 #     TestClass-[:INHERITS_TEST] and TestMethod-[:COVERS_MODEL|COVERS_FIELD|
-#     COVERS_METHOD]; reconcile_test_surface recomputes them every run and
+#     COVERS_METHOD] (reconcile_test_surface), OWLComp-[:EXTENDS|BOUND_TO]
+#     (reconcile_owl_edges); each pass recomputes its edges every run and
 #     deletes the ones it no longer derives (addon TestHelper projections
 #     carry no DEFINED_IN);
 #   * starting at a shared node: AssetBundle-[:INCLUDES_BUNDLE];
@@ -146,7 +147,7 @@ MODULE_CHILD_REL_TYPES: dict[str, tuple[str, ...]] = {
     "QWebTmpl": (REL_DEFINED_IN, "EXTENDS_TMPL", "EXTENDS_ASSET_BUNDLE"),
     "Report": (REL_DEFINED_IN, REL_REPORTS_ON, REL_USES_TEMPLATE),
     "JSPatch": (REL_DEFINED_IN, "PATCHES"),
-    "OWLComp": (REL_DEFINED_IN, "EXTENDS", "BOUND_TO"),
+    "OWLComp": (REL_DEFINED_IN,),
     "Stylesheet": (REL_DEFINED_IN, REL_IMPORTS),
     "JsTestSuite": (REL_DEFINED_IN,),
     "TestMethod": ("BELONGS_TO_TEST",),
@@ -2843,6 +2844,101 @@ class Neo4jWriter:
                 )
             return deleted
 
+    def reconcile_owl_edges(self, odoo_version: str) -> dict:
+        """Derive the OWLComp EXTENDS and BOUND_TO edges at *odoo_version*.
+
+        Version-wide post-pass (the parent component or the bound model may be
+        written by a later repo, so no per-module write can be complete).
+
+        * EXTENDS: ``c.extends`` resolves to the OWLComp of that name in the
+          module the superclass is imported from (``c.extends_module``), else in
+          c's own module, else in the nearest module of c's DEPENDS_ON closure
+          (``base`` implied); ties on module name. Never a component of an
+          unrelated module without import evidence (:func:`resolve_owl_parents`).
+          Only parents the parser keeps as OWLComp nodes can exist: it keeps a
+          class only when it extends a name in ``parser_js._OWL_BASE_NAMES``,
+          so the parents are ``LegacyComponent`` / ``ComponentAdapter`` (themselves
+          ``Component`` subclasses); a subclass of any other component is not a
+          node, because whether a superclass is a component is only known across
+          files and modules while the node set is decided per file.
+        * BOUND_TO: ``c.bound_model`` binds the ONE Model node of that name the
+          C1 ranking picks (``is_definition`` DESC, ``field_count`` DESC, module
+          ASC - the REPORTS_ON convention), not every per-module Model node.
+
+        Both edge sets are made exactly the derived ones (missing created, the
+        rest deleted). An EXTENDS whose origin is unknown (``extends_module``
+        absent) and that nothing resolves keeps its recorded edge to that same
+        parent name; an edge to a parent it no longer declares is deleted.
+        Returns ``{"extends_created", "extends_deleted", "bound_created",
+        "bound_deleted"}``. Non-fatal: a failure is logged, the next run retries.
+        """
+        out = {"extends_created": 0, "extends_deleted": 0,
+               "bound_created": 0, "bound_deleted": 0}
+        try:
+            with self.driver.session() as session:
+                snap = session.execute_read(_read_owl_snapshot, odoo_version)
+                comps = snap["comps"]
+                pairs, undetermined = resolve_owl_parents(comps, snap["depends"])
+                desired = {(comps[c]["id"], comps[p]["id"]) for c, p in pairs}
+                # Keep only an edge to the parent name still declared: a parent
+                # the source no longer names is never kept.
+                keep = {(comps[i]["id"], comps[i]["extends"]) for i in undetermined}
+                names = {c["id"]: c["name"] for c in comps}
+                existing = {
+                    (e["c"], e["p"]) for e in snap["edges"]
+                    if (e["c"], names.get(e["p"])) not in keep
+                }
+                create = [{"c": c, "p": p, "cn": names[c], "pn": names[p]}
+                          for c, p in sorted(desired - existing)]
+                delete = [{"c": c, "p": p} for c, p in sorted(existing - desired)]
+                for start in range(0, len(create), _TEST_EDGE_BATCH_ROWS):
+                    out["extends_created"] += session.execute_write(
+                        _create_owl_extends_edges, create[start:start + _TEST_EDGE_BATCH_ROWS],
+                    )
+                for start in range(0, len(delete), _TEST_EDGE_BATCH_ROWS):
+                    out["extends_deleted"] += session.execute_write(
+                        _delete_owl_extends_edges, delete[start:start + _TEST_EDGE_BATCH_ROWS],
+                    )
+                row = _run_single_with_retry(
+                    session, "reconcile_owl_edges[bound delete]",
+                    f"""
+                    MATCH (c:OWLComp {{odoo_version: $v}})-[r:BOUND_TO]->(m)
+                    WITH c, r, m, COLLECT {{
+                        {_BOUND_MODEL_PICK}
+                    }} AS pick
+                    WHERE size(pick) = 0 OR pick[0] <> m
+                    DELETE r
+                    RETURN count(*) AS n
+                    """,
+                    v=odoo_version,
+                )
+                out["bound_deleted"] = row["n"] if row is not None else 0
+                row = _run_single_with_retry(
+                    session, "reconcile_owl_edges[bound create]",
+                    f"""
+                    MATCH (c:OWLComp {{odoo_version: $v}})
+                    WHERE c.bound_model IS NOT NULL
+                    CALL (c) {{
+                        {_BOUND_MODEL_PICK}
+                    }}
+                    WITH c, x WHERE NOT (c)-[:BOUND_TO]->(x)
+                    MERGE (c)-[:BOUND_TO]->(x)
+                    RETURN count(*) AS n
+                    """,
+                    v=odoo_version,
+                )
+                out["bound_created"] = row["n"] if row is not None else 0
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning(
+                "OWL EXTENDS/BOUND_TO reconciliation failed for version %s: %s - "
+                "indexer run continues; next run will retry",
+                odoo_version, exc,
+            )
+            return out
+        if any(out.values()):
+            _logger.info("OWL edge reconciliation for version %s: %s", odoo_version, out)
+        return out
+
     def reconcile_test_inherits(self, odoo_version: str) -> int:
         """Derive the INHERITS_TEST edges of every TestClass at *odoo_version*.
 
@@ -3536,6 +3632,136 @@ def resolve_test_base_targets(
                         and (cand.get("file_path") or "") == target_file):
                     pairs.append((child_idx, cand_idx))
     return pairs, undetermined
+
+
+# The ONE Model node an OWLComp's bound_model binds (bound as ``c``; returns
+# ``x``): the C1 ranking - definition first, then the richest node, then module.
+_BOUND_MODEL_PICK = """
+        MATCH (x:Model {name: c.bound_model, odoo_version: $v})
+        RETURN x
+        ORDER BY coalesce(x.is_definition, false) DESC,
+                 coalesce(x.field_count, 0) DESC, x.module ASC
+        LIMIT 1
+"""
+
+
+def resolve_owl_parents(
+    comps: "list[Mapping]", depends: Mapping[str, Iterable[str]],
+) -> tuple[list[tuple[int, int]], set[int]]:
+    """Resolve each OWLComp's ``extends`` to the parent component the file imports.
+
+    ``comps`` rows: ``name``, ``module``, ``extends``, ``extends_module`` (the
+    Odoo module the superclass is imported from, None when unknown).
+    Candidates are OWLComp rows named ``extends`` (never the child itself),
+    ranked: in ``extends_module``; in the child's own module; in the nearest
+    module of the child's dependency closure (``base`` implied). Ties on
+    module name. Without import evidence a component of a module outside the
+    closure is never a parent.
+
+    Returns ``(pairs, undetermined)``: ``(child_index, parent_index)`` pairs,
+    and the child indexes with unknown import origin that nothing resolves
+    (the caller keeps their recorded edge to the parent name still declared).
+    """
+    by_name: dict[str, list[int]] = {}
+    for idx, comp in enumerate(comps):
+        by_name.setdefault(comp["name"], []).append(idx)
+    closure_cache: dict[str, dict[str, int]] = {}
+    pairs: list[tuple[int, int]] = []
+    undetermined: set[int] = set()
+    for idx, comp in enumerate(comps):
+        parent = comp.get("extends")
+        if not parent:
+            continue
+        module = comp["module"]
+        hint = comp.get("extends_module")
+        distances = closure_cache.get(module)
+        if distances is None:
+            distances = _dependency_distances(module, depends)
+            closure_cache[module] = distances
+        best: tuple | None = None
+        for cand_idx in by_name.get(parent, ()):
+            if cand_idx == idx:
+                continue
+            cand_module = comps[cand_idx]["module"]
+            if hint and cand_module == hint:
+                rank = (0, 0)
+            elif cand_module == module:
+                rank = (1, 0)
+            else:
+                distance = distances.get(cand_module)
+                if distance is None:
+                    continue
+                rank = (2, distance)
+            key = (rank, cand_module, cand_idx)
+            if best is None or key < best:
+                best = key
+        if best is not None:
+            pairs.append((idx, best[2]))
+        elif not hint:
+            undetermined.add(idx)
+    return pairs, undetermined
+
+
+def _read_owl_snapshot(tx, odoo_version: str) -> dict:
+    comps = [
+        dict(row) for row in tx.run(
+            """
+            MATCH (c:OWLComp {odoo_version: $v})
+            RETURN elementId(c) AS id, c.name AS name, c.module AS module,
+                   c.extends AS extends, c.extends_module AS extends_module
+            ORDER BY module, name, id
+            """,
+            v=odoo_version,
+        )
+    ]
+    depends = {
+        row["module"]: row["deps"] for row in tx.run(
+            f"""
+            MATCH (m:Module {{odoo_version: $v}})-[:{REL_DEPENDS_ON}]->(d:Module)
+            WHERE d.odoo_version = $v
+            RETURN m.name AS module, collect(DISTINCT d.name) AS deps
+            """,
+            v=odoo_version,
+        )
+    }
+    edges = [
+        dict(row) for row in tx.run(
+            """
+            MATCH (c:OWLComp {odoo_version: $v})-[:EXTENDS]->(p:OWLComp)
+            RETURN elementId(c) AS c, elementId(p) AS p
+            """,
+            v=odoo_version,
+        )
+    ]
+    return {"comps": comps, "depends": depends, "edges": edges}
+
+
+def _create_owl_extends_edges(tx, rows: list[dict]) -> int:
+    row = tx.run(
+        """
+        UNWIND $rows AS row
+        MATCH (c:OWLComp) WHERE elementId(c) = row.c AND c.name = row.cn
+        MATCH (p:OWLComp) WHERE elementId(p) = row.p AND p.name = row.pn
+        MERGE (c)-[:EXTENDS]->(p)
+        RETURN count(*) AS n
+        """,
+        rows=rows,
+    ).single()
+    return row["n"] if row is not None else 0
+
+
+def _delete_owl_extends_edges(tx, rows: list[dict]) -> int:
+    row = tx.run(
+        """
+        UNWIND $rows AS row
+        MATCH (c:OWLComp) WHERE elementId(c) = row.c
+        MATCH (c)-[r:EXTENDS]->(p:OWLComp) WHERE elementId(p) = row.p
+        DELETE r
+        RETURN count(r) AS n
+        """,
+        rows=rows,
+    ).single()
+    return row["n"] if row is not None else 0
 
 
 def _read_test_inherits_snapshot(tx, odoo_version: str) -> dict:

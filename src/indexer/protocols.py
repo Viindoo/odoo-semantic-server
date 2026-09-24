@@ -113,6 +113,11 @@ class IndexWriterProtocol(Protocol):
         """
         ...
 
+    def reconcile_owl_edges(self, odoo_version: str) -> dict:
+        """Derive OWLComp EXTENDS (import/module-aware) and BOUND_TO (the ranked
+        definition Model) version-wide, exactly. Returns created/deleted counts."""
+        ...
+
     def reconcile_test_inherits(self, odoo_version: str) -> int:
         """Make the TestClass INHERITS_TEST edges exactly the resolved bases.
 
