@@ -88,6 +88,8 @@ def describe_module(
         Tree: Manifest (Depends, Edition, Author, Version, Summary, Website,
         Old technical name, Price), Defines models, Extends models, Views (by
         type), JS patches; plus a Description block when include_description=True.
+        Not indexed: lifecycle history (removed / renamed / excluded) and the
+        other versions where the name is indexed.
 
     Example:
         describe_module("viin_sale", "17.0")
@@ -225,8 +227,9 @@ def module_inspect(
             'dependencies' returns transitive DEPENDS_ON closure with repo info
             and topological load order (B2, ADR-0028 consolidation).
             'tests' returns TestClass nodes in the module (ADR-0051).
-        profile_name: Optional profile filter (inheritance-resolved via
-            ancestor chain). Default None = all profiles.
+        profile_name: Optional profile filter: this profile plus globally
+            shared base profiles (no ancestor-chain expansion of private
+            parent profiles). Default None = every profile you can access.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
         view_type: Filter views by type, e.g. 'form'/'tree'/'list' - method='views' only.

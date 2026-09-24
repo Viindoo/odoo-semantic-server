@@ -450,7 +450,7 @@ def test_model_inspect_limit_hint_no_limit_raising():
 # ---------------------------------------------------------------------------
 # WI-3 (#258, #259-B) — odoo_version='auto' + profile_name semantics alignment
 # ADR-0029 WI-4 amendment: 'auto' resolves to session pin on version-bearing
-# tools. ADR-0016 profile inheritance: profile filter is inheritance-resolved.
+# tools. profile_name is a narrowing-only filter (no ancestor-chain expansion).
 # ---------------------------------------------------------------------------
 
 
@@ -504,24 +504,35 @@ def test_set_active_version_docstring_distinguishes_pin_vs_reuse():
     )
 
 
+_PROFILE_DOC_STILL_CLAIMS_ANCESTORS = pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "profile_name param doc still says 'inheritance-resolved' / ancestor chain, "
+        "which _scope does not do (#378 L9 fixed only check_module_exists and "
+        "module_inspect); fix the doc and drop this mark"
+    ),
+)
+
+
 @pytest.mark.parametrize("tool_name", [
-    "model_inspect",
     "module_inspect",
     "check_module_exists",
-    "find_deprecated_usage",
+    pytest.param("model_inspect", marks=_PROFILE_DOC_STILL_CLAIMS_ANCESTORS),
+    pytest.param("find_deprecated_usage", marks=_PROFILE_DOC_STILL_CLAIMS_ANCESTORS),
 ])
-def test_profile_name_docstring_mentions_inheritance_resolved(tool_name):
-    """WI-3 (#259-B): Tools with profile_name parameter must document that the
-    filter is inheritance-resolved (includes parent profiles via ancestor chain).
+def test_profile_name_doc_does_not_promise_parent_profile_content(tool_name):
+    """The profile_name filter only narrows; it never pulls in parent profiles.
 
-    Guards the agent-facing semantics: an agent reading the profile_name param
-    description must understand that a child profile also includes parent
-    profile content (ADR-0016 profile inheritance).
+    Rewritten (#378 L9): the old test required the doc to call the filter
+    "inheritance-resolved (includes parent profiles via ancestor chain)". The
+    source says otherwise: nodes carry only their owning profile
+    (``pipeline_repo._owning_profiles``) and ``server._scope(profile_name)``
+    narrows ``own`` to exactly ``[profile_name]`` - a private parent profile's
+    modules are not included. An agent that believes the old wording concludes
+    a module exists in a child profile when it is only in the parent.
     """
-    desc = _get_tool_agent_doc(tool_name)
-    assert "inheritance" in desc.lower() or "ancestor" in desc.lower(), (
-        f"'{tool_name}' profile_name description must mention 'inheritance' or "
-        "'ancestor' to convey that profile filtering is inheritance-resolved "
-        "(ADR-0016). "
-        f"Relevant fragment: {desc[desc.find('profile_name'):desc.find('profile_name')+200]!r}"
-    )
+    tool = _resolve_tool(tool_name)
+    doc = tool.parameters["properties"]["profile_name"]["description"].lower()
+    assert "inheritance-resolved" not in doc, doc
+    assert "via the ancestor chain" not in doc, doc
+    assert "no ancestor-chain expansion" in doc, doc

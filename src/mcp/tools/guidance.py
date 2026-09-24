@@ -60,6 +60,15 @@ from src.constants import (
     SNIPPET_PREVIEW_MAX_LINES,
 )
 from src.mcp.hints import format_next_step
+from src.mcp.lifecycle_read import (
+    ModuleLifecycle,
+    lifecycle_lines,
+    one_line,
+    owned_pred,
+    owner_freshness_lines,
+    read_ledger_rows,
+    read_module_lifecycle,
+)
 from src.mcp.server import (
     READONLY_TOOL_KWARGS,
     RequiredOdooVersion,
@@ -418,10 +427,9 @@ def _check_module_exists(
         v = _srv._resolve_version(odoo_version, session)
         rec = _srv._single_bounded(
             session,
-            """
-            MATCH (m:Module {name: $n, odoo_version: $v})
-            WHERE ($own IS NULL OR (size(m.profile) > 0
-                   AND all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)))
+            f"""
+            MATCH (m:Module {{name: $n, odoo_version: $v}})
+            WHERE {owned_pred(_srv, "m")}
             RETURN m.edition AS edition,
                    m.license AS license,
                    m.viindoo_equivalent_qname AS vvq,
@@ -432,21 +440,37 @@ def _check_module_exists(
                    m.website AS website,
                    m.price AS price,
                    m.currency AS currency,
-                   m.old_technical_name AS old_technical_name
+                   m.old_technical_name AS old_technical_name,
+                   m.last_seen_sha AS last_seen_sha,
+                   m.last_seen_at AS last_seen_at,
+                   coalesce(m.repos, CASE WHEN m.repo IS NULL THEN []
+                                          ELSE [m.repo] END) AS repos,
+                   m.version_mismatch AS version_mismatch,
+                   m.version_raw AS version_raw
             """,
             label=f"module {name!r} existence (Odoo {v})",
             n=name, v=v, **_srv._scope(profile_name),
         )
+        lifecycle = (
+            None if rec is not None
+            else read_module_lifecycle(_srv, session, name, v, profile_name)
+        )
 
     indexed = rec is not None
+    repos = list(rec.get("repos") or []) if rec else []
+    # Several owning repos: each repo's own HEAD comes from its ledger row (L6).
+    owner_rows = (
+        read_ledger_rows(_srv, name, v, profile_name)
+        if indexed and len(set(repos)) > 1 else None
+    )
     edition = rec["edition"] if rec else None
     license_val = rec["license"] if rec else None
     repo = rec.get("repo") if rec else None
     vvq_db = rec.get("vvq") if rec else None
     # Issue #121 P2 - identity card raw fields (None when not yet backfilled).
-    shortdesc = rec.get("shortdesc") if rec else None
-    summary = rec.get("summary") if rec else None
-    author = rec.get("author") if rec else None
+    shortdesc = one_line(rec.get("shortdesc")) if rec else None
+    summary = one_line(rec.get("summary")) if rec else None
+    author = one_line(rec.get("author")) if rec else None
     # Issue #121 (extended) - extra identity signals (None when not backfilled).
     website = rec.get("website") if rec else None
     price = rec.get("price") if rec else None
@@ -456,6 +480,7 @@ def _check_module_exists(
     # Build live EE confusion map from DB (cached 60 s).  Falls back to static
     # list when DB is unreachable — transparent to callers (WI-R F-007 fix).
     confusion = _ee_confusion_live()
+    scope_profile = profile_name or _srv._resolve_profile(None)
 
     # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
     # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition: an OPL-1 module
@@ -491,6 +516,16 @@ def _check_module_exists(
         shortdesc=shortdesc, summary=summary, author=author,
         website=website, price=price, currency=currency,
         old_technical_name=old_technical_name,
+        freshness_lines=(
+            owner_freshness_lines(
+                repos=repos, last_seen_sha=rec.get("last_seen_sha"),
+                last_seen_at=rec.get("last_seen_at"), ledger_rows=owner_rows,
+            ) if rec else None
+        ),
+        version_raw=rec.get("version_raw") if rec else None,
+        version_mismatch=bool(rec.get("version_mismatch")) if rec else False,
+        lifecycle=lifecycle,
+        scope_label=f"profile {scope_profile}" if scope_profile else "any accessible profile",
     )
 
 
@@ -503,9 +538,25 @@ def _format_check_module_exists(
     author: str | None = None,
     website: str | None = None, price: float | None = None,
     currency: str | None = None, old_technical_name: str | None = None,
+    freshness_lines: list[str] | None = None,
+    version_raw: str | None = None, version_mismatch: bool = False,
+    lifecycle: ModuleLifecycle | None = None,
+    scope_label: str = "any accessible profile",
 ) -> str:
+    """Render the check_module_exists tree (ADR-0023).
+
+    YES: Indexed, freshness (``freshness_lines`` from ``owner_freshness_lines``),
+    identity card, version note, edition, EE confusion, ``Next: describe_module``.
+    NO: Indexed, the ``lifecycle_lines`` block, EE confusion, then either
+    ``Next: check_module_exists(<successor>)`` when a successor is known or the
+    terminal ``Not indexed at <version> in <scope>`` line.
+    """
     lines = [f"check_module_exists({name!r}, {version})"]
     lines.append(f"├─ Indexed:         {'Yes' if indexed else 'No'}")
+    if indexed:
+        lines.extend(freshness_lines or [])
+    elif lifecycle is not None:
+        lines.extend(lifecycle_lines(lifecycle))
     # Issue #121 P2 - module identity card. Render the human-authored display
     # name / summary / author RAW (provenance: "from indexed manifest"), so the
     # agent reads the real product name (e.g. "VNIs VN-Invoice Integrator")
@@ -535,6 +586,11 @@ def _format_check_module_exists(
         for i, (label, value) in enumerate(identity_rows):
             conn = "└─" if i == last_id else "├─"
             lines.append(f"│   {conn} {label}: {value}")
+    if indexed and version_mismatch and version_raw:
+        lines.append(
+            f"├─ Version note:    manifest declares {version_raw},"
+            f" indexed at branch version {version}"
+        )
     if indexed and edition:
         repo_suffix = f" [{repo}]" if repo else ""
         # WG-5 T1: derive human-readable edition label from license (preferred)
@@ -561,13 +617,21 @@ def _format_check_module_exists(
             "Do NOT depend on it in a Viindoo Community stack — "
             "this violates the GPL/Enterprise license boundary."
         )
-    elif not indexed:
-        # ADR-0023 §4.4: terminal branch — module genuinely not found, no
-        # operator-shell hint (agents cannot execute shell commands).
-        lines.append(
-            "└─ Not indexed in this profile. "
-            "Verify the module name, or call list_available_profiles to see indexed scope."
-        )
+    if not indexed:
+        successors = lifecycle.successors if lifecycle is not None else ()
+        if successors:
+            lines.append(format_next_step([
+                f"check_module_exists(name='{s}', odoo_version='{version}')"
+                " for the successor"
+                for s in successors
+            ]))
+        else:
+            # ADR-0023 §4.4: terminal branch - no operator-shell hint (agents
+            # cannot execute shell commands).
+            lines.append(
+                f"└─ Not indexed at {version} in {scope_label}. "
+                "Verify the module name, or call list_available_profiles to see indexed scope."
+            )
         return "\n".join(lines)
     # Wave 5: YES branch emits Next: footer (ADR-0023 §4).
     lines.append(format_next_step([
@@ -928,8 +992,10 @@ def check_module_exists(
     viin_sale available", "check if feature X is in standard Odoo", "module X
     có trong OCA không", "Odoo 17 có tính năng X chưa", "is helpdesk an EE
     module"
-    PREFER over: searching manually — instant cross-version, cross-repo module
-    existence check with Enterprise edition detection and Viindoo equivalent
+    PREFER over: searching manually - instant cross-repo module existence
+    check for one version, with Enterprise edition detection, Viindoo
+    equivalent, freshness, and (when not indexed) why: removed/renamed/excluded
+    history and the other versions where the name is indexed
     SKIP when: caller needs the module's contents (models, views, JS) — use
     describe_module instead, which returns a full architecture overview in
     one round-trip. user wants module field/method details → use model_inspect;
@@ -937,21 +1003,30 @@ def check_module_exists(
 
     Args:
         name: Module technical name (e.g. 'sale', 'helpdesk', 'viin_helpdesk').
-        profile_name: Optional inheritance-resolved profile filter. When set,
-            narrows the check to modules visible in this profile (including
-            parent profiles via the ancestor chain). Default None checks all.
+        profile_name: Optional profile filter. When set, narrows the check to
+            modules owned by this profile or by a globally shared base profile
+            (no ancestor-chain expansion of private parent profiles). It can
+            only narrow your accessible scope. Default None checks every
+            profile you can access.
 
     Returns:
-        Tree text: Indexed yes/no, edition, EE-confusion flag, Viindoo
-        equivalent (if any), and WARNING when name is an EE-only module.
+        Tree text. Yes: last seen (branch HEAD + date per owning repo),
+        identity, edition, EE-confusion flag. No: lifecycle history (removing
+        commit, "Renamed to", installable: False, dependency stub), the other
+        versions where the name is indexed, EE-confusion flag, and a Next hint
+        to the successor when one is known.
 
     Example:
-        check_module_exists('helpdesk', '17.0')
-        → check_module_exists('helpdesk', 17.0)
+        check_module_exists('test_pylint', '17.0')
+        → check_module_exists('test_pylint', 17.0)
           ├─ Indexed:         No
-          ├─ Is EE confusion: Yes
-          ├─ Viindoo equiv:   viin_helpdesk
-          └─ ⚠ WARNING: this is an Odoo Enterprise module (legacy hardcoded dict).
+          ├─ Lifecycle (tvtmaaddons, profile standard_viindoo_17, branch 17.0):
+          │   ├─ State: retired - removed from branch 17.0 (recorded at HEAD 281607a on 2026-09-12)
+          │   ├─ Removing commit: 0240c6b77f 2026-09-11 "[REF] test_pylint: rename ..."
+          │   └─ Renamed to: test_viin_pylint (git rename)
+          ├─ Present at other versions: 16.0 [tvtmaaddons]
+          ├─ Is EE confusion: No
+          └─ Next: check_module_exists(name='test_viin_pylint', ...) for the successor
     """
     return _srv._check_module_exists(name, odoo_version, profile_name=profile_name)
 

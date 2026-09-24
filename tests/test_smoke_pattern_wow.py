@@ -186,7 +186,11 @@ class TestSmokeCheckModuleExists:
     def test_indexed_viindoo_module_recognized(
         self, smoke_writer, neo4j_driver,
     ):
-        """Seed 1 viin_* module → check_module_exists shows edition=viindoo."""
+        """Seed 1 viin_* module → check_module_exists shows edition=viindoo.
+
+        Seeded with an owning profile like every indexed module: a profile-less
+        Module is a dependency stub and answers ``Indexed: No`` (#378 M7/R14).
+        """
         viin_mod = ModuleInfo(
             name="smoke_viin_helpdesk", odoo_version=SMOKE_VERSION,
             repo="acme_addons17", path="/p/smoke_viin_helpdesk",
@@ -194,12 +198,13 @@ class TestSmokeCheckModuleExists:
         )
         smoke_writer.write_results([
             ParseResult(module=viin_mod, models=[]),
-        ])
+        ], profiles=["smoke_profile"])
 
         out = _check_module_exists(
             "smoke_viin_helpdesk", odoo_version=SMOKE_VERSION,
             _driver=neo4j_driver,
         )
+        assert "Indexed:         Yes" in out, out
         assert "viindoo" in out.lower(), (
             f"Expected edition=viindoo in output, got:\n{out}"
         )

@@ -301,7 +301,12 @@ def seeded_category_oracle_patterns(clean_pg_embeddings, clean_neo4j):
 
 @pytest.fixture
 def seeded_modules(clean_neo4j):
-    """Seed Module nodes for check_module_exists tests."""
+    """Seed owned Module nodes for check_module_exists tests.
+
+    Seeded with an owning profile because the indexer always writes one
+    (``_owning_profiles``); a profile-less Module is a dependency stub, which
+    check_module_exists answers ``Indexed: No`` to every caller (#378 M7/R14).
+    """
     import os
 
     from src.indexer.models import ModuleInfo, ParseResult
@@ -326,7 +331,7 @@ def seeded_modules(clean_neo4j):
     writer.write_results([
         ParseResult(module=sale, models=[]),
         ParseResult(module=viin_helpdesk, models=[]),
-    ])
+    ], profiles=["cme_profile"])
     writer.close()
     return clean_neo4j
 
@@ -767,7 +772,10 @@ class TestCheckModuleExists:
             path="/odoo-ee/addons/knowledge_pro", depends=[], version_raw="",
             edition="enterprise", license="OEEL-1",
         )
-        writer.write_results([ParseResult(module=knowledge_pro, models=[])])
+        # Owned like every indexed module; a profile-less node is a stub (#378 M7).
+        writer.write_results(
+            [ParseResult(module=knowledge_pro, models=[])], profiles=["cme_profile"],
+        )
         writer.close()
 
         result = _check_module_exists(
