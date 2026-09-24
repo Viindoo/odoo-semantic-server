@@ -366,7 +366,7 @@ def _prune_mode(run_id, written_before, started_at_for) -> dict:
     if written_before is not None:
         return {
             "run": _CUTOFF_RUN,
-            "run_started": _require_aware_datetime(written_before, "written_before"),
+            "run_started": utc_for_neo4j(written_before, "written_before"),
             "keep_same_name_inherits": True,
         }
     run = _require_run_id(run_id)
@@ -389,8 +389,8 @@ def _require_run_id(run_id) -> str:
     return run_id
 
 
-def _require_aware_datetime(value, param: str) -> datetime:
-    """Return *value* as a timezone-aware ``datetime`` or raise ValueError.
+def utc_for_neo4j(value, param: str) -> datetime:
+    """Return *value* as an aware ``datetime`` at the fixed UTC offset, or raise ValueError.
 
     The cascade guard compares ``Module.last_seen_at`` (a zoned Cypher
     ``datetime()``) with this value. A naive Python datetime is sent as a
@@ -399,6 +399,13 @@ def _require_aware_datetime(value, param: str) -> datetime:
     too (``to_native()``). The result is converted to the fixed ``UTC``
     offset, so a value stamped from it is stored in the same form as the
     server's own ``datetime()``.
+
+    This is the ONLY way a Python datetime reaches the Neo4j driver in this
+    code base: the neo4j 5.28 driver packs an aware datetime by calling
+    ``tzinfo.utcoffset(<neo4j.time.DateTime>)``, and CPython's C ``zoneinfo``
+    reads that non-``datetime`` argument as if it were one - a NAMED zone
+    (``ZoneInfo('Asia/Ho_Chi_Minh')``) intermittently SIGSEGVs the process.
+    ``datetime.UTC`` (a fixed offset) never goes through zoneinfo.
     """
     if hasattr(value, "to_native"):
         value = value.to_native()
@@ -525,7 +532,7 @@ class Neo4jWriter:
         Returns the token.
         """
         self._run_started_at = (
-            _require_aware_datetime(started_at, "started_at")
+            utc_for_neo4j(started_at, "started_at")
             if started_at is not None else self.server_now()
         )
         self._run_id = run_id or uuid.uuid4().hex
@@ -1275,7 +1282,7 @@ class Neo4jWriter:
         "skipped_recent": [names]}``; ``retired`` and ``skipped_recent`` are
         sorted.
         """
-        run_at = _require_aware_datetime(run_started_at, "run_started_at")
+        run_at = utc_for_neo4j(run_started_at, "run_started_at")
         wanted = sorted({n for n in names if n and n not in NON_RETIRABLE_MODULE_NAMES})
         result: dict = {
             "modules": 0,
@@ -1816,7 +1823,7 @@ class Neo4jWriter:
         confirm or drop them. TestHelper projections (never stamped) are left
         out. None when there is none. Read-only.
         """
-        since_at = _require_aware_datetime(since, "since")
+        since_at = utc_for_neo4j(since, "since")
         skip = set(skip_labels) | {"TestHelper"}
         if not name or name in NON_RETIRABLE_MODULE_NAMES:
             return None
@@ -2100,7 +2107,7 @@ class Neo4jWriter:
         some present names have no node (lost to a concurrent retire or a
         failed write) and must be re-written (H2 self-heal).
         """
-        now_value = None if now is None else _require_aware_datetime(now, "now")
+        now_value = None if now is None else utc_for_neo4j(now, "now")
         payload = []
         for r in rows:
             name = r["name"]
