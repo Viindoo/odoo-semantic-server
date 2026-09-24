@@ -13,6 +13,8 @@ DB setup re-uses pg_conn + clean_browser from tests/conftest.py (inherited via
 pytest's conftest chain).
 """
 import os
+import signal
+import socket
 import subprocess
 import time
 import urllib.request
@@ -27,10 +29,21 @@ API_PORT = 8003
 SITE_DIR = Path(__file__).resolve().parents[2] / "site"
 
 
-def _wait_for_server(url: str, timeout: int = 30) -> bool:
-    """Poll GET url until 200 or timeout. Returns True on success."""
+def _port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _wait_for_server(url: str, timeout: int = 30, proc: subprocess.Popen | None = None) -> bool:
+    """Poll GET url until 200 or timeout. Returns True on success.
+
+    Gives up early when *proc* (the server being waited for) has already exited.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False
         try:
             code = urllib.request.urlopen(url, timeout=1).getcode()
             if code < 400:
@@ -39,6 +52,46 @@ def _wait_for_server(url: str, timeout: int = 30) -> bool:
             pass
         time.sleep(0.5)
     return False
+
+
+def _stop_process_group(proc: subprocess.Popen) -> None:
+    """Stop *proc* and every child it spawned (pnpm preview forks node)."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=5)
+
+
+def _start_server(cmd: list[str], *, port: int, probe_url: str, name: str, **popen_kwargs):
+    """Start a test server in its own process group, or skip with the reason.
+
+    Never reuses a foreign listener: a port already bound by another process
+    would make the tests assert against a server this session did not start.
+    The caller must pass the returned process to :func:`_stop_process_group`.
+    """
+    if _port_in_use(port):
+        pytest.skip(
+            f"{name}: 127.0.0.1:{port} is already in use by another process;"
+            " stop it so the tests run against a server this session starts."
+        )
+    try:
+        proc = subprocess.Popen(cmd, start_new_session=True, **popen_kwargs)
+    except FileNotFoundError as exc:
+        pytest.skip(f"{name}: cannot start {cmd[0]!r} ({exc})")
+    if not _wait_for_server(probe_url, timeout=30, proc=proc):
+        _stop_process_group(proc)
+        pytest.skip(f"{name} did not start on port {port} within 30s.")
+    return proc
 
 
 @pytest.fixture(scope="session")
@@ -50,25 +103,20 @@ def astro_server():
 
     Yields the base URL string: "http://127.0.0.1:4321"
     """
-    proc = subprocess.Popen(
-        ["pnpm", "preview", "--host", "127.0.0.1", "--port", str(ASTRO_PORT)],
-        cwd=str(SITE_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
     base_url = f"http://127.0.0.1:{ASTRO_PORT}"
-    if not _wait_for_server(base_url, timeout=30):
-        proc.terminate()
-        pytest.skip(
-            f"Astro preview did not start on port {ASTRO_PORT} within 30s. "
-            "Run `cd site && pnpm build` first."
-        )
-    yield base_url
-    proc.terminate()
+    proc = _start_server(
+        ["pnpm", "preview", "--host", "127.0.0.1", "--port", str(ASTRO_PORT)],
+        port=ASTRO_PORT,
+        probe_url=base_url,
+        name="Astro preview (run `cd site && pnpm build` first)",
+        cwd=str(SITE_DIR),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        yield base_url
+    finally:
+        _stop_process_group(proc)
 
 
 @pytest.fixture(scope="session")
@@ -106,7 +154,9 @@ def api_server(pg_conn):
     # by the pytest process), making future regressions diagnosable from CI
     # logs without rerunning locally. ``warning`` keeps the access-log
     # noise low (200/304/redirects stay silent).
-    proc = subprocess.Popen(
+    base_url = f"http://127.0.0.1:{API_PORT}"
+    # Poll /openapi.json - always 200 when FastAPI is up, no auth needed
+    proc = _start_server(
         [
             "python", "-m", "uvicorn",
             "src.web_ui.app:create_app",
@@ -115,18 +165,12 @@ def api_server(pg_conn):
             "--port", str(API_PORT),
             "--log-level", "warning",
         ],
+        port=API_PORT,
+        probe_url=f"{base_url}/openapi.json",
+        name="FastAPI api_server",
         env=env,
     )
-    base_url = f"http://127.0.0.1:{API_PORT}"
-    # Poll /openapi.json — always 200 when FastAPI is up, no auth needed
-    if not _wait_for_server(f"{base_url}/openapi.json", timeout=30):
-        proc.terminate()
-        pytest.skip(
-            f"FastAPI api_server did not start on port {API_PORT} within 30s."
-        )
-    yield base_url
-    proc.terminate()
     try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
+        yield base_url
+    finally:
+        _stop_process_group(proc)

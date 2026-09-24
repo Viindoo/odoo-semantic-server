@@ -60,7 +60,7 @@ jobs:
       - run: uv sync --locked --extra dev
       - name: Validate patterns.json schema
         run: uv run check-jsonschema --schemafile src/data/patterns.schema.json src/data/patterns.json
-      - run: uv run pytest tests/ -v -m "not neo4j and not postgres and not browser" --tb=short
+      - run: uv run pytest tests/ -v -m "not neo4j and not postgres and not browser and not astro" --tb=short
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -241,7 +241,7 @@ jobs:
         working-directory: site
 
       - name: Run public browser tests
-        run: uv run pytest tests/browser/public/ -v -rs -m browser --tb=short
+        run: uv run pytest tests/browser/public/ -v -rs -m "browser or astro" --tb=short
 
   site-tests:
     # Site unit tests (vitest) — tools/resources SSOT drift-guard

@@ -289,37 +289,55 @@ def _close_server_driver_at_session_end():
         srv._driver = None
 
 
-def _playwright_chromium_available() -> bool:
-    """True if Playwright chromium binary is installed at the expected location.
+def _playwright_chromium_launch_error() -> str | None:
+    """None when the installed Playwright can launch headless chromium, else why not.
 
-    pytest-playwright's session-scoped browser fixture raises a hard error
-    (not a skip) when the binary is missing, which then cascades into other
-    tests that share session-scoped DB fixtures. Detect missing binary
-    upfront and convert to a clean skip via pytest_collection_modifyitems.
+    Probes with the same launch pytest-playwright's ``browser`` fixture will do,
+    so a browser build of a different revision than the one this Playwright
+    release pins (e.g. ``chromium-1228`` on disk, ``1223`` wanted) counts as
+    missing. The context manager stops the driver and closes its event loop on
+    every path, so a failed probe leaves no loop behind.
     """
-    cache_root = Path.home() / ".cache" / "ms-playwright"
-    if not cache_root.is_dir():
-        return False
-    return any(p.name.startswith("chromium") for p in cache_root.iterdir())
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        return f"playwright is not importable ({exc})"
+    try:
+        with sync_playwright() as p:
+            p.chromium.launch(headless=True, timeout=30_000).close()
+    except Exception as exc:  # noqa: BLE001 - any launch failure means "cannot run"
+        text = str(exc).strip()
+        return text.splitlines()[0] if text else type(exc).__name__
+    return None
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(config, items):
-    """Convert browser-marker tests to clean SKIPs when chromium binary missing.
+    """Skip Playwright tests that cannot launch, and run the ones that can last.
 
-    Without this, pytest-playwright's `browser` fixture raises
-    "Executable doesn't exist at ~/.cache/ms-playwright/chromium..." during
-    fixture setup, and the resulting ERROR cascades to corrupt the shared
-    `pg_conn` session fixture — failing unrelated tests in the same suite.
-    Local dev: run `playwright install chromium` to enable browser tests.
+    Runs after ``-m`` deselection, so the launch probe happens only when a
+    ``browser`` test is still selected. A launch failure becomes a SKIP of the
+    browser tests alone instead of a fixture ERROR that cascades into shared
+    session fixtures. The sync Playwright driver keeps its event loop running
+    in the main thread for the rest of the session, so browser tests are moved
+    to the end: no later ``asyncio.run()`` test can hit that loop.
+    Local dev: ``make test-browser`` (installs the pinned chromium first).
     """
-    if _playwright_chromium_available():
+    # The marker, not ``item.keywords``: keywords also hold node names, so every
+    # test under the tests/browser/ package (astro header tests included) would match.
+    browser_items = [item for item in items if item.get_closest_marker("browser")]
+    if not browser_items:
         return
-    skip_marker = pytest.mark.skip(
-        reason="Playwright chromium not installed — run: playwright install chromium"
-    )
-    for item in items:
-        if "browser" in item.keywords:
+    error = _playwright_chromium_launch_error()
+    if error is not None:
+        skip_marker = pytest.mark.skip(
+            reason=f"Playwright chromium cannot launch: {error}"
+            " - run: playwright install chromium"
+        )
+        for item in browser_items:
             item.add_marker(skip_marker)
+    browser_ids = {id(item) for item in browser_items}
+    items[:] = [i for i in items if id(i) not in browser_ids] + browser_items
 
 
 @pytest.fixture(autouse=True)
@@ -366,6 +384,37 @@ def _bypass_webui_auth_for_legacy_tests(monkeypatch, request):
         monkeypatch.delenv("WEBUI_AUTH_DISABLED", raising=False)
         return
     monkeypatch.setenv("WEBUI_AUTH_DISABLED", "1")
+
+
+_PG_POOL_GLOBALS = ("_pool", "_auth_store", "_repo_store", "_job_store", "_subscription_store")
+
+
+@pytest.fixture(autouse=True)
+def _hide_pg_pool_from_tests_without_pg(request):
+    """A test that does not request ``pg_conn`` sees no process-wide PG pool.
+
+    ``pg_conn`` (session scope) initialises ``src.db.pg``'s pool once the first
+    PG test runs and keeps it for the session, while ``clean_pg`` drops every
+    table after each test. Code that probes for the pool (``get_pool()`` /
+    ``PoolNotInitializedError``, e.g. the entity prune's embedding reconcile)
+    then found a pool to a schema-less database in a later Neo4j-only test
+    (``relation "embeddings" does not exist``) - a result that depended on test
+    order. Without ``pg_conn`` in its fixture closure a test now runs as if no
+    PG test had run before it; the pool is restored afterwards.
+    """
+    if "pg_conn" in request.fixturenames:
+        yield
+        return
+    import src.db.pg as _pg_mod
+
+    saved = {name: getattr(_pg_mod, name, None) for name in _PG_POOL_GLOBALS}
+    for name in _PG_POOL_GLOBALS:
+        setattr(_pg_mod, name, None)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(_pg_mod, name, value)
 
 
 @pytest.fixture(autouse=True)

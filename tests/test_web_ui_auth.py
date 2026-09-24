@@ -857,15 +857,24 @@ class TestPasswordComplexity:
 
 
 class TestLoginTimingConstant:
-    """F1 — dummy-hash unconditional verify: timing must be constant.
+    """F1 - dummy-hash unconditional verify: login work must be constant.
 
-    Measures average login time for valid user vs non-existent user.
-    Delta must be < 50ms on 10-round average.
-    Marked flaky: CI environments with high contention may see larger jitter.
+    Measures the median login cost for a valid user vs a non-existent user.
+    Delta must be < 50ms.
+
+    The cost is measured as process CPU time, not wall-clock. Root cause of the
+    old flake (observed 2026-09-23 while other test lanes loaded the 8-core dev
+    box): ``time.perf_counter`` also counts the time the process is descheduled,
+    so one cost-12 bcrypt (~250ms of CPU) read as 700-1040ms wall-clock and two
+    interleaved arms drifted apart by 70-210ms under bursty external load (5 of
+    6 runs failed), although both arms did identical work. CPU time counts only
+    the cycles this process spends, so the same load gave deltas of 4-6ms
+    (8 of 8 passes), while a disabled dummy hash (bcrypt skipped on the
+    non-existent-user path) still shows a ~340-450ms gap and fails. The oracle
+    target - one bcrypt of equal cost on both paths - is unchanged.
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.flaky
     async def test_login_timing_constant(self, monkeypatch):
         import statistics
 
@@ -887,6 +896,8 @@ class TestLoginTimingConstant:
         #     5-sample mean badly; the median ignores such per-call outliers.
         #   * A WARM-UP round is measured then discarded so first-touch costs land
         #     on neither arm's statistics.
+        #   * PROCESS CPU TIME, not wall-clock (see the class docstring): the time
+        #     the scheduler gives to OTHER processes is not work this login did.
         #
         # Security intent is unchanged: both code paths run exactly one bcrypt
         # (real user → stored hash, non-existent/OAuth-only user → dummy hash), so a
@@ -896,12 +907,12 @@ class TestLoginTimingConstant:
         N = 7  # measured rounds; first (warm-up) round is discarded
 
         async def _login(client: httpx.AsyncClient, username: str) -> float:
-            t0 = time.perf_counter()
+            t0 = time.process_time()
             await client.post(
                 "/api/auth/login",
                 json={"username": username, "password": "wrong_password_here"},
             )
-            return time.perf_counter() - t0
+            return time.process_time() - t0
 
         # This oracle test is only meaningful at PRODUCTION bcrypt cost. The test
         # suite globally lowers BCRYPT_ROUNDS to 4 for speed (conftest), but at
