@@ -155,7 +155,9 @@ def model_inspect(
             'field' needs field=. 'method' needs method_name=.
             'extenders' paginates the full extending-module list (use after
             summary shows "and N more" in Extended by).
-        profile_name: Profile filter (inheritance-resolved). Default: all.
+        profile_name: Optional profile filter: this profile plus globally
+            shared base profiles (no ancestor-chain expansion of private
+            parent profiles). Default None = every profile you can access.
         field: Required for method='field'. readonly reflects Python def only.
         method_name: Required for method='method'.
         start_index: Pagination cursor for fields/methods/views/extenders.
@@ -395,9 +397,11 @@ def profile_inspect(
 
     Args:
         method: 'summary' | 'repos' | 'modules' | 'coverage'.
-            summary  - ancestor chain, children, repos, module count (needs name=).
+            summary  - ancestor chain, children, repos (whole chain), count of
+              modules owned by this profile - parent profiles not counted
+              (needs name=).
             repos    - distinct repos in the ancestor chain, deduped by (url, branch).
-            modules  - paginated modules scoped to the profile; repo= URL-substring
+            modules  - paginated modules owned by the profile; repo= URL-substring
               filter; start_index/limit pagination (default 50/page, max 50).
             coverage - module count by category for this profile, with a
               superset-diff (indexed_elsewhere = modules of that category visible

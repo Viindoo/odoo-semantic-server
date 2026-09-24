@@ -1774,7 +1774,7 @@ def _scope_pred(alias: str) -> str:
     )
 
 
-def _scope(profile_name: str | None = None) -> dict:
+def _scope(profile_name: str | None = None, *, pin: bool = True) -> dict:
     """Neo4j ARRAY-filter params: ``{'own': [...] | None, 'shared': [...]}`` (ADR-0034).
 
     The uniform fail-closed Cypher fragment at every user-data site is built by
@@ -1795,8 +1795,9 @@ def _scope(profile_name: str | None = None) -> dict:
     ``own ∪ shared``; it can never widen it:
 
     - admin (own=None), no profile_name      → ``own=None`` (unrestricted).
-    - admin (own=None), explicit profile      → narrow to ``own=[profile]``, keep ``shared``
-      (admin convenience; shared/CE base nodes with [own, base] still visible).
+    - admin (own=None), explicit profile      → ``own=[profile]`` + every shared
+      profile: the view a tenant owning that profile gets (see
+      ``session.admin_narrowing_shared`` for the registry-down case).
     - tenant, no profile_name                 → full ``(own, shared)`` boundary.
     - tenant, profile_name ∈ own∪shared       → narrow own to ``[profile]``, keep ``shared``
       (nodes that carry [own, base] both remain visible - shared is never stripped).
@@ -1810,7 +1811,7 @@ def _scope(profile_name: str | None = None) -> dict:
     # (not in own ∪ shared, with a scoped tenant) fail-closes to deny-all, and
     # an admin (own=None) stays unrestricted. The pin can never widen beyond
     # own ∪ shared, nor cross tenants.
-    if profile_name is None:
+    if profile_name is None and pin:  # pin=False: the full boundary, pin ignored
         profile_name = _resolve_profile(None)
     own, shared = _session.resolve_tenant_scope(_get_tenant_id())
     if not profile_name:
@@ -1822,7 +1823,7 @@ def _scope(profile_name: str | None = None) -> dict:
     # [profile_name, base_profile] (the normal [own, CE-base] pattern) are not
     # accidentally denied when the caller narrows to a specific own-profile.
     if own is None:
-        return {"own": [profile_name], "shared": shared}
+        return {"own": [profile_name], "shared": _session.admin_narrowing_shared()}
     if profile_name in own or profile_name in shared:
         return {"own": [profile_name], "shared": shared}
     return {"own": [], "shared": []}
