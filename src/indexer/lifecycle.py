@@ -260,6 +260,9 @@ class GateResult:
     tripped: tuple[str, ...] = ()
     bypassed: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
+    # "ledger" (the repo's present rows) or "graph" (the Module nodes the
+    # graph attributes to a repo the ledger never reflected, see apply_gates).
+    baseline: str = "ledger"
 
     @property
     def retire_allowed(self) -> bool:
@@ -289,6 +292,25 @@ def mass_gate_trips(
     return None
 
 
+def graph_baseline_drops(
+    baseline: Iterable[tuple[str, str]], scan: RegistryScan,
+) -> list[tuple[str, str]]:
+    """``(odoo_version, name)`` pairs of *baseline* the scan no longer covers.
+
+    *baseline* is what the graph attributes to the repo (every version key).
+    A pair is covered when the scan indexes the name at that version key, or
+    excludes the name for a gate-exempt reason (``installable_false``,
+    ``license_skip``: positively observed). An absent name, an unparseable
+    one, and a name the scan now keys at another version all count - each
+    turns the graph node into an orphan the version sweep removes.
+    """
+    covered = {(v, n) for v, mods in scan.modules.items() for n in mods}
+    exempt = {n for n, ex in scan.excluded.items() if ex.reason in GATE_EXEMPT_REASONS}
+    return sorted(
+        (v, n) for v, n in set(baseline) if (v, n) not in covered and n not in exempt
+    )
+
+
 def unparseable_kept(
     transitions: Transitions,
     scan: RegistryScan,
@@ -312,12 +334,23 @@ def apply_gates(
     *,
     trusted: bool,
     allow_mass_retire: bool = False,
+    graph_baseline: Iterable[tuple[str, str]] | None = None,
     indexed_names: Iterable[str] | None = None,
 ) -> GateResult:
     """Evaluate G-A and G-B for one repo (see ``GateResult``).
 
     ``trusted`` must come from ``git_utils.head_matches_remote_branch`` for the
     repo's registered branch, evaluated after the pre-scan refresh.
+
+    *graph_baseline* (given while the ledger has never reflected the repo,
+    ``presence_head_sha`` NULL - the first runs after the ledger was deployed,
+    or a newly registered repo) replaces the ledger baseline for G-B: the
+    ``(odoo_version, name)`` Module nodes the graph attributes to the repo,
+    against :func:`graph_baseline_drops`. Such nodes are removed by the orphan
+    sweep, not by a pending retirement, so a trip holds the repo unsynced and
+    the sweep keeps every orphan of its profile (exit 3 + attention) until an
+    operator-confirmed ``--allow-mass-retire`` run. An empty baseline (a repo
+    the graph never saw) never trips.
 
     ``manifest_unparseable`` (:func:`unparseable_kept`, *indexed_names* = the
     scan's unparseable names that have a graph node) is listed in ``tripped``
@@ -352,15 +385,31 @@ def apply_gates(
         )
     scan_ok = not tripped
 
-    n = len(transitions.soft_drops)
-    n_before = transitions.n_present_before
+    if graph_baseline is not None:
+        baseline_pairs = set(graph_baseline)
+        drops = graph_baseline_drops(baseline_pairs, scan)
+        n = len(drops)
+        n_before = len(baseline_pairs)
+        baseline = "graph"
+    else:
+        n = len(transitions.soft_drops)
+        n_before = transitions.n_present_before
+        baseline = "ledger"
     mass_ok = True
     gate = mass_gate_trips(n, n_before, len(scan.present_names()))
     if gate is not None:
-        message = (
-            f"mass retire: {n} of {n_before} present module(s) would drop "
-            f"(absent or unparseable)"
-        )
+        if baseline == "graph":
+            sample = ", ".join(f"{name}@{v}" for v, name in drops[:3])
+            message = (
+                f"mass retire: {n} of {n_before} module node(s) the graph attributes "
+                f"to this repo are not in the scan (absent, unparseable or keyed at "
+                f"another version, e.g. {sample}; ledger not yet synced for this repo)"
+            )
+        else:
+            message = (
+                f"mass retire: {n} of {n_before} present module(s) would drop "
+                f"(absent or unparseable)"
+            )
         if allow_mass_retire:
             bypassed.append(gate)
             reasons.append(message + "; applied (--allow-mass-retire)")
@@ -386,6 +435,7 @@ def apply_gates(
         tripped=tuple(tripped),
         bypassed=tuple(bypassed),
         reasons=tuple(reasons),
+        baseline=baseline,
     )
 
 

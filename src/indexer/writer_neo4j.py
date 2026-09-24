@@ -1414,8 +1414,42 @@ class Neo4jWriter:
             for r in result
         }
 
+    def repo_module_baseline(
+        self, repo_id: int | None, repo_basename: str, profile_name: str,
+    ) -> list[tuple[str, str]]:
+        """``(odoo_version, name)`` of every owned Module node the graph
+        attributes to one repo, sorted - the G-B baseline of a repo the ledger
+        never reflected (``lifecycle.apply_gates``).
+
+        A node belongs to the repo when its ``repo_id`` is the repo's, or when
+        it is owned by *profile_name* and names *repo_basename* in ``repo`` or
+        ``repos`` (nodes written before ``repo_id`` / ``repos`` existed).
+        Dependency stubs (no profile) and the ``@framework`` /
+        ``__unresolved__`` sentinels are left out. Read-only.
+        """
+        with self.driver.session() as session:
+            result = session.run(
+                self._read_query("""
+                MATCH (m:Module)
+                WITH m, properties(m) AS p
+                WHERE size(coalesce(p.profile, [])) > 0
+                  AND NOT m.name IN $sentinels
+                  AND (
+                    ($repo_id IS NOT NULL AND p.repo_id = $repo_id)
+                    OR ($profile IN p.profile
+                        AND (p.repo = $basename OR $basename IN coalesce(p.repos, [])))
+                  )
+                RETURN DISTINCT m.odoo_version AS v, m.name AS name
+                ORDER BY v ASC, name ASC
+                """),
+                repo_id=repo_id, basename=repo_basename, profile=profile_name,
+                sentinels=sorted(NON_RETIRABLE_MODULE_NAMES),
+            ).data()
+        return [(r["v"], r["name"]) for r in result]
+
     def modules_by_old_technical_name(
         self, odoo_version: str, old_names: Iterable[str],
+        profiles: Iterable[str] | None = None,
     ) -> dict[str, list[str]]:
         """``{old name: sorted Module names}`` of indexed Modules at the version
         whose manifest ``old_technical_name`` is one of *old_names* (successor
