@@ -12,10 +12,12 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+# type(r), not a [:DEPENDS_ON] pattern: a graph without any DEPENDS_ON edge yet
+# would make Neo4j warn about an unknown relationship type on every run.
 _CYPHER_FIND_DEPENDENT_REPOS = """
-MATCH (dependent:Module {odoo_version: $version})-[:DEPENDS_ON]->
-      (changed:Module {odoo_version: $version})
-WHERE changed.name IN $changed_names AND NOT dependent.name IN $changed_names
+MATCH (dependent:Module {odoo_version: $version})-[r]->(changed:Module)
+WHERE type(r) = 'DEPENDS_ON' AND changed.odoo_version = $version
+  AND changed.name IN $changed_names AND NOT dependent.name IN $changed_names
 RETURN DISTINCT dependent.repo AS repo
 """
 

@@ -170,6 +170,19 @@ def compute_patterns_canonical_sha(
     ).hexdigest()
 
 
+def _seed_meta_label_exists(session) -> bool:
+    """True once any _SeedMeta sentinel was ever written.
+
+    On a graph never seeded the label is unknown to the database and a
+    ``MATCH (s:_SeedMeta)`` makes Neo4j emit an UnknownLabelWarning on every
+    call; ``db.labels()`` answers without naming it.
+    """
+    row = session.run(
+        "CALL db.labels() YIELD label WHERE label = '_SeedMeta' RETURN count(*) AS n",
+    ).single()
+    return bool(row and row["n"])
+
+
 def _get_stored_patterns_sha(driver, key: str = "patterns_neo4j") -> str | None:
     """Return sha256 stored on the _SeedMeta sentinel node for ``key``, or None.
 
@@ -182,8 +195,13 @@ def _get_stored_patterns_sha(driver, key: str = "patterns_neo4j") -> str | None:
     Neo4j PatternExample nodes and pgvector embeddings is explicitly detectable.
     """
     with driver.session() as session:
+        if not _seed_meta_label_exists(session):
+            return None
         row = session.run(
-            "MATCH (s:_SeedMeta {key: $key}) RETURN s.sha256 AS sha LIMIT 1",
+            # properties(s): on a graph never seeded the keys are unknown and a
+            # direct s.key read makes Neo4j warn (first run of a deployment).
+            "MATCH (s:_SeedMeta) WITH properties(s) AS p WHERE p.key = $key "
+            "RETURN p.sha256 AS sha LIMIT 1",
             key=key,
         ).single()
         if row:
@@ -192,7 +210,8 @@ def _get_stored_patterns_sha(driver, key: str = "patterns_neo4j") -> str | None:
         # the neo4j sentinel only (pgvector was never written with that key).
         if key == "patterns_neo4j":
             legacy = session.run(
-                "MATCH (s:_SeedMeta {key: 'patterns'}) RETURN s.sha256 AS sha LIMIT 1"
+                "MATCH (s:_SeedMeta) WITH properties(s) AS p WHERE p.key = 'patterns' "
+                "RETURN p.sha256 AS sha LIMIT 1"
             ).single()
             return legacy["sha"] if legacy else None
         return None
@@ -222,7 +241,8 @@ def _delete_stored_patterns_sha(driver, key: str) -> None:
     the next reseed cycle.
     """
     with driver.session() as session:
-        session.run("MATCH (s:_SeedMeta {key: $key}) DELETE s", key=key)
+        if _seed_meta_label_exists(session):
+            session.run("MATCH (s:_SeedMeta {key: $key}) DELETE s", key=key)
 
 
 def invalidate_patterns_sentinel(driver=None) -> bool:
