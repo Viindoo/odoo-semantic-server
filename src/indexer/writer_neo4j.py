@@ -183,7 +183,6 @@ def _stale(alias: str) -> str:
     )
 
 
-_STALE_REL = _stale("r")
 def _written_before_run(alias: str) -> str:
     """Cypher predicate: child *alias* was not written at or after ``$run_at``.
 
@@ -198,7 +197,19 @@ def _written_before_run(alias: str) -> str:
     )
 
 
+# In the ``written_before`` mode (shared modules, version post-pass) an
+# extender's same-name INHERITS edge is never pruned: reconcile_same_name_inherits
+# MERGEs such edges without a stamp, and the edge is valid for as long as its
+# Model node exists (the node prune DETACH-deletes it otherwise). The per-module
+# prune runs before that post-pass, which re-derives what it removed.
+_STALE_REL = (
+    f"({_stale('r')} AND NOT ($keep_same_name_inherits AND type(r) = 'INHERITS' "
+    "AND endNode(r).name = n.name))"
+)
 
+# Run token of the ``written_before`` prune mode: no writer ever stamps it, so
+# the stale predicate reduces to "written_at missing or before the cutoff".
+_CUTOFF_RUN = "__written_before__"
 
 def _rel_selector(label: str) -> tuple[str, str] | None:
     """``(MATCH ... of the start nodes, rel types)`` for the relationship prune.
@@ -337,6 +348,27 @@ def _written_run_set(alias: str) -> str:
         f"{alias}.written_at = CASE WHEN $run IS NULL THEN {alias}.written_at "
         f"ELSE datetime() END"
     )
+
+
+def _prune_mode(run_id, written_before, started_at_for) -> dict:
+    """Stale-predicate parameters of the entity prune, by mode.
+
+    Token mode (*run_id*): stale = not written by that run and, when the run
+    start is known (``started_at_for(run)``), written before it. Cutoff mode
+    (*written_before*, an aware datetime): stale = ``written_at`` missing or
+    before the cutoff, whoever wrote it, and same-name INHERITS edges are kept.
+    Exactly one of the two must be given.
+    """
+    if (run_id is None) == (written_before is None):
+        raise ValueError("pass exactly one of run_id and written_before")
+    if written_before is not None:
+        return {
+            "run": _CUTOFF_RUN,
+            "run_started": _require_aware_datetime(written_before, "written_before"),
+            "keep_same_name_inherits": True,
+        }
+    run = _require_run_id(run_id)
+    return {"run": run, "run_started": started_at_for(run), "keep_same_name_inherits": False}
 
 
 def _chunked(items, size):
@@ -1519,11 +1551,18 @@ class Neo4jWriter:
         odoo_version: str,
         name: str,
         *,
-        run_id: str,
+        run_id: str | None = None,
+        written_before=None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
     ) -> dict:
         """Count module *name*'s children and relationships the run *run_id* did not write.
+
+        With *written_before* (an aware datetime) instead of *run_id*, "stale"
+        means written before that instant (or never stamped), whoever wrote it:
+        the shared-module mode of the version post-pass, where the cutoff is the
+        oldest complete parse among the module's present owners. Same-name
+        INHERITS edges are never stale in that mode (see ``_STALE_REL``).
 
         Read-only half of the intra-module entity prune (ADR-0056 B14); the
         caller decides from these counts whether :meth:`prune_module_children`
@@ -1541,7 +1580,7 @@ class Neo4jWriter:
         "rels_by_label": {start label: {"total", "stale"}}, "rels_total",
         "rels_stale"}``.
         """
-        run = _require_run_id(run_id)
+        mode = _prune_mode(run_id, written_before, self._prune_started_at)
         skip = set(skip_labels)
         labels = [lb for lb in MODULE_CHILD_LABELS if lb not in skip]
         result: dict = {
@@ -1591,9 +1630,8 @@ class Neo4jWriter:
                 )
             rows = session.run(
                 "\nUNION ALL\n".join(parts),
-                name=name, v=odoo_version, run=run, names=[name],
-                xmlids=xmlids, file_prefixes=prefixes,
-                run_started=self._prune_started_at(run),
+                name=name, v=odoo_version, names=[name],
+                xmlids=xmlids, file_prefixes=prefixes, **mode,
             ).data()
         for row in rows:
             key = "by_label" if row["kind"] == "node" else "rels_by_label"
@@ -1609,11 +1647,16 @@ class Neo4jWriter:
         odoo_version: str,
         name: str,
         *,
-        run_id: str,
+        run_id: str | None = None,
+        written_before=None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
     ) -> dict:
         """Delete module *name*'s children and relationships run *run_id* did not write.
+
+        *written_before* instead of *run_id*: delete what was written before
+        that instant (or never stamped), the shared-module mode of
+        :meth:`module_children_census`, same selection.
 
         The destructive half of the intra-module entity prune (B14): after the
         module was fully re-parsed and re-written in run *run_id*, every child
@@ -1643,7 +1686,7 @@ class Neo4jWriter:
         Returns ``{"deleted": int, "by_label": {label: int},
         "rels_deleted": int, "rels_by_label": {start label: int}}``.
         """
-        run = _require_run_id(run_id)
+        mode = _prune_mode(run_id, written_before, self._prune_started_at)
         skip = set(skip_labels)
         by_label: dict[str, int] = {}
         rels_by_label: dict[str, int] = {}
@@ -1652,8 +1695,8 @@ class Neo4jWriter:
         if not name or name in NON_RETIRABLE_MODULE_NAMES:
             return empty
         prefixes = sorted({p for p in file_prefixes if p})
-        params = {"name": name, "v": odoo_version, "run": run, "names": [name],
-                  "file_prefixes": prefixes, "run_started": self._prune_started_at(run)}
+        params = {"name": name, "v": odoo_version, "names": [name],
+                  "file_prefixes": prefixes, **mode}
         with self.driver.session() as session:
             params["xmlids"] = self._module_view_xmlids(session, odoo_version, [name])
             for label in MODULE_CHILD_LABELS:
@@ -1706,6 +1749,118 @@ class Neo4jWriter:
             )
         return {"deleted": total, "by_label": by_label,
                 "rels_deleted": rels_total, "rels_by_label": rels_by_label}
+
+    def shared_prune_states(
+        self, odoo_version: str, names: Iterable[str],
+    ) -> dict[str, str | None]:
+        """The owner-record state each Module's last shared-module prune evaluated.
+
+        None for a module never evaluated that way (or without a node). Read
+        through ``properties(m)`` (see :meth:`parse_degraded_modules`).
+        """
+        wanted = sorted(set(names))
+        if not wanted:
+            return {}
+        with self.driver.session() as session:
+            rows = session.run(
+                self._read_query("""
+                UNWIND $names AS name
+                MATCH (m:Module {name: name, odoo_version: $v})
+                WITH m, properties(m) AS p
+                RETURN m.name AS name, p.shared_prune_state AS state
+                """),
+                names=wanted, v=odoo_version,
+            ).data()
+        out: dict[str, str | None] = dict.fromkeys(wanted)
+        for r in rows:
+            out[r["name"]] = r["state"]
+        return out
+
+    def record_shared_prune(self, odoo_version: str, name: str, state: str) -> None:
+        """Remember on the Module node the owner-record state its shared-module
+        prune evaluated; the post-pass examines the module again only once an
+        owner's complete-parse record changed (nothing new can be decided
+        before)."""
+        with self.driver.session() as session:
+            _run_single_with_retry(
+                session, "record_shared_prune",
+                """
+                MATCH (m:Module {name: $name, odoo_version: $v})
+                SET m.shared_prune_state = $state
+                RETURN count(m) AS n
+                """,
+                name=name, v=odoo_version, state=state,
+            )
+
+    def module_unattributed_latest(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_tokens: Iterable[str],
+        since,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> datetime | None:
+        """Latest ``written_at`` among module *name*'s children and relationships
+        that no owner's latest complete parse accounts for.
+
+        Selection as :meth:`module_children_census`; counted are the nodes and
+        relationships stamped at or after *since* (so not prunable at that
+        cutoff) whose ``written_run`` is none of *run_tokens* (the owners'
+        latest parse tokens): a present owner's parse wrote them before that
+        owner's latest parse, or a repo that is not an owner wrote them. Only
+        an owner whose latest parse started before that instant can still
+        confirm or drop them. TestHelper projections (never stamped) are left
+        out. None when there is none. Read-only.
+        """
+        since_at = _require_aware_datetime(since, "since")
+        skip = set(skip_labels) | {"TestHelper"}
+        if not name or name in NON_RETIRABLE_MODULE_NAMES:
+            return None
+        labels = [lb for lb in MODULE_CHILD_LABELS if lb not in skip]
+        unattributed = (
+            "{a}.written_at IS NOT NULL AND {i} >= {c} "
+            "AND NOT coalesce({a}.written_run, '') IN $tokens"
+        )
+        prefixes = sorted({p for p in file_prefixes if p})
+        parts = []
+        for label in labels:
+            alias, selection, _stale_pred = _prune_selector(label)
+            pred = unattributed.format(
+                a=alias, i=_instant(f"{alias}.written_at"), c=_instant("$since"),
+            )
+            parts.append(
+                f"""{selection}
+                AND {pred}
+                RETURN max({_instant(f'{alias}.written_at')}) AS latest"""
+            )
+        for label in ("Module", *labels):
+            rel = _rel_selector(label)
+            if rel is None:
+                continue
+            start_nodes, types = rel
+            pred = unattributed.format(
+                a="r", i=_instant("r.written_at"), c=_instant("$since"),
+            )
+            parts.append(
+                f"""{start_nodes}
+                MATCH (n)-[r]->() WHERE type(r) IN [{types}] AND {pred}
+                RETURN max({_instant('r.written_at')}) AS latest"""
+            )
+        mode = _prune_mode(None, since_at, self._prune_started_at)
+        with self.driver.session() as session:
+            xmlids = self._module_view_xmlids(session, odoo_version, [name])
+            rows = session.run(
+                self._read_query("\nUNION ALL\n".join(parts)),
+                name=name, v=odoo_version, names=[name], xmlids=xmlids,
+                file_prefixes=prefixes, tokens=sorted({t for t in run_tokens if t}),
+                since=since_at, **mode,
+            ).data()
+        latest = [r["latest"] for r in rows if r["latest"] is not None]
+        if not latest:
+            return None
+        return datetime.fromtimestamp(max(latest) / 1000, tz=UTC)
 
     def record_module_parse_degraded(
         self,
@@ -2033,7 +2188,7 @@ class Neo4jWriter:
     def module_identity(
         self, odoo_version: str, names: Iterable[str],
     ) -> dict[str, dict]:
-        """``{name: {repo, repo_id, path, profile}}`` of existing Module nodes.
+        """``{name: {repo, repo_id, path, profile, repos}}`` of existing Module nodes.
 
         Read before a retire so the caller can attribute a deleted node to the
         repo that last wrote it (ledger evidence for the orphan sweep).
@@ -2057,6 +2212,7 @@ class Neo4jWriter:
             r["name"]: {
                 "repo": r["repo"], "repo_id": r["repo_id"], "path": r["path"],
                 "profile": sorted(set(r["profile"])),
+                "repos": sorted(set(r["repos"])),
             }
             for r in result
         }

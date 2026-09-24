@@ -11,6 +11,7 @@ from psycopg2.extras import execute_values
 
 from src.constants import EMBEDDER_TOKEN_BUDGET, GLOBAL_PROFILE
 
+from . import parse_health
 from .embedder import EmbedderClient, estimate_tokens, split_by_token_budget
 from .models import (
     CSSChunk,
@@ -666,6 +667,8 @@ def write_module_embeddings(
     chunks = list(seen.values())
 
     live_chunks, vecs, embed_calls = _embed_chunks_resilient(embedder, chunks)
+    if len(live_chunks) < len(chunks):
+        parse_health.note_embeddings_incomplete()
 
     # Guard: if all chunks failed embedding (total failure), do NOT delete existing
     # rows and insert nothing — that would silently wipe the module's embeddings.
@@ -879,6 +882,64 @@ def delete_module_embeddings_except(
     if delete:
         _warn_short_delete(module, version, [profile_name], deleted, expected)
     return deleted
+
+
+_SHARED_STALE_EMBEDDINGS_WHERE = """
+    e.module = %(module)s AND e.odoo_version = %(v)s AND e.profile_name = ANY(%(profiles)s)
+    AND NOT EXISTS (
+        SELECT 1
+        FROM embeddings l
+        JOIN unnest(%(owner_profiles)s::text[], %(owner_since)s::timestamptz[])
+             AS o(profile_name, since)
+          ON l.profile_name = o.profile_name AND l.indexed_at >= o.since
+        WHERE l.module = e.module AND l.odoo_version = e.odoo_version
+          AND l.chunk_type = e.chunk_type
+          AND l.entity_name IS NOT DISTINCT FROM e.entity_name
+          AND l.file_path IS NOT DISTINCT FROM e.file_path
+          AND l.chunk_idx = e.chunk_idx
+    )
+"""
+
+
+def shared_module_stale_embeddings(
+    conn,
+    module: str,
+    version: str,
+    owners: Iterable[tuple[str, object]],
+    *,
+    delete: bool,
+    expected: int | None = None,
+) -> int:
+    """Count or delete the rows of a shared module no owner's latest parse produced.
+
+    The embedding half of the shared-module prune (ADR-0056 B14). *owners* is
+    one ``(profile_name, embedded_since)`` per present owner: the PostgreSQL
+    time taken before that owner's latest complete parse, whose chunk upserts
+    all stamped ``indexed_at`` at or after it. A chunk key (chunk_type,
+    entity_name, file_path, chunk_idx) is live when some owner's profile has
+    a row of it stamped since that owner's time; every row of the module in
+    the owners' profiles whose key is not live goes - every chunk kind
+    (fields, methods, views, templates, JS, CSS/SCSS/LESS, tests, JS tests).
+    ``GLOBAL_PROFILE`` is never touched. Runs with the unrestricted RLS scope
+    (:func:`_write_scope`, a FORCEd policy must not hide rows); *delete*
+    False only counts. *expected* (a prior count): fewer rows deleted logs a
+    WARNING. Returns the number of rows counted or deleted.
+    """
+    pairs = [(p, since) for p, since in owners if p and p != GLOBAL_PROFILE]
+    profiles = sorted({p for p, _ in pairs})
+    if not profiles:
+        return 0
+    params = {
+        "module": module, "v": version, "profiles": profiles,
+        "owner_profiles": [p for p, _ in pairs], "owner_since": [s for _, s in pairs],
+    }
+    verb = "DELETE FROM embeddings e WHERE" if delete else "SELECT count(*) FROM embeddings e WHERE"
+    with _write_scope(conn), conn.cursor() as cur:
+        cur.execute(f"{verb} {_SHARED_STALE_EMBEDDINGS_WHERE}", params)
+        n = cur.rowcount if delete else cur.fetchone()[0]
+    if delete:
+        _warn_short_delete(module, version, profiles, n, expected)
+    return n
 
 
 def orphan_embedding_keys(

@@ -101,6 +101,26 @@ CREATE TABLE IF NOT EXISTS module_presence (
         CHECK (resurrection_count >= 0)
 );
 
+-- Complete-parse record of each (repo, name) copy (ADR-0056 B14, shared
+-- modules): last_full_parse_at is the start, on the Neo4j server clock, of the
+-- run whose parse of this copy read every file (not degraded); every graph
+-- child that parse wrote carries written_at at or after it. NULL = no such
+-- parse since the row last changed state or path, or the last parse was
+-- degraded. last_full_parse_unobserved lists the node families that parse did
+-- not look at (LintViolation without RelaxNG schemas).
+-- last_full_parse_embedded_at is the PostgreSQL time taken before that parse
+-- when it (re-)embedded every chunk of the copy (each upsert stamps indexed_at
+-- at or after it); NULL when it did not embed, or not completely. last_full_parse_run is
+-- that parse's run token (the written_run it stamped). A module
+-- several repos ship loses a child (an embedding row) only when it predates
+-- every present owner's record.
+ALTER TABLE module_presence ADD COLUMN IF NOT EXISTS last_full_parse_at TIMESTAMPTZ;
+ALTER TABLE module_presence ADD COLUMN IF NOT EXISTS last_full_parse_sha TEXT;
+ALTER TABLE module_presence
+    ADD COLUMN IF NOT EXISTS last_full_parse_unobserved TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE module_presence ADD COLUMN IF NOT EXISTS last_full_parse_embedded_at TIMESTAMPTZ;
+ALTER TABLE module_presence ADD COLUMN IF NOT EXISTS last_full_parse_run TEXT;
+
 UPDATE module_presence mp
    SET repo_id = NULL
  WHERE mp.repo_id IS NOT NULL

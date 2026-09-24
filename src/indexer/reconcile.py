@@ -82,7 +82,7 @@ from src.indexer.lifecycle import (
     reconcile_may_retry,
     removal_evidence,
 )
-from src.indexer.models import ModuleOwner
+from src.indexer.models import EXCLUSION_UNPARSEABLE, ModuleOwner
 from src.indexer.protocols import IndexWriterProtocol
 
 _logger = logging.getLogger(__name__)
@@ -146,9 +146,29 @@ class ReconcileReport:
     # Modules whose owner re-parses them next run to prune: the siblings its
     # shared_unsynced prune waited for synced without present-owning them.
     prune_rewrites: list[str] = field(default_factory=list)
+    # Shared-module prune (B14, a module two or more repos ship): name ->
+    # {stale, total, rels_stale, rels_total, cutoff, owners} of what was (dry
+    # run: would be) removed, plus {deleted, rels_deleted, embeddings_deleted}
+    # when executed; held by the mass-drop gate; waiting for unsynced repos
+    # that may ship it (name -> repo labels).
+    shared_pruned: dict[str, dict] = field(default_factory=dict)
+    shared_prune_held: dict[str, dict] = field(default_factory=dict)
+    shared_prune_waiting: dict[str, list[str]] = field(default_factory=dict)
+    # Shared modules whose other owners re-parse them next run (needs_rewrite):
+    # name -> the owners (repo labels) whose latest parse predates a child no
+    # owner's latest parse accounts for.
+    shared_prune_rewrites: dict[str, list[str]] = field(default_factory=dict)
+    # Co-owned modules an owner EXCLUDED (installable False, license policy,
+    # unparseable) while another repo still ships them: name -> the excluded
+    # repos (labels) removed from the node (dry run: that would be).
+    excluded_owner_dropped: dict[str, list[str]] = field(default_factory=dict)
     # Excluded co-owner drops waiting for unsynced repos that may ship the
     # module: name -> repo labels (re-evaluated every run; the node is untouched).
     excluded_owner_waiting: dict[str, list[str]] = field(default_factory=dict)
+    # Orphan Module nodes kept because a repo still ships the name with a
+    # manifest that was read but does not parse (ledger excluded/unparseable):
+    # never swept until the manifest parses again.
+    orphans_unparseable: list[str] = field(default_factory=list)
 
     @property
     def needs_attention(self) -> bool:
@@ -159,6 +179,8 @@ class ReconcileReport:
         return bool(
             self.retired or self.owner_dropped or self.orphans_swept
             or self.child_orphans_swept or self.embedding_orphans
+            or (self.shared_pruned and not self.dry_run)
+            or (self.excluded_owner_dropped and not self.dry_run)
         )
 
     def as_dict(self) -> dict:
@@ -311,6 +333,41 @@ def _tracked_module_names(row: Mapping, odoo_version: str) -> set[str] | None:
         (Path(p).parent.name or root_name)
         for p in filter_manifest_paths(tracked, repo_version or odoo_version)
     }
+
+
+def _owner_file_prefixes(owners: Iterable[Mapping]) -> list[str]:
+    """Directory prefixes (``/``-terminated) of every owner's copy of a module.
+
+    Repo-relative ``path`` and the absolute path under the repo checkout, the
+    two forms a LintViolation ``file_path`` may be stored in.
+    """
+    candidates: set[str] = set()
+    for o in owners:
+        rel = (o.get("path") or "").strip("/")
+        if not rel:
+            continue
+        candidates.add(rel)
+        if o.get("local_path"):
+            candidates.add(str(Path(o["local_path"]) / rel))
+    return sorted(c.rstrip("/") + "/" for c in candidates)
+
+
+def _owner_record_state(owners: Iterable[Mapping]) -> str:
+    """Fingerprint of the owners' complete-parse records (repo, time, token)."""
+    return ";".join(sorted(
+        f"{o['repo_id']}@{o['last_full_parse_at'].isoformat()}#{o.get('last_full_parse_run') or ''}"
+        for o in owners
+    ))
+
+
+def _owner_embedding_marks(owners: Iterable[Mapping]) -> list[tuple[str, object]] | None:
+    """``(profile, embedded_since)`` per owner, or None when some owner's latest
+    complete parse did not (fully) embed its copy - its rows cannot tell what
+    that parse produced, so the shared prune leaves the embeddings alone."""
+    marks = [(o.get("profile_name"), o.get("last_full_parse_embedded_at")) for o in owners]
+    if any(since is None or not profile for profile, since in marks):
+        return None
+    return marks
 
 
 def _repo_label(row: Mapping) -> str:
@@ -534,6 +591,96 @@ class _Reconciler:
             return
         self.report.owner_dropped.append(name)
 
+    def drop_excluded_owners(self) -> None:
+        """Remove a repo that EXCLUDED a module from the node another repo still ships.
+
+        The same outcome as a co-owner's retirement (:meth:`_drop_owner`): the
+        node's ownership becomes exactly the present owners, the excluded
+        repo's tests and its profile's embeddings of the module go, and the
+        survivors re-write the module (``needs_rewrite``). A module whose only
+        repo excluded it is left to the orphan sweep, as before. While an
+        unsynced repo may still ship the module (:class:`PotentialOwners`) the
+        drop waits (``excluded_owner_waiting``) and is re-evaluated next run. Runs while the
+        node still carries an excluded owner's profile (one no survivor has)
+        or basename; once dropped it is a no-op, so the ledger row stays
+        ``excluded`` untouched. With ``--no-retire`` it reports only. An
+        ``unparseable`` exclusion never drops its repo (the manifest was read
+        but does not parse; the repo may well still ship the module).
+        """
+        rows_read = getattr(self.store, "excluded_co_owner_rows", None)
+        identity_read = getattr(self.writer, "module_identity", None)
+        if not callable(rows_read) or not callable(identity_read):
+            return
+        by_name: dict[str, list[dict]] = {}
+        for r in rows_read(self.v, conn=self.conn):
+            # A manifest that does not parse says nothing about whether the
+            # repo still ships the module: its ownership is kept as it is.
+            if r.get("exclusion_reason") == EXCLUSION_UNPARSEABLE:
+                continue
+            by_name.setdefault(r["name"], []).append(r)
+        if not by_name:
+            return
+        identity = identity_read(self.v, list(by_name)) or {}
+        for name, rows in sorted(by_name.items()):
+            node = identity.get(name)
+            if node is None:
+                continue
+            excluded_ids = {r["repo_id"] for r in rows}
+            owners = [
+                o for o in self.store.other_present_owners(name, self.v, conn=self.conn)
+                if o["repo_id"] not in excluded_ids
+            ]
+            if not owners:
+                continue
+            blockers = self._owners.blockers(
+                name, self.v, excluded_ids | {o["repo_id"] for o in owners},
+            )
+            if blockers:
+                self.report.excluded_owner_waiting[name] = sorted(
+                    f"{_repo_label(b)} [{b['why']}]" for b in blockers
+                )
+                continue
+            survivor_profiles = {o["profile_name"] for o in owners}
+            gone_profiles = {r["profile_name"] for r in rows} - survivor_profiles
+            gone_basenames = {r["repo_basename"] for r in rows} - {
+                o["repo_basename"] for o in owners
+            }
+            if not (gone_profiles & set(node.get("profile") or [])
+                    or gone_basenames & set(node.get("repos") or [])):
+                continue
+            self.report.excluded_owner_dropped[name] = sorted(_repo_label(r) for r in rows)
+            self.report.owners_kept[name] = sorted({_repo_label(o) for o in owners})
+            if not self.execute:
+                continue
+            try:
+                _retrying(
+                    f"drop_module_owner[excluded:{name}]",
+                    lambda name=name, owners=owners: self.writer.drop_module_owner(
+                        self.v, name, [
+                            ModuleOwner(
+                                profile_name=o["profile_name"],
+                                repo_basename=o["repo_basename"],
+                                path=o["path"],
+                                repo_id=o["repo_id"],
+                                repo_url=o["repo_url"],
+                            )
+                            for o in owners
+                        ],
+                    ),
+                )
+                if gone_profiles:
+                    self._delete_embeddings(name, gone_profiles)
+                for repo_id in sorted({o["repo_id"] for o in owners}):
+                    self.store.mark_needs_rewrite(repo_id, name, conn=self.conn)
+            except Exception as exc:  # noqa: BLE001 - one name never aborts the others
+                message = f"{type(exc).__name__}: {exc}"[:300]
+                self.report.errors[f"excluded_owner:{name}"] = message
+                _logger.error(
+                    "reconcile %s: dropping the excluding owner(s) of %s failed: %s",
+                    self.v, name, message,
+                )
+                self.report.excluded_owner_dropped.pop(name, None)
+
     def _retire(self, to_retire: dict[str, list[dict]]) -> None:
         names = sorted(to_retire)
         if not self.execute:
@@ -652,10 +799,238 @@ class _Reconciler:
             if callable(clear):
                 clear(self.v, settled)
 
+    # --- 1d. modules several repos ship (B14 shared residue, F49) -----------
+
+    def prune_shared(self) -> None:
+        """Prune what no present owner of a shared module still defines.
+
+        The per-repo entity prune never prunes a module another live repo also
+        ships (``shared``): graph children carry no repo, so one copy's parse
+        cannot tell the other copy's entities from stale ones. Here, per
+        module M that two or more live repos have ``present`` at the version:
+
+        * every owner row must record a complete parse of its copy
+          (``last_full_parse_at``: not degraded, run token, trusted scan) and
+          be neither ``needs_rewrite`` nor ``retire_pending`` - otherwise M
+          waits for that owner's next complete parse;
+        * cutoff = the OLDEST of those records. Each complete parse stamps
+          every child and relationship it writes at or after its record, so
+          one written before the cutoff (or never stamped) was produced by no
+          owner's latest parse: that is what is removed (``written_before``
+          mode of the writer prune: the same selection, the Module node,
+          other modules, ``@framework`` / ``__unresolved__`` nodes and
+          shared labels never touched; same-name INHERITS kept);
+        * families an owner's parse did not observe are left out, the
+          LintViolation selection covers every owner's module directory;
+        * an unsynced repo that may ship M (:class:`PotentialOwners`) holds it
+          (``shared_prune_waiting``; attention when it is not simply a
+          checkout tracking M);
+        * the mass-drop gate G-B of the per-repo prune applies (bypassed by
+          ``allow_mass_retire``): ``shared_prune_held``, gate id
+          ``entity_prune:<M>@<v>``, attention on every owner;
+        * embeddings: a row of M in an owner profile goes when no owner's
+          profile holds a row of its chunk key stamped since that owner's
+          latest complete parse (``last_full_parse_embedded_at``) - every
+          chunk kind, before the graph prune, RLS-unrestricted, with the
+          prior count as ``expected``. When some owner's latest parse did not
+          embed completely the rows are left alone (``embeddings_stale``
+          None), as the per-repo prune does without embeddings.
+
+        What remains undecided (stamped after the cutoff by no owner's latest
+        parse) sends the owners whose latest parse predates it back to
+        re-parse M (:meth:`_settle_shared`, ``shared_prune_rewrites``).
+        The evaluated owner-record state is recorded on the Module node; M is
+        examined again only once an owner's record changed, so an unchanged
+        night costs one ledger query and one batched read. Runs in dry runs
+        too (the audit's prediction), deleting and flagging nothing.
+        """
+        if not self.report.retire_enabled:
+            return
+        census = getattr(self.writer, "module_children_census", None)
+        applied_read = getattr(self.writer, "shared_prune_states", None)
+        shared_owners = getattr(self.store, "shared_module_owners", None)
+        if not (callable(census) and callable(applied_read) and callable(shared_owners)):
+            return
+        from src.indexer.pipeline_repo import PRUNE_GATE_PREFIX, _mass_drop
+
+        candidates: dict[str, list[dict]] = {}
+        for name, owners in sorted(shared_owners(self.v, conn=self.conn).items()):
+            if any(
+                o["retire_pending"] or o["needs_rewrite"] or o["last_full_parse_at"] is None
+                for o in owners
+            ):
+                continue
+            candidates[name] = owners
+        if not candidates:
+            return
+        applied = applied_read(self.v, list(candidates)) or {}
+        for name, owners in candidates.items():
+            cutoff = min(o["last_full_parse_at"] for o in owners)
+            state = _owner_record_state(owners)
+            if applied.get(name) == state:
+                continue
+            owner_ids = [o["repo_id"] for o in owners]
+            blockers = self._owners.blockers(name, self.v, owner_ids)
+            if blockers:
+                labels = [f"{_repo_label(b)} [{b['why']}]" for b in blockers]
+                self.report.shared_prune_waiting[name] = labels
+                if any(b["why"] != POTENTIAL_OWNER_SHIPS_NAME for b in blockers):
+                    text = (
+                        f"entity prune of shared module {name}@{self.v} deferred: "
+                        f"repo(s) {', '.join(labels)} not synced may still ship it"
+                    )
+                    for rid in owner_ids:
+                        self._attend(rid, text)
+                continue
+            skip = sorted({
+                lb for o in owners for lb in (o.get("last_full_parse_unobserved") or [])
+            })
+            prefixes = _owner_file_prefixes(owners)
+            counts = census(
+                self.v, name, written_before=cutoff,
+                file_prefixes=prefixes, skip_labels=skip,
+            )
+            if not counts["module_exists"]:
+                continue
+            embedded = _owner_embedding_marks(owners)
+            summary = {
+                "stale": counts["stale"], "total": counts["total"],
+                "rels_stale": counts["rels_stale"], "rels_total": counts["rels_total"],
+                "embeddings_stale": (
+                    self._shared_stale_embeddings(name, embedded, delete=False)
+                    if embedded is not None else None
+                ),
+                "cutoff": cutoff.isoformat(),
+                "owners": sorted(_repo_label(o) for o in owners),
+            }
+            if not (summary["stale"] or summary["rels_stale"] or summary["embeddings_stale"]):
+                self._settle_shared(name, owners, cutoff, state, prefixes, skip)
+                continue
+            if not self.allow_mass_retire and (
+                _mass_drop(summary["stale"], summary["total"])
+                or _mass_drop(summary["rels_stale"], summary["rels_total"])
+            ):
+                self.report.shared_prune_held[name] = summary
+                self.report.gates_tripped.append(f"{PRUNE_GATE_PREFIX}{name}@{self.v}")
+                text = (
+                    f"entity prune of shared module {name}@{self.v} held: "
+                    f"{summary['stale']} of {summary['total']} indexed node(s) and "
+                    f"{summary['rels_stale']} of {summary['rels_total']} relationship(s) "
+                    "are produced by no present owner's latest parse; graph and "
+                    "embeddings kept; check the owners' parses, then re-run with "
+                    "--allow-mass-retire"
+                )
+                _logger.warning("reconcile %s: %s", self.v, text)
+                for rid in owner_ids:
+                    self._attend(rid, text)
+                continue
+            if not self.execute:
+                self.report.shared_pruned[name] = summary
+                self._settle_shared(name, owners, cutoff, state, prefixes, skip)
+                continue
+            try:
+                self.report.shared_pruned[name] = {
+                    **summary,
+                    **self._prune_shared_module(
+                        name, cutoff, prefixes, skip, embedded, summary["embeddings_stale"],
+                    ),
+                }
+                self._settle_shared(name, owners, cutoff, state, prefixes, skip)
+            except Exception as exc:  # noqa: BLE001 - one name never aborts the others
+                message = f"{type(exc).__name__}: {exc}"[:300]
+                self.report.errors[f"shared_prune:{name}"] = message
+                _logger.error(
+                    "reconcile %s: shared-module prune of %s failed: %s", self.v, name, message,
+                )
+
+    def _settle_shared(
+        self, name: str, owners: list[dict], cutoff, state: str,
+        prefixes: list[str], skip: list[str],
+    ) -> None:
+        """Send back the owners that can still decide what remains of M, then
+        remember the evaluated owner-record state.
+
+        A child (relationship) stamped at or after the cutoff whose run token
+        is none of the owners' latest parses was written before those parses
+        by an owner, or by a repo that is not an owner: only an owner whose
+        latest complete parse STARTED before that stamp can still re-produce
+        it or drop it. Those owners are flagged ``needs_rewrite`` - their next
+        normal run re-parses just M - so the residue is decided without a
+        source change. After their re-parse either the child carries a current
+        owner token (it is live) or it predates every record (the next
+        evaluation prunes it); flagging never repeats for the same child.
+        """
+        latest_read = getattr(self.writer, "module_unattributed_latest", None)
+        if callable(latest_read):
+            latest = latest_read(
+                self.v, name,
+                run_tokens=[o.get("last_full_parse_run") for o in owners],
+                since=cutoff, file_prefixes=prefixes, skip_labels=skip,
+            )
+            if latest is not None:
+                late = [o for o in owners if o["last_full_parse_at"] <= latest]
+                if late:
+                    self.report.shared_prune_rewrites[name] = sorted(
+                        _repo_label(o) for o in late
+                    )
+                    if self.execute:
+                        for o in late:
+                            self.store.mark_needs_rewrite(o["repo_id"], name, conn=self.conn)
+        if self.execute:
+            self.writer.record_shared_prune(self.v, name, state)
+
+    def _shared_stale_embeddings(
+        self, name: str, embedded: list[tuple[str, object]], *, delete: bool,
+        expected: int | None = None,
+    ) -> int:
+        from src.indexer.writer_pgvector import shared_module_stale_embeddings
+
+        with self._vec_conn() as conn:
+            return _retrying(
+                f"shared_prune_embeddings[{name}]",
+                lambda: shared_module_stale_embeddings(
+                    conn, name, self.v, embedded, delete=delete, expected=expected,
+                ),
+            )
+
+    def _prune_shared_module(
+        self, name: str, cutoff, prefixes: list[str], skip: list[str],
+        embedded: list[tuple[str, object]] | None, embeddings_expected: int | None,
+    ) -> dict:
+        embeddings = 0
+        if embedded is not None and embeddings_expected:
+            embeddings = self._shared_stale_embeddings(
+                name, embedded, delete=True, expected=embeddings_expected,
+            )
+        result = _retrying(
+            f"shared_prune[{name}]",
+            lambda: self.writer.prune_module_children(
+                self.v, name, written_before=cutoff,
+                file_prefixes=prefixes, skip_labels=skip,
+            ),
+        )
+        self.report.embeddings_deleted += embeddings
+        self.report.children_deleted += int(result.get("deleted") or 0)
+        _logger.info(
+            "reconcile %s: shared module %s lost %d node(s), %d relationship(s) and %d "
+            "embedding row(s) no present owner still defines",
+            self.v, name, result.get("deleted") or 0, result.get("rels_deleted") or 0,
+            embeddings,
+        )
+        return {
+            "deleted": int(result.get("deleted") or 0),
+            "rels_deleted": int(result.get("rels_deleted") or 0),
+            "embeddings_deleted": embeddings,
+        }
+
     # --- 2. orphan sweep -----------------------------------------------------
 
     def sweep(self) -> bool:
         """Orphan sweep; returns True when every repo at the version is synced.
+
+        A name some repo still ships with a manifest that does not parse
+        (ledger ``excluded``/``unparseable``) is never an orphan: its node and
+        children are kept (``orphans_unparseable``) until the manifest parses.
 
         Unlike a pending name (which only a repo that had it, or a never
         observed checkout that tracks it, can still claim - :class:`PotentialOwners`),
@@ -679,9 +1054,14 @@ class _Reconciler:
         # must not be counted again as orphans.
         retired = set(self.report.retired)
         present = self.store.present_names(self.v, conn=self.conn) - retired
+        unparseable = self.store.excluded_names(
+            self.v, (EXCLUSION_UNPARSEABLE,), conn=self.conn,
+        )
         orphans = [
             n for n in self.writer.orphan_module_names(self.v, present) if n not in retired
         ]
+        self.report.orphans_unparseable = sorted(n for n in orphans if n in unparseable)
+        orphans = [n for n in orphans if n not in unparseable]
         identity = self.writer.module_identity(self.v, orphans)
         decidable: list[str] = []
         for name in orphans:
@@ -715,7 +1095,7 @@ class _Reconciler:
         if all_synced:
             child_names = [
                 n for n in self.writer.orphan_child_keys(self.v)
-                if n not in present and n not in set(orphans)
+                if n not in present and n not in set(orphans) and n not in unparseable
             ]
 
         # Nodes of modules the ledger positively saw become installable False /
@@ -1106,8 +1486,10 @@ def reconcile_version(
             allow_mass_retire=allow_mass_retire, dry_run=dry_run, report=report,
         )
         rec.pending()
+        rec.drop_excluded_owners()
         rec.advance_presence(advance_presence or {})
         rec.resolve_prune_deferrals()
+        rec.prune_shared()
         if retire and sweep:
             all_synced = rec.sweep()
             rec.global_gcs(all_synced if global_gc is None else global_gc)

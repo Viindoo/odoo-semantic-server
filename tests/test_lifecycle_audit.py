@@ -10,8 +10,12 @@ Business rules protected here:
 - It lists exactly what the next real index run will do, proven by running that
   run afterwards and comparing the graph with the prediction.
 - ``--fail-on-findings`` is the weekly drift detector (Q9): exit 4 on any
-  finding, 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/1`` is a
-  contract for that timer and for the P3/P4 rollout review.
+  finding, 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/3`` is a
+  contract for that timer and for the P3/P4 rollout review (``/2``: a
+  soft-gate-held entity prune is a finding, ``held_prunes``; ``/3``: the
+  shared-module entity prune of F49 is a finding, ``shared_prunes``, with
+  ``shared_prune_waiting`` / ``shared_prune_rewrites`` per version and the
+  post-deploy ``shared_parse_backlog`` per repo).
 - F36: ONE plain run heals Module nodes whose path is not the registry winner
   (F15 posbox stub, F7 untracked ``.odoo-ai`` copy) or that name a stale repo;
   two co-owners of one module never re-write each other every night.
@@ -49,7 +53,8 @@ POSBOX_STUB_MANIFEST = "{\n    'license': 'LGPL-3',\n}\n"
 REQUIRED_FINDING_KEYS = {
     "would_retire", "would_drop_owner", "undecidable", "blocked", "orphan_modules",
     "child_orphans", "embedding_orphans", "modules_without_profile", "would_rewrite",
-    "wrong_paths", "unapplied_changes", "errors",
+    "wrong_paths", "unapplied_changes", "errors", "held_prunes", "shared_prunes",
+    "unparseable_kept",
 }
 
 
@@ -268,7 +273,9 @@ def drifted(pg, neo4j_driver, tmp_path):
       no git history) -> orphan modules;
     - a Model whose module has no Module node -> child orphan;
     - an embeddings row of a module no repo ships -> embedding orphan;
-    - ``noprof_mod``: shipped, but its node lost its profile list -> F24;
+    - ``noprof_mod``: shipped, but its node lost its profile list -> F24, and
+      the next (incremental) run re-writes it (F44) -> also would_rewrite
+      (no_node on an existing node);
     - ``point_of_sale`` indexed at the posbox stub path, ``viin_ai`` at its
       untracked ``.odoo-ai`` copy, ``mod_moved`` naming the repo's old clone dir
       -> would_rewrite (path_drift shadowed / untracked, repo_drift).
@@ -337,6 +344,7 @@ def drifted(pg, neo4j_driver, tmp_path):
             "point_of_sale": ("path_drift", "shadowed"),
             "viin_ai": ("path_drift", "untracked"),
             "mod_moved": ("repo_drift", None),
+            "noprof_mod": ("no_node", None),
         },
     }
 
@@ -363,7 +371,26 @@ def test_audit_lists_exactly_what_the_next_run_will_do(
     drifted, pg, neo4j_driver, monkeypatch, capsys,
 ):
     """Each seeded drift appears in its category with its evidence, and nothing
-    else is reported."""
+    else is reported.
+
+    Updated for F44: the next run is incremental, and an incremental run
+    re-writes the unchanged F24 module ``noprof_mod`` (node present, profile
+    lost), so the audit now lists it in ``would_rewrite`` as well as in
+    ``modules_without_profile`` (the old count of 3 under-predicted the run).
+    The findings dict gains ``held_prunes`` (schema /2), zero here.
+
+    Updated for F49 (schema /3): the findings dict also carries
+    ``shared_prunes`` - what the shared-module rule would prune or holds. This
+    fixture has no module two repos ship, so the prediction is 0 and the
+    version entry lists none, waits for none and sends no owner back; every
+    other count is unchanged.
+
+    Updated for E2E-D1: the findings dict also carries ``unparseable_kept`` -
+    indexed modules whose manifest was read but does not parse, kept as they
+    are (the next run exits 3 for them). Every module of this fixture parses,
+    so the prediction is 0 and the repo entry lists none; every other count is
+    unchanged (the dict is still compared whole, so an unexpected finding
+    still fails)."""
     code, out, _ = _cli(monkeypatch, capsys, "--profile", PROFILE, "--json")
     assert code == 0
     report = json.loads(out)
@@ -392,6 +419,7 @@ def test_audit_lists_exactly_what_the_next_run_will_do(
     assert by_name["point_of_sale"]["indexed_path"] == POSBOX_STUB
     assert by_name["point_of_sale"]["winner_path"] == "point_of_sale"
     assert by_name["viin_ai"]["indexed_path"] == ".odoo-ai/viin_ai"
+    assert by_name["noprof_mod"].get("has_node") is True, by_name["noprof_mod"]
     assert repo["wrong_paths"] == [], "the next run heals them: they are not left-over drift"
 
     ver = _version_entry(report)
@@ -413,9 +441,14 @@ def test_audit_lists_exactly_what_the_next_run_will_do(
     assert report["findings"] == {
         "would_retire": 2, "would_drop_owner": 0, "undecidable": 0, "blocked": 0,
         "orphan_modules": 2, "child_orphans": 1, "embedding_orphans": 1,
-        "modules_without_profile": 1, "would_rewrite": 3, "wrong_paths": 0,
-        "unapplied_changes": 0, "errors": 0,
+        "modules_without_profile": 1, "would_rewrite": 4, "wrong_paths": 0,
+        "unapplied_changes": 0, "errors": 0, "held_prunes": 0, "shared_prunes": 0,
+        "unparseable_kept": 0,
     }
+    assert repo["unparseable_kept"] == []
+    assert ver["orphans_unparseable"] == []
+    assert ver["shared_prunes"] == [] and ver["shared_prune_waiting"] == {}
+    assert ver["shared_prune_rewrites"] == {}
 
 
 def test_next_real_run_does_what_the_audit_predicted(
@@ -497,12 +530,31 @@ def test_fail_on_findings_exits_4_and_names_the_findings(drifted, monkeypatch, c
         assert name in out
 
 
-def test_json_report_keeps_the_osm_lifecycle_audit_1_schema(drifted, monkeypatch, capsys):
-    """Keys and types the weekly timer and the rollout review read."""
+def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch, capsys):
+    """Keys and types the weekly timer and the rollout review read.
+
+    Updated for the held-prune finding: the shape changed (``held_prunes`` in
+    each repo entry and in ``findings``; ``prune_rewrites`` in each version
+    entry), so the schema id is ``osm.lifecycle-audit/2``. Every /1 key is
+    still pinned with its type.
+
+    Updated for F49 (the shared-module entity prune): the shape changed again -
+    ``shared_prunes`` in ``findings`` and in each version entry (with
+    ``shared_prune_waiting`` and ``shared_prune_rewrites``), and
+    ``shared_parse_backlog`` in each repo entry - so the schema id is
+    ``osm.lifecycle-audit/3``. Every /1 and /2 key is still pinned with its
+    type; the new keys are pinned too.
+
+    Updated for E2E-D1 and D1/D3 (additive, so the schema id stays ``/3``):
+    ``findings`` gains ``unparseable_kept``; each repo entry gains
+    ``unparseable_kept`` (list), ``scan.unreadable_manifests`` (int) and
+    ``gates.baseline`` (``ledger`` / ``graph``); each version entry gains
+    ``orphans_unparseable`` (list) and ``excluded_owner_waiting`` (dict).
+    Every earlier key is still pinned with its type."""
     _, out, _ = _cli(monkeypatch, capsys, "--profile", PROFILE, "--json")
     report = json.loads(out)
 
-    assert report["schema"] == "osm.lifecycle-audit/1"
+    assert report["schema"] == "osm.lifecycle-audit/3"
     assert report["dry_run"] is True
     assert isinstance(report["generated_at"], str) and "T" in report["generated_at"]
     assert isinstance(report["duration_s"], float | int)
@@ -519,7 +571,8 @@ def test_json_report_keeps_the_osm_lifecycle_audit_1_schema(drifted, monkeypatch
         "transitions": dict, "pending": list, "unapplied_changes": dict,
         "would_rewrite": list, "wrong_paths": list, "would_retire": list,
         "would_drop_owner": list, "undecidable": list, "blocked": list,
-        "error": (str, type(None)),
+        "held_prunes": list, "shared_parse_backlog": dict, "error": (str, type(None)),
+        "unparseable_kept": list,
     }
     repo = _repo_entry(report, REPO)
     for key, typ in repo_keys.items():
@@ -528,12 +581,17 @@ def test_json_report_keeps_the_osm_lifecycle_audit_1_schema(drifted, monkeypatch
     assert repo["next_run"] in {"skip", "sync", "incremental", "full", "not_cloned"}
     assert {
         "complete", "trusted", "tracked_available", "present", "excluded", "shadowed",
-        "untracked_manifests", "missing_manifests",
+        "untracked_manifests", "missing_manifests", "unreadable_manifests",
     } <= set(repo["scan"])
+    assert isinstance(repo["scan"]["unreadable_manifests"], int)
     assert {
         "scan_ok", "mass_ok", "retire_allowed", "tripped", "bypassed", "reasons",
-        "n_soft_drop", "n_present_before",
+        "n_soft_drop", "n_present_before", "baseline",
     } <= set(repo["gates"])
+    assert repo["gates"]["baseline"] in {"ledger", "graph"}
+    assert set(repo["shared_parse_backlog"]) == {"remaining", "next_run"}
+    assert isinstance(repo["shared_parse_backlog"]["remaining"], int)
+    assert isinstance(repo["shared_parse_backlog"]["next_run"], list)
     for item in repo["would_retire"]:
         assert {"name", "repo_id", "repo", "profile", "path", "removing_commit",
                 "successor", "blocked_by"} <= set(item)
@@ -544,7 +602,9 @@ def test_json_report_keeps_the_osm_lifecycle_audit_1_schema(drifted, monkeypatch
         "undecidable": dict, "blocked": dict, "other_pending": list,
         "orphan_modules": list, "child_orphans": list, "embedding_orphans": list,
         "gates_tripped": list, "unsynced_repos": list, "modules_without_profile": list,
-        "errors": dict,
+        "errors": dict, "prune_rewrites": list, "shared_prunes": list,
+        "shared_prune_waiting": dict, "shared_prune_rewrites": dict,
+        "orphans_unparseable": list, "excluded_owner_waiting": dict,
     }
     ver = _version_entry(report)
     for key, typ in ver_keys.items():

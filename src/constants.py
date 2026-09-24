@@ -502,6 +502,29 @@ STYLESHEET_RESOURCE_MAX_BYTES: int = 131_072  # 128 KB
 # RETIRE_LOCK_WAIT_SECONDS.
 RETIRE_LOCK_WAIT_SECONDS: float = float(os.getenv("RETIRE_LOCK_WAIT_SECONDS", "900"))
 
+# SHARED_PARSE_BOOTSTRAP_PER_RUN: at most this many modules per repo per index
+# run are re-parsed (sync path, no source change) because the repo's copy of a
+# module another live repo also ships has no complete-parse record in the
+# ledger yet (first runs after the ADR-0056 deploy, or after a degraded /
+# untrusted parse cleared it). Every owner of a shared module needs one before
+# the version reconcile may prune what no copy defines any more. Measured on a
+# real CE 17.0 checkout (606 modules): parse + Neo4j write averages ~1.2 s per
+# module (median 0.4 s, p90 2.6 s, website 20 s) before embeddings, so 60 adds
+# about 75 s per repo per run and a full CE clone converges in 11 daily runs.
+# 0 disables the bootstrap. Override via OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN, which
+# is read on every run (shared_parse_bootstrap_per_run), not at import: a
+# long-lived process (Web UI, a scheduler) picks a changed value up.
+SHARED_PARSE_BOOTSTRAP_PER_RUN: int = int(os.getenv("OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN", "60"))
+
+
+def shared_parse_bootstrap_per_run() -> int:
+    """The bootstrap budget now: the environment variable when set, else the
+    module default ``SHARED_PARSE_BOOTSTRAP_PER_RUN``."""
+    raw = os.environ.get("OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN")
+    if raw is None or not raw.strip():
+        return SHARED_PARSE_BOOTSTRAP_PER_RUN
+    return int(raw)
+
 # LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS: per-query server-side timeout
 # (neo4j.Query(timeout=...)) of every graph read ``lifecycle-audit`` makes. The
 # audit reads whole versions (orphan Modules, module-less children, profile-less

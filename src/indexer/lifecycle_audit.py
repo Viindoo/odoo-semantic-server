@@ -39,7 +39,19 @@ incremental and full alike; a module the run writes as new is not listed); a
 repo whose next run is the unchanged skip keeps them (``wrong_paths``, a
 finding). Entity prunes the soft gate holds (recorded on the Module node by the
 index run, which exits 3 for them on every re-parse) are the ``held_prunes``
-finding.
+finding. An indexed module whose tracked manifest was read but does not parse
+is kept as it is until it parses again (``unparseable_kept``, a finding; the
+index run exits 3 for it); a manifest that cannot be read at all makes the scan
+incomplete (gate G-A). The version reconcile's shared-module prune (a module two or more repos
+ship loses what no present owner's latest complete parse defines) is predicted
+from the ledger's complete-parse records as they stand: ``shared_prunes``
+(``would_prune`` or ``held``) is a finding, ``shared_prune_waiting`` names the
+modules an unsynced repo holds, ``shared_prune_rewrites`` the owners the reconcile
+sends back to re-parse a module. Each repo entry's ``shared_parse_backlog``
+(``remaining``, ``next_run``) is the bootstrap still to do: copies of shared
+modules without a complete-parse record, re-parsed at most
+``SHARED_PARSE_BOOTSTRAP_PER_RUN`` per repo per run (not a finding: it drains
+by itself) (schema /3).
 """
 from __future__ import annotations
 
@@ -65,13 +77,15 @@ from src.indexer.pipeline_repo import (
     plan_repo_run,
     regular_write_names,
     self_heal_rewrites,
+    shared_parse_backlog,
+    shared_parse_bootstrap,
 )
 from src.indexer.reconcile import reconcile_version
 from src.indexer.registry import build_registry_scan, resolve_repo_version
 
 _logger = logging.getLogger(__name__)
 
-AUDIT_SCHEMA = "osm.lifecycle-audit/2"
+AUDIT_SCHEMA = "osm.lifecycle-audit/3"
 
 # Finding categories, in report order. Any non-zero count is a finding
 # (``--fail-on-findings``).
@@ -81,6 +95,7 @@ FINDING_KEYS: tuple[str, ...] = (
     "undecidable",
     "blocked",
     "held_prunes",
+    "shared_prunes",
     "orphan_modules",
     "child_orphans",
     "embedding_orphans",
@@ -113,6 +128,9 @@ class ReadOnlyWriter:
         "parse_degraded_modules",
         "prune_held_modules",
         "prune_deferred_modules",
+        "module_children_census",
+        "shared_prune_states",
+        "module_unattributed_latest",
     })
 
     def __init__(self, writer) -> None:
@@ -285,6 +303,7 @@ def _new_repo_entry(repo: dict) -> dict:
         "blocked": [],
         "held_prunes": [],
         "unparseable_kept": [],
+        "shared_parse_backlog": {"remaining": 0, "next_run": []},
         "error": None,
     }
 
@@ -315,6 +334,12 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     # B14: a degraded module whose failing files changed on disk makes the
     # real run re-parse at an unchanged HEAD; predict the same mode.
     _records, degraded_changed = _degraded_state(writer, repo, repo_path)
+    # B14 shared-module bootstrap: the real run re-parses this batch like
+    # needs_rewrite names (sync path at an unchanged HEAD).
+    remaining, _batch = shared_parse_backlog(bound, repo, _records)
+    bootstrap = shared_parse_bootstrap(bound, repo, _records)
+    entry["shared_parse_backlog"] = {"remaining": remaining, "next_run": bootstrap}
+    rewrite_names = sorted(set(rewrite_names) | set(bootstrap))
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=False, ledger=True, degraded_changed=bool(degraded_changed),
@@ -395,7 +420,8 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
         # degraded prune the next run re-evaluates. Nothing is pruned here.
         attention.append(
             f"{len(reparse)} module(s) are re-parsed by the next run without a source "
-            "change (ledger needs_rewrite or changed degraded-parse files), which "
+            "change (ledger needs_rewrite, shared-module bootstrap or changed "
+            "degraded-parse files), which "
             "re-evaluates their entity prune: " + ", ".join(reparse[:10])
             + (f", ... {len(reparse) - 10} more" if len(reparse) > 10 else "")
         )
@@ -510,6 +536,11 @@ def _audit_version(
         "odoo_version": version,
         "would_retire": report.retired,
         "would_drop_owner": report.owner_dropped,
+        "would_drop_excluded_owner": {
+            k: {"excluded_by": report.excluded_owner_dropped[k],
+                "kept_by": report.owners_kept.get(k, [])}
+            for k in sorted(report.excluded_owner_dropped)
+        },
         "undecidable": {k: report.undecidable[k] for k in sorted(report.undecidable)},
         "blocked": {k: report.blocked[k] for k in sorted(report.blocked)},
         "other_pending": other_pending,
@@ -528,9 +559,22 @@ def _audit_version(
         "gates_tripped": report.gates_tripped,
         "orphans_unparseable": report.orphans_unparseable,
         "prune_rewrites": report.prune_rewrites,
+        "shared_prunes": [
+            {"name": name, "outcome": "would_prune", **report.shared_pruned[name]}
+            for name in sorted(report.shared_pruned)
+        ] + [
+            {"name": name, "outcome": "held", **report.shared_prune_held[name]}
+            for name in sorted(report.shared_prune_held)
+        ],
+        "shared_prune_waiting": {
+            k: report.shared_prune_waiting[k] for k in sorted(report.shared_prune_waiting)
+        },
         "excluded_owner_waiting": {
             k: report.excluded_owner_waiting[k]
             for k in sorted(report.excluded_owner_waiting)
+        },
+        "shared_prune_rewrites": {
+            k: report.shared_prune_rewrites[k] for k in sorted(report.shared_prune_rewrites)
         },
         "unsynced_repos": unsynced,
         "modules_without_profile": writer.modules_without_profile(version),
@@ -546,8 +590,10 @@ def _findings(repos: list[dict], versions: list[dict]) -> dict[str, int]:
             continue
         counts["would_retire"] += len(v["would_retire"])
         counts["would_drop_owner"] += len(v["would_drop_owner"])
+        counts["would_drop_owner"] += len(v.get("would_drop_excluded_owner") or {})
         counts["undecidable"] += len(v["undecidable"])
         counts["blocked"] += len(v["blocked"])
+        counts["shared_prunes"] += len(v["shared_prunes"])
         counts["orphan_modules"] += len(v["orphan_modules"])
         counts["child_orphans"] += len(v["child_orphans"])
         counts["embedding_orphans"] += len(v["embedding_orphans"])
@@ -783,6 +829,13 @@ def render_text(report: dict) -> str:
                 "  manifest does not parse, module kept until it does: "
                 + ", ".join(r["unparseable_kept"])
             )
+        backlog = r.get("shared_parse_backlog") or {}
+        if backlog.get("remaining"):
+            lines.append(
+                f"  shared-module bootstrap: {backlog['remaining']} shared module(s) without "
+                f"a complete-parse record; the next run re-parses "
+                f"{len(backlog['next_run'])}: {', '.join(backlog['next_run'][:10])}"
+            )
         for kind, names in r["unapplied_changes"].items():
             lines.append(f"  unapplied at unchanged HEAD ({kind}): {', '.join(names)}")
         for label, items in (
@@ -804,6 +857,36 @@ def render_text(report: dict) -> str:
             )
         for gate in v["gates_tripped"]:
             lines.append(f"  gate tripped: {gate}")
+        for name, item in (v.get("would_drop_excluded_owner") or {}).items():
+            lines.append(
+                f"  would drop excluding owner(s) of {name}: {', '.join(item['excluded_by'])} "
+                f"(kept by {', '.join(item['kept_by'])})"
+            )
+        for item in v.get("shared_prunes", []):
+            verdict = (
+                "would prune" if item["outcome"] == "would_prune"
+                else "HELD (mass drop; index with --allow-mass-retire)"
+            )
+            lines.append(
+                f"  shared module entity prune {verdict}: {item['name']} ({item['stale']} "
+                f"of {item['total']} node(s) and {item['rels_stale']} of "
+                f"{item['rels_total']} relationship(s)"
+                + (
+                    f" and {item['embeddings_stale']} embedding row(s)"
+                    if item.get("embeddings_stale") is not None else ""
+                )
+                + f" produced by no present owner's latest parse; owners "
+                f"{', '.join(item['owners'])})"
+            )
+        for name, owners in (v.get("shared_prune_rewrites") or {}).items():
+            lines.append(
+                f"  shared module re-parsed next run to decide what no owner's latest parse "
+                f"accounts for: {name} (by {', '.join(owners)})"
+            )
+        for name, waits in (v.get("shared_prune_waiting") or {}).items():
+            lines.append(
+                f"  shared module entity prune waits: {name} (for {', '.join(waits)})"
+            )
         for name, waits in (v.get("excluded_owner_waiting") or {}).items():
             lines.append(
                 f"  excluding co-owner drop waits: {name} (for {', '.join(waits)})"

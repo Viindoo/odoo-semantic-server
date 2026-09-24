@@ -273,11 +273,16 @@ class IndexWriterProtocol(Protocol):
         odoo_version: str,
         name: str,
         *,
-        run_id: str,
+        run_id: str | None = None,
+        written_before: Any = None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
     ) -> dict:
-        """Count a module's children and how many the run did not write (read-only)."""
+        """Count a module's children and how many the run did not write (read-only).
+
+        With *written_before* instead of *run_id*: what was written before that
+        instant (shared modules, version post-pass).
+        """
         ...
 
     def prune_module_children(
@@ -285,11 +290,16 @@ class IndexWriterProtocol(Protocol):
         odoo_version: str,
         name: str,
         *,
-        run_id: str,
+        run_id: str | None = None,
+        written_before: Any = None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
     ) -> dict:
-        """Delete a re-parsed module's children the run did not write."""
+        """Delete a re-parsed module's children the run did not write.
+
+        With *written_before* instead of *run_id*: what was written before that
+        instant (shared modules, version post-pass).
+        """
         ...
 
     def record_module_parse_degraded(
@@ -334,6 +344,23 @@ class IndexWriterProtocol(Protocol):
 
     def prune_deferred_modules(self, odoo_version: str) -> list[dict]:
         """Modules at the version whose entity prune waits for siblings."""
+        ...
+
+    def shared_prune_states(
+        self, odoo_version: str, names: Iterable[str],
+    ) -> dict[str, Any]:
+        """The owner-record state each Module's last shared-module prune evaluated."""
+        ...
+
+    def record_shared_prune(self, odoo_version: str, name: str, state: str) -> None:
+        """Remember the owner-record state a module's shared-module prune evaluated."""
+        ...
+
+    def module_unattributed_latest(
+        self, odoo_version: str, name: str, *, run_tokens: Iterable[str], since: Any,
+        file_prefixes: Iterable[str] = (), skip_labels: Iterable[str] = (),
+    ) -> Any:
+        """Latest stamp of the module's children no owner's latest parse accounts for."""
         ...
 
     def orphan_module_names(
