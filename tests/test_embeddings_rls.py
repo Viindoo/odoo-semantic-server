@@ -30,6 +30,7 @@ Pure unit test for _allowed_to_guc mapping lives in tests/test_rls_guc_unit.py
 import pytest
 
 from tests.conftest import PG_EMBED_VERSION as V
+from tests.conftest import drop_osm_reader
 
 # All tests here are postgres integration tests.
 # The pure unit test for _allowed_to_guc lives in tests/test_rls_guc_unit.py
@@ -112,19 +113,32 @@ def forced_rls(clean_pg_embeddings):
 
     If the test DB user lacks CREATE ROLE or FORCE RLS privilege this fixture
     sets has_privilege=False and each test individually skips (the skip is only
-    set for a real InsufficientPrivilege error — NOT for "role already exists"
-    which is a pollution artefact cleaned up defensively in setup).
+    set for a real InsufficientPrivilege error).
+
+    osm_reader is a CLUSTER-WIDE role (PostgreSQL has no per-database roles):
+    another database on the same cluster (a parallel lane's DB, a migrated dev
+    DB) can hold GRANT dependencies on it at any moment, which makes an
+    unconditional DROP-then-CREATE at setup unsafe - DROP ROLE legitimately
+    fails while those dependencies exist, and the previous version of this
+    fixture mistook that "role already exists" condition for a privilege error
+    and skipped with a misleading "run as superuser" reason (lane FINDINGS.md
+    F1). Setup below is create-if-absent instead, mirroring the guarded DO
+    block in conftest.ensure_osm_reader_or_skip (kept inline, not called
+    directly, because this fixture defers the skip decision to each test via
+    has_privilege/skip_reason rather than skipping immediately).
 
     Setup order:
-      1. Best-effort pre-cleanup of any leftover osm_reader from a prior run
-         (drop owned + drop role — swallowed if the role doesn't exist).
-      2. CREATE ROLE + GRANT + FORCE.  InsufficientPrivilege here → skip flag.
+      1. CREATE ROLE osm_reader IF NOT EXISTS (reuse an existing cluster role).
+      2. GRANT + FORCE.  InsufficientPrivilege anywhere in this block -> skip flag.
 
     Teardown order (each statement in its own try so a failure doesn't cascade):
       1. RESET ROLE  (recover session to owner)
       2. NO FORCE ROW LEVEL SECURITY  (critical — must not leak into sibling tests)
-      3. REVOKE / DROP OWNED BY  (clear grants so DROP ROLE succeeds)
-      4. DROP ROLE IF EXISTS
+      3. Best-effort drop via the shared conftest.drop_osm_reader helper - it
+         swallows the (expected) error when another database still holds
+         grants to osm_reader, so this never drops a role other databases
+         depend on; it leaves the role for reuse by the next test instead of
+         forcing a drop/recreate cycle.
     """
     import psycopg2.errors
 
@@ -134,25 +148,14 @@ def forced_rls(clean_pg_embeddings):
     has_privilege = True
     skip_reason = None
 
-    # --- Step 1: defensive pre-cleanup (best-effort, swallow all errors) ---
-    for stmt in (
-        "DROP OWNED BY osm_reader",
-        "DROP ROLE IF EXISTS osm_reader",
-    ):
-        try:
-            with pg.cursor() as cur:
-                cur.execute(stmt)
-            pg.commit()
-        except Exception:
-            try:
-                pg.rollback()
-            except Exception:
-                pass
-
-    # --- Step 2: actual setup --- only InsufficientPrivilege → skip flag ---
     try:
         with pg.cursor() as cur:
-            cur.execute("CREATE ROLE osm_reader NOLOGIN")
+            cur.execute(
+                "DO $$ BEGIN "
+                "IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'osm_reader') "
+                "THEN CREATE ROLE osm_reader NOLOGIN; END IF; "
+                "END $$;"
+            )
             cur.execute("GRANT SELECT ON embeddings TO osm_reader")
             # Required so SET ROLE osm_reader succeeds for non-superuser CREATEROLE
             # users: PostgreSQL requires caller to be superuser OR a member of the
@@ -169,18 +172,6 @@ def forced_rls(clean_pg_embeddings):
         has_privilege = False
         skip_reason = (
             f"DB user lacks CREATE ROLE / FORCE RLS privilege: {exc} "
-            "— run tests as a superuser to enable FORCE-mode coverage."
-        )
-    except Exception as exc:
-        # Unexpected error (e.g. "role already exists" should not reach here
-        # because pre-cleanup ran, but handle defensively).
-        try:
-            pg.rollback()
-        except Exception:
-            pass
-        has_privilege = False
-        skip_reason = (
-            f"Unexpected error during forced_rls setup: {exc} "
             "— run tests as a superuser to enable FORCE-mode coverage."
         )
 
@@ -210,27 +201,8 @@ def forced_rls(clean_pg_embeddings):
         except Exception:
             pass
 
-    # 3. Revoke grants so DROP ROLE succeeds (Postgres rejects DROP if grants exist).
-    try:
-        with pg.cursor() as cur:
-            cur.execute("DROP OWNED BY osm_reader")
-        pg.commit()
-    except Exception:
-        try:
-            pg.rollback()
-        except Exception:
-            pass
-
-    # 4. Drop the role.
-    try:
-        with pg.cursor() as cur:
-            cur.execute("DROP ROLE IF EXISTS osm_reader")
-        pg.commit()
-    except Exception:
-        try:
-            pg.rollback()
-        except Exception:
-            pass
+    # 3. Best-effort drop (never drops a role another database depends on).
+    drop_osm_reader(pg)
 
 
 # ---------------------------------------------------------------------------

@@ -59,8 +59,10 @@ lock-check:
 
 test: test-unit
 
+# browser/astro tests start their own servers and a Playwright driver; they are
+# owned by test-browser, never selected here.
 test-unit:
-	$(PYTEST) tests/ -v -m "not neo4j and not postgres" --tb=short
+	$(PYTEST) tests/ -v -m "not neo4j and not postgres and not browser and not astro" --tb=short
 
 # testcontainers tự spin up Neo4j nếu Docker có sẵn.
 # Nếu muốn dùng Neo4j đang chạy sẵn thay vì testcontainers:
@@ -79,7 +81,7 @@ test-browser:
 	done
 	@echo " PostgreSQL sẵn sàng"
 	$(VENV)/bin/playwright install chromium
-	$(PYTEST) tests/browser/ -v -m "browser and postgres" --tb=short
+	$(PYTEST) tests/browser/ tests/test_unit_harness_isolation.py -v -rs -m "browser or astro" --tb=short
 
 # httpx in-process FastAPI tests — no browser, no live server.
 test-http:
