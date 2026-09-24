@@ -1923,17 +1923,25 @@ class Neo4jWriter:
 
         Rows ``{name, odoo_version, fingerprint, paths, problems}`` sorted by
         version then name.
+
+        The record properties exist only on modules that had the event, so on
+        a graph where none ever did their keys are unknown to the database and
+        a direct ``m.<key>`` read makes the server emit an
+        UnknownPropertyKeyWarning per query. This read and the other lifecycle
+        record reads (``prune_held_modules``, ``prune_deferred_modules``) go
+        through the ``properties(m)`` map, which names no key to the planner.
         """
         with self.driver.session() as session:
             return session.run(
                 """
                 MATCH (m:Module)
-                WHERE m.parse_degraded_repo_id = $repo_id
-                  AND m.parse_degraded_fingerprint IS NOT NULL
+                WITH m, properties(m) AS p
+                WHERE p.parse_degraded_repo_id = $repo_id
+                  AND p.parse_degraded_fingerprint IS NOT NULL
                 RETURN m.name AS name, m.odoo_version AS odoo_version,
-                       m.parse_degraded_fingerprint AS fingerprint,
-                       coalesce(m.parse_degraded_paths, []) AS paths,
-                       coalesce(m.parse_degraded_problems, []) AS problems
+                       p.parse_degraded_fingerprint AS fingerprint,
+                       coalesce(p.parse_degraded_paths, []) AS paths,
+                       coalesce(p.parse_degraded_problems, []) AS problems
                 ORDER BY m.odoo_version, m.name
                 """,
                 repo_id=repo_id,
@@ -1992,17 +2000,19 @@ class Neo4jWriter:
         """Modules whose entity prune by repo *repo_id* is held, every version.
 
         Rows ``{name, odoo_version, stale, total, rels_stale, rels_total}``
-        sorted by version then name.
+        sorted by version then name. Read through ``properties(m)`` (see
+        :meth:`parse_degraded_modules`).
         """
         with self.driver.session() as session:
             return session.run(
                 self._read_query("""
                 MATCH (m:Module)
-                WHERE m.prune_held_repo_id = $repo_id AND m.prune_held_counts IS NOT NULL
+                WITH m, properties(m) AS p
+                WHERE p.prune_held_repo_id = $repo_id AND p.prune_held_counts IS NOT NULL
                 RETURN m.name AS name, m.odoo_version AS odoo_version,
-                       m.prune_held_counts[0] AS stale, m.prune_held_counts[1] AS total,
-                       m.prune_held_counts[2] AS rels_stale,
-                       m.prune_held_counts[3] AS rels_total
+                       p.prune_held_counts[0] AS stale, p.prune_held_counts[1] AS total,
+                       p.prune_held_counts[2] AS rels_stale,
+                       p.prune_held_counts[3] AS rels_total
                 ORDER BY m.odoo_version, m.name
                 """),
                 repo_id=repo_id,
@@ -2052,14 +2062,16 @@ class Neo4jWriter:
 
     def prune_deferred_modules(self, odoo_version: str) -> list[dict]:
         """Modules at the version whose prune waits for siblings: rows
-        ``{name, repo_id, waits_for}`` sorted by name."""
+        ``{name, repo_id, waits_for}`` sorted by name. Read through
+        ``properties(m)`` (see :meth:`parse_degraded_modules`)."""
         with self.driver.session() as session:
             return session.run(
                 self._read_query("""
                 MATCH (m:Module {odoo_version: $v})
-                WHERE m.prune_deferred_repo_id IS NOT NULL
-                RETURN m.name AS name, m.prune_deferred_repo_id AS repo_id,
-                       coalesce(m.prune_deferred_for, []) AS waits_for
+                WITH m, properties(m) AS p
+                WHERE p.prune_deferred_repo_id IS NOT NULL
+                RETURN m.name AS name, p.prune_deferred_repo_id AS repo_id,
+                       coalesce(p.prune_deferred_for, []) AS waits_for
                 ORDER BY m.name
                 """),
                 v=odoo_version,
@@ -2204,8 +2216,10 @@ class Neo4jWriter:
                 self._read_query("""
                 UNWIND $names AS name
                 MATCH (m:Module {name: name, odoo_version: $v})
-                RETURN m.name AS name, m.repo AS repo, m.repo_id AS repo_id,
-                       m.path AS path, coalesce(m.profile, []) AS profile
+                WITH m, properties(m) AS p
+                RETURN m.name AS name, p.repo AS repo, p.repo_id AS repo_id,
+                       p.path AS path, coalesce(p.profile, []) AS profile,
+                       coalesce(p.repos, []) AS repos
                 ORDER BY name ASC
                 """),
                 names=wanted, v=odoo_version,
@@ -2276,9 +2290,11 @@ class Neo4jWriter:
             result = session.run(
                 self._read_query("""
                 MATCH (m:Module {odoo_version: $v})
-                WHERE m.old_technical_name IN $old AND m.old_technical_name <> m.name
-                  AND size(coalesce(m.profile, [])) > 0
-                RETURN m.old_technical_name AS old, m.name AS name
+                WITH m, properties(m) AS p
+                WHERE p.old_technical_name IN $old AND p.old_technical_name <> m.name
+                  AND size(coalesce(p.profile, [])) > 0
+                  AND (NOT $scoped OR any(x IN p.profile WHERE x IN $allowed))
+                RETURN p.old_technical_name AS old, m.name AS name
                 ORDER BY old ASC, name ASC
                 """),
                 old=wanted, v=odoo_version, scoped=scoped, allowed=allowed,
@@ -3182,7 +3198,8 @@ class Neo4jWriter:
                 row = _run_single_with_retry(
                     session, "finalize_is_helper[count]",
                     """
-                    MATCH (tc:TestClass {odoo_version: $version, is_helper: true})
+                    MATCH (tc:TestClass {odoo_version: $version})
+                    WHERE properties(tc).is_helper = true
                     RETURN count(tc) AS promoted
                     """,
                     version=odoo_version,
@@ -3702,13 +3719,19 @@ def resolve_owl_parents(
     return pairs, undetermined
 
 
+# Post-pass reads run on graphs that may not have a given property key or
+# relationship type yet (a fresh deployment, a version without OWL components or
+# test helpers); naming one makes Neo4j emit an Unknown*Warning per query. They
+# read optional properties through properties(n) and filter relationship types
+# with type(r), which name nothing to the planner.
 def _read_owl_snapshot(tx, odoo_version: str) -> dict:
     comps = [
         dict(row) for row in tx.run(
             """
             MATCH (c:OWLComp {odoo_version: $v})
+            WITH c, properties(c) AS p
             RETURN elementId(c) AS id, c.name AS name, c.module AS module,
-                   c.extends AS extends, c.extends_module AS extends_module
+                   p.extends AS extends, p.extends_module AS extends_module
             ORDER BY module, name, id
             """,
             v=odoo_version,
@@ -3717,8 +3740,8 @@ def _read_owl_snapshot(tx, odoo_version: str) -> dict:
     depends = {
         row["module"]: row["deps"] for row in tx.run(
             f"""
-            MATCH (m:Module {{odoo_version: $v}})-[:{REL_DEPENDS_ON}]->(d:Module)
-            WHERE d.odoo_version = $v
+            MATCH (m:Module {{odoo_version: $v}})-[r]->(d:Module)
+            WHERE type(r) = '{REL_DEPENDS_ON}' AND d.odoo_version = $v
             RETURN m.name AS module, collect(DISTINCT d.name) AS deps
             """,
             v=odoo_version,
@@ -3727,7 +3750,8 @@ def _read_owl_snapshot(tx, odoo_version: str) -> dict:
     edges = [
         dict(row) for row in tx.run(
             """
-            MATCH (c:OWLComp {odoo_version: $v})-[:EXTENDS]->(p:OWLComp)
+            MATCH (c:OWLComp {odoo_version: $v})-[r]->(p:OWLComp)
+            WHERE type(r) = 'EXTENDS'
             RETURN elementId(c) AS c, elementId(p) AS p
             """,
             v=odoo_version,
@@ -3775,10 +3799,11 @@ def _read_test_inherits_snapshot(tx, odoo_version: str) -> dict:
         dict(row) for row in tx.run(
             """
             MATCH (tc:TestClass {odoo_version: $v})
+            WITH tc, properties(tc) AS p
             RETURN elementId(tc) AS id, tc.name AS name, tc.module AS module,
                    tc.file_path AS file_path,
-                   coalesce(tc.base_classes_ordered, []) AS bases,
-                   tc.base_sources_ordered AS sources
+                   coalesce(p.base_classes_ordered, []) AS bases,
+                   p.base_sources_ordered AS sources
             ORDER BY id
             """,
             v=odoo_version,
@@ -3796,8 +3821,8 @@ def _read_test_inherits_snapshot(tx, odoo_version: str) -> dict:
     depends = {
         row["module"]: row["deps"] for row in tx.run(
             f"""
-            MATCH (m:Module {{odoo_version: $v}})-[:{REL_DEPENDS_ON}]->(d:Module)
-            WHERE d.odoo_version = $v
+            MATCH (m:Module {{odoo_version: $v}})-[r]->(d:Module)
+            WHERE type(r) = '{REL_DEPENDS_ON}' AND d.odoo_version = $v
             RETURN m.name AS module, collect(DISTINCT d.name) AS deps
             """,
             v=odoo_version,
@@ -3806,9 +3831,10 @@ def _read_test_inherits_snapshot(tx, odoo_version: str) -> dict:
     edges = [
         dict(row) for row in tx.run(
             """
-            MATCH (c:TestClass {odoo_version: $v})-[:INHERITS_TEST]->(t)
-            WHERE (t:TestClass AND t.odoo_version = $v)
-               OR (t:TestHelper AND t.module = '@framework' AND t.odoo_version = $v)
+            MATCH (c:TestClass {odoo_version: $v})-[r]->(t)
+            WHERE type(r) = 'INHERITS_TEST'
+              AND ((t:TestClass AND t.odoo_version = $v)
+               OR (t:TestHelper AND t.module = '@framework' AND t.odoo_version = $v))
             RETURN elementId(c) AS c, elementId(t) AS t, t.name AS tn
             """,
             v=odoo_version,
