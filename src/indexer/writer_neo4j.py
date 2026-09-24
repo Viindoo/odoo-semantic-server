@@ -1356,6 +1356,62 @@ class Neo4jWriter:
                 ).data()
         return {r["name"]: sorted(set(r["profile"])) for r in result}
 
+    def module_identity(
+        self, odoo_version: str, names: Iterable[str],
+    ) -> dict[str, dict]:
+        """``{name: {repo, repo_id, path, profile}}`` of existing Module nodes.
+
+        Read before a retire so the caller can attribute a deleted node to the
+        repo that last wrote it (ledger evidence for the orphan sweep).
+        Names without a Module node are absent. Read-only.
+        """
+        wanted = sorted(set(names))
+        if not wanted:
+            return {}
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                UNWIND $names AS name
+                MATCH (m:Module {name: name, odoo_version: $v})
+                RETURN m.name AS name, m.repo AS repo, m.repo_id AS repo_id,
+                       m.path AS path, coalesce(m.profile, []) AS profile
+                ORDER BY name ASC
+                """,
+                names=wanted, v=odoo_version,
+            ).data()
+        return {
+            r["name"]: {
+                "repo": r["repo"], "repo_id": r["repo_id"], "path": r["path"],
+                "profile": sorted(set(r["profile"])),
+            }
+            for r in result
+        }
+
+    def modules_by_old_technical_name(
+        self, odoo_version: str, old_names: Iterable[str],
+    ) -> dict[str, list[str]]:
+        """``{old name: sorted Module names}`` of indexed Modules at the version
+        whose manifest ``old_technical_name`` is one of *old_names* (successor
+        evidence declared by the survivor). Read-only."""
+        wanted = sorted(set(old_names))
+        if not wanted:
+            return {}
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (m:Module {odoo_version: $v})
+                WHERE m.old_technical_name IN $old AND m.old_technical_name <> m.name
+                  AND size(coalesce(m.profile, [])) > 0
+                RETURN m.old_technical_name AS old, m.name AS name
+                ORDER BY old ASC, name ASC
+                """,
+                old=wanted, v=odoo_version,
+            ).data()
+        out: dict[str, list[str]] = {}
+        for r in result:
+            out.setdefault(r["old"], []).append(r["name"])
+        return out
+
     def orphan_child_keys(self, odoo_version: str) -> dict[str, dict[str, int]]:
         """Module-owned nodes whose Module node no longer exists (M6).
 

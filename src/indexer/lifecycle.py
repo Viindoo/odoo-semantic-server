@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Module lifecycle classification and mass-retire gates (ADR-0056).
 
-Pure helpers: no Neo4j, no Postgres. They compare the previous presence-ledger
-rows of ONE repo with a fresh ``RegistryScan`` of that repo and decide what
-changed, whether retirement may proceed, and who succeeds a retired module.
-Callers (the per-repo index path and the per-version reconcile) own every write.
+No Neo4j, no Postgres (``removal_evidence`` reads git history). They compare
+the previous presence-ledger rows of ONE repo with a fresh ``RegistryScan`` of
+that repo and decide what changed, whether retirement may proceed, and who
+succeeds a retired module. Callers (the per-repo index path and the
+per-version reconcile) own every write.
 
 States of a module name inside a repo (ledger ``state``):
 
@@ -19,8 +20,15 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
-from src.indexer.incremental import ManifestChange
+from src.git_utils import removing_commit, rev_parse
+from src.indexer.incremental import (
+    ManifestChange,
+    _git_z,
+    _parse_name_status,
+    compute_manifest_changes,
+)
 from src.indexer.models import (
     EXCLUSION_INSTALLABLE_FALSE,
     EXCLUSION_LICENSE_SKIP,
@@ -56,6 +64,28 @@ GATE_MANIFEST_UNPARSEABLE = "manifest_unparseable"
 
 MASS_RETIRE_FRACTION = 0.5
 MASS_RETIRE_FLOOR = 20
+
+# ``module_presence.retire_blocked_by`` vocabulary. The per-repo index path
+# writes the first two when it flags names pending; the reconcile writes the
+# rest and re-evaluates only rows it blocked itself (or never blocked).
+BLOCKED_NO_RETIRE = "no_retire"
+BLOCKED_GATE_PREFIX = "gate:"
+BLOCKED_UNDECIDABLE_PREFIX = "undecidable:"
+BLOCKED_SKIPPED_RECENT = "skipped_recent"
+BLOCKED_ERROR_PREFIX = "error:"
+
+
+def reconcile_may_retry(blocked_by: str | None) -> bool:
+    """True when a pending row may be executed by the per-version reconcile:
+    never blocked, or blocked only by a previous reconcile (undecidable owner,
+    concurrent re-write, transient error). A gate trip or ``--no-retire`` is
+    lifted only by that repo's own next clean scan."""
+    if not blocked_by:
+        return True
+    return blocked_by == BLOCKED_SKIPPED_RECENT or blocked_by.startswith(
+        (BLOCKED_UNDECIDABLE_PREFIX, BLOCKED_ERROR_PREFIX)
+    )
+
 
 SUCCESSOR_GIT_RENAME = "git_rename"
 SUCCESSOR_OLD_TECHNICAL_NAME = "old_technical_name"
@@ -409,3 +439,104 @@ def pick_successors(
                 tuple(sorted(declared[t.name])), SUCCESSOR_OLD_TECHNICAL_NAME,
             )
     return out
+
+
+@dataclass(frozen=True)
+class RemovalEvidence:
+    """The commit that deleted a module's manifest, and its parent (the last
+    commit at which the manifest still existed)."""
+    sha: str
+    date: str
+    subject: str
+    manifest_file: str
+    parent_sha: str | None = None
+
+
+def _directory_moved_into(
+    repo: Path, parent: str, sha: str, old_dir: str,
+    candidates: list[tuple[str, str]],
+) -> list[str]:
+    """Names of the candidate ``(module_dir, name)`` whose directory received
+    more than half of ``old_dir``'s files in the ``parent..sha`` rename pairing
+    of the whole commit (sorted)."""
+    if not candidates:
+        return []
+    old_files = _git_z(repo, "ls-tree", "-r", "-z", "--name-only", parent, "--", old_dir)
+    fields = _git_z(repo, "diff", "--name-status", "-z", "-M", f"{parent}..{sha}")
+    if not old_files or fields is None:
+        return []
+    pairs = _parse_name_status(fields)
+    old_prefix = old_dir.rstrip("/") + "/"
+    out = set()
+    for module_dir, name in candidates:
+        prefix = module_dir.rstrip("/") + "/"
+        moved = sum(
+            1 for kind, _sim, path, old in pairs
+            if kind == "R" and old and old.startswith(old_prefix) and path.startswith(prefix)
+        )
+        if 2 * moved > len(old_files):
+            out.add(name)
+    return sorted(out)
+
+
+def removal_evidence(
+    local_path: str,
+    module_path: str,
+    manifest_files: Iterable[str],
+    observed_names: Iterable[str],
+) -> tuple[RemovalEvidence | None, Successor | None]:
+    """Git evidence for a module directory that no longer has a manifest.
+
+    Tries each candidate manifest file name under ``module_path`` (repo-relative)
+    and takes the newest deleting commit (``git_utils.removing_commit``). The
+    successor is the rename destination of that manifest in that same commit
+    (``compute_manifest_changes`` over ``parent..commit``, directory-majority
+    checked; when the manifest paired with another manifest, the commit's
+    whole-tree rename pairing decides which added module received the old
+    directory),
+    kept only when the destination name is in ``observed_names``.
+    Returns ``(None, None)`` when git never deleted the manifest there (or the
+    path is not a git repo); successor alone may be None.
+    """
+    found: tuple[str, str, str, str] | None = None
+    for manifest_file in manifest_files:
+        rel = f"{module_path.rstrip('/')}/{manifest_file}" if module_path else manifest_file
+        hit = removing_commit(local_path, rel)
+        if hit is not None and (found is None or hit[1] > found[1]):
+            found = (*hit, rel)
+    if found is None:
+        return None, None
+    sha, date, subject, rel = found
+    parent = rev_parse(local_path, f"{sha}^")
+    evidence = RemovalEvidence(
+        sha=sha, date=date, subject=subject, manifest_file=Path(rel).name,
+        parent_sha=parent,
+    )
+    if parent is None:
+        return evidence, None
+    observed = set(observed_names)
+    old_dir = str(Path(rel).parent)
+    old_name = Path(rel).parent.name
+    changes = compute_manifest_changes(Path(local_path), parent, sha)
+    targets = sorted({
+        change.name
+        for change in changes
+        if change.status == "R" and change.old_path == rel
+        and change.name != old_name and change.name in observed
+    })
+    if not targets:
+        # Manifest-only rename detection can pair the moved manifest with a
+        # near-identical sibling deleted in the same commit (a merge wave), which
+        # the directory check then rejects. Fall back to the commit's whole-tree
+        # rename pairing (one source per destination file) and accept a manifest
+        # the commit added whose directory received most of the old directory.
+        targets = _directory_moved_into(
+            Path(local_path), parent, sha, old_dir,
+            [
+                (change.module_dir, change.name) for change in changes
+                if change.status in ("A", "R") and change.name != old_name
+                and change.name in observed
+            ],
+        )
+    successor = Successor(tuple(targets), SUCCESSOR_GIT_RENAME) if targets else None
+    return evidence, successor

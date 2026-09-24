@@ -40,7 +40,7 @@ from src.indexer import (  # noqa: F401
     parser_xml,
 )
 from src.indexer.protocols import IndexWriterProtocol
-from src.indexer.registry import build_registry  # noqa: F401
+from src.indexer.registry import build_registry, build_registry_scan  # noqa: F401
 from src.indexer.resolver import topological_sort  # noqa: F401
 from src.indexer.writer_neo4j import Neo4jWriter
 
@@ -199,8 +199,27 @@ def open_production_pg():
 # NOTE (B6 split): ``_owning_profiles`` and ``_index_repo`` were moved verbatim
 # to ``src/indexer/pipeline_repo.py`` and are re-exported at the BOTTOM of this
 # module (see "Facade re-exports"). ``index_profile`` calls ``_index_repo``
-# through that re-export. The split is structural only — the per-repo logic,
-# head_sha advance order (ADR-0007) and provenance stamping are byte-identical.
+# through that re-export.
+
+
+def _presence_store():
+    """The lifecycle ledger store on the shared pool, or None without a pool.
+
+    Resolved through this module by ``_index_repo`` (patchable in tests). No
+    pool means no ledger: the repo is indexed but its lifecycle is not observed
+    and nothing can be retired.
+    """
+    from src.db.exceptions import PoolNotInitializedError
+    from src.db.module_presence import ModulePresenceStore
+    from src.db.pg import get_pool
+    try:
+        return ModulePresenceStore(get_pool())
+    except PoolNotInitializedError:
+        _logger.warning(
+            "lifecycle ledger unavailable (PostgreSQL pool not initialized): module "
+            "lifecycle not observed, nothing retired"
+        )
+        return None
 
 
 def _profiles_for_run(repos: list[dict], profile_name: str) -> list[str]:
@@ -292,6 +311,98 @@ def reconcile_test_surface(
         writer.reconcile_test_coverage(rv)
 
 
+def _empty_lifecycle() -> dict:
+    return {
+        "versions": [],
+        "gates_tripped": [],
+        "undecidable": [],
+        "errors": [],
+        "deferred_presence": {},
+        "reports": [],
+        "needs_attention": False,
+    }
+
+
+def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
+    """Fold one repo's ``_index_repo`` lifecycle counters into the run summary."""
+    repo_lc = counters.get("lifecycle")
+    if not repo_lc:
+        return
+    version = repo_lc.get("odoo_version")
+    if version and version not in lc["versions"]:
+        lc["versions"].append(version)
+    for gate in repo_lc.get("gates_tripped") or []:
+        lc["gates_tripped"].append(f"repo id={repo['id']} ({repo.get('url')}): {gate}")
+    head = repo_lc.get("presence_deferred_head")
+    if head and version:
+        lc["deferred_presence"][repo["id"]] = {"head": head, "odoo_version": version}
+
+
+def _absorb_report(lc: dict, report) -> None:
+    """Fold one ReconcileReport into the run summary."""
+    v = report.odoo_version
+    lc["reports"].append(report.as_dict())
+    lc["gates_tripped"].extend(f"{v}: {g}" for g in report.gates_tripped)
+    lc["undecidable"].extend(f"{v}: {n}" for n in sorted(report.undecidable))
+    lc["errors"].extend(f"{v}: {k}: {e}" for k, e in sorted(report.errors.items()))
+
+
+def _finish_lifecycle(lc: dict) -> dict:
+    lc["versions"] = sorted(set(lc["versions"]))
+    lc["needs_attention"] = bool(lc["gates_tripped"] or lc["undecidable"] or lc["errors"])
+    return lc
+
+
+def run_lifecycle_reconcile(
+    writer: IndexWriterProtocol,
+    versions,
+    *,
+    run_started_at,
+    lifecycle: dict,
+    retire: bool = True,
+    allow_mass_retire: bool = False,
+    global_gc: bool | None = None,
+    conn=None,
+) -> None:
+    """Run ``reconcile_version`` for every version, folding reports into *lifecycle*.
+
+    The orphan sweep and version-wide GCs run for a version only when a repo
+    at it was scanned this run (``lifecycle['versions']``) or under
+    ``allow_mass_retire``. A version whose reconcile cannot run (ledger lock
+    timeout, ledger down) is recorded in ``lifecycle['errors']`` - it never
+    aborts the other versions or the run, and it makes the CLI exit 3.
+    *conn*: the caller's own autocommit connection, used to hold the ledger lock
+    instead of a pool connection (ignored when it is not autocommit).
+    """
+    from src.indexer.reconcile import reconcile_version
+
+    if _presence_store() is None:
+        return
+    deferred = lifecycle.get("deferred_presence", {})
+    scanned = set(lifecycle.get("versions") or [])
+    for version in sorted(set(versions)):
+        advance = {
+            rid: d["head"] for rid, d in deferred.items() if d["odoo_version"] == version
+        }
+        try:
+            report = reconcile_version(
+                version,
+                writer=writer,
+                run_started_at=run_started_at,
+                retire=retire,
+                allow_mass_retire=allow_mass_retire,
+                advance_presence=advance,
+                global_gc=global_gc,
+                sweep=allow_mass_retire or version in scanned,
+                conn=conn if getattr(conn, "autocommit", None) is True else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - one version never aborts the run
+            _logger.exception("lifecycle reconcile failed for version %s", version)
+            lifecycle["errors"].append(f"{version}: reconcile: {type(exc).__name__}: {exc}")
+            continue
+        _absorb_report(lifecycle, report)
+
+
 def index_profile(
     pg_conn,
     *,
@@ -302,6 +413,10 @@ def index_profile(
     full_reindex: bool = False,
     gc: bool = False,
     refresh: bool = True,
+    retire: bool = True,
+    allow_mass_retire: bool = False,
+    reconcile: bool = True,
+    run_started_at=None,
 ) -> dict:
     """Index all repos belonging to *profile_name*.
 
@@ -318,33 +433,49 @@ def index_profile(
                        are NOT thread-safe). Neo4jWriter is shared across threads
                        (safe: every method uses a per-call session).
         full_reindex:  When True, bypass incremental skip-unchanged + diff filter
-                       and force a full reindex for all repos. Use periodically
-                       to clean up stale Neo4j Module nodes from rename/move.
-        gc:            When True, after a full scan of each repo, compare Module
-                       nodes in Neo4j vs scanner output and DETACH DELETE stale
-                       nodes (modules that no longer exist on disk). Risk-gated:
-                       only runs when scanner found ≥1 module. Recommended for
-                       monthly runs or after module renames. See ADR-0007 §D5.
+                       and re-parse every module of every repo. Module
+                       retirement does NOT need it (it runs on every run).
+        gc:            Deprecated, ignored: module retirement, the orphan sweep
+                       and the version-wide GCs run on every run (ADR-0056).
         refresh:       When True (default), each repo is `git fetch`ed and
                        `reset --hard origin/<branch>` BEFORE the incremental
                        check, so upstream merges become visible to the nightly
                        cron. Fail-safe: a fetch error is logged and indexing
                        proceeds on the on-disk state. Set False (CLI --no-fetch)
                        to keep the old local-only behaviour.
+        retire:        False (CLI --no-retire) scans and writes but deletes
+                       nothing; no longer shipped modules stay pending.
+        allow_mass_retire: bypass the mass-retire gate G-B (never set in a timer).
+        reconcile:     run the per-version lifecycle reconcile at the end of the
+                       profile (default). ``index_all`` passes False and runs it
+                       once per version after every profile worker joined.
+        run_started_at: start of the enclosing run on the Neo4j clock; defaults
+                       to the start of this profile run. Nodes written after it
+                       are never deleted by the reconcile.
 
     Returns:
-        Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps}.
+        Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps,
+        lifecycle}; a profile with no repo registered returns it with
+        ``no_repos`` True and nothing indexed. ``lifecycle`` = {versions,
+        gates_tripped, undecidable, errors, deferred_presence, reports,
+        needs_attention}; ``needs_attention``
+        True means a gate tripped, a name was undecidable or the reconcile
+        failed (CLI exit code 3).
+
+    Raises RuntimeError after the post-passes when any repo failed to index.
     """
     repos = repo_store().get_repos_for_profile(profile_name)
     if not repos:
         _logger.warning("index_profile: no repos found for profile %r", profile_name)
         return {
+            "no_repos": True,
             "modules": 0,
             "views": 0,
             "qweb": 0,
             "embeddings": 0,
             "js_patches": 0,
             "owl_comps": 0,
+            "lifecycle": _finish_lifecycle(_empty_lifecycle()),
         }
 
     # Build the ancestor profile name list SOLELY for the
@@ -401,6 +532,9 @@ def index_profile(
 
         try:
             writer.setup_indexes()
+            if run_started_at is None:
+                run_started_at = writer.server_now()
+            lifecycle = _empty_lifecycle()
 
             total_modules = 0
             total_views = 0
@@ -408,6 +542,10 @@ def index_profile(
             total_embeddings = 0
             total_js_patches = 0
             total_owl_comps = 0
+            # A failed repo no longer skips the post-passes: the lifecycle
+            # reconcile decides per name (a failed repo only blocks the names
+            # it may still ship, review H5); the failure is raised at the end.
+            deferred_failure: RuntimeError | None = None
 
             if max_workers <= 1:
                 # --- Sequential path (original behaviour, unchanged) ----------
@@ -418,11 +556,14 @@ def index_profile(
                     try:
                         counters = _index_repo(
                             repo, writer, pg_conn=pg_conn, embedder=embedder,
-                            progress=progress, full_reindex=full_reindex, gc=gc,
+                            progress=progress, full_reindex=full_reindex,
                             profile_name=profile_name,
                             core_rng_root=core_rng_root,
                             refresh=refresh,
+                            retire=retire,
+                            allow_mass_retire=allow_mass_retire,
                         )
+                        _absorb_repo_lifecycle(lifecycle, repo, counters)
                         _elapsed = time.monotonic() - _t0
                         total_modules += counters["modules"]
                         total_views += counters["views"]
@@ -453,7 +594,9 @@ def index_profile(
 
                 if failed_repos:
                     summary = "; ".join(f"id={rid}: {msg}" for rid, msg in failed_repos)
-                    raise RuntimeError(f"{len(failed_repos)} repo(s) failed: {summary}")
+                    deferred_failure = RuntimeError(
+                        f"{len(failed_repos)} repo(s) failed: {summary}"
+                    )
             else:
                 # --- Parallel path (ThreadPoolExecutor) ----------------------
                 if progress:
@@ -474,10 +617,11 @@ def index_profile(
                             embedder=embedder,
                             progress=False,
                             full_reindex=full_reindex,
-                            gc=gc,
                             profile_name=profile_name,
                             core_rng_root=core_rng_root,
                             refresh=refresh,
+                            retire=retire,
+                            allow_mass_retire=allow_mass_retire,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")
@@ -519,6 +663,7 @@ def index_profile(
                         repo_for_future = futures[future]
                         try:
                             counters = future.result()
+                            _absorb_repo_lifecycle(lifecycle, repo_for_future, counters)
                             total_modules += counters["modules"]
                             total_views += counters["views"]
                             total_qweb += counters["qweb"]
@@ -533,7 +678,7 @@ def index_profile(
                         summary = "; ".join(
                             f"id={rid}: {msg}" for rid, msg in failed_repo_ids
                         )
-                        raise RuntimeError(
+                        deferred_failure = RuntimeError(
                             f"{len(failed_repo_ids)} repo(s) failed: {summary}"
                         )
 
@@ -565,6 +710,19 @@ def index_profile(
             )
             # === End test-surface reconciliation ===
 
+            # === Lifecycle reconcile (ADR-0056): the only place modules retire ===
+            if reconcile:
+                run_lifecycle_reconcile(
+                    writer,
+                    set(lifecycle["versions"]) | _indexed_versions,
+                    run_started_at=run_started_at,
+                    lifecycle=lifecycle,
+                    retire=retire,
+                    allow_mass_retire=allow_mass_retire,
+                    conn=pg_conn,
+                )
+            # === End lifecycle reconcile ===
+
             # Auto-reseed pattern catalogue (W2-7).
             # Hash-gated via _SeedMeta sentinel (W2-6) - cheap when patterns.json unchanged.
             # Per --no-embed semantic: if embedder is None, pattern embedding is also skipped.
@@ -591,6 +749,8 @@ def index_profile(
         finally:
             writer.close()
 
+        if deferred_failure is not None:
+            raise deferred_failure
         return {
             "modules": total_modules,
             "views": total_views,
@@ -598,6 +758,7 @@ def index_profile(
             "embeddings": total_embeddings,
             "js_patches": total_js_patches,
             "owl_comps": total_owl_comps,
+            "lifecycle": _finish_lifecycle(lifecycle),
         }
 
 
@@ -897,6 +1058,8 @@ def index_all(
     profile_workers: int = 1,
     gc: bool = False,
     refresh: bool = True,
+    retire: bool = True,
+    allow_mass_retire: bool = False,
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
@@ -919,19 +1082,42 @@ def index_all(
                          worker opens its own psycopg2 connection (psycopg2
                          connections are NOT thread-safe). Per-profile advisory
                          lock (Wave 1 P1) ensures no collision across workers.
-        gc:              When True, run Module GC for each repo (see index_profile
-                         and ADR-0007 §D5). Forwarded to each index_profile() call.
+        gc:              Deprecated, ignored (see index_profile).
         refresh:         When True (default), `git fetch` + `reset --hard
                          origin/<branch>` each repo before the incremental check
                          so upstream merges are visible to the nightly cron.
                          Fail-safe (fetch error -> index on-disk state). Set False
                          (CLI --no-fetch) for the old local-only behaviour.
                          Forwarded to each index_profile() call.
+        retire / allow_mass_retire: see index_profile.
 
-    Returns aggregate summary: {profiles_ok, profiles_failed, modules, views,
-    qweb, embeddings, js_patches, owl_comps}.
+    Module lifecycle: each profile run observes its repos (ledger + pending
+    names) with its own reconcile turned off; after every profile worker
+    joined, ``reconcile_version`` runs ONCE per version (retirement, orphan
+    sweep, version-wide GCs including the dep-stub GC).
+
+    Returns aggregate summary: {profiles_ok, profiles_failed, profiles_empty,
+    modules, views, qweb, embeddings, js_patches, owl_comps, lifecycle}
+    (``lifecycle`` as in index_profile, merged across profiles plus the
+    post-pass reports). ``profiles_empty`` (sorted names) are the profiles
+    with no repo registered (e.g. seeded roots): nothing was indexed for
+    them, so they are neither ok nor failed.
     """
     profiles = repo_store().list_profiles()
+    lifecycle = _empty_lifecycle()
+    uri, user, password = _neo4j_creds()
+    _clock_writer = Neo4jWriter(uri, user, password)
+    try:
+        run_started_at = _clock_writer.server_now()
+    finally:
+        _clock_writer.close()
+
+    def _absorb_profile(summary: dict) -> None:
+        plc = summary.get("lifecycle") or {}
+        lifecycle["versions"].extend(plc.get("versions") or [])
+        lifecycle["gates_tripped"].extend(plc.get("gates_tripped") or [])
+        lifecycle["deferred_presence"].update(plc.get("deferred_presence") or {})
+
     agg_modules = 0
     agg_views = 0
     agg_qweb = 0
@@ -940,6 +1126,8 @@ def index_all(
     agg_owl_comps = 0
     profiles_ok = 0
     profiles_failed: list[str] = []
+    profiles_empty: list[str] = []
+    first_exc: Exception | None = None
 
     if profile_workers <= 1:
         # --- Sequential path (original behaviour) ----------------------------
@@ -953,16 +1141,23 @@ def index_all(
                     progress=progress,
                     max_workers=max_workers,
                     full_reindex=full_reindex,
-                    gc=gc,
                     refresh=refresh,
+                    retire=retire,
+                    allow_mass_retire=allow_mass_retire,
+                    reconcile=False,
+                    run_started_at=run_started_at,
                 )
+                _absorb_profile(summary)
                 agg_modules += summary["modules"]
                 agg_views += summary["views"]
                 agg_qweb += summary["qweb"]
                 agg_embeddings += summary.get("embeddings", 0)
                 agg_js_patches += summary.get("js_patches", 0)
                 agg_owl_comps += summary.get("owl_comps", 0)
-                profiles_ok += 1
+                if summary.get("no_repos"):
+                    profiles_empty.append(name)
+                else:
+                    profiles_ok += 1
             except Exception:
                 _logger.exception("index_all: profile %r failed — skipping", name)
                 profiles_failed.append(name)
@@ -987,7 +1182,6 @@ def index_all(
             _pre_writer.close()
 
         profile_names = [p["name"] for p in profiles]
-        first_exc: Exception | None = None
 
         def _run_one_profile(profile_name: str) -> dict:
             """Per-profile worker: own pg_conn, own advisory lock."""
@@ -1000,8 +1194,11 @@ def index_all(
                     progress=False,  # avoid tqdm collision
                     max_workers=max_workers,
                     full_reindex=full_reindex,
-                    gc=gc,
                     refresh=refresh,
+                    retire=retire,
+                    allow_mass_retire=allow_mass_retire,
+                    reconcile=False,
+                    run_started_at=run_started_at,
                 )
             finally:
                 pg_conn_thread.close()
@@ -1025,53 +1222,58 @@ def index_all(
                         first_exc = exc
                 else:
                     summary = future.result()
+                    _absorb_profile(summary)
                     agg_modules += summary["modules"]
                     agg_views += summary["views"]
                     agg_qweb += summary["qweb"]
                     agg_embeddings += summary.get("embeddings", 0)
                     agg_js_patches += summary.get("js_patches", 0)
                     agg_owl_comps += summary.get("owl_comps", 0)
-                    profiles_ok += 1
+                    if summary.get("no_repos"):
+                        profiles_empty.append(name)
+                    else:
+                        profiles_ok += 1
 
-        if first_exc is not None:
-            raise first_exc
+    # === Post-all-profiles lifecycle reconcile (ADR-0056) ===
+    # Runs AFTER every profile worker joined (no MERGE in flight for any
+    # version), once per version: retirement of pending names, the orphan
+    # sweep, and the version-wide GCs - including the dep-stub GC (FUFU-1),
+    # which must run after all profiles so a stub promoted to a real module by
+    # a later profile is not deleted first. A failed profile never skips it.
+    _all_versions: set[str] = {
+        p["odoo_version"] for p in profiles if p.get("odoo_version")
+    } | set(lifecycle["versions"])
+    if _all_versions:
+        _gc_writer = Neo4jWriter(uri, user, password)
+        try:
+            run_lifecycle_reconcile(
+                _gc_writer,
+                _all_versions,
+                run_started_at=run_started_at,
+                lifecycle=lifecycle,
+                retire=retire,
+                allow_mass_retire=allow_mass_retire,
+                global_gc=True,
+                conn=pg_conn,
+            )
+        finally:
+            _gc_writer.close()
+    # === End post-all-profiles lifecycle reconcile ===
 
-    # === Global post-all-profiles GC: childless repo_id-NULL dep-stubs (FUFU-1) ===
-    # Must run AFTER all profile indexing completes so stubs promoted to real
-    # modules in a later-running profile are not deleted before that profile
-    # runs.  In parallel mode (profile_workers > 1) this block is outside the
-    # ThreadPoolExecutor context so no dep-MERGEs are in-flight here.
-    # Gated on the same gc=True flag; runs once per unique odoo_version across
-    # all profiles (NOT per-profile — ordering hazard in parallel mode).
-    if gc:
-        _all_versions: set[str] = {
-            p["odoo_version"] for p in profiles if p.get("odoo_version")
-        }
-        if _all_versions:
-            uri, user, password = _neo4j_creds()
-            _gc_writer = Neo4jWriter(uri, user, password)
-            try:
-                for _v in sorted(_all_versions):
-                    _n = _gc_writer.gc_null_repo_dep_stubs(_v)
-                    if _n > 0:
-                        _logger.info(
-                            "index_all dep-stub GC [post-all-profiles]: "
-                            "deleted %d stubs for version %s",
-                            _n, _v,
-                        )
-            finally:
-                _gc_writer.close()
-    # === End global dep-stub GC ===
+    if first_exc is not None:
+        raise first_exc
 
     return {
         "profiles_ok": profiles_ok,
         "profiles_failed": profiles_failed,
+        "profiles_empty": sorted(profiles_empty),
         "modules": agg_modules,
         "views": agg_views,
         "qweb": agg_qweb,
         "embeddings": agg_embeddings,
         "js_patches": agg_js_patches,
         "owl_comps": agg_owl_comps,
+        "lifecycle": _finish_lifecycle(lifecycle),
     }
 
 

@@ -220,11 +220,20 @@ class TestProfileWorkersFullReindex:
         profiles = [_make_profile("p1"), _make_profile("p2")]
         seen_full_reindex: list[bool] = []
 
+        seen_lifecycle: list[dict] = []
+
+        # ADR-0056 B9: index_all now also forwards the lifecycle flags and turns
+        # the per-profile reconcile off (one reconcile per version runs after
+        # every worker joined), so the fake accepts the new keyword arguments.
         def fake_index_profile(
             pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
-            gc=False, refresh=True,
+            gc=False, refresh=True, retire=True, allow_mass_retire=False, reconcile=True,
+            run_started_at=None,
         ):
             seen_full_reindex.append(full_reindex)
+            seen_lifecycle.append({
+                "retire": retire, "reconcile": reconcile, "run_started_at": run_started_at,
+            })
             return _fake_counters(modules=1)
 
         mock_store = MagicMock()
@@ -236,6 +245,7 @@ class TestProfileWorkersFullReindex:
             patch("src.indexer.pipeline.Neo4jWriter", return_value=mock_writer),
             patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
             patch("src.indexer.pipeline.open_production_pg", side_effect=_make_thread_pg),
+            patch("src.indexer.pipeline.run_lifecycle_reconcile") as reconcile_after,
         ):
             from src.indexer.pipeline import index_all
             result = index_all(
@@ -249,6 +259,13 @@ class TestProfileWorkersFullReindex:
         assert all(seen_full_reindex), (
             "full_reindex must propagate to all parallel profile workers"
         )
+        assert all(lc["retire"] and lc["reconcile"] is False for lc in seen_lifecycle), (
+            "workers retire by default and leave the reconcile to index_all"
+        )
+        assert len({lc["run_started_at"] for lc in seen_lifecycle}) == 1, (
+            "every profile shares the run's start instant (H2 guard)"
+        )
+        assert reconcile_after.call_count == 1, "one reconcile after every worker joined"
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +280,10 @@ class TestSequentialFallback:
 
         def fake_index_profile(
             pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
-            gc=False, refresh=True,
+            gc=False, refresh=True, retire=True, allow_mass_retire=False, reconcile=True,
+            run_started_at=None,
         ):
+            assert reconcile is False, "index_all reconciles once, after all profiles"
             call_order.append(profile_name)
             return _fake_counters(modules=2)
 
@@ -274,6 +293,11 @@ class TestSequentialFallback:
         with (
             patch("src.indexer.pipeline.repo_store", return_value=mock_store),
             patch("src.indexer.pipeline.index_profile", side_effect=fake_index_profile),
+            # index_all reads the run's start on the Neo4j clock and reconciles
+            # after the profiles (ADR-0056 B9) - both are outside this unit test.
+            patch("src.indexer.pipeline.Neo4jWriter", return_value=MagicMock()),
+            patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
+            patch("src.indexer.pipeline.run_lifecycle_reconcile") as reconcile_after,
         ):
             from src.indexer.pipeline import index_all
             result = index_all(mock_pg_conn, profile_workers=1)
@@ -281,6 +305,7 @@ class TestSequentialFallback:
         assert call_order == ["p1", "p2"], "Sequential: profiles must be processed in list order"
         assert result["profiles_ok"] == 2
         assert result["modules"] == 4
+        assert reconcile_after.call_count == 1
 
 
 # ---------------------------------------------------------------------------

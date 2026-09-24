@@ -25,6 +25,25 @@ pytestmark = pytest.mark.neo4j
 TEST_VERSION = "99.0"
 
 
+def _scan_for(registry: dict, repo_path: str):
+    """Scan truth (ADR-0056 F16) holding exactly *registry*'s modules.
+
+    ``_index_repo`` reads its module set from ``build_registry_scan``, no longer
+    from ``build_registry``; patching the latter left these end-to-end tests with
+    an empty scan, so nothing was written and nothing propagated (two failed,
+    three passed vacuously). The ledger is stubbed out (``_presence_store`` ->
+    None) because these tests are about dependency propagation, not lifecycle.
+    """
+    from src.indexer.models import RegistryScan
+
+    return RegistryScan(
+        repo_path=repo_path, odoo_version=TEST_VERSION, branch=TEST_VERSION,
+        modules=registry, excluded={}, shadowed={}, tracked_paths=None,
+        finder_paths=frozenset(), untracked=frozenset(), missing=frozenset(),
+        complete=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers — Neo4j
 # ---------------------------------------------------------------------------
@@ -428,7 +447,11 @@ class TestDepPropagationEndToEnd:
         new_head = "cafebabe"
 
         with (
-            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
+            patch(
+                "src.indexer.pipeline.build_registry_scan",
+                return_value=_scan_for(fake_registry, repo_a_path),
+            ),
+            patch("src.indexer.pipeline._presence_store", return_value=None),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
@@ -450,6 +473,10 @@ class TestDepPropagationEndToEnd:
             )),
         ):
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
+
+        # Positive control: the changed module really reached the writer, so the
+        # propagation assertions below are not vacuous.
+        assert writer.write_results.called, "precondition: 'base' must be re-written"
 
         # repo_b head_sha should be NULL (propagation reset it)
         repo_b_sha = repo_store().get_repo_head_sha(repo_b_id)
@@ -515,7 +542,11 @@ class TestDepPropagationEndToEnd:
         new_head = "cafebabe"
 
         with (
-            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
+            patch(
+                "src.indexer.pipeline.build_registry_scan",
+                return_value=_scan_for(fake_registry, repo_a_path),
+            ),
+            patch("src.indexer.pipeline._presence_store", return_value=None),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
@@ -537,6 +568,10 @@ class TestDepPropagationEndToEnd:
             )),
         ):
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
+
+        # Positive control: the changed module really reached the writer, so the
+        # propagation assertions below are not vacuous.
+        assert writer.write_results.called, "precondition: 'base' must be re-written"
 
         # repo_c must NOT be reset — it has no dependency on base
         repo_c_sha = repo_store().get_repo_head_sha(repo_c_id)
@@ -590,7 +625,11 @@ class TestDepPropagationEndToEnd:
         new_head = "cafebabe"
 
         with (
-            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
+            patch(
+                "src.indexer.pipeline.build_registry_scan",
+                return_value=_scan_for(fake_registry, repo_a_path),
+            ),
+            patch("src.indexer.pipeline._presence_store", return_value=None),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
@@ -612,6 +651,10 @@ class TestDepPropagationEndToEnd:
             )),
         ):
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
+
+        # Positive control: the changed module really reached the writer, so the
+        # propagation assertions below are not vacuous.
+        assert writer.write_results.called, "precondition: 'base' must be re-written"
 
         # repo_a must NOT be reset — it was the one we just indexed
         repo_a_sha = repo_store().get_repo_head_sha(repo_a_id)
@@ -669,7 +712,11 @@ class TestDepPropagationEndToEnd:
         new_head = "cafebabe"
 
         with (
-            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
+            patch(
+                "src.indexer.pipeline.build_registry_scan",
+                return_value=_scan_for(fake_registry, repo_a_path),
+            ),
+            patch("src.indexer.pipeline._presence_store", return_value=None),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
             patch("src.indexer.pipeline.topological_sort", return_value=["base"]),
             patch("src.indexer.pipeline.parser_python.parse_module", return_value=MagicMock(
@@ -682,6 +729,10 @@ class TestDepPropagationEndToEnd:
             )),
         ):
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=True)
+
+        # Positive control: the changed module really reached the writer, so the
+        # propagation assertions below are not vacuous.
+        assert writer.write_results.called, "precondition: 'base' must be re-written"
 
         # repo_b head_sha must remain unchanged (full reindex skips propagation)
         repo_b_sha = repo_store().get_repo_head_sha(repo_b_id)
@@ -767,7 +818,11 @@ class TestDepPropagationEndToEnd:
         new_head = "cafebabe"
 
         with (
-            patch("src.indexer.pipeline.build_registry", return_value=fake_registry),
+            patch(
+                "src.indexer.pipeline.build_registry_scan",
+                return_value=_scan_for(fake_registry, repo_a_path),
+            ),
+            patch("src.indexer.pipeline._presence_store", return_value=None),
             patch("src.indexer.pipeline._incremental.get_repo_head", return_value=new_head),
             patch("src.indexer.pipeline._incremental.is_ancestor", return_value=True),
             patch(
@@ -789,6 +844,10 @@ class TestDepPropagationEndToEnd:
             )),
         ):
             _index_repo(repo_a, writer, pg_conn=pg_conn, full_reindex=False)
+
+        # Positive control: the changed module really reached the writer, so the
+        # propagation assertions below are not vacuous.
+        assert writer.write_results.called, "precondition: 'base' must be re-written"
 
         # Same-version, different-profile dependent MUST be reset (real dependency).
         same_ver_sha = repo_store().get_repo_head_sha(same_ver_dep_id)

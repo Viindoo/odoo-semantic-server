@@ -7,7 +7,8 @@ Usage:
     python -m src.indexer index-core --source ~/git/odoo_17.0 --version 17.0
 
 Subcommands:
-    index-repo   Index one or all registered profiles into Neo4j (existing behavior).
+    index-repo   Index one or all registered profiles into Neo4j and reconcile the
+                 module lifecycle (retire modules no repo ships any more).
     index-core   Index Odoo core API symbols, lint rules, and CLI from a source checkout.
 """
 import argparse
@@ -70,7 +71,10 @@ def _build_parser() -> argparse.ArgumentParser:
     grp.add_argument("--all", action="store_true", help="Index every registered profile")
     sub_repo.add_argument(
         "--no-embed", action="store_true",
-        help="Skip embedding step (Neo4j only). Default: embed using [embedder] config.",
+        help=(
+            "Compute no new embeddings (Neo4j only). Rows of entities the run's entity "
+            "prune removes are still deleted. Default: embed using [embedder] config."
+        ),
     )
     sub_repo.add_argument(
         "--no-fetch", action="store_true",
@@ -104,8 +108,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Force full reindex (bypass incremental skip-unchanged + diff filter). "
-            "Use periodically to clean up stale Module nodes from rename/move."
+            "Re-parse and re-write every module (bypass the unchanged skip and the "
+            "diff filter): backfills node properties and re-stamps every entity. "
+            "Not needed for cleanup - module retirement, the entity prune and the "
+            "orphan sweep run on every index run (ADR-0056)."
         ),
     )
     sub_repo.add_argument(
@@ -123,12 +129,33 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Garbage-collect stale Module nodes after scanning each repo. "
-            "Compares Module nodes in Neo4j vs scanner output and DETACH DELETEs "
-            "modules that no longer exist on disk (e.g. after a rename or removal). "
-            "Risk-gated: only runs when scanner found ≥1 module to prevent data loss "
-            "when scanner fails silently. Recommended for monthly runs or after "
-            "module directory renames. See ADR-0007 §D5."
+            "Deprecated, no effect: module retirement (with its safety gates), the "
+            "orphan sweep and the version-wide GCs run on every index run "
+            "(ADR-0056). Accepted so existing timers and scripts keep working."
+        ),
+    )
+    sub_repo.add_argument(
+        "--no-retire",
+        action="store_true",
+        default=False,
+        help=(
+            "Incident escape hatch: scan and write as usual but delete nothing (no "
+            "retirement, owner drop, orphan sweep or entity prune). Modules that are "
+            "no longer shipped stay pending in the lifecycle ledger; the next run "
+            "without this flag retires and prunes them."
+        ),
+    )
+    sub_repo.add_argument(
+        "--allow-mass-retire",
+        action="store_true",
+        default=False,
+        help=(
+            "Bypass the mass-drop safety gates: module retirement / orphan sweep "
+            "(more than half of a repo's modules, at least 20, or all of them, "
+            "vanishing in one run) and the entity prune of one module, shared or "
+            "not (more than half of its nodes or relationships, at least 20). A "
+            "tripped gate makes the run exit 3. Never set it in a timer; use it "
+            "once after checking lifecycle_attention."
         ),
     )
 
@@ -211,6 +238,39 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+EXIT_LIFECYCLE_ATTENTION = 3
+
+
+def _lifecycle_exit_code(lifecycle: dict) -> int:
+    """0, or EXIT_LIFECYCLE_ATTENTION when the run's module lifecycle needs an
+    operator: a safety gate tripped, a name was undecidable, or the reconcile
+    failed (review H4 - systemd ``OnFailure=`` must fire, the data was indexed
+    but ghosts may remain). The details go to stderr; the same text is in
+    ``repos.lifecycle_attention``."""
+    if not lifecycle.get("needs_attention"):
+        return 0
+    print("Lifecycle needs attention (exit 3):", file=sys.stderr)
+    for key in ("gates_tripped", "undecidable", "errors"):
+        for item in lifecycle.get(key) or []:
+            print(f"  {key}: {item}", file=sys.stderr)
+    return EXIT_LIFECYCLE_ATTENTION
+
+
+def _print_empty_profiles(summary, profile: str | None) -> None:
+    """Name the profiles that had no repo to index (neither ok nor failed, exit 0)."""
+    if not isinstance(summary, dict):
+        return
+    if summary.get("no_repos"):
+        print(f"Profile {profile!r} has no repo registered: nothing indexed.", file=sys.stderr)
+    empty = summary.get("profiles_empty") or []
+    if empty:
+        print(
+            f"{len(empty)} profile(s) with no repo registered, nothing indexed: "
+            + ", ".join(empty),
+            file=sys.stderr,
+        )
+
+
 def _run_index_core(
     source: str,
     version: str,
@@ -256,7 +316,13 @@ def main(argv: list[str] | None = None) -> int:
         verbose = getattr(args, "verbose", False)
         job_id = getattr(args, "job_id", None)
         full_reindex = getattr(args, "full", False)
-        gc = getattr(args, "gc", False)
+        if getattr(args, "gc", False):
+            logging.getLogger(__name__).warning(
+                "--gc is deprecated and has no effect: module retirement now runs on "
+                "every index run (ADR-0056)"
+            )
+        retire = not getattr(args, "no_retire", False)
+        allow_mass_retire = getattr(args, "allow_mass_retire", False)
         refresh = not getattr(args, "no_fetch", False)
         embedder = None if args.no_embed else _build_embedder()
         pg = open_production_pg()
@@ -303,8 +369,9 @@ def main(argv: list[str] | None = None) -> int:
                         max_workers=max_workers,
                         full_reindex=full_reindex,
                         profile_workers=profile_workers,
-                        gc=gc,
                         refresh=refresh,
+                        retire=retire,
+                        allow_mass_retire=allow_mass_retire,
                     )
                 else:
                     summary = index_profile(
@@ -314,10 +381,17 @@ def main(argv: list[str] | None = None) -> int:
                         progress=verbose,
                         max_workers=max_workers,
                         full_reindex=full_reindex,
-                        gc=gc,
                         refresh=refresh,
+                        retire=retire,
+                        allow_mass_retire=allow_mass_retire,
                     )
+                lifecycle = (
+                    summary.pop("lifecycle", None) if isinstance(summary, dict) else None
+                )
+                if not isinstance(lifecycle, dict):
+                    lifecycle = {}
                 print(f"Done: {summary}")
+                _print_empty_profiles(summary, args.profile)
                 if args.no_embed:
                     print("Embeddings skipped (--no-embed).", file=sys.stdout)
                 elif embedder is None:
@@ -335,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     except Exception:
                         pass
+                exit_code = _lifecycle_exit_code(lifecycle)
             except BaseException as e:
                 if job_id is not None and not isinstance(e, SystemExit):
                     # Don't overwrite job status already set by SIGTERM handler
@@ -354,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
                 if callable(close):
                     close()
             pg.close()
+        return exit_code
 
     elif args.subcommand == "index-core":
         _run_index_core(

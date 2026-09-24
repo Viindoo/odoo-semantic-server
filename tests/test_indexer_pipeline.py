@@ -103,14 +103,20 @@ def test_pipeline_index_all_iterates_every_profile(
         repo_store().add_repo(pid, f"local/{prof}", TEST_VERSION, str(repo))
 
     summary = index_all(clean_pg)
-    # Migration 0004 seeds 5 root profiles (no repos); they index as ok with 0 modules.
-    assert summary["profiles_ok"] >= 2
+    # Migration 0004 seeds root profiles with no repo: reported in profiles_empty,
+    # never counted as indexed ok (F39).
+    assert summary["profiles_ok"] == 2
     assert summary["modules"] >= 2
     assert summary["profiles_failed"] == []
 
 
 def test_index_all_continues_after_profile_failure(pg_conn, clean_pg, neo4j_driver):
-    """index_all continues with remaining profiles if one fails, reports failures."""
+    """index_all continues with remaining profiles if one fails, reports failures.
+
+    Updated for F39: the old ``profiles_ok >= 1`` held only because a profile
+    with no repo (empty_prof, the seeded roots) counted as indexed ok. Such a
+    profile is now reported apart in ``profiles_empty``, neither ok nor failed,
+    so no profile here is ok."""
     from src.indexer.pipeline import index_all
 
     run_migrations(clean_pg)
@@ -125,8 +131,9 @@ def test_index_all_continues_after_profile_failure(pg_conn, clean_pg, neo4j_driv
 
     summary = index_all(clean_pg)
 
-    # Migration 0004 seeds 5 root profiles (no repos, always ok) + empty_prof (ok) = 6 ok.
-    assert summary["profiles_ok"] >= 1, f"Expected at least 1 ok profile, got {summary}"
+    assert summary["profiles_ok"] == 0, summary
+    assert "empty_prof" in summary["profiles_empty"]
+    assert "bad_prof" not in summary["profiles_empty"]
     assert "bad_prof" in summary["profiles_failed"]
     assert len(summary["profiles_failed"]) == 1
     assert summary["modules"] == 0

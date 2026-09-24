@@ -3,6 +3,7 @@
 
 Tests verify the incremental indexing contract:
   - First run sets head_sha in DB
+  - A renamed module is retired by the next plain run and by --full (ADR-0056)
   - Identical second run skips (zero-cost)
   - Changed modules triggers targeted re-index
   - Force-push falls back to full reindex
@@ -291,15 +292,16 @@ def test_full_flag_bypasses_skip(
 
 
 # ---------------------------------------------------------------------------
-# Tests 5b + 5c: Module rename — ADR-0007 D5 enforcement
+# Tests 5b + 5c: Module rename - retired by a plain run (ADR-0056, #378)
 #
-# ADR-0007 D5 (accepted trade-off):
-#   Incremental run after rename → old Module node stays (stale orphan).
-#   --full run after rename → old Module node STILL stays (no gc code yet).
-#   Cleanup is deferred to M7 via a future --gc flag.
-#
-# These tests lock in the documented behavior so future changes that
-# silently alter the trade-off surface in CI.
+# These two tests used to LOCK IN the ADR-0007 D5 trade-off ("the stale Module
+# node stays after a rename, even under --full; cleanup deferred to a --gc
+# flag"). That trade-off is the #378 defect: no job ever ran --gc, so renamed
+# modules (tvtmaaddons test_pylint -> test_viin_pylint, 0240c6b77f) kept
+# answering "Yes" forever. Owner decision 2 (08-approved-plan): a PLAIN run
+# must retire them. The old tests' own docstrings asked to flip them once GC
+# shipped - they are rewritten as T01 / T02, same one-module repo shape (a
+# repo renaming its only module is a rename, not a total wipe).
 # ---------------------------------------------------------------------------
 
 def _setup_rename_repo(tmp_path: Path, profile_suffix: str, pg_conn):
@@ -308,7 +310,7 @@ def _setup_rename_repo(tmp_path: Path, profile_suffix: str, pg_conn):
     Creates a git repo with module 'mod_foo', registers it, runs first
     index_profile, then renames the module dir to 'mod_bar' and commits.
 
-    Returns (pid, repo_path) ready for the second index_profile call.
+    Returns (pid, repo_path, profile_name) ready for the second index_profile call.
     """
     run_migrations(pg_conn)
     repo = _make_git_repo_with_commit(
@@ -322,7 +324,7 @@ def _setup_rename_repo(tmp_path: Path, profile_suffix: str, pg_conn):
     pid = repo_store().add_profile(prof_name, TEST_VERSION)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
-    # First run — establishes mod_foo Module node in Neo4j
+    # First run - establishes mod_foo Module node in Neo4j
     summary1 = index_profile(pg_conn, profile_name=prof_name)
     assert summary1["modules"] >= 1, "First run must index mod_foo"
 
@@ -343,73 +345,60 @@ def _neo4j_module_exists(neo4j_driver, name: str) -> bool:
     return rec is not None
 
 
-def test_module_rename_leaves_stale_neo4j_node(
+def _neo4j_children_of(neo4j_driver, name: str) -> int:
+    """Nodes other than the Module that the index attributes to module *name*."""
+    with neo4j_driver.session() as session:
+        return session.run(
+            "MATCH (n) WHERE n.odoo_version = $v AND n.module = $m AND NOT n:Module "
+            "RETURN count(n) AS n",
+            v=TEST_VERSION, m=name,
+        ).single()["n"]
+
+
+def test_module_rename_retires_old_module_on_incremental_run(
     clean_neo4j, clean_pg, neo4j_driver, tmp_path,
 ):
-    """ADR-0007 D5: incremental run after module rename → stale Module node remains.
-
-    'mod_foo' is renamed to 'mod_bar'. The incremental diff sees both paths as
-    changed; the scanner finds 'mod_bar' (new) but not 'mod_foo' (dir gone).
-    Neo4j MERGE only writes what the scanner returns — stale 'mod_foo' node is
-    never deleted. This is the documented accepted trade-off (see ADR-0007 D5).
-
-    This test enforces that behavior so any future refactor that silently
-    auto-cleans the stale node (consuming scarce Neo4j write cycles) surfaces.
-    """
+    """T01 (rewritten from test_module_rename_leaves_stale_neo4j_node, see the
+    section note): after 'mod_foo' is renamed to 'mod_bar', the NEXT PLAIN
+    incremental run indexes mod_bar AND retires mod_foo with its children -
+    no --gc, no --full, no attention."""
     pid, repo, prof_name = _setup_rename_repo(tmp_path, "a", clean_pg)
 
-    # Second run — incremental (no --full)
+    # Second run - incremental (no --full, no lifecycle flag)
     summary2 = index_profile(clean_pg, profile_name=prof_name)
     assert summary2["modules"] >= 1, "Second run must index mod_bar"
 
-    # Guard: confirm incremental diff-filter ran (not the unchanged-skip path).
-    # repos_skipped == 0 because the rename advanced the head_sha, triggering re-index.
-    assert summary2.get("repos_skipped", 0) == 0, (
-        f"expected diff-filter path, got summary2={summary2}"
-    )
-
-    # mod_bar must be indexed (new path picked up by scanner)
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (
         "mod_bar Module node must exist after incremental run following rename"
     )
-
-    # mod_foo must STILL exist — stale orphan, NOT cleaned up by incremental run
-    assert _neo4j_module_exists(neo4j_driver, "mod_foo"), (
-        "mod_foo Module node must remain as stale orphan after incremental rename run "
-        "(ADR-0007 D5 accepted trade-off; cleanup deferred to M7 --gc flag)"
+    assert not _neo4j_module_exists(neo4j_driver, "mod_foo"), (
+        "#378: the renamed-away mod_foo must be retired by the plain incremental run"
     )
+    assert _neo4j_children_of(neo4j_driver, "mod_foo") == 0, (
+        "#378: mod_foo's models/fields/methods must be retired with it"
+    )
+    assert not (summary2.get("lifecycle") or {}).get("needs_attention")
 
 
-def test_module_rename_full_flag_still_leaves_stale(
+def test_module_rename_full_flag_retires_old_module(
     clean_neo4j, clean_pg, neo4j_driver, tmp_path,
 ):
-    """ADR-0007 D5 + D4: --full reindex after rename indexes new module but does NOT
-    remove the stale Module node (no gc code exists; deferred to M7 --gc flag).
-
-    This test locks in the current behavior: --full is NOT a cleanup mechanism
-    for stale Module nodes (only a bypass of the diff-filter / skip-unchanged
-    logic). Stale orphan 'mod_foo' must persist even after --full.
-
-    If M7 implements --gc and this test starts failing, update the assertion
-    here to reflect the new documented behavior.
-    """
+    """T02 (rewritten from test_module_rename_full_flag_still_leaves_stale): --full
+    re-parses everything AND retires the renamed-away module - the old contract
+    that --full "is not a cleanup mechanism" pinned the #378 defect."""
     pid, repo, prof_name = _setup_rename_repo(tmp_path, "b", clean_pg)
 
-    # Second run — forced full reindex (bypasses skip + diff filter)
     summary2 = index_profile(clean_pg, profile_name=prof_name, full_reindex=True)
     assert summary2["modules"] >= 1, "--full run must index mod_bar"
 
-    # mod_bar must be indexed (scanner found the new path)
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (
         "mod_bar Module node must exist after --full run following rename"
     )
-
-    # mod_foo must STILL exist — --full does not delete stale Module nodes
-    # (ADR-0007 D5 defers gc to M7; pipeline uses MERGE, never DELETE on Module)
-    assert _neo4j_module_exists(neo4j_driver, "mod_foo"), (
-        "mod_foo Module node must remain as stale orphan after --full run "
-        "(ADR-0007 D5: gc deferred to M7 --gc flag; current pipeline never DELETEs Module nodes)"
+    assert not _neo4j_module_exists(neo4j_driver, "mod_foo"), (
+        "#378: --full must not leave the renamed-away mod_foo behind"
     )
+    assert _neo4j_children_of(neo4j_driver, "mod_foo") == 0
+    assert not (summary2.get("lifecycle") or {}).get("needs_attention")
 
 
 # ---------------------------------------------------------------------------

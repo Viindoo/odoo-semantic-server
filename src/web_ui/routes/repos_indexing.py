@@ -245,6 +245,8 @@ async def index_repo(
         if body.full:
             argv += ["--full"]
         if body.gc:
+            # Deprecated no-op (ADR-0056): retirement runs on every index run.
+            # Forwarded so the job log carries the CLI's deprecation line.
             argv += ["--gc"]
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]
@@ -385,6 +387,7 @@ async def index_all(
         if body.full:
             argv += ["--full"]
         if body.gc:
+            # Deprecated no-op (ADR-0056), forwarded for the deprecation log line.
             argv += ["--gc"]
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]

@@ -1,34 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/pipeline_repo.py
-"""Per-repo indexing stage (B6 split from pipeline.py — no behavior change).
+"""Per-repo indexing stage (B6 split from pipeline.py).
 
-Houses the per-repo scan -> parse -> write -> embed unit that ``index_profile``
-drives (sequentially or via its ThreadPoolExecutor worker):
+Houses the per-repo scan -> ledger -> parse -> write -> embed unit that
+``index_profile`` drives (sequentially or via its ThreadPoolExecutor worker):
 
     _owning_profiles(repo, profile_name, repo_root_name) -> list[str]
     _index_repo(repo, writer, ...) -> per-repo counter dict
 
-The orchestrator (``index_profile`` / ``index_all`` / ``index_core``), the lock
-infrastructure and the production connection helpers stay in ``pipeline.py``.
-``pipeline.py`` re-exports ``_owning_profiles`` and ``_index_repo`` at the bottom
-of its body so existing call sites and test patch targets
-(``src.indexer.pipeline._index_repo`` / ``_owning_profiles``) keep working.
+The per-repo path OBSERVES module lifecycle (ADR-0056: ledger rows, pending
+retirements, presence stamp) but never deletes a module; deletion happens only
+in ``reconcile.reconcile_version``. The orchestrator (``index_profile`` /
+``index_all`` / ``index_core``), the lock infrastructure and the production
+connection helpers stay in ``pipeline.py``. ``pipeline.py`` re-exports
+``_owning_profiles`` and ``_index_repo`` at the bottom of its body so existing
+call sites and test patch targets (``src.indexer.pipeline._index_repo`` /
+``_owning_profiles``) keep working.
 
 Patch-visibility contract (why some names are referenced through ``pipeline``):
 The test suite monkeypatches several collaborators on the *parent* module
 namespace and then calls ``_index_repo`` — e.g.
-``patch("src.indexer.pipeline.build_registry", ...)``,
-``...topological_sort``, ``...repo_store``. These three are *function* bindings:
-a ``from ... import build_registry`` binding in THIS module would NOT see a patch
-applied to the ``pipeline`` namespace. So ``_index_repo`` resolves
-``build_registry`` / ``topological_sort`` / ``repo_store`` through the ``pipeline``
-module object at call time (a deferred, cold-import-safe ``from . import
-pipeline``). By contrast ``_incremental`` and the ``parser_*`` submodules are
-*module objects* shared by identity across both namespaces, so patching
-``pipeline.parser_python.parse_module`` is visible here regardless of the binding
-path — those stay as ordinary module-level imports.
+``patch("src.indexer.pipeline.build_registry_scan", ...)``,
+``...topological_sort``, ``...repo_store``, ``..._presence_store``. These are
+*function* bindings: a ``from ... import`` binding in THIS module would NOT see
+a patch applied to the ``pipeline`` namespace. So ``_index_repo`` resolves them
+through the ``pipeline`` module object at call time (a deferred,
+cold-import-safe ``from . import pipeline``). By contrast ``_incremental`` and
+the ``parser_*`` submodules are *module objects* shared by identity across both
+namespaces, so patching ``pipeline.parser_python.parse_module`` is visible here
+regardless of the binding path - those stay as ordinary module-level imports.
 """
 import contextlib
+import functools
 import logging
 import subprocess
 import sys
@@ -47,7 +50,12 @@ from src.indexer import (
     parser_test,
     parser_xml,
 )
-from src.indexer.models import AssetParseResult, StylesheetInfo, ViewParseResult
+from src.indexer.models import (
+    EXCLUSION_UNPARSEABLE,
+    AssetParseResult,
+    StylesheetInfo,
+    ViewParseResult,
+)
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.version_registry import less_active, scss_active
 
@@ -263,218 +271,185 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
     )
 
 
-def _index_repo(
-    repo: dict,
+
+
+_EMPTY_COUNTERS = {
+    "modules": 0,
+    "views": 0,
+    "qweb": 0,
+    "embeddings": 0,
+    "js_patches": 0,
+    "owl_comps": 0,
+}
+
+# Test seam (ADR-0056 T09): when set, called with the repo dict after this
+# repo's graph writes and BEFORE its ledger commit, so a test can interleave a
+# concurrent reconcile deterministically. Always None in production.
+_LIFECYCLE_TEST_BARRIER = None
+
+_MANIFEST_NAMES = ("__manifest__.py", "__openerp__.py")
+
+
+class _ConnBoundStore:
+    """A ModulePresenceStore whose every call runs on one given connection."""
+
+    def __init__(self, store, conn) -> None:
+        self._store = store
+        self._conn = conn
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._store, name)
+        if not callable(attr):
+            return attr
+        return functools.partial(attr, conn=self._conn)
+
+
+def _manifest_file_for(scan, rel_dir: str) -> str:
+    """File name of the manifest the scan used for the module directory *rel_dir*."""
+    live = scan.finder_paths - scan.untracked
+    for name in _MANIFEST_NAMES:
+        if str(Path(rel_dir) / name) in live:
+            return name
+    return _MANIFEST_NAMES[0]
+
+
+def _observed_modules(scan) -> list:
+    """Map a RegistryScan onto the ledger's ObservedModule list (one per name)."""
+    from src.db.module_presence import ObservedModule
+
+    observed = []
+    for name in sorted(scan.present_names()):
+        info = scan.module(name)
+        rel = info.relative_path(info.path)
+        observed.append(ObservedModule(
+            name=name,
+            path=rel,
+            manifest_file=_manifest_file_for(scan, rel),
+            version_raw=info.version_raw or None,
+            version_mismatch=info.version_mismatch,
+            shadowed_paths=tuple(scan.shadowed.get(name, ())),
+        ))
+    for name in sorted(scan.excluded):
+        if scan.module(name) is not None:
+            continue
+        ex = scan.excluded[name]
+        observed.append(ObservedModule(
+            name=name,
+            path=ex.path,
+            manifest_file=ex.manifest_file,
+            state="excluded",
+            exclusion_reason=ex.reason,
+            version_raw=ex.version_raw or None,
+            version_mismatch=ex.version_mismatch,
+            shadowed_paths=tuple(scan.shadowed.get(name, ())),
+        ))
+    return observed
+
+
+REWRITE_NO_NODE = "no_node"
+REWRITE_PATH_DRIFT = "path_drift"
+REWRITE_REPO_DRIFT = "repo_drift"
+
+
+def _repo_relative(path: str | None, local_path: str) -> str | None:
+    if not path:
+        return path
+    p = Path(path)
+    if p.is_absolute():
+        try:
+            return str(p.relative_to(local_path))
+        except ValueError:
+            return str(p)
+    return str(p)
+
+
+def modules_needing_rewrite(
     writer: IndexWriterProtocol,
-    pg_conn=None,
-    embedder=None,
-    progress: bool = False,
-    full_reindex: bool = False,
-    gc: bool = False,
-    profile_name: str | None = None,
-    core_rng_root: Path | None = None,
-    refresh: bool = True,
-) -> dict:
-    """Index a single repo dict (from get_repos_for_profile).
+    presence,
+    repo: dict,
+    scan,
+    owning_profile: str,
+) -> dict[str, dict]:
+    """Present modules whose graph node does not match the scan (self-heal, H2).
 
-    Returns per-repo counters: {modules, views, qweb, embeddings}.
-    Pass pg_conn + embedder to also write semantic embeddings to pgvector.
-    Set progress=True to show tqdm progress bar during module iteration.
-    profile_name is stamped on every EmbeddingChunk written so re-indexing
-    one profile does not erase another profile's chunks for the same module.
+    ``{name: {reason, ...}}`` for every present module of the scan whose Module
+    node, re-written by this repo, would differ from what it is now:
 
-    core_rng_root: Path to <odoo_core_root>/odoo/addons/base/rng/ (or the
-        openerp/ equivalent for v8/v9).  When the repo itself contains the RNG
-        directory it is used directly; *core_rng_root* is the fallback for
-        addon-only repos whose views still need version-exact RNG validation.
-        None → RelaxNG validation is silently skipped (no false positives).
+    - ``no_node``: no Module node carries this repo's owning profile (lost to a
+      concurrent retire or a failed write).
+    - ``path_drift``: the node was last written by this repo but its ``path`` is
+      not the registry winner. ``kind``: ``shadowed`` (a same-name loser dir,
+      the posbox ``point_of_sale`` stub, F15), ``untracked`` (a git-untracked
+      copy such as ``.odoo-ai/...``, F7) or ``stale``; with ``indexed_path`` and
+      ``winner_path`` (repo-relative).
+    - ``repo_drift``: the node names another repo but only this repo's profile
+      owns it and the ledger shows no other present owner (``indexed_repo``).
 
-    Incremental behaviour (M6 W2-4):
-    - Compares current git HEAD to repos.head_sha (stored from last run).
-    - Equal → zero-cost skip.
-    - Force-push detected (stored sha not ancestor of HEAD) → full reindex.
-    - Otherwise → diff-filter scan results to changed modules only.
-    - head_sha advanced to current HEAD ONLY after all writes succeed.
-    - full_reindex=True bypasses the skip + diff filter (use to clean stale nodes).
-
-    refresh (nightly-fetch): when True (default), do a ``git fetch`` +
-        ``reset --hard origin/<branch>`` on the local clone BEFORE the incremental
-        check, so upstream merges become visible to the cron (the incremental
-        check only reads the local clone, so without a fetch an advanced upstream
-        branch left local HEAD == repos.head_sha and the repo was skipped). The
-        fetch runs under the per-repo advisory lock and is FAIL-SAFE: a fetch
-        error is logged and indexing proceeds on the on-disk state (network
-        reachability is never a hard dependency of the nightly job). Set False
-        (CLI ``--no-fetch``) to preserve the old local-only behaviour. See
-        ``refresh_before_scan``.
+    The index path re-writes these on a plain sync / incremental run, so drift
+    left by older code heals without ``--full``; the re-parse re-stamps the
+    children and the entity prune drops those only the old path produced.
+    Read-only (one Module lookup; one ledger read when *presence* is given).
     """
-    # Resolve the parent orchestrator module at call time. ``build_registry``,
-    # ``topological_sort`` and ``repo_store`` are referenced through it so that
-    # test patches applied to ``src.indexer.pipeline.<name>`` are honoured (see
-    # the module docstring). Deferred (function-local) import keeps a cold
-    # ``import src.indexer.pipeline_repo`` cycle-free.
+    local_path = repo["local_path"]
+    basename = Path(local_path).name
+    present = sorted(scan.present_names())
+    if not present:
+        return {}
+    identity = writer.module_identity(scan.odoo_version, present)
+    untracked_dirs = {str(Path(p).parent) for p in scan.untracked}
+    owners = (
+        presence.present_owner_basenames(scan.odoo_version, present)
+        if presence is not None else {}
+    )
+    out: dict[str, dict] = {}
+    for name in present:
+        node = identity.get(name)
+        if node is None or owning_profile not in node.get("profile", []):
+            out[name] = {"reason": REWRITE_NO_NODE}
+            continue
+        ours = node.get("repo") == basename and (
+            node.get("repo_id") is None or node["repo_id"] == repo["id"]
+        )
+        if not ours:
+            if node.get("profile") == [owning_profile] and len(owners.get(name, [])) <= 1:
+                out[name] = {"reason": REWRITE_REPO_DRIFT, "indexed_repo": node.get("repo")}
+            continue
+        info = scan.module(name)
+        winner = info.relative_path(info.path)
+        indexed = _repo_relative(node.get("path"), local_path)
+        if not indexed or indexed == winner:
+            continue
+        if indexed in scan.shadowed.get(name, ()):
+            kind = "shadowed"
+        elif indexed in untracked_dirs:
+            kind = "untracked"
+        else:
+            kind = "stale"
+        out[name] = {
+            "reason": REWRITE_PATH_DRIFT, "kind": kind,
+            "indexed_path": indexed, "winner_path": winner,
+        }
+    return out
+
+
+def _parse_and_write(
+    modules_by_version: dict,
+    *,
+    writer: IndexWriterProtocol,
+    repo: dict,
+    repo_path: Path,
+    rng_root: Path | None,
+    pg_conn,
+    embedder,
+    progress: bool,
+    profiles_arr: list[str],
+    owning_profile: str,
+) -> tuple[dict, list]:
+    """Parse the given modules and write every node + embedding they produce.
+
+    Returns ``(counters, test_results)``; ``test_results`` feeds the test-node GC.
+    """
     from src.indexer import pipeline as _pipeline
-
-    local_path: str = repo["local_path"]
-    odoo_version: str = repo["odoo_version"]
-
-    if not Path(local_path).is_dir():
-        raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
-
-    # Resolve the RNG directory for version-exact RelaxNG validation (WI-E rework).
-    # Prefer the RNG dir within THIS repo's local_path (covers the main Odoo core
-    # repo where addons live alongside the rng/ dir).  Fall back to core_rng_root
-    # (resolved once per profile in index_profile) for addon-only repos.
-    # If neither exists → rng_root=None → validation silently skipped.
-    repo_path = Path(local_path)
-    _rng_candidates = [
-        repo_path / "odoo" / "addons" / "base" / "rng",
-        repo_path / "openerp" / "addons" / "base" / "rng",
-    ]
-    rng_root: Path | None = next(
-        (p for p in _rng_candidates if p.is_dir()), core_rng_root
-    )
-
-    # === Pre-scan refresh (nightly-fetch) ===
-    # Fetch + reset --hard origin/<branch> BEFORE reading HEAD, so an advanced
-    # upstream branch (e.g. a merged PR) is picked up by the incremental check
-    # below instead of being invisible (local HEAD == repos.head_sha -> skip).
-    # FAIL-SAFE inside refresh_before_scan: a fetch error is logged and we index
-    # whatever is on disk. Gated by `refresh` (CLI --no-fetch turns it off).
-    if refresh:
-        refresh_before_scan(repo, pg_conn)
-    # === End pre-scan refresh ===
-
-    # === Incremental check (W2-4) ===
-    current_head = _incremental.get_repo_head(repo_path)
-    last_head: str | None = None
-
-    if current_head is None:
-        _logger.warning(
-            "Cannot determine HEAD for repo %s — full reindex without head_sha tracking",
-            repo["url"],
-        )
-
-    if not full_reindex and pg_conn is not None:
-        last_head = _pipeline.repo_store().get_repo_head_sha(repo["id"])
-
-        if current_head and last_head and current_head == last_head:
-            _logger.info(
-                "Repo %s unchanged (HEAD %s) — skipping reindex",
-                repo.get("url", local_path), current_head[:8],
-            )
-            return {
-                "modules": 0,
-                "views": 0,
-                "qweb": 0,
-                "embeddings": 0,
-                "js_patches": 0,
-                "owl_comps": 0,
-            }
-
-        if last_head and current_head and not _incremental.is_ancestor(
-            repo_path, last_head, current_head
-        ):
-            _logger.warning(
-                "Repo %s: force-push or history rewrite detected "
-                "(stored %s not ancestor of HEAD %s) — falling back to full reindex",
-                repo.get("url", local_path),
-                last_head[:8],
-                current_head[:8],
-            )
-            last_head = None  # force full reindex below
-    elif full_reindex:
-        last_head = None  # ensure diff filter is skipped
-    # === End incremental check ===
-
-    # build_registry expects list[tuple[repo_path, odoo_version]].
-    # Pass repo_url + repo_id for A2c provenance stamping on every ModuleInfo.
-    # The registered branch + profile version feed the version rule (ADR-0056):
-    # a standard branch name decides every module's odoo_version.
-    registry = _pipeline.build_registry(
-        [(local_path, odoo_version)],
-        repo_url=repo.get("url"),
-        repo_id=repo.get("id"),
-        branch=repo.get("branch"),
-    )
-    # registry: {odoo_version: {module_name: ModuleInfo}}
-    modules_by_version = registry  # alias for clarity
-
-    # Collect live_paths (all module paths found on disk) BEFORE incremental filter.
-    # GC compares these against Neo4j Module nodes to detect stale (renamed/removed) modules.
-    # Must use the FULL scan (not the incremental-filtered subset) so GC sees ALL live dirs.
-    # ADR-0037: relativize to repo root so live_paths matches the relative form now
-    # stored in Module.path — a mismatch would mark every node stale and delete the graph.
-    live_paths: set[str] = {
-        info.relative_path(info.path)
-        for mods in registry.values()
-        for info in mods.values()
-    }
-    # Live module NAMES per version (registry keys) — used by gc_stale_test_nodes,
-    # whose stale predicate is `tm.module IN $live_modules` (module names, not paths,
-    # since TestClass/TestMethod nodes carry module NAME not relative path). Computed
-    # from the FULL scan (pre-incremental) so a --full GC sees every live module.
-    live_module_names_by_version: dict[str, list[str]] = {
-        ver: list(mods.keys()) for ver, mods in registry.items()
-    }
-    # Repo dir name (m.repo in Neo4j) — derived the same way registry.py does it.
-    repo_root_name: str = Path(local_path).name
-    # Start of this run on the Neo4j server clock: the --gc shim's retire guard
-    # keeps any module another run re-wrote after this instant (ADR-0056 H2).
-    gc_run_started_at = writer.server_now() if gc else None
-
-    # F4 — single source of truth for this repo's OWNING profile. Compute ONCE
-    # here and feed BOTH the Neo4j writer (`profiles=`) AND the pgvector write
-    # (`profile_name=`) from it, so the two stores can never diverge by
-    # construction (Neo4j↔pgvector owner split-brain). Previously Neo4j stamped
-    # _owning_profiles(repo,...) while pgvector stamped the run `profile_name`
-    # directly — equal today (get_repos_for_profile returns no `profile_name`
-    # column) but would silently diverge if a future caller fed repos carrying
-    # their own `profile_name` (e.g. get_ancestor_repos). _owning_profiles raises
-    # on a falsy owner (F2), so `owning_profile` below is always a real name.
-    _profiles_arr: list[str] = _owning_profiles(repo, profile_name, repo_root_name)
-    owning_profile: str = _profiles_arr[0]
-
-    # === Incremental filter (W2-4) ===
-    if last_head and current_head and not full_reindex:
-        changed_rel_paths = _incremental.compute_changed_module_paths(
-            repo_path, last_head, current_head,
-        )
-        # convert relative paths to absolute to match ModuleInfo.path
-        changed_abs_paths = {str(repo_path / rel) for rel in changed_rel_paths}
-
-        filtered_by_version: dict[str, dict] = {}
-        total_before = sum(len(mods) for mods in modules_by_version.values())
-        for ver, mods in modules_by_version.items():
-            filtered_by_version[ver] = _incremental.filter_modules_by_changed(
-                mods, changed_abs_paths,
-            )
-        total_after = sum(len(mods) for mods in filtered_by_version.values())
-
-        _logger.info(
-            "Repo %s: incremental — %d/%d modules changed",
-            repo.get("url", local_path), total_after, total_before,
-        )
-
-        if total_after == 0:
-            _logger.info(
-                "Repo %s: no module dirs changed (only meta files) — "
-                "head_sha will still be advanced",
-                repo.get("url", local_path),
-            )
-            if current_head and pg_conn is not None:
-                _pipeline.repo_store().update_repo_head_sha(repo["id"], current_head)
-            return {
-                "modules": 0,
-                "views": 0,
-                "qweb": 0,
-                "embeddings": 0,
-                "js_patches": 0,
-                "owl_comps": 0,
-            }
-
-        modules_by_version = filtered_by_version
-    # === End incremental filter ===
 
     py_results = []
     view_results: list[ViewParseResult] = []
@@ -630,7 +605,7 @@ def _index_repo(
                     repo=info.repo, repo_id=info.repo_id,
                 ))
                 # F4: pgvector stamps the SAME single owning profile as Neo4j
-                # (owning_profile == _profiles_arr[0]), not the run profile_name
+                # (owning_profile == profiles_arr[0]), not the run profile_name
                 # directly — single source of truth, no split-brain.
                 embed_calls = write_module_embeddings(
                     mod_name, version, chunks, embedder,
@@ -643,170 +618,442 @@ def _index_repo(
     # stamping for the WRITE-time provenance array): stamp every node with the
     # OWNING profile of THIS repo — never the descendant ancestor chain. Foreign
     # tenant-private names accumulated onto shared-core nodes (`base`, `sale`, …)
-    # would be hidden by the choke's all(). `_profiles_arr` is the SAME list
+    # would be hidden by the choke's all(). `profiles_arr` is the SAME list
     # computed once near the top of the function (F4 single source of truth) and
     # used for the pgvector write above, so the two stores cannot diverge. See
     # _owning_profiles() for the full rationale + the F-2/F-6 non-empty guard.
-    writer.write_results(py_results, profiles=_profiles_arr)
+    writer.write_results(py_results, profiles=profiles_arr)
     # WI-D: write :AssetBundle nodes BEFORE views/qweb so the legacy
     # <template inherit_id="web.assets_backend"> extenders (written in the qweb
     # pass) resolve against the AssetBundle base nodes via EXTENDS_ASSET_BUNDLE
     # instead of emitting an unresolved warning (the ~13 A2 warnings, ADR-0052).
-    writer.write_asset_results(asset_results, profiles=_profiles_arr)
-    writer.write_view_results(view_results, profiles=_profiles_arr)
+    writer.write_asset_results(asset_results, profiles=profiles_arr)
+    writer.write_view_results(view_results, profiles=profiles_arr)
     # WI-1: write test surface nodes (TestClass/TestMethod) alongside model nodes.
     # test_results collected per-module inside the main loop (see below) then written here.
     # Era-gated dispatch is handled by parser_test.parse_module internally.
     if test_results:
-        writer.write_test_results(test_results, profiles=_profiles_arr)
+        writer.write_test_results(test_results, profiles=profiles_arr)
     # WI-3: write JsTestSuite nodes for frontend test files (Hoot/QUnit/tour).
     # js_test_suites accumulated per-module in the loop above.
     if js_test_suites:
-        writer.write_js_test_results(js_test_suites, profiles=_profiles_arr)
+        writer.write_js_test_results(js_test_suites, profiles=profiles_arr)
     # WI-E (M11): write RelaxNG LintViolation nodes after View nodes exist.
     # ADR-0037: pass repo_root so file_path (a MERGE-key component) is stored
     # repo-relative — keeps it consistent with Stylesheet + the cleanup cypher.
     all_lint_violations = [v for vr in view_results for v in vr.lint_violations]
     writer.write_lint_violations(
-        all_lint_violations, profiles=_profiles_arr, repo_root=repo_path,
+        all_lint_violations, profiles=profiles_arr, repo_root=repo_path,
     )
-    writer.write_js_graph_results(js_graph_results, profiles=_profiles_arr)
+    writer.write_js_graph_results(js_graph_results, profiles=profiles_arr)
     # WI-A1: write Stylesheet nodes (CSS + SCSS) after module writes.
     # ADR-0037: pass repo_root so Stylesheet.file_path + @import targets are
     # stored repo-relative (all stylesheets in this repo share one repo_root).
     # Pass repo_id so the :IMPORTS target MATCH is repo-scoped — without it two
     # repos at the same version sharing a relative path would cross-link.
     writer.write_stylesheets(
-        all_stylesheet_infos, profiles=_profiles_arr, repo_root=repo_path,
+        all_stylesheet_infos, profiles=profiles_arr, repo_root=repo_path,
         repo_id=repo.get("id"),
     )
 
-    # === Module GC (M7 C4): retire stale modules after successful writes ===
-    # TRANSITIONAL SHIM (ADR-0056 B6): the opt-in --gc path now runs the single
-    # retirement cascade (writer.retire_modules: Module + full child subtree)
-    # instead of the removed Module-only gc_stale_modules. Stale = a module this
-    # repo last wrote (Module.repo) whose name is absent from the full scan.
-    # This whole block is replaced by the ledger reconcile (B7/B8).
-    # Risk gate: only run when scanner found ≥1 module to avoid data loss when
-    # scanner fails silently (e.g. filesystem permission error, empty repo).
-    if gc:
-        if len(live_paths) >= 1:
-            stale_names = writer.orphan_module_names(
-                odoo_version,
-                # Every scanned name, whatever version it resolved to - the old
-                # path-based GC compared against all live paths the same way.
-                sorted({
-                    n for names in live_module_names_by_version.values() for n in names
-                }),
-                repo=repo_root_name,
-            )
-            gc_deleted = 0
-            if stale_names:
-                gc_deleted = writer.retire_modules(
-                    odoo_version, stale_names, run_started_at=gc_run_started_at,
-                )["modules"]
-            if gc_deleted > 0:
+    return {
+        "modules": total_modules,
+        "views": total_views,
+        "qweb": total_qweb,
+        "reports": total_reports,
+        "asset_bundles": total_asset_bundles,
+        "embeddings": total_embeddings,
+        "embed_calls": total_embed_calls,
+        "js_patches": total_js_patches,
+        "owl_comps": total_owl_comps,
+        "stylesheets": total_stylesheets,
+    }, test_results
+
+
+def _gc_stale_test_nodes(
+    writer: IndexWriterProtocol,
+    live_names_by_version: dict[str, list[str]],
+    test_results: list,
+    repo_root_name: str,
+) -> None:
+    """Test-node GC (M12, explicit and not behind any flag).
+
+    Removes this repo's TestClass/TestMethod nodes whose module is no longer
+    in the scan (module level) or whose test FILE was deleted inside a module
+    re-parsed this run (file level). Repo-scoped (Defect H) and restricted to
+    the re-parsed modules for the file level (Defect I).
+    """
+    live_test_files_by_version: dict[str, set[str]] = {}
+    reparsed_by_version: dict[str, set[str]] = {}
+    for tr in test_results:
+        ver = tr.module.odoo_version
+        bucket = live_test_files_by_version.setdefault(ver, set())
+        reparsed_by_version.setdefault(ver, set()).add(tr.module.name)
+        for tc in tr.test_classes:
+            if tc.file_path:
+                bucket.add(tc.file_path)
+    for ver, live_names in live_names_by_version.items():
+        writer.gc_stale_test_nodes(
+            ver, live_names,
+            live_file_paths=sorted(live_test_files_by_version.get(ver, set())),
+            repo=repo_root_name,
+            live_modules_for_file_gc=sorted(reparsed_by_version.get(ver, set())),
+        )
+
+
+def _index_repo(
+    repo: dict,
+    writer: IndexWriterProtocol,
+    pg_conn=None,
+    embedder=None,
+    progress: bool = False,
+    full_reindex: bool = False,
+    gc: bool = False,
+    profile_name: str | None = None,
+    core_rng_root: Path | None = None,
+    refresh: bool = True,
+    *,
+    retire: bool = True,
+    allow_mass_retire: bool = False,
+) -> dict:
+    """Index a single repo dict (from get_repos_for_profile) and observe its
+    module lifecycle (ADR-0056).
+
+    Returns per-repo counters: {modules, views, qweb, embeddings, ...}; a run
+    that reached the ledger also carries ``lifecycle`` (see below).
+    Pass pg_conn + embedder to also write semantic embeddings to pgvector.
+    Set progress=True to show tqdm progress bar during module iteration.
+    profile_name is stamped on every EmbeddingChunk written so re-indexing
+    one profile does not erase another profile's chunks for the same module.
+
+    core_rng_root: Path to <odoo_core_root>/odoo/addons/base/rng/ (or the
+        openerp/ equivalent for v8/v9).  When the repo itself contains the RNG
+        directory it is used directly; *core_rng_root* is the fallback for
+        addon-only repos whose views still need version-exact RelaxNG validation.
+        None → RelaxNG validation is silently skipped (no false positives).
+
+    Every run scans the repo (``build_registry_scan``: git-tracked manifests)
+    and reconciles the scan with the ``module_presence`` ledger; nothing is
+    ever deleted here - retirement is decided by ``reconcile.reconcile_version``
+    after the run's repos were indexed.
+
+    - Unchanged skip (zero cost) only when HEAD == ``repos.head_sha`` AND the
+      ledger reflects that HEAD (``repos.presence_head_sha``) AND no module of
+      the repo is flagged ``needs_rewrite``.
+    - Sync path: HEAD unchanged but the ledger is behind (first run after the
+      ledger shipped, a gate trip, a pending retirement): scan + ledger + stamp,
+      no re-parse except the modules that must be (re)written.
+    - Incremental: only modules whose directory changed since ``head_sha`` are
+      re-parsed. Force-push (stored sha not an ancestor) or ``full_reindex``
+      re-parse everything.
+    - Always (re)written as well: ``needs_rewrite`` names (another repo stopped
+      shipping a module this repo still ships, M5) and self-heal names (present
+      in the scan but without a graph node carrying this repo's profile, H2).
+    - After the writes: ``commit_observed`` (present/excluded rows), names the
+      scan no longer contains are flagged ``retire_pending`` with the removing
+      commit and successor as evidence, blocked by the repo's gates (G-A scan
+      complete + trusted, G-B mass drop) or by ``retire=False``; the Module
+      nodes are stamped with the HEAD and their ledger owners (L6).
+    - ``head_sha`` advances after all writes succeed. ``presence_head_sha``
+      advances only when no gate tripped, the stamp matched every present
+      module, and nothing is pending (H1); when the only reason is pending
+      names, ``lifecycle.presence_deferred_head`` hands the HEAD to the
+      reconcile, which advances it once those names are retired.
+    - Signals the operator must see (version rule, gate trips, git refusing
+      the repo, missing ``origin/<branch>`` ref, stamp shortfall) replace
+      ``repos.lifecycle_attention``; a clean run clears it.
+
+    ``lifecycle`` counters: ``odoo_version`` (ledger key version),
+    ``gates_tripped`` (gate ids), ``pending`` (names flagged this run),
+    ``attention`` (messages), ``presence_synced`` (bool),
+    ``presence_deferred_head`` (sha or None).
+
+    ``gc`` is accepted for backward compatibility and ignored (retirement and
+    test-node GC always run). ``retire=False`` (CLI ``--no-retire``) scans and
+    writes but deletes nothing: absent names stay pending (``no_retire``) and
+    the test-node GC is skipped. ``allow_mass_retire`` bypasses gate G-B.
+
+    refresh (nightly-fetch): when True (default), do a ``git fetch`` +
+        ``reset --hard origin/<branch>`` on the local clone BEFORE the incremental
+        check, so upstream merges become visible to the cron (the incremental
+        check only reads the local clone, so without a fetch an advanced upstream
+        branch left local HEAD == repos.head_sha and the repo was skipped). The
+        fetch runs under the per-repo advisory lock and is FAIL-SAFE: a fetch
+        error is logged and indexing proceeds on the on-disk state (network
+        reachability is never a hard dependency of the nightly job). Set False
+        (CLI ``--no-fetch``) to preserve the old local-only behaviour. See
+        ``refresh_before_scan``.
+    """
+    # Resolve the parent orchestrator module at call time. ``build_registry_scan``,
+    # ``topological_sort``, ``repo_store`` and ``_presence_store`` are referenced
+    # through it so that test patches applied to ``src.indexer.pipeline.<name>``
+    # are honoured (see the module docstring). Deferred (function-local) import
+    # keeps a cold ``import src.indexer.pipeline_repo`` cycle-free.
+    from src.git_utils import head_matches_remote_branch, remote_branch_ref_exists
+    from src.indexer import lifecycle
+    from src.indexer import pipeline as _pipeline
+
+    del gc  # deprecated: retirement is no longer opt-in (ADR-0056)
+
+    local_path: str = repo["local_path"]
+    odoo_version: str = repo["odoo_version"]
+    url = repo.get("url", local_path)
+
+    if not Path(local_path).is_dir():
+        raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
+
+    # Resolve the RNG directory for version-exact RelaxNG validation (WI-E rework).
+    # Prefer the RNG dir within THIS repo's local_path (covers the main Odoo core
+    # repo where addons live alongside the rng/ dir).  Fall back to core_rng_root
+    # (resolved once per profile in index_profile) for addon-only repos.
+    # If neither exists → rng_root=None → validation silently skipped.
+    repo_path = Path(local_path)
+    _rng_candidates = [
+        repo_path / "odoo" / "addons" / "base" / "rng",
+        repo_path / "openerp" / "addons" / "base" / "rng",
+    ]
+    rng_root: Path | None = next(
+        (p for p in _rng_candidates if p.is_dir()), core_rng_root
+    )
+
+    # === Pre-scan refresh (nightly-fetch) ===
+    # Fetch + reset --hard origin/<branch> BEFORE reading HEAD, so an advanced
+    # upstream branch (e.g. a merged PR) is picked up by the incremental check
+    # below instead of being invisible (local HEAD == repos.head_sha -> skip).
+    # FAIL-SAFE inside refresh_before_scan: a fetch error is logged and we index
+    # whatever is on disk. Gated by `refresh` (CLI --no-fetch turns it off).
+    if refresh:
+        refresh_before_scan(repo, pg_conn)
+    # === End pre-scan refresh ===
+
+    # === Incremental / sync decision (W2-4 + ADR-0056) ===
+    current_head = _incremental.get_repo_head(repo_path)
+    if current_head is None:
+        _logger.warning(
+            "Cannot determine HEAD for repo %s - full reindex without head_sha tracking",
+            url,
+        )
+
+    presence = _pipeline._presence_store() if pg_conn is not None else None
+    if presence is not None and getattr(pg_conn, "autocommit", None) is True:
+        # Ledger calls run on this worker's own connection, never the shared
+        # pool: waiting for the per-version ledger lock (up to
+        # RETIRE_LOCK_WAIT_SECONDS while another process reconciles) must not
+        # pin pool connections that embedding writes and repo_store() need.
+        presence = _ConnBoundStore(presence, pg_conn)
+    last_head: str | None = None
+    presence_head: str | None = None
+    rewrite_names: list[str] = []
+    if pg_conn is not None:
+        last_head = _pipeline.repo_store().get_repo_head_sha(repo["id"])
+    if presence is not None:
+        presence_head = presence.presence_head_sha(repo["id"])
+        rewrite_names = presence.needs_rewrite_names(repo["id"])
+
+    head_unchanged = bool(current_head) and current_head == last_head
+    if not full_reindex and head_unchanged and (
+        presence is None or (presence_head == current_head and not rewrite_names)
+    ):
+        _logger.info(
+            "Repo %s unchanged (HEAD %s) - skipping reindex", url, current_head[:8],
+        )
+        return dict(_EMPTY_COUNTERS)
+
+    diff_base: str | None = None if full_reindex else last_head
+    if diff_base and current_head and not head_unchanged and not _incremental.is_ancestor(
+        repo_path, diff_base, current_head
+    ):
+        _logger.warning(
+            "Repo %s: force-push or history rewrite detected "
+            "(stored %s not ancestor of HEAD %s) - falling back to full reindex",
+            url, diff_base[:8], current_head[:8],
+        )
+        diff_base = None
+    sync_only = not full_reindex and head_unchanged
+    if sync_only:
+        _logger.info(
+            "Repo %s: HEAD %s unchanged but the lifecycle ledger is behind it "
+            "(presence %s, %d needs_rewrite) - sync path, no re-parse of unchanged modules",
+            url, current_head[:8], (presence_head or "none")[:8], len(rewrite_names),
+        )
+    # === End incremental / sync decision ===
+
+    # Scan truth for this repo (ADR-0056): git-tracked manifests, version rule
+    # from the registered branch + profile version, present vs excluded.
+    scan = _pipeline.build_registry_scan(
+        local_path, odoo_version,
+        branch=repo.get("branch"),
+        repo_url=repo.get("url"),
+        repo_id=repo.get("id"),
+    )
+    present_names: set[str] = scan.present_names()
+    live_module_names_by_version: dict[str, list[str]] = {
+        ver: sorted(mods) for ver, mods in scan.modules.items()
+    }
+    # Repo dir name (m.repo in Neo4j) - derived the same way registry.py does it.
+    repo_root_name: str = Path(local_path).name
+
+    # F4 - single source of truth for this repo's OWNING profile. Compute ONCE
+    # here and feed BOTH the Neo4j writer (`profiles=`) AND the pgvector write
+    # (`profile_name=`) from it, so the two stores can never diverge by
+    # construction (Neo4j↔pgvector owner split-brain). _owning_profiles raises
+    # on a falsy owner (F2), so `owning_profile` below is always a real name.
+    _profiles_arr: list[str] = _owning_profiles(repo, profile_name, repo_root_name)
+    owning_profile: str = _profiles_arr[0]
+
+    # === Lifecycle pre-write: trust, gates, self-heal (ADR-0056) ===
+    branch: str | None = repo.get("branch")
+    attention: list[str] = list(scan.attention)
+    trusted = head_matches_remote_branch(repo_path, branch)
+    if scan.tracked_paths is None:
+        attention.append(
+            "git tracking unavailable (not a git work tree, no commit yet, or git "
+            "refused the repository, e.g. safe.directory ownership): scan untrusted, "
+            "no module retired"
+        )
+    elif branch and not remote_branch_ref_exists(repo_path, branch):
+        attention.append(
+            f"no origin/{branch} ref: scan trust falls back to the checked-out branch name"
+        )
+    lifecycle_on = presence is not None and bool(current_head) and bool(branch)
+    if presence is not None and not lifecycle_on:
+        attention.append(
+            "lifecycle ledger not updated: "
+            + ("no git HEAD" if not current_head else "no branch registered")
+            + "; no module retired"
+        )
+    rows: list[dict] = presence.rows_for_repo(repo["id"]) if lifecycle_on else []
+    transitions = lifecycle.classify(rows, scan)
+    gates = lifecycle.apply_gates(
+        transitions, scan, trusted=trusted, allow_mass_retire=allow_mass_retire,
+    )
+    attention.extend(gates.reasons)
+    for reason in gates.reasons:
+        _logger.warning("Repo %s: lifecycle gate: %s", url, reason)
+
+    heal_names: set[str] = set()
+    if lifecycle_on and present_names and diff_base is not None:
+        heal = modules_needing_rewrite(writer, presence, repo, scan, owning_profile)
+        heal_names = set(heal)
+        for reason in (REWRITE_NO_NODE, REWRITE_PATH_DRIFT, REWRITE_REPO_DRIFT):
+            names = sorted(n for n, d in heal.items() if d["reason"] == reason)
+            if names:
                 _logger.info(
-                    "Module GC: retired %d stale Module nodes for repo %s version %s",
-                    gc_deleted, repo_root_name, odoo_version,
+                    "Repo %s: %d present module(s) re-written (self-heal, %s): %s",
+                    url, len(names), reason, ", ".join(names[:10]),
                 )
+    # === End lifecycle pre-write ===
+
+    # === Write set ===
+    total_before = sum(len(mods) for mods in scan.modules.values())
+    if diff_base is None:
+        write_names = set(present_names)
+    elif sync_only:
+        write_names = set()
+    else:
+        changed_rel_paths = _incremental.compute_changed_module_paths(
+            repo_path, diff_base, current_head,
+        )
+        # convert relative paths to absolute to match ModuleInfo.path
+        changed_abs_paths = {str(repo_path / rel) for rel in changed_rel_paths}
+        write_names = {
+            name
+            for mods in scan.modules.values()
+            for name in _incremental.filter_modules_by_changed(mods, changed_abs_paths)
+        }
+        _logger.info(
+            "Repo %s: incremental - %d/%d modules changed",
+            url, len(write_names), total_before,
+        )
+    write_names |= (set(rewrite_names) | heal_names) & present_names
+    modules_by_version: dict[str, dict] = {
+        ver: {n: info for n, info in mods.items() if n in write_names}
+        for ver, mods in scan.modules.items()
+    }
+    modules_by_version = {v: m for v, m in modules_by_version.items() if m}
+    if not modules_by_version and diff_base is not None:
+        _logger.info(
+            "Repo %s: no module dirs changed (only meta files) - head_sha will "
+            "still be advanced", url,
+        )
+    # === End write set ===
+
+    counters = dict(_EMPTY_COUNTERS)
+    test_results: list = []
+    if modules_by_version:
+        counters, test_results = _parse_and_write(
+            modules_by_version,
+            writer=writer, repo=repo, repo_path=repo_path, rng_root=rng_root,
+            pg_conn=pg_conn, embedder=embedder, progress=progress,
+            profiles_arr=_profiles_arr, owning_profile=owning_profile,
+        )
+
+    # NOTE: reconcile_same_name_inherits runs once per version in the post-pass
+    # (index_profile / reconcile_version), not per repo.
+
+    if _LIFECYCLE_TEST_BARRIER is not None:
+        _LIFECYCLE_TEST_BARRIER(repo)
+
+    # === Lifecycle post-write: ledger, pending, stamp (ADR-0056, C1/H1/H2) ===
+    lifecycle_counters: dict | None = None
+    if lifecycle_on:
+        lifecycle_counters = _commit_lifecycle(
+            presence, writer, repo,
+            scan=scan, rows=rows, transitions=transitions, gates=gates,
+            current_head=current_head, diff_base=diff_base,
+            owning_profile=owning_profile, retire=retire,
+            written=write_names, rewrite_names=rewrite_names, attention=attention,
+        )
+    if presence is not None:
+        try:
+            if attention:
+                presence.set_lifecycle_attention(repo["id"], "; ".join(attention))
             else:
-                _logger.info(
-                    "Module GC: no stale Module nodes found for repo %s version %s",
-                    repo_root_name, odoo_version,
-                )
-        else:
-            _logger.warning(
-                "Module GC requested but scanner returned 0 modules — "
-                "skipping to avoid data loss (repo %s version %s)",
-                repo.get("url", local_path), odoo_version,
-            )
+                presence.clear_lifecycle_attention(repo["id"])
+        except Exception:  # noqa: BLE001 - never fail a repo over the attention column
+            _logger.exception("Repo %s: could not write lifecycle_attention", url)
+    elif attention:
+        for message in attention:
+            _logger.warning("Repo %s: lifecycle: %s", url, message)
+    # === End lifecycle post-write ===
 
-        # Placeholder GC (ADR-0007 §D5 extension): delete inert __unresolved__
-        # placeholder nodes that have accumulated in the graph.  Safe at any time
-        # (server.py filters them at read time); running after module writes
-        # maximises the chance that newly indexed parents already resolved some
-        # of the pending placeholders so they will be absent from the graph.
-        writer.gc_unresolved_placeholders(odoo_version)
-
-        # AssetBundle orphan GC (graph MED-1 / integration LOW): AssetBundle is
-        # version-global so it is NOT in the per-module delete cascade; reclaim
-        # genuinely-unreferenced bundles here. Gated to --full only: on an
-        # incremental run a bundle's sole contributor module may simply be absent
-        # from the diff (not re-written), so it would look orphaned but is live.
-        # On --full every live contribution is re-written first, so survivors are
-        # real orphans.
-        if full_reindex:
-            writer.gc_orphan_asset_bundles(odoo_version)
-
-        # Test-node GC (WI-1, MISSED-2): remove TestClass/TestMethod nodes whose
-        # owning module no longer exists on disk (module-level) OR whose test FILE
-        # was deleted inside a still-present module (file-level, M6). Risk-gated
-        # identically to module GC above (only with >=1 live module) so a silent
-        # empty scan never wipes the test surface. Same odoo_version scope.
-        if len(live_paths) >= 1:
-            # Live test FILE paths the parser actually emitted this run, grouped by
-            # version (only from the changed-module subset on incremental runs).
-            # A TestClass whose file_path is absent here (but module IS live and
-            # was re-parsed) had its file deleted -> file-level prune removes orphan.
-            live_test_files_by_version: dict[str, set[str]] = {}
-            # Defect I fix: live_modules_for_file_gc = ONLY modules actually re-parsed
-            # this run (test_results is the changed-module subset on incremental).
-            # Using the full live_module_names would mark unchanged modules' test files
-            # as absent (they were never re-emitted) and delete valid nodes.
-            live_modules_for_file_gc_by_ver: dict[str, set[str]] = {}
-            for _tr in test_results:
-                _ver = _tr.module.odoo_version
-                _bucket = live_test_files_by_version.setdefault(_ver, set())
-                live_modules_for_file_gc_by_ver.setdefault(_ver, set()).add(
-                    _tr.module.name
-                )
-                for _tc in _tr.test_classes:
-                    if _tc.file_path:
-                        _bucket.add(_tc.file_path)
-            for _ver, _live_names in live_module_names_by_version.items():
-                writer.gc_stale_test_nodes(
-                    _ver, _live_names,
-                    live_file_paths=sorted(live_test_files_by_version.get(_ver, set())),
-                    # Defect H fix: scope both prune queries to this repo so
-                    # another repo's same-named modules are never touched.
-                    repo=repo_root_name,
-                    # Defect I fix: file-level prune restricted to re-parsed modules.
-                    live_modules_for_file_gc=sorted(
-                        live_modules_for_file_gc_by_ver.get(_ver, set())
-                    ),
-                )
-    # === End Module GC ===
-
-    # NOTE: reconcile_same_name_inherits was moved from here to index_profile
-    # (called once per version AFTER all repos are indexed) to avoid R redundant
-    # full :Model label scans per profile run.  See PERF comment in index_profile.
+    # Test-node GC (M12): explicit, not behind any flag; needs a trusted,
+    # complete scan (a degraded scan would drop live modules' tests) and is
+    # skipped under --no-retire (which deletes nothing).
+    if retire and gates.scan_ok and present_names:
+        # A module whose manifest does not parse is kept as it is (E2E-D1):
+        # its test nodes are live too.
+        test_live = {v: set(names) for v, names in live_module_names_by_version.items()}
+        test_live.setdefault(scan.odoo_version, set()).update(
+            n for n, ex in scan.excluded.items()
+            if ex.reason == EXCLUSION_UNPARSEABLE
+        )
+        _gc_stale_test_nodes(
+            writer, {v: sorted(n) for v, n in test_live.items()}, test_results, repo_root_name,
+        )
 
     # Observability summary log (M7 C5) - one line per repo, readable by admins.
     _logger.info(
         "Indexer run: %d modules, %d embed calls, %d rows written",
-        total_modules,
-        total_embed_calls,
-        total_embeddings,
+        counters["modules"],
+        counters.get("embed_calls", 0),
+        counters["embeddings"],
     )
 
     # === On full success (W2-4): advance head_sha AFTER all writes ===
-    # Must be the last statement — any exception above prevents this,
-    # preserving last_head so next run retries the same diff (or full reindex).
+    # Any exception above prevents this, preserving last_head so the next run
+    # retries the same diff (or full reindex).
     if current_head and pg_conn is not None:
         _pipeline.repo_store().update_repo_head_sha(repo["id"], current_head)
     # =====================================================================
 
     # === Cross-repo dep propagation (M7 W14) ===
-    # Only on incremental runs (diff-based): collect the changed module names,
-    # query Neo4j for modules in OTHER repos that DEPENDS_ON those modules, and
-    # NULL their repos.head_sha so they are re-indexed on the next run.
-    # Full reindex skips this — it already re-evaluates everything.
-    _is_incremental = (
-        last_head is not None
-        and current_head is not None
-        and not full_reindex
-    )
+    # Only on incremental runs (diff-based): query Neo4j for modules in OTHER
+    # repos that DEPENDS_ON the re-written modules and NULL their
+    # repos.head_sha so they are re-indexed on the next run. Full reindex skips
+    # this - it already re-evaluates everything. Dependents of RETIRED modules
+    # are reset by the reconcile, before the delete removes the edges.
+    _is_incremental = diff_base is not None and not sync_only
     if _is_incremental and pg_conn is not None:
         changed_module_names: set[str] = {
             mod_name
@@ -851,15 +1098,133 @@ def _index_repo(
                     )
     # === End cross-repo dep propagation ===
 
+    if lifecycle_counters is not None:
+        counters["lifecycle"] = lifecycle_counters
+    return counters
+
+
+def _commit_lifecycle(
+    presence,
+    writer: IndexWriterProtocol,
+    repo: dict,
+    *,
+    scan,
+    rows: list[dict],
+    transitions,
+    gates,
+    current_head: str,
+    diff_base: str | None,
+    owning_profile: str,
+    retire: bool,
+    written: set[str],
+    rewrite_names: list[str],
+    attention: list[str],
+) -> dict:
+    """Ledger half of ``_index_repo`` (after the graph writes succeeded).
+
+    Commits the observed rows, flags absent names pending with their evidence,
+    stamps the Module nodes, and decides whether ``presence_head_sha`` may
+    advance. Appends operator messages to *attention*. Returns the
+    ``lifecycle`` counters.
+    """
+    from src.db.module_presence import RetireEvidence
+    from src.db.module_presence import Successor as LedgerSuccessor
+    from src.indexer import lifecycle
+
+    repo_id = repo["id"]
+    local_path = repo["local_path"]
+    scan_version = scan.odoo_version
+    observed = _observed_modules(scan)
+    observed_names = {o.name for o in observed}
+    presence.commit_observed(
+        repo_id,
+        profile_name=owning_profile,
+        odoo_version=scan_version,
+        head_sha=current_head,
+        observed=observed,
+    )
+    done_rewrites = sorted(set(rewrite_names) & written)
+    if done_rewrites:
+        presence.clear_needs_rewrite(repo_id, done_rewrites)
+
+    absent = transitions.retired
+    pending: list[str] = []
+    if absent:
+        changes = (
+            _incremental.compute_manifest_changes(Path(local_path), diff_base, current_head)
+            if diff_base and diff_base != current_head else []
+        )
+        successors = lifecycle.pick_successors(transitions, changes, scan)
+        rows_by_name = {r["name"]: r for r in rows}
+        evidence: dict = {}
+        ledger_successors: dict = {}
+        for t in absent:
+            row = rows_by_name.get(t.name, {})
+            found, git_successor = lifecycle.removal_evidence(
+                local_path, t.path or row.get("path") or t.name,
+                [row.get("manifest_file") or _MANIFEST_NAMES[0]],
+                observed_names,
+            )
+            if found is not None:
+                evidence[t.name] = RetireEvidence(found.sha, found.date, found.subject)
+            chosen = successors.get(t.name) or git_successor
+            if chosen is not None:
+                ledger_successors[t.name] = LedgerSuccessor(chosen.names, chosen.source)
+        if not gates.retire_allowed:
+            blocked_by = lifecycle.BLOCKED_GATE_PREFIX + ",".join(gates.tripped)
+        elif not retire:
+            blocked_by = lifecycle.BLOCKED_NO_RETIRE
+        else:
+            blocked_by = None
+        pending = presence.mark_retire_pending(
+            repo_id, [t.name for t in absent], "absent",
+            evidence=evidence, successors=ledger_successors, blocked_by=blocked_by,
+        )
+        _logger.info(
+            "Repo %s: %d module(s) no longer shipped, pending retirement%s: %s",
+            repo.get("url", local_path), len(pending),
+            f" (blocked: {blocked_by})" if blocked_by else "",
+            ", ".join(pending),
+        )
+
+    present = sorted(scan.present_names())
+    stamp_short = False
+    if present:
+        owners = presence.present_owner_basenames(scan_version, present)
+        matched = writer.stamp_module_presence(
+            scan_version,
+            [
+                {
+                    "name": n,
+                    "repos": owners.get(n),
+                    "version_mismatch": scan.module(n).version_mismatch,
+                    "version_raw": scan.module(n).version_raw or None,
+                }
+                for n in present
+            ],
+            current_head,
+        )
+        if matched < len(present):
+            stamp_short = True
+            attention.append(
+                f"{len(present) - matched} present module(s) have no graph node after "
+                "the write (concurrent retire?); ledger not marked synced, the next run "
+                "re-writes them"
+            )
+
+    held = (not gates.retire_allowed) or stamp_short or (bool(pending) and not retire)
+    synced = False
+    deferred_head: str | None = None
+    if not held and not pending:
+        presence.mark_presence_synced(repo_id, current_head)
+        synced = True
+    elif not held:
+        deferred_head = current_head
     return {
-        "modules": total_modules,
-        "views": total_views,
-        "qweb": total_qweb,
-        "reports": total_reports,
-        "asset_bundles": total_asset_bundles,
-        "embeddings": total_embeddings,
-        "embed_calls": total_embed_calls,
-        "js_patches": total_js_patches,
-        "owl_comps": total_owl_comps,
-        "stylesheets": total_stylesheets,
+        "odoo_version": scan_version,
+        "gates_tripped": list(gates.tripped),
+        "pending": pending,
+        "attention": list(attention),
+        "presence_synced": synced,
+        "presence_deferred_head": deferred_head,
     }
