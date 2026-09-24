@@ -9,6 +9,10 @@ Per ADR-0035 D3: pre-pinned known_hosts for common forges (GitHub/GitLab/Bitbuck
 
 Per ADR-0035 D4: repo refresh = git fetch + git reset --hard origin/<branch>.
 Per ADR-0035 D6: stale .git/*.lock cleanup before retry after SIGKILL.
+
+Scan-truth helpers (ADR-0056): ``list_tracked_manifests`` (the git-tracked
+manifest set, submodules included), ``removing_commit`` (evidence for a
+retired module) and ``head_matches_remote_branch`` (scan trust).
 """
 import logging
 import os
@@ -19,6 +23,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from src.constants import TIMEOUT_GIT_CLONE, TIMEOUT_GIT_DIFF
+
+MANIFEST_FILENAMES: tuple[str, ...] = ("__manifest__.py", "__openerp__.py")
 
 _logger = logging.getLogger(__name__)
 
@@ -329,3 +335,97 @@ def refresh_repo(
                 os.unlink(tmp_path)
             except FileNotFoundError:
                 pass  # best-effort cleanup
+
+
+def _git_out(repo: Path, *args: str, timeout: int = TIMEOUT_GIT_DIFF) -> str | None:
+    """Run ``git -C repo <args>``; return stdout, or None on any failure."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, timeout=timeout,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode("utf-8", errors="surrogateescape")
+
+
+def list_tracked_manifests(local_path: Path | str) -> set[str] | None:
+    """Return the repo-relative paths of every git-tracked module manifest.
+
+    A manifest is a tracked file named ``__manifest__.py`` or ``__openerp__.py``
+    (any depth), including files inside git submodules (``--recurse-submodules``:
+    a vendored addon submodule is part of the tree, not cruft). The listing is the
+    index, which equals HEAD after the ``reset --hard`` refresh (ADR-0035 D4).
+
+    Returns None when tracking is unavailable - ``local_path`` is not a git work
+    tree, or HEAD does not resolve to a commit (unborn branch). The caller then
+    treats the working tree as the only truth and must not trust the scan for
+    retirement. No version dispatch here: the caller filters by era.
+    """
+    repo = Path(local_path)
+    if _git_out(repo, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") is None:
+        return None
+    out = _git_out(
+        repo, "ls-files", "-z", "--recurse-submodules", "--",
+        *(f"*{name}" for name in MANIFEST_FILENAMES),
+        timeout=TIMEOUT_GIT_DIFF * 3,
+    )
+    if out is None:
+        return None
+    return {
+        p for p in out.split("\0")
+        if p and Path(p).name in MANIFEST_FILENAMES
+    }
+
+
+def removing_commit(
+    local_path: Path | str, path: str, rev: str = "HEAD",
+) -> tuple[str, str, str] | None:
+    """Return ``(sha, iso_date, subject)`` of the newest commit reachable from
+    ``rev`` that deleted ``path`` (repo-relative), or None when git never deleted
+    it there (or on any git error).
+
+    Rename detection is off, so a module directory renamed by ``git mv`` still
+    reports the rename commit as the deleter of the old path. The subject is data
+    for the reader (e.g. ``[REF] test_pylint: rename the module to
+    test_viin_pylint``), never a classifier.
+    """
+    out = _git_out(
+        Path(local_path), "log", "-1", "--no-renames", "--diff-filter=D",
+        "--format=%H%x09%cI%x09%s", rev, "--", path,
+    )
+    if not out or not out.strip():
+        return None
+    sha, _, rest = out.strip().partition("\t")
+    date, _, subject = rest.partition("\t")
+    if not sha or not date:
+        return None
+    return sha, date, subject
+
+
+def head_matches_remote_branch(local_path: Path | str, branch: str | None) -> bool:
+    """True when the checked-out tree is the registered branch (scan trust, M8).
+
+    When ``refs/remotes/origin/<branch>`` exists, HEAD must point at the same
+    commit: a failed refresh that left another branch, or local commits, on disk
+    makes the scan untrusted. When no such remote-tracking ref exists (a local
+    repo without an ``origin`` copy of the branch), the symbolic branch of HEAD
+    must equal ``branch``. False when ``branch`` is empty, HEAD is unborn or
+    detached without a remote ref, or ``local_path`` is not a git repository.
+    """
+    if not branch:
+        return False
+    repo = Path(local_path)
+    head = _git_out(repo, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    if head is None:
+        return False
+    remote = _git_out(
+        repo, "rev-parse", "--verify", "--quiet",
+        f"refs/remotes/origin/{branch}^{{commit}}",
+    )
+    if remote is not None:
+        return head.strip() == remote.strip()
+    current = _git_out(repo, "symbolic-ref", "--quiet", "--short", "HEAD")
+    return current is not None and current.strip() == branch

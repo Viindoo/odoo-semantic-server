@@ -103,17 +103,31 @@ def test_compute_changed_returns_empty_on_invalid_sha(repo_3_modules: Path):
 
 
 def test_compute_changed_handles_module_rename(repo_3_modules: Path):
-    """Renaming a module dir → both old + new paths appear changed."""
+    """A module dir rename re-parses exactly the NEW module dir, and the rename
+    itself is not lost: it is reported by compute_manifest_changes.
+
+    Rewritten (OSM #378): the old assertion accepted "old path or not, either is
+    acceptable", which protects nothing. The precise contract is:
+    - compute_changed_module_paths resolves changed files to module dirs that
+      exist in the NEW tree; the old dir has no manifest any more, so it can
+      never be a "changed module" to re-parse. Its disappearance is the
+      lifecycle ledger's job (scan truth + lifecycle.classify -> retired), not
+      this helper's - the defect in #378 was precisely that nothing else ever
+      noticed the old name vanish.
+    - compute_manifest_changes carries the old -> new pair (git_rename
+      successor evidence), so "Renamed to: inventory" can be answered.
+    """
+    from src.indexer.incremental import compute_manifest_changes
+
     sha1 = get_repo_head(repo_3_modules)
     _git(repo_3_modules, "mv", "addons/stock", "addons/inventory")
     _git(repo_3_modules, "commit", "-m", "rename stock to inventory")
     sha2 = get_repo_head(repo_3_modules)
     changed = compute_changed_module_paths(repo_3_modules, sha1, sha2)
-    # Both old and new paths should appear (or at minimum the new one)
-    assert "addons/inventory" in changed
-    # Old path may or may not be there depending on git diff output;
-    # if rename detection treats it as a single rename with no content
-    # change, only inventory shows. Either is acceptable.
+    assert changed == {"addons/inventory"}
+
+    changes = compute_manifest_changes(repo_3_modules, sha1, sha2)
+    assert [(c.status, c.old_name, c.name) for c in changes] == [("R", "stock", "inventory")]
 
 
 def test_compute_changed_module_paths_skips_root_files(repo_3_modules: Path):

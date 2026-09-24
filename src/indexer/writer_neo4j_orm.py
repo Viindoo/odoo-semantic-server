@@ -90,6 +90,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                       m.repo_url = coalesce($repo_url, m.repo_url),
                       m.repo_id = coalesce($repo_id, m.repo_id)
         SET m.repo = $repo, m.path = $path, m.version_raw = $version_raw,
+            m.version_mismatch = $version_mismatch,
             m.edition = $edition,
             m.viindoo_equivalent_qname = $vvq,
             m.last_commit_sha = $commit_sha,
@@ -100,6 +101,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
     """, name=module.name, v=module.odoo_version,
          repo=module.repo, path=module.relative_path(module.path),
          version_raw=module.version_raw,
+         version_mismatch=getattr(module, "version_mismatch", False) is True,
          edition=module.edition,
          vvq=module.viindoo_equivalent_qname,
          commit_sha=module.commit_sha,

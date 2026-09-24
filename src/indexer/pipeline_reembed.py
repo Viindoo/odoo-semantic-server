@@ -120,6 +120,7 @@ def reembed_stubs_for_profile(
                 [(local_path, odoo_version)],
                 repo_url=repo.get("url"),
                 repo_id=repo.get("id"),
+                branch=repo.get("branch"),
             )
             # Flatten to {module_name: ModuleInfo} for O(1) lookup in the inner loop.
             _modules_map: dict = {}

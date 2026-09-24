@@ -389,10 +389,13 @@ def _index_repo(
 
     # build_registry expects list[tuple[repo_path, odoo_version]].
     # Pass repo_url + repo_id for A2c provenance stamping on every ModuleInfo.
+    # The registered branch + profile version feed the version rule (ADR-0056):
+    # a standard branch name decides every module's odoo_version.
     registry = _pipeline.build_registry(
         [(local_path, odoo_version)],
         repo_url=repo.get("url"),
         repo_id=repo.get("id"),
+        branch=repo.get("branch"),
     )
     # registry: {odoo_version: {module_name: ModuleInfo}}
     modules_by_version = registry  # alias for clarity
