@@ -169,7 +169,7 @@ def _write_cli_flag_replacements(tx, replaced: list[tuple[str, str]],
 
 def _write_lint_violations_batch(
     tx, violations: list[LintViolationInfo], profiles: list[str],
-    repo_root=None,
+    repo_root=None, run_id: str | None = None,
 ) -> None:
     """MERGE :LintViolation nodes + :HAS_VIOLATION edge from owning :View.
 
@@ -184,7 +184,7 @@ def _write_lint_violations_batch(
     post-reindex cleanup (ops/cleanup_absolute_path_nodes.cypher) would wrongly
     delete them.  None → stored verbatim (back-compat for callers without it).
     """
-    from .writer_neo4j import _profile_union_set
+    from .writer_neo4j import _profile_union_set, _written_run_set
 
     for v in violations:
         fp_rel = to_repo_relative(v.file_path, repo_root)
@@ -207,9 +207,10 @@ def _write_lint_violations_batch(
                           lv.view_type = $vtype,
                           lv.profile =
                               {_profile_union_set("lv")}
+            SET {_written_run_set("lv")}
         """, fp=fp_rel, line=v.line, rule=v.rule, ver=v.odoo_version,
              msg=v.message, sev=v.severity, xmlid=v.view_xmlid,
-             vtype=v.view_type, profiles=profiles)
+             vtype=v.view_type, profiles=profiles, run=run_id)
 
         # HAS_VIOLATION edge from :View to :LintViolation
         # Silent skip when the View node does not exist yet.
@@ -219,6 +220,7 @@ def _write_lint_violations_batch(
                 file_path: $fp, line: $line,
                 rule: $rule, odoo_version: $ver
             }})
-            MERGE (view)-[:{REL_HAS_VIOLATION}]->(lv)
+            MERGE (view)-[r:{REL_HAS_VIOLATION}]->(lv)
+            SET {_written_run_set("r")}
         """, xmlid=v.view_xmlid, ver=v.odoo_version,
-             fp=fp_rel, line=v.line, rule=v.rule)
+             fp=fp_rel, line=v.line, rule=v.rule, run=run_id)

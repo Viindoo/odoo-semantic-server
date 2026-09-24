@@ -527,6 +527,27 @@ def test_index_repo_feeds_same_owner_to_neo4j_and_pgvector(tmp_path, monkeypatch
     # initialized by an earlier PG test (tables already dropped) makes this pure
     # unit test fail with UndefinedTable, but only in a combined run.
     monkeypatch.setattr("src.indexer.pipeline._presence_store", lambda: None)
+    # Without a ledger the entity prune (B14) keeps the pre-B14 replace: it
+    # deletes the owner's rows this parse did not produce, through the pool.
+    # A fake pool + delete capture that owner too, so the pgvector delete is
+    # held to the same F4 invariant (and no real pool left by an earlier PG
+    # test is reached).
+    import contextlib
+
+    class _FakePool:
+        @contextlib.contextmanager
+        def checkout(self):
+            yield object()
+
+    def _fake_delete_except(conn, module, version, profile_name, keep_keys, **_kw):
+        captured_pg["delete_profile_name"] = profile_name
+        return 0
+
+    monkeypatch.setattr("src.db.pg.get_pool", lambda: _FakePool())
+    monkeypatch.setattr(
+        "src.indexer.writer_pgvector.delete_module_embeddings_except",
+        _fake_delete_except,
+    )
 
     from src.indexer.pipeline import _index_repo
 
@@ -549,5 +570,6 @@ def test_index_repo_feeds_same_owner_to_neo4j_and_pgvector(tmp_path, monkeypatch
 
     # pgvector side: stamped the SAME owner, NOT a separately-derived value.
     assert captured_pg.get("profile_name") == "odoo_99"
+    assert captured_pg.get("delete_profile_name") == "odoo_99"
     # The load-bearing invariant: both stores agree by construction.
     assert captured_pg["profile_name"] == writer.profiles_seen[0][0]

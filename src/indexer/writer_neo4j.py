@@ -2,6 +2,7 @@
 # src/indexer/writer_neo4j.py
 import logging
 import time
+import uuid
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 
@@ -11,7 +12,18 @@ from neo4j.exceptions import DriverError, Neo4jError
 from src.constants import (
     NEO4J_DELETE_BATCH_ROWS,
     NEO4J_WRITE_BATCH_SIZE,
+    REL_DEFINED_IN,
+    REL_DEPENDS_ON,
+    REL_DEPENDS_ON_FIELD,
+    REL_HAS_VIOLATION,
+    REL_IMPORTS,
     REL_INHERITS,
+    REL_INHERITS_VIEW,
+    REL_REPORTS_ON,
+    REL_TARGETS_MODEL,
+    REL_USES_CORE_SYMBOL,
+    REL_USES_FIELD,
+    REL_USES_TEMPLATE,
 )
 
 from .diff_engine import DiffResult
@@ -46,7 +58,10 @@ _PRUNE_SOFT_DROP_MAX_FRACTION = 0.5
 # --- Module retirement cascade (ADR-0056 D9) --------------------------------
 # Every node label the writers attach to ONE module at one version. This is the
 # single source of truth for the retirement cascade (retire_modules), the owner
-# reset (drop_module_owner) and the child-orphan finder (orphan_child_keys).
+# reset (drop_module_owner), the child-orphan finder (orphan_child_keys) and the
+# intra-module entity prune (module_children_census / prune_module_children).
+# Every label's writer stamps the run token (_written_run_set) except
+# TestHelper, whose addon nodes are projections of TestClass nodes.
 # Membership rule: the label is written by a module's own index run and is
 # selected by a module-scoped predicate:
 #   * carries a ``module`` property naming the owning module (MERGE key or SET):
@@ -105,6 +120,38 @@ _MODULE_LINT_VIOLATION_PREDICATE = """
         })
 """
 
+# Relationships the per-module writers MERGE from a module's OWN nodes, by the
+# label of the start node ("Module" = the Module node itself). Every writer of
+# these stamps the run token on the relationship (_written_run_set), so after a
+# complete re-parse the ones not re-stamped are relations the source no longer
+# declares (a removed `_inherit`, a dropped manifest dependency, a view that no
+# longer extends its parent ...) and the entity prune deletes them. Not listed,
+# hence never pruned here:
+#   * derived by version-wide post-passes, not by a module's parse:
+#     TestClass-[:INHERITS_TEST], TestMethod-[:COVERS_MODEL|COVERS_FIELD|
+#     COVERS_METHOD] (reconcile_test_surface), addon TestHelper-[:DEFINED_IN]
+#     (finalize_is_helper projection);
+#   * starting at a shared node: AssetBundle-[:INCLUDES_BUNDLE];
+#   * spec layer (CoreSymbol / LintRule / CLI*), not module-scoped.
+# reconcile_same_name_inherits also MERGEs INHERITS from module Models; its edges
+# target the same is_definition tips the Model writer re-stamps on every parse,
+# and the post-pass re-adds any it owns after the prune.
+MODULE_CHILD_REL_TYPES: dict[str, tuple[str, ...]] = {
+    "Module": (REL_DEPENDS_ON, "CONTRIBUTES_TO"),
+    "Model": (REL_DEFINED_IN, REL_INHERITS, "DELEGATES_TO"),
+    "Field": ("BELONGS_TO",),
+    "Method": ("BELONGS_TO", REL_USES_CORE_SYMBOL, REL_USES_FIELD, REL_DEPENDS_ON_FIELD),
+    "View": (REL_DEFINED_IN, REL_TARGETS_MODEL, REL_INHERITS_VIEW, REL_HAS_VIOLATION),
+    "QWebTmpl": (REL_DEFINED_IN, "EXTENDS_TMPL", "EXTENDS_ASSET_BUNDLE"),
+    "Report": (REL_DEFINED_IN, REL_REPORTS_ON, REL_USES_TEMPLATE),
+    "JSPatch": (REL_DEFINED_IN, "PATCHES"),
+    "OWLComp": (REL_DEFINED_IN, "EXTENDS", "BOUND_TO"),
+    "Stylesheet": (REL_DEFINED_IN, REL_IMPORTS),
+    "JsTestSuite": (REL_DEFINED_IN,),
+    "TestMethod": ("BELONGS_TO_TEST",),
+    "TestClass": (REL_DEFINED_IN,),
+}
+
 def _instant(expr: str) -> str:
     """Cypher: the instant of DateTime *expr* in epoch milliseconds.
 
@@ -121,6 +168,22 @@ def _instant(expr: str) -> str:
     return f"{expr}.epochMillis"
 
 
+def _stale(alias: str) -> str:
+    """Cypher predicate: *alias* was not written by run ``$run`` and predates it.
+
+    ``written_at`` (server clock, stamped with the token) at or after
+    ``$run_started`` means another run wrote it while this one was running;
+    it is never stale here. Without ``written_at`` (written before the stamp
+    existed) or without ``$run_started`` the token alone decides.
+    """
+    return (
+        f"(coalesce({alias}.written_run, '') <> $run AND ($run_started IS NULL "
+        f"OR {alias}.written_at IS NULL "
+        f"OR {_instant(f'{alias}.written_at')} < {_instant('$run_started')}))"
+    )
+
+
+_STALE_REL = _stale("r")
 def _written_before_run(alias: str) -> str:
     """Cypher predicate: child *alias* was not written at or after ``$run_at``.
 
@@ -132,6 +195,96 @@ def _written_before_run(alias: str) -> str:
     return (
         f"({alias}.written_at IS NULL "
         f"OR {_instant(f'{alias}.written_at')} < {_instant('$run_at')})"
+    )
+
+
+
+
+def _rel_selector(label: str) -> tuple[str, str] | None:
+    """``(MATCH ... of the start nodes, rel types)`` for the relationship prune.
+
+    Start nodes are the SURVIVING children of ``$name`` (the node prune ran
+    first) or the Module node itself; None when *label* owns no prunable
+    relationship.
+    """
+    types = MODULE_CHILD_REL_TYPES.get(label)
+    if not types:
+        return None
+    if label == "Module":
+        return "MATCH (n:Module {name: $name, odoo_version: $v})", ", ".join(
+            repr(t) for t in types
+        )
+    alias, selection, stale = _prune_selector(label)
+    if alias != "n":
+        return None
+    return f"{selection} AND NOT ({stale})", ", ".join(repr(t) for t in types)
+
+
+# Intra-module entity prune (ADR-0056 B14). View / QWebTmpl / Report are keyed
+# by xmlid, not by module: a module that writes a record under ANOTHER module's
+# xmlid (``<record id="base.view_x">``) updates that module's node and becomes
+# its ``module`` until the owner writes it again. Only a module's own-namespace
+# xmlids are therefore its to prune; a foreign-namespace record it stops
+# overriding is left for its owner.
+_XMLID_KEYED_CHILD_LABELS: frozenset[str] = frozenset({"View", "QWebTmpl", "Report"})
+
+
+def _prune_selector(label: str) -> tuple[str, str, str]:
+    """``(alias, MATCH ... WHERE <selection>, <stale predicate>)`` for one label.
+
+    Selection = the children of module ``$name`` at ``$v`` the prune may touch;
+    stale = the ones the current run (``$run``) did not write. Parameters:
+    ``$name``, ``$v``, ``$run``, ``$xmlids`` (the module's View xmlids) and
+    ``$file_prefixes`` (the module directory, repo-relative and absolute, each
+    ending in ``/``).
+    """
+    if label == "LintViolation":
+        # The B6 cascade predicate, narrowed to files inside the module's own
+        # directory: a violation raised on a foreign-xmlid View the module
+        # overrides belongs to the file that declares it, not to this module.
+        # The file-prefix seek (LintViolation.file_path index) comes first so
+        # the predicate is evaluated for this module's files only.
+        return (
+            "lv",
+            f"""
+            UNWIND $file_prefixes AS prefix
+            MATCH (lv:LintViolation)
+            WHERE lv.file_path STARTS WITH prefix AND lv.odoo_version = $v
+            WITH DISTINCT lv
+            WHERE ({_MODULE_LINT_VIOLATION_PREDICATE})
+            """,
+            _stale("lv"),
+        )
+    if label == "TestHelper":
+        # Addon TestHelper nodes are projections finalize_is_helper derives
+        # from TestClass nodes after every repo was written; no parse writes
+        # them. One is stale when no TestClass of its name was written by
+        # this run.
+        return (
+            "n",
+            """
+            MATCH (n:TestHelper)
+            WHERE n.module = $name AND n.odoo_version = $v
+            """,
+            f"""NOT EXISTS {{
+                MATCH (tc:TestClass {{name: n.name, module: $name, odoo_version: $v}})
+                WHERE tc.written_run = $run
+                   OR ($run_started IS NOT NULL
+                       AND {_instant('tc.written_at')} >= {_instant('$run_started')})
+            }}""",
+        )
+    own_namespace = (
+        "AND split(coalesce(n.xmlid, ''), '.')[0] = $name"
+        if label in _XMLID_KEYED_CHILD_LABELS else ""
+    )
+    return (
+        "n",
+        f"""
+        MATCH (n:{label})
+        WHERE n.module = $name AND n.odoo_version = $v
+        {own_namespace}
+        """,
+        _stale("n"),
     )
 
 
@@ -165,10 +318,41 @@ def _profile_union_set(alias: str) -> str:
     return f"[x IN coalesce({alias}.profile, []) WHERE NOT x IN $profiles] + $profiles"
 
 
+def _written_run_set(alias: str) -> str:
+    """Cypher SET item stamping the writer's run token on a module child (B14).
+
+    Every writer of a :data:`MODULE_CHILD_LABELS` node (except the derived
+    TestHelper projection) puts this item in the node's MERGE, so after a
+    module is re-parsed the nodes the parse still produced carry the current
+    run token and the ones it no longer produced do not. With no run begun
+    (``$run`` is null) the existing token is kept, never erased.
+
+    With a token the item also stamps ``written_at`` (Neo4j server
+    ``datetime()``), which the prune compares with the run start
+    (:func:`_stale`). The ``$run`` token is bound by the caller's
+    ``tx.run(..., run=...)``.
+    """
+    return (
+        f"{alias}.written_run = coalesce($run, {alias}.written_run), "
+        f"{alias}.written_at = CASE WHEN $run IS NULL THEN {alias}.written_at "
+        f"ELSE datetime() END"
+    )
+
+
 def _chunked(items, size):
     """Yield successive chunks of `items` of length up to `size`."""
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+
+def _require_run_id(run_id) -> str:
+    """Return *run_id* when it is a non-empty string, else raise ValueError.
+
+    An empty token would make every child of the module look stale.
+    """
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError(f"run_id must be a non-empty string (got {run_id!r})")
+    return run_id
 
 
 def _require_aware_datetime(value, param: str) -> datetime:
@@ -266,6 +450,9 @@ class Neo4jWriter:
         # server's db.transaction.timeout, as every indexer statement;
         # ``lifecycle-audit`` sets LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS.
         self.read_timeout_s: float | None = None
+        self._run_id: str | None = None
+        self._run_scope: str | None = None
+        self._run_started_at: datetime | None = None
 
     def close(self) -> None:
         self.driver.close()
@@ -275,6 +462,60 @@ class Neo4jWriter:
         if self.read_timeout_s is None:
             return text
         return Query(text, timeout=self.read_timeout_s)
+
+    # --- Run token (ADR-0056 B14) ---------------------------------------------
+
+    def begin_run(
+        self, run_id: str | None = None, *, scope: str = "run", started_at=None,
+    ) -> str:
+        """Start a write run: every module child written from now on carries *run_id*.
+
+        The token is what the intra-module entity prune compares against: a
+        child of a re-parsed module whose ``written_run`` is not the current
+        token was not produced by that parse. The call signatures of the
+        ``write_*`` methods stay unchanged; they read the token from here.
+
+        *run_id* defaults to a fresh random token. *scope* is ``"run"`` when an
+        orchestrator (``index_profile``) owns the run - every repo it indexes
+        shares the token, which is safe because the writer is shared across
+        its worker threads - and ``"repo"`` when ``_index_repo`` begins one for
+        a direct call without an orchestrator (a fresh token per call).
+
+        *started_at* (aware, Neo4j server clock) is when the run began; it
+        defaults to :meth:`server_now`. Every child written with a token also
+        gets ``written_at`` (server ``datetime()``), and the prune never
+        deletes one written at or after the run start: a concurrent run of
+        another profile (another token) that has just written a module this
+        run also re-parses keeps what it wrote (the B6 ``run_started_at`` guard
+        of ``retire_modules``, applied to children).
+        Returns the token.
+        """
+        self._run_started_at = (
+            _require_aware_datetime(started_at, "started_at")
+            if started_at is not None else self.server_now()
+        )
+        self._run_id = run_id or uuid.uuid4().hex
+        self._run_scope = scope
+        return self._run_id
+
+    @property
+    def run_started_at(self) -> datetime | None:
+        """Server-clock start of the current run, or None when no run was begun."""
+        return self._run_started_at
+
+    def _prune_started_at(self, run: str):
+        """The run start guarding a prune by token *run* (None: token rule only)."""
+        return self._run_started_at if run == self._run_id else None
+
+    @property
+    def run_id(self) -> str | None:
+        """The current run token, or None when no run was begun."""
+        return self._run_id
+
+    @property
+    def run_scope(self) -> str | None:
+        """``"run"`` (orchestrator-owned), ``"repo"`` or None (no run begun)."""
+        return self._run_scope
 
     def setup_indexes(self) -> None:
         with self.driver.session() as session:
@@ -341,6 +582,9 @@ class Neo4jWriter:
                 " ON (n.file_path, n.line, n.rule, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:LintViolation)"
                 " ON (n.view_xmlid, n.odoo_version)",
+                # Intra-module entity prune (ADR-0056 B14): prefix seek on the
+                # module directory.
+                "CREATE INDEX IF NOT EXISTS FOR (n:LintViolation) ON (n.file_path)",
                 # WI-1: test surface index layer (§2.7)
                 # CRITICAL-1 + Defect H: MERGE key now includes repo (5-part).
                 "CREATE INDEX IF NOT EXISTS FOR (n:TestClass)"
@@ -372,6 +616,7 @@ class Neo4jWriter:
                     for _label in (
                         "Model", "Field", "Method", "View", "QWebTmpl",
                         "Report", "JSPatch", "OWLComp", "TestHelper",
+                        "TestClass", "TestMethod", "JsTestSuite",
                     )
                 ),
                 # Version-wide lifecycle reads (orphan_child_keys, the orphan
@@ -424,7 +669,7 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_parse_result, result, _profiles)
+                session.execute_write(_write_parse_result, result, _profiles, self._run_id)
 
     def write_view_results(
         self,
@@ -435,7 +680,9 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_view_parse_result, result, _profiles)
+                session.execute_write(
+                    _write_view_parse_result, result, _profiles, self._run_id,
+                )
 
     def write_js_graph_results(
         self,
@@ -446,7 +693,9 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_js_graph_result, result, _profiles)
+                session.execute_write(
+                    _write_js_graph_result, result, _profiles, self._run_id,
+                )
 
     def write_asset_results(
         self,
@@ -464,7 +713,9 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_asset_parse_result, result, _profiles)
+                session.execute_write(
+                    _write_asset_parse_result, result, _profiles, self._run_id,
+                )
 
     # --- M4.5 spec layer (CoreSymbol + diff edges) -------------------------
 
@@ -881,6 +1132,7 @@ class Neo4jWriter:
             for batch in _chunked(stylesheets, NEO4J_WRITE_BATCH_SIZE):
                 session.execute_write(
                     _write_stylesheets_batch, batch, _profiles, repo_root, repo_id,
+                    self._run_id,
                 )
 
     def write_lint_violations(
@@ -907,6 +1159,7 @@ class Neo4jWriter:
             for batch in _chunked(violations, NEO4J_WRITE_BATCH_SIZE):
                 session.execute_write(
                     _write_lint_violations_batch, batch, _profiles, repo_root,
+                    self._run_id,
                 )
 
     # --- Module retirement cascade (ADR-0056 D9) -----------------------------
@@ -1260,6 +1513,400 @@ class Neo4jWriter:
             name, odoo_version, repos, reset, tests_deleted,
         )
         return {"module": matched, "children": reset, "tests_deleted": tests_deleted}
+
+    def module_children_census(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_id: str,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> dict:
+        """Count module *name*'s children and relationships the run *run_id* did not write.
+
+        Read-only half of the intra-module entity prune (ADR-0056 B14); the
+        caller decides from these counts whether :meth:`prune_module_children`
+        may run. Node selection per label is the one the prune deletes from
+        (:func:`_prune_selector`): the module's :data:`MODULE_CHILD_LABELS`
+        nodes at *odoo_version*, own-namespace xmlids only for View / QWebTmpl
+        / Report, LintViolations only in files under *file_prefixes*, addon
+        TestHelper projections judged by their TestClass. Relationships are
+        the :data:`MODULE_CHILD_REL_TYPES` leaving the Module node and the
+        children that stay (not stale). Labels in *skip_labels* are counted
+        for neither.
+
+        Returns ``{"module_exists": bool, "module_profiles": sorted list,
+        "by_label": {label: {"total", "stale"}}, "total", "stale",
+        "rels_by_label": {start label: {"total", "stale"}}, "rels_total",
+        "rels_stale"}``.
+        """
+        run = _require_run_id(run_id)
+        skip = set(skip_labels)
+        labels = [lb for lb in MODULE_CHILD_LABELS if lb not in skip]
+        result: dict = {
+            "module_exists": False,
+            "module_profiles": [],
+            "by_label": {},
+            "total": 0,
+            "stale": 0,
+            "rels_by_label": {},
+            "rels_total": 0,
+            "rels_stale": 0,
+        }
+        if not name or name in NON_RETIRABLE_MODULE_NAMES:
+            return result
+        prefixes = sorted({p for p in file_prefixes if p})
+        with self.driver.session() as session:
+            module_row = _run_single_with_retry(
+                session, "module_children_census[Module]",
+                """
+                OPTIONAL MATCH (m:Module {name: $name, odoo_version: $v})
+                RETURN m IS NOT NULL AS exists, coalesce(m.profile, []) AS profile
+                """,
+                name=name, v=odoo_version,
+            )
+            if module_row is not None:
+                result["module_exists"] = bool(module_row["exists"])
+                result["module_profiles"] = sorted(module_row["profile"] or [])
+            xmlids = self._module_view_xmlids(session, odoo_version, [name])
+            parts = []
+            for label in labels:
+                alias, selection, stale = _prune_selector(label)
+                parts.append(
+                    f"""{selection}
+                    RETURN 'node' AS kind, '{label}' AS label, count({alias}) AS total,
+                           count(CASE WHEN {stale} THEN 1 END) AS stale"""
+                )
+            for label in ("Module", *labels):
+                rel = _rel_selector(label)
+                if rel is None:
+                    continue
+                start_nodes, types = rel
+                parts.append(
+                    f"""{start_nodes}
+                    MATCH (n)-[r]->() WHERE type(r) IN [{types}]
+                    RETURN 'rel' AS kind, '{label}' AS label, count(r) AS total,
+                           count(CASE WHEN {_STALE_REL} THEN 1 END) AS stale"""
+                )
+            rows = session.run(
+                "\nUNION ALL\n".join(parts),
+                name=name, v=odoo_version, run=run, names=[name],
+                xmlids=xmlids, file_prefixes=prefixes,
+                run_started=self._prune_started_at(run),
+            ).data()
+        for row in rows:
+            key = "by_label" if row["kind"] == "node" else "rels_by_label"
+            result[key][row["label"]] = {"total": row["total"], "stale": row["stale"]}
+        result["total"] = sum(c["total"] for c in result["by_label"].values())
+        result["stale"] = sum(c["stale"] for c in result["by_label"].values())
+        result["rels_total"] = sum(c["total"] for c in result["rels_by_label"].values())
+        result["rels_stale"] = sum(c["stale"] for c in result["rels_by_label"].values())
+        return result
+
+    def prune_module_children(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_id: str,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> dict:
+        """Delete module *name*'s children and relationships run *run_id* did not write.
+
+        The destructive half of the intra-module entity prune (B14): after the
+        module was fully re-parsed and re-written in run *run_id*, every child
+        it still defines and every relationship it still declares carry that
+        token, so one without it is something the source no longer has (a
+        removed field, method, view, report, JS patch, stylesheet, test; a
+        dropped ``_inherit``, manifest dependency, ``inherit_id`` ...). The
+        caller has already checked, from the ledger and
+        :meth:`module_children_census`, that the parse was complete, that no
+        other repo ships the module and that the drop is not a mass event;
+        this method does not re-check.
+
+        Scope is exactly :meth:`module_children_census`'s selection. Nodes:
+        never the Module node, other modules, other versions, foreign-namespace
+        xmlid records, ``@framework`` / ``__unresolved__`` nodes, or labels
+        outside :data:`MODULE_CHILD_LABELS`. Relationships: only the
+        :data:`MODULE_CHILD_REL_TYPES` leaving the Module node or a surviving
+        child - never a relationship another module's node starts. Nodes and
+        relationships without ``written_run`` (written before B14) count as
+        not written by this run; one whose ``written_at`` is at or after this
+        run's start (:attr:`run_started_at`, a concurrent run of another
+        profile) is never deleted. Nodes go first, in the retirement cascade's
+        order (LintViolation before Views), then relationships. Each step is
+        an auto-commit ``CALL {} IN TRANSACTIONS`` retried on transient
+        errors, so a re-run after a failure finishes the job.
+
+        Returns ``{"deleted": int, "by_label": {label: int},
+        "rels_deleted": int, "rels_by_label": {start label: int}}``.
+        """
+        run = _require_run_id(run_id)
+        skip = set(skip_labels)
+        by_label: dict[str, int] = {}
+        rels_by_label: dict[str, int] = {}
+        empty = {"deleted": 0, "by_label": by_label, "rels_deleted": 0,
+                 "rels_by_label": rels_by_label}
+        if not name or name in NON_RETIRABLE_MODULE_NAMES:
+            return empty
+        prefixes = sorted({p for p in file_prefixes if p})
+        params = {"name": name, "v": odoo_version, "run": run, "names": [name],
+                  "file_prefixes": prefixes, "run_started": self._prune_started_at(run)}
+        with self.driver.session() as session:
+            params["xmlids"] = self._module_view_xmlids(session, odoo_version, [name])
+            for label in MODULE_CHILD_LABELS:
+                if label in skip:
+                    continue
+                alias, selection, stale = _prune_selector(label)
+                row = _run_single_with_retry(
+                    session, f"prune_module_children[{label}]",
+                    f"""{selection}
+                    AND {stale}
+                    CALL ({alias}) {{
+                        DETACH DELETE {alias}
+                    }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                    RETURN count({alias}) AS deleted
+                    """,
+                    **params,
+                )
+                deleted = row["deleted"] if row is not None else 0
+                if deleted:
+                    by_label[label] = deleted
+            for label in ("Module", *MODULE_CHILD_LABELS):
+                if label in skip:
+                    continue
+                rel = _rel_selector(label)
+                if rel is None:
+                    continue
+                start_nodes, types = rel
+                row = _run_single_with_retry(
+                    session, f"prune_module_children[rel:{label}]",
+                    f"""{start_nodes}
+                    MATCH (n)-[r]->()
+                    WHERE type(r) IN [{types}] AND {_STALE_REL}
+                    CALL (r) {{
+                        DELETE r
+                    }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                    RETURN count(r) AS deleted
+                    """,
+                    **params,
+                )
+                deleted = row["deleted"] if row is not None else 0
+                if deleted:
+                    rels_by_label[label] = deleted
+        total = sum(by_label.values())
+        rels_total = sum(rels_by_label.values())
+        if total or rels_total:
+            _logger.info(
+                "prune_module_children: %s@%s lost %d node(s) %s and %d relationship(s) "
+                "%s its source no longer defines",
+                name, odoo_version, total, by_label, rels_total, rels_by_label,
+            )
+        return {"deleted": total, "by_label": by_label,
+                "rels_deleted": rels_total, "rels_by_label": rels_by_label}
+
+    def record_module_parse_degraded(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        repo_id,
+        fingerprint: str,
+        paths: Iterable[str],
+        problems: Iterable[str],
+    ) -> None:
+        """Remember on the Module node that its last parse was degraded (B14).
+
+        ``parse_degraded_fingerprint`` identifies the state of the failing
+        files (see ``pipeline_repo._failure_fingerprint``) so the pipeline
+        re-parses the module only when that state changes, or once after a
+        transient failure - never on every run. ``parse_degraded_paths``
+        (repo-relative) and ``parse_degraded_problems`` keep the operator
+        message alive while the module stays degraded.
+        """
+        with self.driver.session() as session:
+            _run_single_with_retry(
+                session, "record_module_parse_degraded",
+                """
+                MATCH (m:Module {name: $name, odoo_version: $v})
+                SET m.parse_degraded_fingerprint = $fingerprint,
+                    m.parse_degraded_paths = $paths,
+                    m.parse_degraded_problems = $problems,
+                    m.parse_degraded_repo_id = $repo_id
+                RETURN count(m) AS n
+                """,
+                name=name, v=odoo_version, fingerprint=fingerprint,
+                paths=sorted(set(paths)), problems=list(problems), repo_id=repo_id,
+            )
+
+    def clear_module_parse_degraded(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the degraded-parse record of *names* (their parse is complete again)."""
+        wanted = sorted(set(names))
+        if not wanted:
+            return 0
+        with self.driver.session() as session:
+            row = _run_single_with_retry(
+                session, "clear_module_parse_degraded",
+                """
+                UNWIND $names AS name
+                MATCH (m:Module {name: name, odoo_version: $v})
+                WHERE m.parse_degraded_fingerprint IS NOT NULL
+                REMOVE m.parse_degraded_fingerprint, m.parse_degraded_paths,
+                       m.parse_degraded_problems, m.parse_degraded_repo_id
+                RETURN count(m) AS n
+                """,
+                names=wanted, v=odoo_version,
+            )
+        return row["n"] if row is not None else 0
+
+    def parse_degraded_modules(self, repo_id) -> list[dict]:
+        """Modules whose last parse by repo *repo_id* was degraded, every version.
+
+        Rows ``{name, odoo_version, fingerprint, paths, problems}`` sorted by
+        version then name.
+        """
+        with self.driver.session() as session:
+            return session.run(
+                """
+                MATCH (m:Module)
+                WHERE m.parse_degraded_repo_id = $repo_id
+                  AND m.parse_degraded_fingerprint IS NOT NULL
+                RETURN m.name AS name, m.odoo_version AS odoo_version,
+                       m.parse_degraded_fingerprint AS fingerprint,
+                       coalesce(m.parse_degraded_paths, []) AS paths,
+                       coalesce(m.parse_degraded_problems, []) AS problems
+                ORDER BY m.odoo_version, m.name
+                """,
+                repo_id=repo_id,
+            ).data()
+
+    def record_module_prune_held(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        repo_id,
+        stale: int,
+        total: int,
+        rels_stale: int,
+        rels_total: int,
+    ) -> None:
+        """Remember on the Module node that its entity prune is held by the soft gate (B14).
+
+        The counts are those of the census that tripped the gate. The record
+        stands until a run prunes the module (``clear_module_prune_held``), so
+        the dry-run ``lifecycle-audit`` can report the hold without parsing.
+        """
+        with self.driver.session() as session:
+            _run_single_with_retry(
+                session, "record_module_prune_held",
+                """
+                MATCH (m:Module {name: $name, odoo_version: $v})
+                SET m.prune_held_repo_id = $repo_id,
+                    m.prune_held_counts = [$stale, $total, $rels_stale, $rels_total]
+                RETURN count(m) AS n
+                """,
+                name=name, v=odoo_version, repo_id=repo_id, stale=stale, total=total,
+                rels_stale=rels_stale, rels_total=rels_total,
+            )
+
+    def clear_module_prune_held(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the held-prune record of *names* (their entity prune ran)."""
+        wanted = sorted(set(names))
+        if not wanted:
+            return 0
+        with self.driver.session() as session:
+            row = _run_single_with_retry(
+                session, "clear_module_prune_held",
+                """
+                UNWIND $names AS name
+                MATCH (m:Module {name: name, odoo_version: $v})
+                WHERE m.prune_held_counts IS NOT NULL
+                REMOVE m.prune_held_repo_id, m.prune_held_counts
+                RETURN count(m) AS n
+                """,
+                names=wanted, v=odoo_version,
+            )
+        return row["n"] if row is not None else 0
+
+    def prune_held_modules(self, repo_id) -> list[dict]:
+        """Modules whose entity prune by repo *repo_id* is held, every version.
+
+        Rows ``{name, odoo_version, stale, total, rels_stale, rels_total}``
+        sorted by version then name.
+        """
+        with self.driver.session() as session:
+            return session.run(
+                self._read_query("""
+                MATCH (m:Module)
+                WHERE m.prune_held_repo_id = $repo_id AND m.prune_held_counts IS NOT NULL
+                RETURN m.name AS name, m.odoo_version AS odoo_version,
+                       m.prune_held_counts[0] AS stale, m.prune_held_counts[1] AS total,
+                       m.prune_held_counts[2] AS rels_stale,
+                       m.prune_held_counts[3] AS rels_total
+                ORDER BY m.odoo_version, m.name
+                """),
+                repo_id=repo_id,
+            ).data()
+
+    def record_module_prune_deferred(
+        self, odoo_version: str, name: str, *, repo_id, waits_for: Iterable[int],
+    ) -> None:
+        """Remember that repo *repo_id*'s entity prune of the module waits for siblings.
+
+        *waits_for*: the never-synced repos whose checkout tracks the module
+        (``shared_unsynced``). The reconcile reads it back once they synced
+        (``prune_deferred_modules``): a sibling that does not present-own the
+        module after all makes the owner re-parse and prune it.
+        """
+        with self.driver.session() as session:
+            _run_single_with_retry(
+                session, "record_module_prune_deferred",
+                """
+                MATCH (m:Module {name: $name, odoo_version: $v})
+                SET m.prune_deferred_repo_id = $repo_id,
+                    m.prune_deferred_for = $waits_for
+                RETURN count(m) AS n
+                """,
+                name=name, v=odoo_version, repo_id=repo_id,
+                waits_for=sorted({int(r) for r in waits_for}),
+            )
+
+    def clear_module_prune_deferred(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the prune deferral of *names* (re-evaluated, pruned or shared)."""
+        wanted = sorted(set(names))
+        if not wanted:
+            return 0
+        with self.driver.session() as session:
+            row = _run_single_with_retry(
+                session, "clear_module_prune_deferred",
+                """
+                UNWIND $names AS name
+                MATCH (m:Module {name: name, odoo_version: $v})
+                WHERE m.prune_deferred_repo_id IS NOT NULL
+                REMOVE m.prune_deferred_repo_id, m.prune_deferred_for
+                RETURN count(m) AS n
+                """,
+                names=wanted, v=odoo_version,
+            )
+        return row["n"] if row is not None else 0
+
+    def prune_deferred_modules(self, odoo_version: str) -> list[dict]:
+        """Modules at the version whose prune waits for siblings: rows
+        ``{name, repo_id, waits_for}`` sorted by name."""
+        with self.driver.session() as session:
+            return session.run(
+                self._read_query("""
+                MATCH (m:Module {odoo_version: $v})
+                WHERE m.prune_deferred_repo_id IS NOT NULL
+                RETURN m.name AS name, m.prune_deferred_repo_id AS repo_id,
+                       coalesce(m.prune_deferred_for, []) AS waits_for
+                ORDER BY m.name
+                """),
+                v=odoo_version,
+            ).data()
 
     def stamp_module_presence(
         self,
@@ -1947,7 +2594,9 @@ class Neo4jWriter:
         _profiles = profiles if profiles is not None else []
         with self.driver.session() as session:
             for result in results:
-                session.execute_write(_write_test_classes_batch, result, _profiles)
+                session.execute_write(
+                    _write_test_classes_batch, result, _profiles, self._run_id,
+                )
                 if result.test_helpers:
                     session.execute_write(_write_test_helpers_batch, result.test_helpers, _profiles)
 
@@ -1967,7 +2616,7 @@ class Neo4jWriter:
         if not suites:
             return
         with self.driver.session() as session:
-            session.execute_write(_write_js_test_batch, suites, _profiles)
+            session.execute_write(_write_js_test_batch, suites, _profiles, self._run_id)
 
     def write_framework_test_helpers(
         self,
@@ -2463,7 +3112,9 @@ from .writer_neo4j_ui import (  # noqa: E402,I001
 # WI-1: test surface write helpers (module-level, called via execute_write)
 # ---------------------------------------------------------------------------
 
-def _write_test_classes_batch(tx, result: "TestParseResult", profiles: list[str]) -> None:
+def _write_test_classes_batch(
+    tx, result: "TestParseResult", profiles: list[str], run_id: str | None = None,
+) -> None:
     """Write TestClass + TestMethod nodes from one TestParseResult (one module).
 
     MERGE key for TestClass: (name, module, file_path, repo, odoo_version) - CRITICAL-1.
@@ -2499,10 +3150,12 @@ def _write_test_classes_batch(tx, result: "TestParseResult", profiles: list[str]
                 tc.is_helper = $is_helper,
                 tc.docstring = $docstring,
                 tc.line = $line,
-                tc.profile = {union_expr}
+                tc.profile = {union_expr},
+                {_written_run_set("tc")}
             WITH tc
             MATCH (m:Module {{name: $module, odoo_version: $ver}})
-            MERGE (tc)-[:DEFINED_IN]->(m)
+            MERGE (tc)-[d:DEFINED_IN]->(m)
+            SET {_written_run_set("d")}
             """,
             name=tc.name,
             module=tc.module,
@@ -2518,6 +3171,7 @@ def _write_test_classes_batch(tx, result: "TestParseResult", profiles: list[str]
             docstring=tc.docstring,
             line=tc.line,
             profiles=profiles,
+            run=run_id,
         )
 
         # MERGE TestMethod nodes for this class
@@ -2547,8 +3201,10 @@ def _write_test_classes_batch(tx, result: "TestParseResult", profiles: list[str]
                     tm.asserts_count = $asserts_count,
                     tm.via = $via,
                     tm.line = $line,
-                    tm.profile = {union_expr_m}
-                MERGE (tm)-[:BELONGS_TO_TEST]->(tc)
+                    tm.profile = {union_expr_m},
+                    {_written_run_set("tm")}
+                MERGE (tm)-[b:BELONGS_TO_TEST]->(tc)
+                SET {_written_run_set("b")}
                 """,
                 name=meth.name,
                 test_class=tc.name,
@@ -2565,6 +3221,7 @@ def _write_test_classes_batch(tx, result: "TestParseResult", profiles: list[str]
                 via=meth.via,
                 line=meth.line,
                 profiles=profiles,
+                run=run_id,
             )
 
 
@@ -2649,6 +3306,7 @@ def _write_js_test_batch(
     tx,
     suites: "list",
     profiles: list[str],
+    run_id: str | None = None,
 ) -> None:
     """Write JsTestSuite nodes for a list of JS test files.
 
@@ -2675,10 +3333,12 @@ def _write_js_test_batch(
                 js.mounts = $mounts,
                 js.mock_models = $mock_models,
                 js.line = $line,
-                js.profile = {union_expr}
+                js.profile = {union_expr},
+                {_written_run_set("js")}
             WITH js
             MATCH (m:Module {{name: $module, odoo_version: $ver}})
-            MERGE (js)-[:DEFINED_IN]->(m)
+            MERGE (js)-[d:DEFINED_IN]->(m)
+            SET {_written_run_set("d")}
             """,
             file_path=suite.file_path,
             module=suite.module,
@@ -2691,4 +3351,5 @@ def _write_js_test_batch(
             mock_models=suite.mock_models,
             line=suite.line,
             profiles=profiles,
+            run=run_id,
         )

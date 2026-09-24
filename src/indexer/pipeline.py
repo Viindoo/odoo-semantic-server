@@ -538,8 +538,11 @@ def index_profile(
 
         try:
             writer.setup_indexes()
+            # One run token for every repo of this profile run (ADR-0056 B14):
+            # the entity prune deletes a re-parsed module's children without it.
             if run_started_at is None:
                 run_started_at = writer.server_now()
+            writer.begin_run(started_at=run_started_at)
             lifecycle = _empty_lifecycle()
 
             total_modules = 0

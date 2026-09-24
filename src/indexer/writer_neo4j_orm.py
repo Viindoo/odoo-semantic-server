@@ -8,7 +8,10 @@ Module/Model/Field/Method and the same-name INHERITS topology (ADR-0048 K×D
 extender→definition edges) are load-bearing. The Module MERGE stamps
 ``m.last_seen_at = datetime()`` (server clock) on every write, so the
 retirement cascade (``Neo4jWriter.retire_modules``, ADR-0056) can tell a node a
-concurrent run just re-wrote from a stale one.
+concurrent run just re-wrote from a stale one. Model / Field / Method carry the
+writer's run token (``written_run``, ADR-0056 B14), and so does every
+relationship this module MERGEs from the module's own nodes, so the intra-module
+prune can tell what the latest parse of their module still defines.
 
 The shared ``_profile_union_set`` Cypher fragment (ADR-0034 SSOT) lives in
 ``writer_neo4j`` and is imported lazily inside the function body — a module-level
@@ -38,8 +41,10 @@ from .models import ParseResult
 _logger = logging.getLogger("src.indexer.writer_neo4j")
 
 
-def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
-    from .writer_neo4j import _profile_union_set
+def _write_parse_result(
+    tx, result: ParseResult, profiles: list[str], run_id: str | None = None,
+) -> None:
+    from .writer_neo4j import _profile_union_set, _written_run_set
 
     module = result.module
 
@@ -146,8 +151,9 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
         tx.run(f"""
             MATCH (m:Module {{name: $name, odoo_version: $v}})
             MERGE (d:Module {{name: $dep, odoo_version: $v}})
-            MERGE (m)-[:{REL_DEPENDS_ON}]->(d)
-        """, name=module.name, v=module.odoo_version, dep=dep)
+            MERGE (m)-[r:{REL_DEPENDS_ON}]->(d)
+            SET {_written_run_set("r")}
+        """, name=module.name, v=module.odoo_version, dep=dep, run=run_id)
 
     for model in result.models:
         tx.run(f"""
@@ -170,14 +176,16 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                               OR ($had_explicit_name AND NOT $name IN $inherit_list),
                           m.profile =
                               {_profile_union_set("m")}
-            MERGE (m)-[:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("m")}
+            MERGE (m)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, name=model.name, v=model.odoo_version,
              module_name=model.module,
              is_abstract=model.is_abstract,
              is_transient=model.is_transient,
              had_explicit_name=model.had_explicit_name,
              inherit_list=model.inherit,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         for idx, parent_name in enumerate(model.inherit):
             if parent_name == model.name:
@@ -201,8 +209,9 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     MERGE (ext)-[r:{REL_INHERITS}]->(tip)
                     ON CREATE SET r.order = $order
                     ON MATCH  SET r.order = coalesce(r.order, $order)
+                    SET {_written_run_set("r")}
                 """, name=model.name, mod=model.module, v=model.odoo_version,
-                     order=idx)
+                     order=idx, run=run_id)
             else:
                 # Prefer-definition collapse (graph HIGH-1 + mixin-resolve fix,
                 # ADR-0048): the cross-name parent (e.g. `mail.thread`) must be
@@ -230,11 +239,11 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                              coalesce(parent.field_count, 0) DESC, parent.module ASC
                     LIMIT 1
                     MERGE (m)-[r:{REL_INHERITS}]->(parent)
-                    SET r.order = $order
+                    SET r.order = $order, {_written_run_set("r")}
                     RETURN 1 AS ok
                 """, model_name=model.name, mod=model.module,
                      v=model.odoo_version, parent_name=parent_name,
-                     order=idx).single()
+                     order=idx, run=run_id).single()
                 if rec is None:
                     _logger.warning(
                         "unresolved INHERITS: %s → %s (version %s) — parent model not indexed",
@@ -258,10 +267,10 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                         ON CREATE SET placeholder.unresolved = true,
                                       placeholder.is_definition = false
                         MERGE (m)-[r:{REL_INHERITS} {{unresolved: true}}]->(placeholder)
-                        SET r.order = $order
+                        SET r.order = $order, {_written_run_set("r")}
                     """, model_name=model.name, mod=model.module,
                          v=model.odoo_version, parent_name=parent_name,
-                         order=idx)
+                         order=idx, run=run_id)
 
         for delegated_model, via_field in model.inherits.items():
             # Prefer-definition collapse (graph HIGH-1 + mixin-resolve fix,
@@ -272,18 +281,19 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
             # ORDER BY (is_definition DESC, field_count DESC, module ASC) + LIMIT 1
             # so the single canonical delegate wins when one exists and the best
             # non-definition node wins otherwise — never dropping a real target.
-            rec = tx.run("""
-                MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
-                MATCH (d:Model {name: $delegated, odoo_version: $v})
+            rec = tx.run(f"""
+                MATCH (m:Model {{name: $name, module: $mod, odoo_version: $v}})
+                MATCH (d:Model {{name: $delegated, odoo_version: $v}})
                 WHERE NOT coalesce(d.unresolved, false)
                 WITH m, d
                 ORDER BY coalesce(d.is_definition, false) DESC,
                          coalesce(d.field_count, 0) DESC, d.module ASC
                 LIMIT 1
-                MERGE (m)-[:DELEGATES_TO {via_field: $via_field}]->(d)
+                MERGE (m)-[r:DELEGATES_TO {{via_field: $via_field}}]->(d)
+                SET {_written_run_set("r")}
                 RETURN 1 AS ok
             """, name=model.name, mod=model.module, v=model.odoo_version,
-                 delegated=delegated_model, via_field=via_field).single()
+                 delegated=delegated_model, via_field=via_field, run=run_id).single()
             if rec is None:
                 _logger.warning(
                     "unresolved DELEGATES_TO: %s → %s (version %s) — target model not indexed",
@@ -293,16 +303,17 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                 # not owned by this run — do NOT stamp this run's profile. Created
                 # profile-less -> F-6 fail-closed for scoped tenants until indexed
                 # under its own owner. ON MATCH leaves profile untouched.
-                tx.run("""
-                    MATCH (m:Model {name: $name, module: $mod, odoo_version: $v})
-                    MERGE (placeholder:Model {name: $delegated,
-                                              module: '__unresolved__', odoo_version: $v})
+                tx.run(f"""
+                    MATCH (m:Model {{name: $name, module: $mod, odoo_version: $v}})
+                    MERGE (placeholder:Model {{name: $delegated,
+                                              module: '__unresolved__', odoo_version: $v}})
                     ON CREATE SET placeholder.unresolved = true,
                                   placeholder.is_definition = false
-                    MERGE (m)-[:DELEGATES_TO {via_field: $via_field, unresolved: true}]
+                    MERGE (m)-[r:DELEGATES_TO {{via_field: $via_field, unresolved: true}}]
                           ->(placeholder)
+                    SET {_written_run_set("r")}
                 """, name=model.name, mod=model.module, v=model.odoo_version,
-                     delegated=delegated_model, via_field=via_field)
+                     delegated=delegated_model, via_field=via_field, run=run_id)
 
         for fld in model.fields:
             tx.run(f"""
@@ -317,8 +328,10 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     f.comodel_name = $comodel_name,
                     f.string = $fstring, f.help = $fhelp,
                     f.readonly = $readonly, f.inverse = $inverse,
-                    f.effective_readonly = $effective_readonly
-                MERGE (f)-[:BELONGS_TO]->(m)
+                    f.effective_readonly = $effective_readonly,
+                    {_written_run_set("f")}
+                MERGE (f)-[b:BELONGS_TO]->(m)
+                SET {_written_run_set("b")}
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=fld.name, ttype=fld.ttype, related=fld.related,
                  compute=fld.compute, stored=fld.stored, required=fld.required,
@@ -326,7 +339,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                  fstring=fld.string, fhelp=fld.help,
                  readonly=fld.readonly, inverse=fld.inverse,
                  effective_readonly=fld.effective_readonly,
-                 profiles=profiles)
+                 profiles=profiles, run=run_id)
 
         for mth in model.methods:
             tx.run(f"""
@@ -343,14 +356,16 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     mth.return_required = $rr,
                     mth.signature = $sig,
                     mth.depends = $depends,
-                    mth.docstring = $docstring
-                MERGE (mth)-[:BELONGS_TO]->(m)
+                    mth.docstring = $docstring,
+                    {_written_run_set("mth")}
+                MERGE (mth)-[b:BELONGS_TO]->(m)
+                SET {_written_run_set("b")}
             """, model_name=model.name, mod=model.module, v=model.odoo_version,
                  name=mth.name, has_super_call=mth.has_super_call,
                  decorators=mth.decorators,
                  ck=mth.convention_kind, ss=mth.super_safety, rr=mth.return_required,
                  sig=mth.signature, depends=mth.depends,
-                 docstring=mth.docstring, profiles=profiles)
+                 docstring=mth.docstring, profiles=profiles, run=run_id)
 
             # M4.5 WI6: USES_CORE_SYMBOL edge — silent skip when target absent
             # or status not in {deprecated, removed} (per ADR-0002 §3 V0 scope).
@@ -361,9 +376,10 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     MATCH (cs:CoreSymbol {{odoo_version: $v}})
                     WHERE cs.qualified_name ENDS WITH '.' + $ref
                       AND cs.status IN ['deprecated', 'removed']
-                    MERGE (mth)-[:{REL_USES_CORE_SYMBOL}]->(cs)
+                    MERGE (mth)-[r:{REL_USES_CORE_SYMBOL}]->(cs)
+                    SET {_written_run_set("r")}
                 """, name=mth.name, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, ref=ref)
+                     v=model.odoo_version, ref=ref, run=run_id)
 
             # A2d: USES_FIELD edges — MATCH (not MERGE) on Field so no stub nodes.
             # F-13 fix: include module in Field MATCH key to avoid fan-out across
@@ -377,9 +393,10 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     UNWIND $refs AS ref_name
                     MATCH (f:Field {{name: ref_name, model: $model_name,
                                     module: $mod, odoo_version: $v}})
-                    MERGE (mth)-[:{REL_USES_FIELD}]->(f)
+                    MERGE (mth)-[r:{REL_USES_FIELD}]->(f)
+                    SET {_written_run_set("r")}
                 """, mth_name=mth.name, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, refs=list(mth.field_refs))
+                     v=model.odoo_version, refs=list(mth.field_refs), run=run_id)
 
             # A2d: DEPENDS_ON_FIELD edges from @api.depends paths — first segment only.
             # F-13 fix: include module in Field MATCH key (same as USES_FIELD above).
@@ -394,6 +411,7 @@ def _write_parse_result(tx, result: ParseResult, profiles: list[str]) -> None:
                     UNWIND $segs AS first_seg
                     MATCH (f:Field {{name: first_seg, model: $model_name,
                                     module: $mod, odoo_version: $v}})
-                    MERGE (mth)-[:{REL_DEPENDS_ON_FIELD}]->(f)
+                    MERGE (mth)-[r:{REL_DEPENDS_ON_FIELD}]->(f)
+                    SET {_written_run_set("r")}
                 """, mth_name=mth.name, model_name=model.name, mod=model.module,
-                     v=model.odoo_version, segs=_dep_segs)
+                     v=model.odoo_version, segs=_dep_segs, run=run_id)

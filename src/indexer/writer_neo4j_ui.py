@@ -2,10 +2,13 @@
 # src/indexer/writer_neo4j_ui.py
 """UI-layer Neo4j writer — View / QWebTmpl / OWLComp / JSPatch / Stylesheet.
 
-Extracted from writer_neo4j.py (B5 structural split, no behaviour change). Owns
-``_write_view_parse_result``, ``_write_js_graph_result`` and
-``_write_stylesheets_batch`` — every Cypher MERGE here is byte-identical to the
-original.
+Extracted from writer_neo4j.py (B5 structural split). Owns
+``_write_view_parse_result``, ``_write_js_graph_result``,
+``_write_asset_parse_result`` and ``_write_stylesheets_batch``. Every module-owned
+node written here (View, QWebTmpl, Report, OWLComp, JSPatch, Stylesheet), and
+every relationship MERGEd from a module's own node (including Module ->
+CONTRIBUTES_TO), carries the writer's run token ``written_run`` (ADR-0056 B14);
+placeholders, the shared AssetBundle and its INCLUDES_BUNDLE edges do not.
 
 The shared ``_profile_union_set`` Cypher fragment (ADR-0034 SSOT) lives in
 ``writer_neo4j`` and is imported lazily inside each function body to avoid an
@@ -120,10 +123,12 @@ def _report_model_in_own_module(model_name: str, report_module: str) -> bool:
     return bool(prefix) and prefix == report_module
 
 
-def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -> None:
+def _write_view_parse_result(
+    tx, result: ViewParseResult, profiles: list[str], run_id: str | None = None,
+) -> None:
     import json
 
-    from .writer_neo4j import _profile_union_set
+    from .writer_neo4j import _profile_union_set, _written_run_set
 
     for view in result.views:
         # GAP-1 - conditional-visibility expressions serialized as a JSON blob on
@@ -153,7 +158,8 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 v.xpaths_positions = $xpaths_positions,
                 v.arch_snippet = $arch_snippet,
                 v.conditions = $conditions,
-                v.unresolved = false
+                v.unresolved = false,
+                {_written_run_set("v")}
         """, xmlid=view.xmlid, ver=view.odoo_version,
              name=view.name, model=view.model, module=view.module,
              view_type=view.view_type, mode=view.mode,
@@ -161,7 +167,7 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
              xpaths_positions=[x.position for x in view.xpaths],
              arch_snippet=view.arch_snippet,
              conditions=conditions_json,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         tx.run(f"""
             MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
@@ -169,17 +175,20 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
                 {_profile_union_set("mod")}
-            MERGE (v)-[:{REL_DEFINED_IN}]->(mod)
+            MERGE (v)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, xmlid=view.xmlid, ver=view.odoo_version, module=view.module,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         # Create TARGETS_MODEL edge to all Model nodes with matching name in same version
         if view.model:
             tx.run(f"""
                 MATCH (v:View {{xmlid: $xmlid, odoo_version: $ver}})
                 MATCH (m:Model {{name: $model_name, odoo_version: $ver}})
-                MERGE (v)-[:{REL_TARGETS_MODEL}]->(m)
-            """, xmlid=view.xmlid, ver=view.odoo_version, model_name=view.model)
+                MERGE (v)-[r:{REL_TARGETS_MODEL}]->(m)
+                SET {_written_run_set("r")}
+            """, xmlid=view.xmlid, ver=view.odoo_version, model_name=view.model,
+                 run=run_id)
 
         if view.inherit_xmlid:
             rec = tx.run(f"""
@@ -188,9 +197,10 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 WHERE NOT coalesce(base.unresolved, false)
                 MERGE (ext)-[r:{REL_INHERITS_VIEW}]->(base)
                 ON MATCH SET r.unresolved = false
+                SET {_written_run_set("r")}
                 RETURN 1 AS ok
             """, xmlid=view.xmlid, ver=view.odoo_version,
-                 inherit_xmlid=view.inherit_xmlid).single()
+                 inherit_xmlid=view.inherit_xmlid, run=run_id).single()
             if rec is None:
                 # Category-B downgrade (see _base_module_out_of_scope): when the
                 # base module is not indexed in any profile (license-skip, absent
@@ -229,8 +239,9 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                                   placeholder.module = '__unresolved__'
                     MERGE (ext)-[r:{REL_INHERITS_VIEW}]->(placeholder)
                     ON CREATE SET r.unresolved = true
+                    SET {_written_run_set("r")}
                 """, xmlid=view.xmlid, ver=view.odoo_version,
-                     inherit_xmlid=view.inherit_xmlid)
+                     inherit_xmlid=view.inherit_xmlid, run=run_id)
 
     for qweb in result.qweb:
         # GAP-11/GAP-12 - website `key=` + inheriting `mode=` written as plain
@@ -245,9 +256,10 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             SET t.module = $module,
                 t.key = coalesce($key, t.key),
                 t.mode = coalesce($mode, t.mode),
-                t.unresolved = false
+                t.unresolved = false,
+                {_written_run_set("t")}
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
-             key=qweb.key, mode=qweb.mode, profiles=profiles)
+             key=qweb.key, mode=qweb.mode, profiles=profiles, run=run_id)
 
         tx.run(f"""
             MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
@@ -255,9 +267,10 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
                 {_profile_union_set("mod")}
-            MERGE (t)-[:{REL_DEFINED_IN}]->(mod)
+            MERGE (t)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         if qweb.inherit_xmlid:
             # A3 cross-type EXTENDS_TMPL: a <template inherit_id="..."> may target a
@@ -267,16 +280,17 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             # account.account_tour_upload_bill form view. Match either label.
             # xmlid+odoo_version is unique across both labels, so this stays a
             # single-row lookup (.single() is safe — no multi-row risk).
-            rec = tx.run("""
-                MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-                MATCH (base {xmlid: $inherit_xmlid, odoo_version: $ver})
+            rec = tx.run(f"""
+                MATCH (ext:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
+                MATCH (base {{xmlid: $inherit_xmlid, odoo_version: $ver}})
                 WHERE (base:QWebTmpl OR base:View)
                   AND NOT coalesce(base.unresolved, false)
                 MERGE (ext)-[r:EXTENDS_TMPL]->(base)
                 ON MATCH SET r.unresolved = false
+                SET {_written_run_set("r")}
                 RETURN 1 AS ok
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
-                 inherit_xmlid=qweb.inherit_xmlid).single()
+                 inherit_xmlid=qweb.inherit_xmlid, run=run_id).single()
             if rec is None:
                 # WI-D: the base may be an AssetBundle, not a QWebTmpl/View. In
                 # v15+ Odoo declares asset bundles (web.assets_backend, ...) in the
@@ -289,14 +303,15 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 # base-lookup spirit as the QWebTmpl OR View match above). name is the
                 # composite key's identifying part; (name, odoo_version) is unique, so
                 # this stays a single-row .single() lookup.
-                ab = tx.run("""
-                    MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-                    MATCH (b:AssetBundle {name: $inherit_xmlid, odoo_version: $ver})
+                ab = tx.run(f"""
+                    MATCH (ext:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
+                    MATCH (b:AssetBundle {{name: $inherit_xmlid, odoo_version: $ver}})
                     MERGE (ext)-[r:EXTENDS_ASSET_BUNDLE]->(b)
                     ON MATCH SET r.unresolved = false
+                    SET {_written_run_set("r")}
                     RETURN 1 AS ok
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
-                     inherit_xmlid=qweb.inherit_xmlid).single()
+                     inherit_xmlid=qweb.inherit_xmlid, run=run_id).single()
                 if ab is not None:
                     continue  # resolved against an AssetBundle — no warning/placeholder
                 # Category-B downgrade — same rationale as INHERITS_VIEW above.
@@ -318,15 +333,16 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 # stamp this run's profile — created profile-less -> F-6 fail-closed
                 # until the real template is indexed under its OWN owner; ON MATCH
                 # leaves profile untouched.
-                tx.run("""
-                    MATCH (ext:QWebTmpl {xmlid: $xmlid, odoo_version: $ver})
-                    MERGE (placeholder:QWebTmpl {xmlid: $inherit_xmlid, odoo_version: $ver})
+                tx.run(f"""
+                    MATCH (ext:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
+                    MERGE (placeholder:QWebTmpl {{xmlid: $inherit_xmlid, odoo_version: $ver}})
                     ON CREATE SET placeholder.unresolved = true,
                                   placeholder.module = '__unresolved__'
                     MERGE (ext)-[r:EXTENDS_TMPL]->(placeholder)
                     ON CREATE SET r.unresolved = true
+                    SET {_written_run_set("r")}
                 """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
-                     inherit_xmlid=qweb.inherit_xmlid)
+                     inherit_xmlid=qweb.inherit_xmlid, run=run_id)
 
     # GAP-2/GAP-5 - ir.actions.report records + v8-v13 <report> shorthand.
     # :Report node (composite MERGE key {xmlid, odoo_version}, same shape as
@@ -343,12 +359,13 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             SET rp.name = $name, rp.model = $model, rp.module = $module,
                 rp.report_type = $report_type, rp.report_name = $report_name,
                 rp.report_file = $report_file, rp.paperformat = $paperformat,
-                rp.unresolved = false
+                rp.unresolved = false,
+                {_written_run_set("rp")}
         """, xmlid=rep.xmlid, ver=rep.odoo_version,
              name=rep.name, model=rep.model, module=rep.module,
              report_type=rep.report_type, report_name=rep.report_name,
              report_file=rep.report_file, paperformat=rep.paperformat,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         tx.run(f"""
             MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
@@ -356,9 +373,10 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
                 {_profile_union_set("mod")}
-            MERGE (rp)-[:{REL_DEFINED_IN}]->(mod)
+            MERGE (rp)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, xmlid=rep.xmlid, ver=rep.odoo_version, module=rep.module,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         # issue #345 report-type gate: classify the report ONCE. Only a genuine
         # qweb report (effective report_type starts with "qweb-" AND no legacy
@@ -390,10 +408,11 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 ORDER BY coalesce(m.is_definition, false) DESC,
                          coalesce(m.field_count, 0) DESC, m.module ASC
                 LIMIT 1
-                MERGE (rp)-[:{REL_REPORTS_ON}]->(m)
+                MERGE (rp)-[r:{REL_REPORTS_ON}]->(m)
+                SET {_written_run_set("r")}
                 RETURN 1 AS ok
             """, xmlid=rep.xmlid, ver=rep.odoo_version,
-                 model_name=rep.model).single()
+                 model_name=rep.model, run=run_id).single()
             if on_model is None:
                 # Issue #347: WARN only for an own-module-namespace gap (the
                 # report's own module should define this model). A cross-module
@@ -422,10 +441,11 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
                 MATCH (t:QWebTmpl {{xmlid: $tmpl_xmlid, odoo_version: $ver}})
                 WHERE NOT coalesce(t.unresolved, false)
-                MERGE (rp)-[:{REL_USES_TEMPLATE}]->(t)
+                MERGE (rp)-[r:{REL_USES_TEMPLATE}]->(t)
+                SET {_written_run_set("r")}
                 RETURN 1 AS ok
             """, xmlid=rep.xmlid, ver=rep.odoo_version,
-                 tmpl_xmlid=rep.report_name).single()
+                 tmpl_xmlid=rep.report_name, run=run_id).single()
             if tmpl is None:
                 _warn = (
                     report_template_warn_active(rep.odoo_version)
@@ -441,7 +461,9 @@ def _write_view_parse_result(tx, result: ViewParseResult, profiles: list[str]) -
                 )
 
 
-def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str]) -> None:
+def _write_asset_parse_result(
+    tx, result: AssetParseResult, profiles: list[str], run_id: str | None = None,
+) -> None:
     """Write :AssetBundle nodes + CONTRIBUTES_TO / INCLUDES_BUNDLE edges (WI-D).
 
     Graph shape (ADR-0052, survey eraBC §5):
@@ -462,7 +484,7 @@ def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str])
     """
     import json
 
-    from .writer_neo4j import _profile_union_set
+    from .writer_neo4j import _profile_union_set, _written_run_set
 
     for c in result.contributions:
         is_private = "._" in c.bundle_name
@@ -483,10 +505,10 @@ def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str])
             ON MATCH  SET mod.profile =
                 {_profile_union_set("mod")}
             MERGE (mod)-[r:CONTRIBUTES_TO]->(b)
-            SET r.entries = $entries
+            SET r.entries = $entries, {_written_run_set("r")}
         """, name=c.bundle_name, ver=c.odoo_version, module=c.module,
              is_private=is_private, entries=json.dumps(c.entries),
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         # INCLUDES_BUNDLE edges — ('include', X) composition. MERGE the target so a
         # not-yet-written referenced bundle is created (profile-less, ADR-0034
@@ -502,8 +524,10 @@ def _write_asset_parse_result(tx, result: AssetParseResult, profiles: list[str])
                  tgt_private=("._" in target))
 
 
-def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> None:
-    from .writer_neo4j import _profile_union_set
+def _write_js_graph_result(
+    tx, result: JSGraphResult, profiles: list[str], run_id: str | None = None,
+) -> None:
+    from .writer_neo4j import _profile_union_set, _written_run_set
 
     # Write OWLComp nodes first so PATCHES can resolve against them
     for comp in result.components:
@@ -517,31 +541,35 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             ON MATCH  SET c.profile =
                 {_profile_union_set("c")}
             SET c.template = $template, c.extends = $extends,
-                c.bound_model = $bound_model, c.file_path = $file_path
-            MERGE (c)-[:{REL_DEFINED_IN}]->(mod)
+                c.bound_model = $bound_model, c.file_path = $file_path,
+                {_written_run_set("c")}
+            MERGE (c)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, module_name=comp.module, v=comp.odoo_version,
              name=comp.name, template=comp.template, extends=comp.extends,
              bound_model=comp.bound_model,
              file_path=result.module.relative_path(comp.file_path),
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         # EXTENDS edge — only when parent OWLComp exists in same version (no placeholder)
         if comp.extends:
-            tx.run("""
-                MATCH (child:OWLComp {name: $name, module: $mod, odoo_version: $v})
-                MATCH (parent:OWLComp {name: $parent, odoo_version: $v})
-                MERGE (child)-[:EXTENDS]->(parent)
+            tx.run(f"""
+                MATCH (child:OWLComp {{name: $name, module: $mod, odoo_version: $v}})
+                MATCH (parent:OWLComp {{name: $parent, odoo_version: $v}})
+                MERGE (child)-[r:EXTENDS]->(parent)
+                SET {_written_run_set("r")}
             """, name=comp.name, mod=comp.module, v=comp.odoo_version,
-                 parent=comp.extends)
+                 parent=comp.extends, run=run_id)
 
         # BOUND_TO edge — only when Model exists; skip silently otherwise
         if comp.bound_model:
-            tx.run("""
-                MATCH (c:OWLComp {name: $name, module: $mod, odoo_version: $v})
-                MATCH (m:Model {name: $bound, odoo_version: $v})
-                MERGE (c)-[:BOUND_TO]->(m)
+            tx.run(f"""
+                MATCH (c:OWLComp {{name: $name, module: $mod, odoo_version: $v}})
+                MATCH (m:Model {{name: $bound, odoo_version: $v}})
+                MERGE (c)-[r:BOUND_TO]->(m)
+                SET {_written_run_set("r")}
             """, name=comp.name, mod=comp.module, v=comp.odoo_version,
-                 bound=comp.bound_model)
+                 bound=comp.bound_model, run=run_id)
 
     # Write JSPatch nodes + PATCHES edges
     for patch in result.patches:
@@ -555,40 +583,44 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
             ON CREATE SET j.profile = $profiles
             ON MATCH  SET j.profile =
                 {_profile_union_set("j")}
-            SET j.era = $era, j.file_path = $file_path
-            MERGE (j)-[:{REL_DEFINED_IN}]->(mod)
+            SET j.era = $era, j.file_path = $file_path,
+                {_written_run_set("j")}
+            MERGE (j)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, module_name=patch.module, v=patch.odoo_version,
              target=patch.target, patch_name=patch.patch_name,
              era=patch.era,
              file_path=result.module.relative_path(patch.file_path),
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         # PATCHES edge — try resolve to existing OWLComp, else create placeholder
-        rec = tx.run("""
-            MATCH (j:JSPatch {target: $target, patch_name: $pn,
-                              module: $mod, odoo_version: $v})
-            MATCH (c:OWLComp {name: $target, odoo_version: $v})
+        rec = tx.run(f"""
+            MATCH (j:JSPatch {{target: $target, patch_name: $pn,
+                              module: $mod, odoo_version: $v}})
+            MATCH (c:OWLComp {{name: $target, odoo_version: $v}})
             WHERE NOT coalesce(c.unresolved, false)
             WITH j, c ORDER BY c.module ASC LIMIT 1
-            MERGE (j)-[:PATCHES]->(c)
+            MERGE (j)-[r:PATCHES]->(c)
+            SET {_written_run_set("r")}
             RETURN 1
         """, target=patch.target, pn=patch.patch_name,
-             mod=patch.module, v=patch.odoo_version).single()
+             mod=patch.module, v=patch.odoo_version, run=run_id).single()
         if rec is None:
             # SCOPE-CHOKE FIX (ADR-0034): the patched component is a REFERENCED node
             # not owned by this run — do NOT stamp this run's profile. Created
             # profile-less -> F-6 fail-closed for scoped tenants until the real
             # OWLComp is indexed under its own owner; ON MATCH leaves profile
             # untouched.
-            tx.run("""
-                MATCH (j:JSPatch {target: $target, patch_name: $pn,
-                                  module: $mod, odoo_version: $v})
-                MERGE (placeholder:OWLComp {name: $target,
-                                            module: '__unresolved__', odoo_version: $v})
+            tx.run(f"""
+                MATCH (j:JSPatch {{target: $target, patch_name: $pn,
+                                  module: $mod, odoo_version: $v}})
+                MERGE (placeholder:OWLComp {{name: $target,
+                                            module: '__unresolved__', odoo_version: $v}})
                 ON CREATE SET placeholder.unresolved = true
-                MERGE (j)-[:PATCHES {unresolved: true}]->(placeholder)
+                MERGE (j)-[r:PATCHES {{unresolved: true}}]->(placeholder)
+                SET {_written_run_set("r")}
             """, target=patch.target, pn=patch.patch_name,
-                 mod=patch.module, v=patch.odoo_version)
+                 mod=patch.module, v=patch.odoo_version, run=run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -597,7 +629,7 @@ def _write_js_graph_result(tx, result: JSGraphResult, profiles: list[str]) -> No
 
 def _write_stylesheets_batch(
     tx, stylesheets: list[StylesheetInfo], profiles: list[str],
-    repo_root=None, repo_id=None,
+    repo_root=None, repo_id=None, run_id: str | None = None,
 ) -> None:
     """MERGE :Stylesheet nodes + :DEFINED_IN -> :Module + :IMPORTS edges.
 
@@ -635,7 +667,7 @@ def _write_stylesheets_batch(
     other repo_id-NULL nodes (back-compat: legacy nodes carry no repo_id; a
     None-id run still never crosses into a repo_id-bearing node).
     """
-    from .writer_neo4j import _profile_union_set
+    from .writer_neo4j import _profile_union_set, _written_run_set
 
     for s in stylesheets:
         fp_rel = to_repo_relative(s.file_path, repo_root)
@@ -660,16 +692,18 @@ def _write_stylesheets_batch(
                           ss.repo_id = coalesce($repo_id, ss.repo_id),
                           ss.profile =
                               {_profile_union_set("ss")}
+            SET {_written_run_set("ss")}
             WITH ss
             MERGE (mod:Module {{name: $mod, odoo_version: $v}})
             ON CREATE SET mod.profile = $profiles
             ON MATCH  SET mod.profile =
                 {_profile_union_set("mod")}
-            MERGE (ss)-[:{REL_DEFINED_IN}]->(mod)
+            MERGE (ss)-[d:{REL_DEFINED_IN}]->(mod)
+            SET {_written_run_set("d")}
         """, fp=fp_rel, mod=s.module, v=s.odoo_version,
              lang=s.language, sel=s.selector_count, var=s.variable_count,
              imp=s.import_count, mix=s.mixin_count, repo_id=repo_id,
-             profiles=profiles)
+             profiles=profiles, run=run_id)
 
         # Write IMPORTS edges — silent skip when target Stylesheet not yet indexed.
         # Relativize the resolved target path the same way as the source so the
@@ -686,6 +720,7 @@ def _write_stylesheets_batch(
                 MATCH (tgt:Stylesheet {{file_path: $tgt_fp, odoo_version: $v}})
                 WHERE tgt.repo_id = $repo_id
                    OR (tgt.repo_id IS NULL AND $repo_id IS NULL)
-                MERGE (src)-[:{REL_IMPORTS}]->(tgt)
+                MERGE (src)-[r:{REL_IMPORTS}]->(tgt)
+                SET {_written_run_set("r")}
             """, src_fp=fp_rel, mod=s.module, v=s.odoo_version, repo_id=repo_id,
-                 tgt_fp=to_repo_relative(import_path, repo_root))
+                 tgt_fp=to_repo_relative(import_path, repo_root), run=run_id)

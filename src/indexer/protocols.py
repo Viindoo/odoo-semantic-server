@@ -258,6 +258,84 @@ class IndexWriterProtocol(Protocol):
         """Stamp last_seen_sha/at + repos on existing Module nodes; returns matched count."""
         ...
 
+    # --- Intra-module entity prune (ADR-0056 B14) -----------------------------
+    run_id: str | None  # current run token stamped on module children
+    run_scope: str | None  # "run" (orchestrator-owned), "repo" or None
+
+    def begin_run(
+        self, run_id: str | None = None, *, scope: str = "run", started_at: Any = None,
+    ) -> str:
+        """Start a write run; module children written afterwards carry the token."""
+        ...
+
+    def module_children_census(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_id: str,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> dict:
+        """Count a module's children and how many the run did not write (read-only)."""
+        ...
+
+    def prune_module_children(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_id: str,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> dict:
+        """Delete a re-parsed module's children the run did not write."""
+        ...
+
+    def record_module_parse_degraded(
+        self, odoo_version: str, name: str, *, repo_id: Any, fingerprint: str,
+        paths: Iterable[str], problems: Iterable[str],
+    ) -> None:
+        """Remember that the module's last parse was degraded (fingerprint + problems)."""
+        ...
+
+    def clear_module_parse_degraded(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the degraded-parse record of *names*."""
+        ...
+
+    def parse_degraded_modules(self, repo_id: Any) -> list[dict]:
+        """Modules whose last parse by the repo was degraded, every version."""
+        ...
+
+    def record_module_prune_held(
+        self, odoo_version: str, name: str, *, repo_id: Any, stale: int, total: int,
+        rels_stale: int, rels_total: int,
+    ) -> None:
+        """Remember that the module's entity prune is held by the soft gate."""
+        ...
+
+    def clear_module_prune_held(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the held-prune record of *names*."""
+        ...
+
+    def prune_held_modules(self, repo_id: Any) -> list[dict]:
+        """Modules whose entity prune by the repo is held, every version."""
+        ...
+
+    def record_module_prune_deferred(
+        self, odoo_version: str, name: str, *, repo_id: Any, waits_for: Iterable[int],
+    ) -> None:
+        """Remember that the repo's entity prune of the module waits for siblings."""
+        ...
+
+    def clear_module_prune_deferred(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the prune deferral of *names*."""
+        ...
+
+    def prune_deferred_modules(self, odoo_version: str) -> list[dict]:
+        """Modules at the version whose entity prune waits for siblings."""
+        ...
+
     def orphan_module_names(
         self, odoo_version: str, present_names: Iterable[str], *, repo: str | None = None,
     ) -> list[str]: ...

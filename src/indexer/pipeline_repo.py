@@ -32,14 +32,17 @@ regardless of the binding path - those stay as ordinary module-level imports.
 """
 import contextlib
 import functools
+import hashlib
 import logging
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.indexer import incremental as _incremental
 from src.indexer import (
+    parse_health,
     parser_assets,
     parser_css,
     parser_js,
@@ -377,14 +380,17 @@ def plan_repo_run(
     *,
     full_reindex: bool,
     ledger: bool,
+    degraded_changed: bool = False,
 ) -> RunPlan:
     """Decide skip / sync / incremental / full for one repo (ADR-0007 + ADR-0056).
 
     *ledger* False (no lifecycle ledger) keeps the pre-ledger rule: HEAD equal
-    to ``repos.head_sha`` skips.
+    to ``repos.head_sha`` skips. *degraded_changed* (B14, ``_degraded_state``):
+    the failing files of a degraded module changed on disk, so the repo is
+    not skipped even at an unchanged HEAD (the sync path re-parses them).
     """
     head_unchanged = bool(current_head) and current_head == last_head
-    if not full_reindex and head_unchanged and (
+    if not full_reindex and head_unchanged and not degraded_changed and (
         not ledger or (presence_head == current_head and not rewrite_names)
     ):
         return RunPlan(RUN_SKIP, last_head, True, False)
@@ -424,6 +430,21 @@ class LifecycleObservation:
     unparseable_kept: list[str] = field(default_factory=list)
 
 
+def _git_trust_attention(repo_path: Path, branch: str | None, tracked_available: bool) -> list[str]:
+    """Operator messages about git tracking and the ``origin/<branch>`` ref."""
+    from src.git_utils import remote_branch_ref_exists
+
+    if not tracked_available:
+        return [
+            "git tracking unavailable (not a git work tree, no commit yet, or git "
+            "refused the repository, e.g. safe.directory ownership): scan untrusted, "
+            "no module retired"
+        ]
+    if branch and not remote_branch_ref_exists(repo_path, branch):
+        return [f"no origin/{branch} ref: scan trust falls back to the checked-out branch name"]
+    return []
+
+
 def observe_lifecycle(
     repo: dict,
     scan,
@@ -449,23 +470,16 @@ def observe_lifecycle(
     unparseable names that have a graph node feed the ``manifest_unparseable``
     signal (``lifecycle.unparseable_kept``).
     """
-    from src.git_utils import head_matches_remote_branch, remote_branch_ref_exists
+    from src.git_utils import head_matches_remote_branch
     from src.indexer import lifecycle
 
     repo_path = Path(repo["local_path"])
     branch: str | None = repo.get("branch")
     attention: list[str] = list(scan.attention)
     trusted = head_matches_remote_branch(repo_path, branch)
-    if scan.tracked_paths is None:
-        attention.append(
-            "git tracking unavailable (not a git work tree, no commit yet, or git "
-            "refused the repository, e.g. safe.directory ownership): scan untrusted, "
-            "no module retired"
-        )
-    elif branch and not remote_branch_ref_exists(repo_path, branch):
-        attention.append(
-            f"no origin/{branch} ref: scan trust falls back to the checked-out branch name"
-        )
+    attention.extend(
+        _git_trust_attention(repo_path, branch, scan.tracked_paths is not None)
+    )
     lifecycle_on = presence is not None and bool(current_head) and bool(branch)
     if presence is not None and not lifecycle_on:
         attention.append(
@@ -532,7 +546,8 @@ def modules_needing_rewrite(
     node, re-written by this repo, would differ from what it is now:
 
     - ``no_node``: no Module node carries this repo's owning profile (lost to a
-      concurrent retire or a failed write).
+      concurrent retire or a failed write; ``has_node`` True when a node exists
+      without that profile, e.g. an empty profile list, F24).
     - ``path_drift``: the node was last written by this repo but its ``path`` is
       not the registry winner. ``kind``: ``shadowed`` (a same-name loser dir,
       the posbox ``point_of_sale`` stub, F15), ``untracked`` (a git-untracked
@@ -541,9 +556,10 @@ def modules_needing_rewrite(
     - ``repo_drift``: the node names another repo but only this repo's profile
       owns it and the ledger shows no other present owner (``indexed_repo``).
 
-    The index path re-writes these on a plain sync / incremental run, so drift
-    left by older code heals without ``--full``; the re-parse re-stamps the
-    children and the entity prune drops those only the old path produced.
+    Every index run that is not the unchanged skip re-writes these
+    (``self_heal_rewrites``), so drift left by older code heals without
+    ``--full``; the re-parse re-stamps the children and the entity prune drops
+    those only the old path produced.
     Read-only (one Module lookup; one ledger read when *presence* is given).
     """
     local_path = repo["local_path"]
@@ -561,7 +577,7 @@ def modules_needing_rewrite(
     for name in present:
         node = identity.get(name)
         if node is None or owning_profile not in node.get("profile", []):
-            out[name] = {"reason": REWRITE_NO_NODE}
+            out[name] = {"reason": REWRITE_NO_NODE, "has_node": node is not None}
             continue
         ours = node.get("repo") == basename and (
             node.get("repo_id") is None or node["repo_id"] == repo["id"]
@@ -588,6 +604,53 @@ def modules_needing_rewrite(
     return out
 
 
+def self_heal_rewrites(
+    writer: IndexWriterProtocol,
+    presence,
+    repo: dict,
+    scan,
+    owning_profile: str,
+    *,
+    plan: RunPlan,
+    lifecycle_on: bool,
+) -> dict[str, dict]:
+    """The self-heal set of the planned run (``modules_needing_rewrite``), or {}.
+
+    Computed for every mode but the unchanged skip, when the ledger is
+    updated this run: on sync and incremental these modules are written in
+    addition to the changed ones; on a full run they are written anyway, and
+    the ``path_drift`` entries still hand their old directory to the entity
+    prune. The index run and the dry-run audit both decide through this.
+    """
+    if plan.mode == RUN_SKIP or not lifecycle_on or not scan.present_names():
+        return {}
+    return modules_needing_rewrite(writer, presence, repo, scan, owning_profile)
+
+
+def regular_write_names(repo_path: Path, scan, plan: RunPlan, current_head: str | None) -> set[str]:
+    """Modules the planned run re-parses on its own, before ``needs_rewrite``,
+    self-heal and degraded retries are added.
+
+    Every present module on a full run, none on the sync path or the skip,
+    the modules whose directory changed since ``plan.diff_base`` on an
+    incremental run. Read-only (git diff).
+    """
+    if plan.mode == RUN_SKIP or plan.mode == RUN_SYNC:
+        return set()
+    if plan.diff_base is None:
+        return set(scan.present_names())
+    changed_rel_paths = _incremental.compute_changed_module_paths(
+        repo_path, plan.diff_base, current_head,
+    )
+    # convert relative paths to absolute to match ModuleInfo.path
+    changed_abs_paths = {str(repo_path / rel) for rel in changed_rel_paths}
+    return {
+        name
+        for mods in scan.modules.values()
+        for name in _incremental.filter_modules_by_changed(mods, changed_abs_paths)
+    }
+
+
 def _parse_and_write(
     modules_by_version: dict,
     *,
@@ -600,10 +663,14 @@ def _parse_and_write(
     progress: bool,
     profiles_arr: list[str],
     owning_profile: str,
+    module_health: dict | None = None,
 ) -> tuple[dict, list]:
     """Parse the given modules and write every node + embedding they produce.
 
     Returns ``(counters, test_results)``; ``test_results`` feeds the test-node GC.
+    *module_health*, when given, receives one
+    :class:`~src.indexer.parse_health.ModuleParseHealth` per parsed module,
+    keyed ``(version, name)`` - the input of the intra-module entity prune.
     """
     from src.indexer import pipeline as _pipeline
 
@@ -632,12 +699,20 @@ def _parse_and_write(
     total_embed_calls = 0
     total_js_test_suites = 0
 
-    # Pre-flight: check whether embedding is possible (once, not per module).
-    embed_enabled = pg_conn is not None and embedder is not None
-    if embed_enabled:
+    # Pre-flight (once, not per module): the embeddings table is usable
+    # (chunks_enabled), and new vectors can be computed (embed_enabled). With
+    # --no-embed the chunk KEYS are still built: the entity prune deletes the
+    # rows of entities the parse no longer produces, which needs no embedder.
+    # Without an embedder the probe needs a real connection (callers that
+    # pass a stand-in for the embed path never reach the embeddings table).
+    chunks_enabled = pg_conn is not None and (
+        embedder is not None or callable(getattr(pg_conn, "cursor", None))
+    )
+    if chunks_enabled:
         from src.db.migrate import _vector_extension_available
-        embed_enabled = _vector_extension_available(pg_conn)
-    if embed_enabled:
+        chunks_enabled = _vector_extension_available(pg_conn)
+    embed_enabled = chunks_enabled and embedder is not None
+    if chunks_enabled:
         from src.indexer.writer_pgvector import make_chunks, write_module_embeddings
 
     for version, modules in modules_by_version.items():
@@ -655,120 +730,135 @@ def _parse_and_write(
             iterable = _tqdm(sorted_names, desc=f"[{version}]", unit="mod", leave=True)
 
         for mod_name in iterable:
-            info = modules[mod_name]
-            total_modules += 1
+            # Parse completeness (ADR-0056 B14): parsers report every file they
+            # could not read or parse into this module's health record.
+            with parse_health.track(mod_name, version) as health:
+                info = modules[mod_name]
+                total_modules += 1
 
-            # Python models
-            py_result = parser_python.parse_module(info)
-            py_results.append(py_result)
+                # Python models
+                py_result = parser_python.parse_module(info)
+                py_results.append(py_result)
 
-            # WI-1: test surface extraction (era-gated internally by parse_module)
-            test_result = parser_test.parse_module(info)
-            test_results.append(test_result)
+                # WI-1: test surface extraction (era-gated internally by parse_module)
+                test_result = parser_test.parse_module(info)
+                test_results.append(test_result)
 
-            # WI-3: JS frontend test extraction (Hoot/QUnit/tour from static/tests/)
-            js_suites = parser_js_test.parse_module_js_tests(info)
-            js_test_suites.extend(js_suites)
-            total_js_test_suites += len(js_suites)
+                # WI-3: JS frontend test extraction (Hoot/QUnit/tour from static/tests/)
+                js_suites = parser_js_test.parse_module_js_tests(info)
+                js_test_suites.extend(js_suites)
+                total_js_test_suites += len(js_suites)
 
-            # XML views (ir.ui.view records) — rng_root enables version-exact
-            # RelaxNG validation; None when no Odoo source RNG dir is available.
-            xml_result = parser_xml.parse_module(info, rng_root=rng_root)
-            total_views += len(xml_result.views)
-            total_reports += len(xml_result.reports)
+                # XML views (ir.ui.view records) - rng_root enables version-exact
+                # RelaxNG validation; None when no Odoo source RNG dir is available.
+                xml_result = parser_xml.parse_module(info, rng_root=rng_root)
+                total_views += len(xml_result.views)
+                total_reports += len(xml_result.reports)
 
-            # QWeb templates
-            qweb_result = parser_qweb.parse_module(info)
-            total_qweb += len(qweb_result.qweb)
+                # QWeb templates
+                qweb_result = parser_qweb.parse_module(info)
+                total_qweb += len(qweb_result.qweb)
 
-            # WI-D asset bundles (ADR-0052): version-aware dispatch. Era B (v15+)
-            # parses the __manifest__.py 'assets' dict; era A (v8-14) returns empty
-            # (legacy XML <template> bundles already captured by parser_qweb above).
-            asset_result = parser_assets.parse_assets(info)
-            asset_results.append(asset_result)
-            total_asset_bundles += len(asset_result.contributions)
+                # WI-D asset bundles (ADR-0052): version-aware dispatch. Era B (v15+)
+                # parses the __manifest__.py 'assets' dict; era A (v8-14) returns empty
+                # (legacy XML <template> bundles already captured by parser_qweb above).
+                asset_result = parser_assets.parse_assets(info)
+                asset_results.append(asset_result)
+                total_asset_bundles += len(asset_result.contributions)
 
-            # Merge both view parsers into one ViewParseResult per module.
-            # writer.write_view_results handles both .views and .qweb in one call.
-            # lint_violations from xml_result (RelaxNG v15+) are preserved.
-            merged = ViewParseResult(
-                module=info,
-                views=xml_result.views,
-                qweb=qweb_result.qweb,
-                # GAP-2/GAP-5: report actions parsed alongside views in parser_xml.
-                # Written by write_view_results AFTER models (write_results) and
-                # templates (this same qweb pass) exist, so REPORTS_ON/USES_TEMPLATE
-                # resolve. write order in _index_repo: write_results -> ... ->
-                # write_view_results, and within _write_view_parse_result the qweb
-                # loop runs before the report loop.
-                reports=xml_result.reports,
-                lint_violations=xml_result.lint_violations,
-            )
-            view_results.append(merged)
-
-            # JS graph extraction — patches and OWL components
-            js_graph = parser_js.parse_module_graph(info)
-            js_graph_results.append(js_graph)
-            total_js_patches += len(js_graph.patches)
-            total_owl_comps += len(js_graph.components)
-
-            # CSS/SCSS/LESS parsing — stylesheet nodes + embeddings (WI-A1, ADR-0025; RP WI-3)
-            # Era gate (osm-audit-views GAP-3): LESS is the v9-v11 stylesheet
-            # language, SCSS is v12+. Plain CSS spans every era (always parsed).
-            # Gating off-era parsers is harmless (they no-op without files) but
-            # enforces + documents the boundary via the version registry (ADR-0032).
-            css_chunks_mod, css_infos = parser_css.parse_module(info)
-            if scss_active(version):
-                scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
-            else:
-                scss_chunks_mod, scss_infos = [], []
-            if less_active(version):
-                less_chunks_mod, less_infos = parser_less.parse_module(info)
-            else:
-                less_chunks_mod, less_infos = [], []
-            all_stylesheet_infos.extend(css_infos)
-            all_stylesheet_infos.extend(scss_infos)
-            all_stylesheet_infos.extend(less_infos)
-            total_stylesheets += len(css_infos) + len(scss_infos) + len(less_infos)
-
-            # Semantic embeddings — optional, skipped when pg_conn/embedder absent,
-            # pgvector extension is not installed, or version could not be resolved.
-            if embed_enabled and version != "unknown":
-                from src.indexer.writer_pgvector import (  # noqa: PLC0415
-                    make_css_chunks,
-                    make_less_chunks,
-                    make_scss_chunks,
+                # Merge both view parsers into one ViewParseResult per module.
+                # writer.write_view_results handles both .views and .qweb in one call.
+                # lint_violations from xml_result (RelaxNG v15+) are preserved.
+                merged = ViewParseResult(
+                    module=info,
+                    views=xml_result.views,
+                    qweb=qweb_result.qweb,
+                    # GAP-2/GAP-5: report actions parsed alongside views in parser_xml.
+                    # Written by write_view_results AFTER models (write_results) and
+                    # templates (this same qweb pass) exist, so REPORTS_ON/USES_TEMPLATE
+                    # resolve. write order in _index_repo: write_results -> ... ->
+                    # write_view_results, and within _write_view_parse_result the qweb
+                    # loop runs before the report loop.
+                    reports=xml_result.reports,
+                    lint_violations=xml_result.lint_violations,
                 )
-                js_chunks = parser_js.parse_module(info)
-                chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
-                # Append CSS, SCSS, and LESS embedding chunks.
-                # Pass `info` (ModuleInfo) so chunks carry repo/repo_id provenance
-                # and file_path is relativized to repo root (ADR-0037, WS-C).
-                chunks.extend(make_css_chunks(css_chunks_mod, info))
-                chunks.extend(make_scss_chunks(scss_chunks_mod, info))
-                chunks.extend(make_less_chunks(less_chunks_mod, info))
-                # WI-1/WI-3 (C2): append test + JS-test chunks so find_test_examples
-                # (AC5) has test_method/test_class/js_test chunks to retrieve. Without
-                # these the test-chunk makers exist but are never called -> the tool
-                # returns nothing. test_result / js_suites are in scope from this loop.
-                from src.indexer.writer_pgvector import (  # noqa: PLC0415
-                    make_js_test_chunks,
-                    make_test_chunks,
-                )
-                chunks.extend(make_test_chunks(mod_name, version, test_result))
-                chunks.extend(make_js_test_chunks(
-                    js_suites, mod_name, version,
-                    repo=info.repo, repo_id=info.repo_id,
-                ))
-                # F4: pgvector stamps the SAME single owning profile as Neo4j
-                # (owning_profile == profiles_arr[0]), not the run profile_name
-                # directly — single source of truth, no split-brain.
-                embed_calls = write_module_embeddings(
-                    mod_name, version, chunks, embedder,
-                    profile_name=owning_profile,
-                )
-                total_embeddings += len(chunks)
-                total_embed_calls += embed_calls
+                view_results.append(merged)
+
+                # JS graph extraction - patches and OWL components
+                js_graph = parser_js.parse_module_graph(info)
+                js_graph_results.append(js_graph)
+                total_js_patches += len(js_graph.patches)
+                total_owl_comps += len(js_graph.components)
+
+                # CSS/SCSS/LESS parsing - stylesheet nodes + embeddings (WI-A1, ADR-0025; RP WI-3)
+                # Era gate (osm-audit-views GAP-3): LESS is the v9-v11 stylesheet
+                # language, SCSS is v12+. Plain CSS spans every era (always parsed).
+                # Gating off-era parsers is harmless (they no-op without files) but
+                # enforces + documents the boundary via the version registry (ADR-0032).
+                css_chunks_mod, css_infos = parser_css.parse_module(info)
+                if scss_active(version):
+                    scss_chunks_mod, scss_infos = parser_scss.parse_module(info)
+                else:
+                    scss_chunks_mod, scss_infos = [], []
+                if less_active(version):
+                    less_chunks_mod, less_infos = parser_less.parse_module(info)
+                else:
+                    less_chunks_mod, less_infos = [], []
+                all_stylesheet_infos.extend(css_infos)
+                all_stylesheet_infos.extend(scss_infos)
+                all_stylesheet_infos.extend(less_infos)
+                total_stylesheets += len(css_infos) + len(scss_infos) + len(less_infos)
+
+                # Semantic embeddings - skipped when pg_conn is absent, the pgvector
+                # extension is not installed, or the version could not be resolved;
+                # without an embedder only the chunk keys are kept (see above).
+                if chunks_enabled and version != "unknown":
+                    from src.indexer.writer_pgvector import (  # noqa: PLC0415
+                        make_css_chunks,
+                        make_less_chunks,
+                        make_scss_chunks,
+                    )
+                    js_chunks = parser_js.parse_module(info)
+                    chunks = make_chunks(mod_name, version, py_result, merged, js_chunks)
+                    # Append CSS, SCSS, and LESS embedding chunks.
+                    # Pass `info` (ModuleInfo) so chunks carry repo/repo_id provenance
+                    # and file_path is relativized to repo root (ADR-0037, WS-C).
+                    chunks.extend(make_css_chunks(css_chunks_mod, info))
+                    chunks.extend(make_scss_chunks(scss_chunks_mod, info))
+                    chunks.extend(make_less_chunks(less_chunks_mod, info))
+                    # WI-1/WI-3 (C2): append test + JS-test chunks so find_test_examples
+                    # (AC5) has test_method/test_class/js_test chunks to retrieve. Without
+                    # these the test-chunk makers exist but are never called -> the tool
+                    # returns nothing. test_result / js_suites are in scope from this loop.
+                    from src.indexer.writer_pgvector import (  # noqa: PLC0415
+                        make_js_test_chunks,
+                        make_test_chunks,
+                    )
+                    chunks.extend(make_test_chunks(mod_name, version, test_result))
+                    chunks.extend(make_js_test_chunks(
+                        js_suites, mod_name, version,
+                        repo=info.repo, repo_id=info.repo_id,
+                    ))
+                    # F4: pgvector stamps the SAME single owning profile as Neo4j
+                    # (owning_profile == profiles_arr[0]), not the run profile_name
+                    # directly - single source of truth, no split-brain.
+                    # Upsert only (B14): the rows of chunks this parse did not
+                    # produce are deleted by the entity prune once it decided
+                    # the module may lose them, so embeddings and graph agree.
+                    health.embedded_keys = {
+                        (c.chunk_type, c.entity_name, c.file_path, c.chunk_idx)
+                        for c in chunks
+                    }
+                    if embed_enabled:
+                        embed_calls = write_module_embeddings(
+                            mod_name, version, chunks, embedder,
+                            profile_name=owning_profile, replace=False,
+                        )
+                        health.embeddings_written = True
+                        total_embeddings += len(chunks)
+                        total_embed_calls += embed_calls
+            if module_health is not None:
+                module_health[(version, mod_name)] = health
 
     # ADR-0034 single-owner provenance (supersedes ADR-0016 Option-Y full-chain
     # stamping for the WRITE-time provenance array): stamp every node with the
@@ -824,6 +914,563 @@ def _parse_and_write(
         "owl_comps": total_owl_comps,
         "stylesheets": total_stylesheets,
     }, test_results
+
+
+# Why a re-parsed module was not pruned (``entity_prune.skipped`` values).
+PRUNE_SKIP_NO_RUN = "no_run"  # the writer carries no run token
+PRUNE_SKIP_NO_LEDGER = "no_ledger"  # ownership cannot be checked without the ledger
+PRUNE_SKIP_NO_RETIRE = "no_retire"  # --no-retire deletes nothing
+PRUNE_SKIP_SCAN_UNTRUSTED = "scan_untrusted"  # gate G-A: scan incomplete or untrusted
+PRUNE_SKIP_DEGRADED = "degraded"  # a file of the module could not be read or parsed
+PRUNE_SKIP_SHARED = "shared"  # another repo still ships the module (ledger)
+# A never-observed repo's checkout tracks the module: it becomes a ledger
+# owner at its first sync ("shared" from then on).
+PRUNE_SKIP_SHARED_UNSYNCED = "shared_unsynced"
+# An unsynced repo may ship it and nothing tells whether it does (its last
+# ledger observation had it, or git cannot read its checkout).
+PRUNE_SKIP_UNDECIDABLE = "undecidable_owner"
+PRUNE_SKIP_NO_MODULE = "no_module"  # no Module node after the write
+PRUNE_SKIP_SOFT_GATE = "soft_gate"  # the prune would remove a mass of the module
+
+# Skips whose cause can clear without the module changing: the module is
+# flagged needs_rewrite so the next run re-parses it and prunes then.
+# "shared" and "shared_unsynced" are not retried: the reconcile flags the
+# survivor itself (M5) once the other owner is gone.
+# "degraded" is decided per source state by _track_degraded_parses (retried
+# once after a transient failure, then only when the failing files change).
+_PRUNE_RETRY_REASONS = frozenset({
+    PRUNE_SKIP_NO_RETIRE, PRUNE_SKIP_SCAN_UNTRUSTED, PRUNE_SKIP_SOFT_GATE,
+    PRUNE_SKIP_UNDECIDABLE,
+})
+
+# Skips that mean the prune machinery is unavailable (not that the prune was
+# unsafe): the module's embeddings keep the pre-B14 behaviour and are replaced
+# by what this parse produced.
+_PRUNE_UNAVAILABLE_REASONS = frozenset({PRUNE_SKIP_NO_RUN, PRUNE_SKIP_NO_LEDGER})
+
+PRUNE_GATE_PREFIX = "entity_prune:"
+
+
+def _writer_run_id(writer: IndexWriterProtocol) -> str | None:
+    """The run token module children are stamped with, beginning one if needed.
+
+    ``index_profile`` begins one run per profile run (scope ``"run"``); a
+    direct ``_index_repo`` call without one gets a fresh per-call token.
+    None when the writer cannot carry a token.
+    """
+    run_id = getattr(writer, "run_id", None)
+    if isinstance(run_id, str) and run_id and getattr(writer, "run_scope", None) == "run":
+        return run_id
+    begin = getattr(writer, "begin_run", None)
+    if not callable(begin):
+        return None
+    run_id = begin(scope="repo")
+    return run_id if isinstance(run_id, str) and run_id else None
+
+
+def _module_file_prefixes(
+    info, repo_path: Path, previous_path: str | None = None,
+) -> list[str]:
+    """Directory prefixes (``/``-terminated) under which the module's files are stored.
+
+    *previous_path* (repo-relative) is the directory the module was indexed
+    from before a ``path_drift`` self-heal (``modules_needing_rewrite``): the
+    children that old directory alone produced (lint violations are selected
+    by file prefix) belong to the module too, so the prune must see them.
+    """
+    from src.indexer.models import to_repo_relative
+
+    abs_dir = str(Path(info.path))
+    candidates = {abs_dir, to_repo_relative(abs_dir, repo_path), info.relative_path(abs_dir)}
+    if previous_path:
+        candidates |= {previous_path, str(repo_path / previous_path)}
+    return sorted(c.rstrip("/") + "/" for c in candidates if c)
+
+
+def _mass_drop(stale: int, total: int) -> bool:
+    """Soft-drop gate G-B applied to one module's children or relationships."""
+    from src.indexer.lifecycle import MASS_RETIRE_FLOOR, MASS_RETIRE_FRACTION
+
+    return stale > MASS_RETIRE_FRACTION * total and stale >= MASS_RETIRE_FLOOR
+
+
+def _prune_reparsed_modules(
+    writer: IndexWriterProtocol,
+    presence,
+    repo: dict,
+    *,
+    modules_by_version: dict,
+    module_health: dict,
+    run_id: str | None,
+    owning_profile: str,
+    repo_path: Path,
+    pg_conn,
+    lifecycle_on: bool,
+    retire: bool,
+    scan_ok: bool,
+    allow_mass_retire: bool,
+    previous_paths: dict[str, str] | None = None,
+) -> dict:
+    """Intra-module entity prune (ADR-0056 B14, review M13/G4).
+
+    For every module re-parsed this run, delete the children (fields,
+    methods, models, views, templates, reports, JS patches, OWL components,
+    stylesheets, JS test suites, test classes and methods, lint violations,
+    addon test-helper projections) and the relationships
+    (``MODULE_CHILD_REL_TYPES``: dependencies, inheritance, view extension,
+    template use, ...) that the parse no longer produced - they carry an
+    older run token, or none. Constraints, per module M at version v:
+
+    (a) only modules re-parsed this run (``modules_by_version``);
+    (b) skipped when any file of M could not be read or parsed
+        (``parse_health``); node families the parse did not look at this run
+        (``unobserved_labels``, e.g. lint violations without RelaxNG schemas)
+        are left out of the prune;
+    (c) skipped when, per the LEDGER, another live repo has M ``present``
+        (``shared``), or a repo that is not synced may still ship M, decided
+        per module by ``reconcile.PotentialOwners``: a never-observed repo
+        whose checkout tracks a manifest of M (``shared_unsynced``: it
+        becomes an owner at its first sync; this also covers a new second
+        owner that has written M but not committed its ledger row yet), or
+        one whose last ledger observation had M or whose checkout git cannot
+        read (``undecidable_owner``). An unsynced repo that does not ship M
+        does not hold M's prune;
+    (d) skipped when the prune would remove more than MASS_RETIRE_FRACTION of
+        M's children, or of M's relationships, and at least
+        MASS_RETIRE_FLOOR of them (bypassed by ``allow_mass_retire``):
+        ``lifecycle_attention`` names it, the gate id
+        ``entity_prune:<M>@<v>`` makes the CLI exit 3, and the Module node
+        records the hold (``record_module_prune_held``, read by
+        ``lifecycle-audit`` as the ``held_prunes`` finding) until a run
+        prunes M.
+
+    Nothing is pruned under ``--no-retire`` or when gate G-A failed (the
+    parse may be of the wrong tree). Skips whose cause can clear without the
+    module changing (``no_retire``, ``scan_untrusted``, ``soft_gate``,
+    ``undecidable_owner``) are returned in ``retry`` so the caller flags the
+    module ``needs_rewrite`` and the next run re-parses and prunes it without
+    a source change; ``shared`` is not retried (the reconcile flags the
+    survivor once the other owner is gone, M5; so is ``shared_unsynced``).
+    ``degraded`` is retried per
+    source state by the caller (``_track_degraded_parses``: once after a
+    transient failure, then only when the failing files change), which also
+    names the files in ``lifecycle_attention``. An undecidable skip names
+    the unsynced repos there.
+
+    Nodes and relationships written before B14 carry no token. A module's
+    first re-parse after deploy re-stamps everything it still defines, so
+    one still without this run's token after a complete (b), single-owner
+    (c), non-mass (d) re-parse is one the source no longer defines - the same
+    rule as for an older token. Ownership comes from the ledger only, never
+    from ``Module.profile``, so pre-ledger profile arrays cannot block it.
+
+    *previous_paths* (``{name: repo-relative dir}``): modules re-written by
+    the ``path_drift`` self-heal (``modules_needing_rewrite``). Their old
+    directory's file prefixes join the selection, so the children only the
+    old path produced (stylesheets, tests, lint violations) are pruned too.
+
+    Embeddings follow the graph. The write path upserts a module's chunks
+    without deleting (``_parse_and_write``); here, when M was pruned (or the
+    prune machinery is unavailable: ``no_run`` / ``no_ledger``, the pre-B14
+    replace), the owning profile's rows of M whose chunk key this parse did
+    not produce are deleted. For every other skip the old rows stay, exactly
+    like the graph nodes they describe.
+
+    A ``shared_unsynced`` skip is recorded on the Module node with the
+    siblings it waits for (``_track_prune_deferrals``); the reconcile sends
+    the owner back to prune once those synced without present-owning M.
+
+    Returns ``{"run_id", "pruned": {name: {"deleted", "by_label",
+    "rels_deleted", "rels_by_label"}}, "skipped": {name: reason},
+    "embeddings_deleted": int, "gates_tripped": [ids], "attention":
+    [messages], "retry": [names], "deferred_for": {name: [repo ids]}}``.
+    """
+    from src.indexer.lifecycle import MASS_RETIRE_FLOOR, MASS_RETIRE_FRACTION
+    from src.indexer.reconcile import PotentialOwners
+
+    report: dict = {
+        "run_id": run_id,
+        "pruned": {},
+        "skipped": {},
+        "embeddings_deleted": 0,
+        "gates_tripped": [],
+        "attention": [],
+        "retry": [],
+        "deferred_for": {},
+    }
+    url = repo.get("url", repo.get("local_path"))
+    reparsed = [
+        (version, name, info)
+        for version, mods in sorted(modules_by_version.items())
+        for name, info in sorted(mods.items())
+    ]
+    if not reparsed:
+        return report
+
+    blanket: str | None = None
+    if not run_id:
+        blanket = PRUNE_SKIP_NO_RUN
+    elif not lifecycle_on or presence is None:
+        blanket = PRUNE_SKIP_NO_LEDGER
+    elif not retire:
+        blanket = PRUNE_SKIP_NO_RETIRE
+    elif not scan_ok:
+        blanket = PRUNE_SKIP_SCAN_UNTRUSTED
+
+    shared: dict[str, set[str]] = {}
+    owners = PotentialOwners(presence) if blanket is None else None
+    released: dict[str, list[str]] = {}
+    if blanket is None:
+        for version in sorted(modules_by_version):
+            shared[version] = presence.names_owned_elsewhere(
+                version, modules_by_version[version], repo["id"],
+            )
+
+    for version, name, info in reparsed:
+        health = module_health.get((version, name))
+        reason = blanket or _prune_skip_reason(
+            owners, repo, version, name, health, shared[version], report, url,
+        )
+        pruned = False
+        if reason is None:
+            prefixes = _module_file_prefixes(
+                info, repo_path, (previous_paths or {}).get(name),
+            )
+            skip_labels = sorted(health.unobserved_labels)
+            census = writer.module_children_census(
+                version, name, run_id=run_id,
+                file_prefixes=prefixes, skip_labels=skip_labels,
+            )
+            stale, total = census["stale"], census["total"]
+            rels_stale, rels_total = census["rels_stale"], census["rels_total"]
+            if not census["module_exists"]:
+                reason = PRUNE_SKIP_NO_MODULE
+            elif not allow_mass_retire and (
+                _mass_drop(stale, total) or _mass_drop(rels_stale, rels_total)
+            ):
+                reason = PRUNE_SKIP_SOFT_GATE
+                report["gates_tripped"].append(f"{PRUNE_GATE_PREFIX}{name}@{version}")
+                report["attention"].append(
+                    f"entity prune of {name}@{version} held: {stale} of {total} indexed "
+                    f"node(s) and {rels_stale} of {rels_total} relationship(s) are no "
+                    "longer produced by its parse (more than "
+                    f"{int(MASS_RETIRE_FRACTION * 100)}% and at least {MASS_RETIRE_FLOOR}); "
+                    "graph and embeddings kept; check the parse, then re-run with "
+                    "--allow-mass-retire"
+                )
+                _logger.warning(
+                    "Repo %s: entity prune held for %s@%s (%d of %d nodes, %d of %d "
+                    "relationships stale)", url, name, version, stale, total,
+                    rels_stale, rels_total,
+                )
+                record_held = getattr(writer, "record_module_prune_held", None)
+                if callable(record_held):
+                    record_held(
+                        version, name, repo_id=repo.get("id"), stale=stale, total=total,
+                        rels_stale=rels_stale, rels_total=rels_total,
+                    )
+            else:
+                pruned = True
+                released.setdefault(version, []).append(name)
+                if stale or rels_stale:
+                    report["pruned"][name] = writer.prune_module_children(
+                        version, name, run_id=run_id,
+                        file_prefixes=prefixes, skip_labels=skip_labels,
+                    )
+                else:
+                    report["pruned"][name] = {
+                        "deleted": 0, "by_label": {}, "rels_deleted": 0, "rels_by_label": {},
+                    }
+        if reason is not None:
+            report["skipped"][name] = reason
+        if pruned or reason in _PRUNE_UNAVAILABLE_REASONS:
+            _reconcile_module_embeddings(
+                report, health, name, version, owning_profile, pg_conn,
+            )
+
+    clear_held = getattr(writer, "clear_module_prune_held", None)
+    if callable(clear_held):
+        for version, names in sorted(released.items()):
+            clear_held(version, names)
+    _track_prune_deferrals(writer, repo, reparsed, report)
+    report["retry"] = sorted(
+        n for n, reason in report["skipped"].items() if reason in _PRUNE_RETRY_REASONS
+    )
+    deleted = sum(r["deleted"] for r in report["pruned"].values())
+    rels_deleted = sum(r["rels_deleted"] for r in report["pruned"].values())
+    if deleted or rels_deleted or report["embeddings_deleted"]:
+        _logger.info(
+            "Repo %s: entity prune removed %d node(s), %d relationship(s) and %d "
+            "embedding row(s) that the re-parsed modules no longer define",
+            url, deleted, rels_deleted, report["embeddings_deleted"],
+        )
+    return report
+
+
+def _track_prune_deferrals(writer, repo: dict, reparsed: list, report: dict) -> None:
+    """Record each ``shared_unsynced`` skip on its Module node; forget the
+    deferral of a module that was pruned or is now ``shared``.
+
+    The reconcile reads the record back (``prune_deferred_modules``) once the
+    siblings it waits for synced, so a sibling that turns out not to
+    present-own the module (excluded, ``installable: False``, absent) sends
+    the owner back to prune it (``needs_rewrite``) instead of deferring for
+    ever. Any other skip keeps the record: that reason owns its own retry.
+    """
+    record = getattr(writer, "record_module_prune_deferred", None)
+    clear = getattr(writer, "clear_module_prune_deferred", None)
+    settled: dict[str, list[str]] = {}
+    for version, name, _info in reparsed:
+        reason = report["skipped"].get(name)
+        waits_for = report["deferred_for"].get(name)
+        if waits_for and reason == PRUNE_SKIP_SHARED_UNSYNCED:
+            if callable(record):
+                record(version, name, repo_id=repo.get("id"), waits_for=waits_for)
+        elif name in report["pruned"] or reason == PRUNE_SKIP_SHARED:
+            settled.setdefault(version, []).append(name)
+    if callable(clear):
+        for version, names in sorted(settled.items()):
+            clear(version, names)
+
+
+def _prune_skip_reason(
+    owners, repo: dict, version: str, name: str, health, shared: set[str],
+    report: dict, url,
+) -> str | None:
+    """Per-module constraints (b) and (c); appends operator messages to *report*."""
+    if health is None or health.degraded:
+        # Retry and operator message: _track_degraded_parses.
+        _logger.warning(
+            "Repo %s: entity prune skipped for %s@%s - parse degraded", url, name, version,
+        )
+        return PRUNE_SKIP_DEGRADED
+    if name in shared:
+        return PRUNE_SKIP_SHARED
+    from src.indexer.reconcile import POTENTIAL_OWNER_SHIPS_NAME
+
+    blockers = owners.blockers(name, version, [repo["id"]])
+    if not blockers:
+        return None
+    unknown = [b for b in blockers if b["why"] != POTENTIAL_OWNER_SHIPS_NAME]
+    if not unknown:
+        _logger.info(
+            "Repo %s: entity prune skipped for %s@%s - shipped by not yet synced "
+            "repo(s) %s", url, name, version,
+            ", ".join(sorted(b.get("repo_basename") or "?" for b in blockers)),
+        )
+        report["deferred_for"][name] = sorted({b["repo_id"] for b in blockers})
+        return PRUNE_SKIP_SHARED_UNSYNCED
+    labels = ", ".join(
+        f"{b.get('repo_basename') or '?'} (repo id={b.get('repo_id')}) [{b['why']}]"
+        for b in unknown
+    )
+    report["attention"].append(
+        f"entity prune of {name}@{version} deferred: repo(s) {labels} not synced "
+        "may still ship it"
+    )
+    return PRUNE_SKIP_UNDECIDABLE
+
+
+def _reconcile_module_embeddings(
+    report: dict, health, name: str, version: str, owning_profile: str, pg_conn,
+) -> None:
+    """Delete the owning profile's rows of *name* this parse did not produce (B14).
+
+    Runs on the run's own *pg_conn* when it is autocommit (the DELETE is then
+    its own committed transaction), like every other lifecycle write of the
+    run; only a non-autocommit or absent run connection falls back to a
+    short pool checkout. Without a pool the preceding upsert wrote nothing
+    either, so there is nothing to reconcile.
+
+    A parse that wrote no rows (``--no-embed``) still removes the rows of the
+    entities it no longer produces - deleting needs no embedder - matched by
+    ``(chunk_type, entity_name)`` so a live entity's older row is kept; the
+    rows are counted first and the count is the delete's ``expected``.
+    """
+    if health is None or health.degraded or health.embedded_keys is None or pg_conn is None:
+        return
+    from src.indexer.writer_pgvector import delete_module_embeddings_except
+
+    by_entity = not health.embeddings_written
+
+    def reconcile(conn) -> int:
+        expected = None
+        if by_entity:
+            expected = delete_module_embeddings_except(
+                conn, name, version, owning_profile, health.embedded_keys,
+                by_entity=True, delete=False,
+            )
+            if not expected:
+                return 0
+        return delete_module_embeddings_except(
+            conn, name, version, owning_profile, health.embedded_keys,
+            by_entity=by_entity, expected=expected,
+        )
+
+    if getattr(pg_conn, "autocommit", None) is True:
+        report["embeddings_deleted"] += reconcile(pg_conn)
+        return
+    from src.db.exceptions import PoolNotInitializedError
+    from src.db.pg import get_pool
+
+    try:
+        pool = get_pool()
+    except PoolNotInitializedError:
+        return
+    with pool.checkout() as conn:
+        report["embeddings_deleted"] += reconcile(conn)
+
+
+def _failure_fingerprint(repo_path: Path, paths: Iterable[str]) -> str:
+    """Identity of the on-disk state of a degraded module's failing files.
+
+    A digest of each file's (path, mode, size, mtime) - or its absence -
+    so it changes when the file is edited, replaced, deleted or has its
+    permissions fixed, and stays equal while nothing about it changed.
+    """
+    digest = hashlib.sha1()
+    for rel in sorted(set(paths)):
+        target = Path(rel) if Path(rel).is_absolute() else repo_path / rel
+        try:
+            st = target.stat()
+            state = (rel, st.st_mode, st.st_size, st.st_mtime_ns)
+        except OSError as exc:
+            state = (rel, "missing", type(exc).__name__)
+        digest.update(repr(state).encode())
+    return digest.hexdigest()
+
+
+def _degraded_message(name: str, version: str, problems: list[str], retry: bool) -> str:
+    shown = "; ".join(problems[:5]) + (
+        f"; ... {len(problems) - 5} more" if len(problems) > 5 else ""
+    )
+    when = (
+        "the module is re-parsed once next run (transient read failure)" if retry
+        else "the module is re-parsed when these files change"
+    )
+    return (
+        f"entity prune of {name}@{version} skipped: parse degraded, "
+        f"{len(problems)} file problem(s): {shown}; {when}"
+    )
+
+
+def _standing_attention(repo: dict, repo_path: Path, degraded_records: dict) -> list[str]:
+    """The ``lifecycle_attention`` of a repo the run skips at its unchanged HEAD (F38).
+
+    The skip happens only when the ledger reflects HEAD and no module is
+    flagged ``needs_rewrite``, so no gate is tripped, no name is pending and
+    no entity prune is held or deferred; the signals of the run that synced
+    the ledger that no longer hold (a bypassed gate, an entity prune since
+    applied) must not linger. What still stands at that HEAD: the version
+    rule, git tracking and the ``origin/<branch>`` ref, and the modules whose
+    parse is still degraded (their files did not change, or the repo would
+    not be skipped).
+    """
+    from src.git_utils import list_tracked_manifests
+    from src.indexer.registry import resolve_repo_version
+
+    branch = repo.get("branch")
+    attention = list(resolve_repo_version(
+        str(repo_path), branch=branch, profile_version=repo.get("odoo_version"),
+    ).attention)
+    attention.extend(_git_trust_attention(
+        repo_path, branch, list_tracked_manifests(repo_path) is not None,
+    ))
+    for (version, name), record in sorted(degraded_records.items()):
+        attention.append(_degraded_message(name, version, list(record["problems"]), False))
+    return attention
+
+
+def _write_attention(presence, repo: dict, attention: list[str], url) -> None:
+    """Replace ``repos.lifecycle_attention`` with *attention* (cleared when empty).
+
+    No write when the repo row already carries exactly that text.
+    """
+    text = "; ".join(attention) or None
+    if "lifecycle_attention" in repo and repo["lifecycle_attention"] == text:
+        return
+    try:
+        if text:
+            presence.set_lifecycle_attention(repo["id"], text)
+        else:
+            presence.clear_lifecycle_attention(repo["id"])
+    except Exception:  # noqa: BLE001 - never fail a repo over the attention column
+        _logger.exception("Repo %s: could not write lifecycle_attention", url)
+
+
+def _degraded_state(writer: IndexWriterProtocol, repo: dict, repo_path: Path):
+    """``(records, changed)``: the repo's degraded-parse records and the names
+    whose failing files changed on disk since (re-parse them this run)."""
+    read = getattr(writer, "parse_degraded_modules", None)
+    if not callable(read) or repo.get("id") is None:
+        return {}, set()
+    records: dict = {}
+    changed: set[str] = set()
+    for row in read(repo["id"]) or []:
+        records[(row["odoo_version"], row["name"])] = row
+        if _failure_fingerprint(repo_path, row["paths"]) != row["fingerprint"]:
+            changed.add(row["name"])
+    return records, changed
+
+
+def _track_degraded_parses(
+    writer: IndexWriterProtocol,
+    repo: dict,
+    *,
+    module_health: dict,
+    records: dict,
+    present_names: set[str],
+    repo_path: Path,
+) -> tuple[set[str], list[str]]:
+    """Retry a degraded module once per source state, never on every run (B14).
+
+    For every module parsed this run: a complete parse clears its record; a
+    degraded parse records ``_failure_fingerprint`` of its failing files and
+    is retried (``needs_rewrite``) only when the failure is transient
+    (an OSError: unreadable, permission, IO) AND this fingerprint was not
+    already recorded - i.e. once per state. A content failure (syntax) is
+    never retried: the module is re-parsed when a commit changes it, or
+    when ``_degraded_state`` sees its failing files change on disk. Modules
+    still degraded but not parsed this run keep their operator message.
+
+    Returns ``(retry_names, attention_messages)``.
+    """
+    from src.indexer.models import to_repo_relative
+
+    root = str(repo_path).rstrip("/") + "/"
+    retry: set[str] = set()
+    attention: list[str] = []
+    clear: dict[str, list[str]] = {}
+    for (version, name), health in sorted(module_health.items()):
+        prev = records.get((version, name))
+        if not health.degraded:
+            if prev is not None:
+                clear.setdefault(version, []).append(name)
+            continue
+        paths = sorted(
+            to_repo_relative(p, repo_path) or p for p in health.failure_paths
+        )
+        fingerprint = _failure_fingerprint(repo_path, paths)
+        again = health.transient and (prev is None or prev["fingerprint"] != fingerprint)
+        problems = [f.replace(root, "") for f in health.failures]
+        record = getattr(writer, "record_module_parse_degraded", None)
+        if callable(record):
+            record(
+                version, name, repo_id=repo.get("id"), fingerprint=fingerprint,
+                paths=paths, problems=problems,
+            )
+        if again:
+            retry.add(name)
+        attention.append(_degraded_message(name, version, problems, again))
+    for (version, name), prev in sorted(records.items()):
+        if (version, name) in module_health or name not in present_names:
+            continue
+        attention.append(_degraded_message(name, version, list(prev["problems"]), False))
+    clear_fn = getattr(writer, "clear_module_parse_degraded", None)
+    if callable(clear_fn):
+        for version, names in sorted(clear.items()):
+            clear_fn(version, names)
+    return retry, attention
 
 
 def _gc_stale_test_nodes(
@@ -889,9 +1536,11 @@ def _index_repo(
         None → RelaxNG validation is silently skipped (no false positives).
 
     Every run scans the repo (``build_registry_scan``: git-tracked manifests)
-    and reconciles the scan with the ``module_presence`` ledger; nothing is
+    and reconciles the scan with the ``module_presence`` ledger; no module is
     ever deleted here - retirement is decided by ``reconcile.reconcile_version``
-    after the run's repos were indexed.
+    after the run's repos were indexed. What IS deleted here: the test-node GC
+    and the intra-module entity prune (B14) - the children of a re-parsed
+    module that its parse no longer produced (see ``_prune_reparsed_modules``).
 
     - Unchanged skip (zero cost) only when HEAD == ``repos.head_sha`` AND the
       ledger reflects that HEAD (``repos.presence_head_sha``) AND no module of
@@ -915,14 +1564,32 @@ def _index_repo(
       module, and nothing is pending (H1); when the only reason is pending
       names, ``lifecycle.presence_deferred_head`` hands the HEAD to the
       reconcile, which advances it once those names are retired.
+    - Before the ledger commit, the entity prune runs over the re-parsed
+      modules (children, relationships, embeddings); a module it had to skip
+      for a reason that can clear on its own (soft gate, an unsynced repo
+      that may ship it (``undecidable_owner``), ``--no-retire``, untrusted
+      scan) is flagged ``needs_rewrite`` so
+      the next run re-parses and prunes it. A degraded parse is recorded on
+      the Module node with a fingerprint of its failing files and retried
+      once after a transient (IO) failure; after that it is re-parsed only
+      when a commit changes it or its failing files change on disk (checked
+      before the unchanged skip), and its files stay named in
+      ``lifecycle_attention`` while it remains degraded.
     - Signals the operator must see (version rule, gate trips, git refusing
-      the repo, missing ``origin/<branch>`` ref, stamp shortfall) replace
-      ``repos.lifecycle_attention``; a clean run clears it.
+      the repo, missing ``origin/<branch>`` ref, stamp shortfall, a held,
+      degraded or deferred entity prune) replace ``repos.lifecycle_attention``;
+      a clean run clears it. The unchanged skip rewrites it too, with what
+      still stands at that HEAD (``_standing_attention``: version rule, git
+      trust, still-degraded parses), so a signal that no longer holds (e.g.
+      a gate bypassed by ``--allow-mass-retire``) never outlives its run.
 
     ``lifecycle`` counters: ``odoo_version`` (ledger key version),
-    ``gates_tripped`` (gate ids), ``pending`` (names flagged this run),
-    ``attention`` (messages), ``presence_synced`` (bool),
-    ``presence_deferred_head`` (sha or None).
+    ``gates_tripped`` (gate ids, including ``entity_prune:<name>@<version>``),
+    ``pending`` (names flagged this run), ``attention`` (messages),
+    ``presence_synced`` (bool), ``presence_deferred_head`` (sha or None),
+    ``entity_prune`` (present when modules were re-parsed: ``run_id``,
+    ``pruned``, ``skipped``, ``embeddings_deleted``, ``gates_tripped``,
+    ``retry``).
 
     ``gc`` is accepted for backward compatibility and ignored (retirement and
     test-node GC always run). ``retire=False`` (CLI ``--no-retire``) scans and
@@ -1004,14 +1671,24 @@ def _index_repo(
         presence_head = presence.presence_head_sha(repo["id"])
         rewrite_names = presence.needs_rewrite_names(repo["id"])
 
+    # Degraded-parse records (B14): a module whose failing files changed on
+    # disk since its degraded parse (edited, deleted, permission fixed) is
+    # re-parsed now even when HEAD did not move.
+    degraded_records, degraded_changed = _degraded_state(writer, repo, repo_path)
+
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=full_reindex, ledger=presence is not None,
+        degraded_changed=bool(degraded_changed),
     )
     if plan.mode == RUN_SKIP:
         _logger.info(
             "Repo %s unchanged (HEAD %s) - skipping reindex", url, current_head[:8],
         )
+        if presence is not None:
+            _write_attention(
+                presence, repo, _standing_attention(repo, repo_path, degraded_records), url,
+            )
         return dict(_EMPTY_COUNTERS)
 
     diff_base: str | None = plan.diff_base
@@ -1066,10 +1743,11 @@ def _index_repo(
     for reason in gates.reasons:
         _logger.warning("Repo %s: lifecycle gate: %s", url, reason)
 
-    heal_names: set[str] = set()
-    if lifecycle_on and present_names and diff_base is not None:
-        heal = modules_needing_rewrite(writer, presence, repo, scan, owning_profile)
-        heal_names = set(heal)
+    heal = self_heal_rewrites(
+        writer, presence, repo, scan, owning_profile, plan=plan, lifecycle_on=lifecycle_on,
+    )
+    heal_names: set[str] = set(heal)
+    if heal:
         for reason in (REWRITE_NO_NODE, REWRITE_PATH_DRIFT, REWRITE_REPO_DRIFT):
             names = sorted(n for n, d in heal.items() if d["reason"] == reason)
             if names:
@@ -1081,26 +1759,13 @@ def _index_repo(
 
     # === Write set ===
     total_before = sum(len(mods) for mods in scan.modules.values())
-    if diff_base is None:
-        write_names = set(present_names)
-    elif sync_only:
-        write_names = set()
-    else:
-        changed_rel_paths = _incremental.compute_changed_module_paths(
-            repo_path, diff_base, current_head,
-        )
-        # convert relative paths to absolute to match ModuleInfo.path
-        changed_abs_paths = {str(repo_path / rel) for rel in changed_rel_paths}
-        write_names = {
-            name
-            for mods in scan.modules.values()
-            for name in _incremental.filter_modules_by_changed(mods, changed_abs_paths)
-        }
+    write_names = regular_write_names(repo_path, scan, plan, current_head)
+    if plan.mode == RUN_INCREMENTAL:
         _logger.info(
             "Repo %s: incremental - %d/%d modules changed",
             url, len(write_names), total_before,
         )
-    write_names |= (set(rewrite_names) | heal_names) & present_names
+    write_names |= (set(rewrite_names) | heal_names | degraded_changed) & present_names
     modules_by_version: dict[str, dict] = {
         ver: {n: info for n, info in mods.items() if n in write_names}
         for ver, mods in scan.modules.items()
@@ -1115,13 +1780,41 @@ def _index_repo(
 
     counters = dict(_EMPTY_COUNTERS)
     test_results: list = []
+    prune_report: dict | None = None
     if modules_by_version:
+        run_id = _writer_run_id(writer)
+        module_health: dict = {}
         counters, test_results = _parse_and_write(
             modules_by_version,
             writer=writer, repo=repo, repo_path=repo_path, rng_root=rng_root,
             pg_conn=pg_conn, embedder=embedder, progress=progress,
             profiles_arr=_profiles_arr, owning_profile=owning_profile,
+            module_health=module_health,
         )
+        # Intra-module entity prune (B14): children the re-parse no longer
+        # produced. Before the ledger commit, like every other graph write.
+        prune_report = _prune_reparsed_modules(
+            writer, presence, repo,
+            modules_by_version=modules_by_version, module_health=module_health,
+            run_id=run_id, owning_profile=owning_profile, repo_path=repo_path,
+            pg_conn=pg_conn, lifecycle_on=lifecycle_on, retire=retire,
+            scan_ok=gates.scan_ok, allow_mass_retire=allow_mass_retire,
+            previous_paths={
+                n: d["indexed_path"] for n, d in heal.items()
+                if d["reason"] == REWRITE_PATH_DRIFT and d.get("indexed_path")
+            },
+        )
+        attention.extend(prune_report["attention"])
+    prune_retry: set[str] = set(prune_report["retry"]) if prune_report else set()
+    degraded_retry, degraded_attention = _track_degraded_parses(
+        writer, repo,
+        module_health=module_health if modules_by_version else {},
+        records=degraded_records, present_names=present_names, repo_path=repo_path,
+    )
+    attention.extend(degraded_attention)
+    prune_retry |= degraded_retry
+    if prune_report is not None:
+        prune_report["retry"] = sorted(prune_retry)
 
     # NOTE: reconcile_same_name_inherits runs once per version in the post-pass
     # (index_profile / reconcile_version), not per repo.
@@ -1137,16 +1830,18 @@ def _index_repo(
             scan=scan, rows=rows, transitions=transitions, gates=gates,
             current_head=current_head, diff_base=diff_base,
             owning_profile=owning_profile, retire=retire,
-            written=write_names, rewrite_names=rewrite_names, attention=attention,
+            written=write_names - prune_retry, rewrite_names=rewrite_names,
+            attention=attention,
         )
+        for name in sorted(prune_retry & present_names):
+            presence.mark_needs_rewrite(repo["id"], name)
+        if prune_report is not None:
+            lifecycle_counters["gates_tripped"].extend(prune_report["gates_tripped"])
+            lifecycle_counters["entity_prune"] = {
+                k: v for k, v in prune_report.items() if k != "attention"
+            }
     if presence is not None:
-        try:
-            if attention:
-                presence.set_lifecycle_attention(repo["id"], "; ".join(attention))
-            else:
-                presence.clear_lifecycle_attention(repo["id"])
-        except Exception:  # noqa: BLE001 - never fail a repo over the attention column
-            _logger.exception("Repo %s: could not write lifecycle_attention", url)
+        _write_attention(presence, repo, attention, url)
     elif attention:
         for message in attention:
             _logger.warning("Repo %s: lifecycle: %s", url, message)

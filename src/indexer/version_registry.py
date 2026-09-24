@@ -122,6 +122,21 @@ _REPORT_TEMPLATE_WARN_REGISTRY: VersionRegistry[bool] = VersionRegistry([
 ])
 
 
+# --- Python 3 source gate (ADR-0056 B14 parse completeness) ----------------
+# Odoo v11 is the first Python-3-only series; v8-v10 source is Python 2. A
+# file ast.parse rejects takes the by-design text-regex fallback on v8-v10; on
+# v11+ it is a broken file whose parse is incomplete (the fallback recovers no
+# methods), so its module counts as degraded.
+_PYTHON3_SOURCE_REGISTRY: VersionRegistry[bool] = VersionRegistry([
+    (11, None, True),
+])
+
+
+def python3_source_expected(odoo_version: str) -> bool:
+    """True when every Python file of *odoo_version* must parse as Python 3 (v11+)."""
+    return bool(_PYTHON3_SOURCE_REGISTRY.resolve_version(odoo_version, default=False))
+
+
 def report_default_type(odoo_version: str) -> str:
     """Return the default `report_type` when the report XML omits it.
 
