@@ -397,15 +397,16 @@ def profile_inspect(
 
     Args:
         method: 'summary' | 'repos' | 'modules' | 'coverage'.
-            summary  - ancestor chain, children, repos (whole chain), count of
-              modules owned by this profile - parent profiles not counted
-              (needs name=).
+            summary  - ancestor chain, children, repos (whole chain), and two
+              module counts: owned by this profile, and including its ancestor
+              profiles (needs name=).
             repos    - distinct repos in the ancestor chain, deduped by (url, branch).
             modules  - paginated modules owned by the profile; repo= URL-substring
               filter; start_index/limit pagination (default 50/page, max 50).
-            coverage - module count by category for this profile, with a
-              superset-diff (indexed_elsewhere = modules of that category visible
-              to you but NOT in this profile) as a "may be incomplete" signal
+            coverage - module count by category: own (this profile) and
+              with_ancestors (plus its ancestor profiles), with a superset-diff
+              (indexed_elsewhere = modules of that category visible to you in
+              neither) as a "may be incomplete" signal
               (needs name=). Absence from the list != absence from the product -
               the static index cannot prove a domain is absent; cross-check live
               ir.module.module to confirm.

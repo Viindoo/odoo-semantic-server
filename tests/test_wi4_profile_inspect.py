@@ -18,7 +18,9 @@ Test (f) is DB-free.
 DB versions: TEST_VERSION = "99.0" (shared conftest) + PG seed via conftest pg_conn.
 """
 import asyncio
+import re
 import sys
+from contextlib import contextmanager
 
 import pytest
 
@@ -671,60 +673,508 @@ def test_inquery_choke_mutation_guard(wi4_db):
 # ---------------------------------------------------------------------------
 
 
-def test_modules_name_none_narrowed_by_active_session_pin(wi4_db):
-    """name=None + an active session pin narrows _scope(None) to the pinned profile.
+@contextmanager
+def _pinned(server, sess, *, api_key_id, mcp_session_id, profile, tenant_id=None):
+    """Run as (api_key_id, mcp_session_id) with *profile* pinned, as *tenant_id*."""
+    assert sess.set_active_profile_db(api_key_id, profile, mcp_session_id), (
+        "Pin must be stored for a numeric api_key_id (precondition).")
+    sess.invalidate_allowed_profiles()
+    tok_key = server._api_key_id_var.set(api_key_id)
+    tok_sid = server._mcp_session_id_var.set(mcp_session_id)
+    tok_tid = server._tenant_id_var.set(tenant_id)
+    try:
+        yield
+    finally:
+        server._tenant_id_var.reset(tok_tid)
+        server._api_key_id_var.reset(tok_key)
+        server._mcp_session_id_var.reset(tok_sid)
+        sess._cache_invalidate(api_key_id, mcp_session_id)
+        sess.invalidate_allowed_profiles()
 
-    _scope(None) injects the per-session pin via _resolve_profile(None) BEFORE the
-    ADR-0034 tenant narrowing (#251), so a session pinned to a profile that is NOT
-    on the seeded modules' profile[] must hide every module — even for an admin
-    (unrestricted) caller. This is the behavior the helper comment now documents
-    ("FURTHER narrowed by any active session pin, narrowing-only / fail-closed").
 
-    Baseline: test_inquery_choke_mutation_guard already proves the SAME admin call
-    with NO pin returns all 60 modules. Here the only added variable is the pin, so
-    the disappearance is attributable solely to pin injection.
+# Sort before wi4_mod_* so they land on the first page (ORDER BY name).
+_PRIVATE_MODULES = [f"wi4_acme_{i:03d}" for i in range(3)]
 
-    MUTATION CHECK: deleting the `profile_name = _resolve_profile(None)` injection
-    at the top of server._scope makes this test RED — the pin is ignored, own stays
-    None (admin/unrestricted), and the modules reappear.
+
+def _page_rows(out: str) -> tuple[str, list[str]]:
+    """(the "Showing rows ..." line, the module names listed on the page)."""
+    showing = [ln for ln in out.splitlines() if "Showing rows" in ln]
+    return (showing[0] if showing else ""), re.findall(r"\bwi4_(?:mod|acme)_\d{3}\b", out)
+
+
+def test_modules_name_none_narrowed_by_active_session_pin(wi4_db, neo4j_driver):
+    """name=None + a session pin narrows the admin view to what a tenant pinned
+    to the same profile sees (ADR-0034, #251).
+
+    Rewritten (lane-mcpfix defect 6). The old test pinned an admin to
+    wi4_internal_97 and required EVERY wi4_mod_* to disappear. Those modules
+    carry [wi4_viindoo_97, wi4_odoo_97], and every wi4_* profile is shared
+    (tenant_id NULL), so a tenant pinned to wi4_internal_97 sees them: the old
+    expectation encoded the admin-only defect (admin narrowing dropped the
+    shared list). The rule now: for the same pinned profile, the admin and a
+    tenant see exactly the same rows.
+
+    To keep proving the pin is applied at all, three modules owned by the
+    tenant-private profile wi4_tenant_17 are added: an unpinned admin sees
+    them (precondition), a pin to wi4_internal_97 hides them from the admin and
+    from the tenant alike.
+
+    MUTATION CHECK: deleting the `profile_name = _resolve_profile(None)`
+    injection in server._scope makes the admin unrestricted again and the
+    private modules reappear (RED). Reverting the admin shared-narrowing makes
+    the shared wi4_mod_* rows vanish for the admin only (RED).
     """
     import importlib
 
     from src.mcp import session as sess
 
     server = importlib.import_module("src.mcp.server")
+    pinned = "wi4_internal_97"  # shared profile, NOT on any module's profile[]
 
-    pinned_api_key_id = "424242"          # numeric → a real (storable) pin key
-    mcp_session_id = "wi4-pin-session"
-    foreign_profile = "wi4_internal_97"   # NOT in modules' profile[] (viindoo+odoo)
-
-    # Set the per-session pin in the in-memory store (the source of truth, #251).
-    stored = sess.set_active_profile_db(
-        pinned_api_key_id, foreign_profile, mcp_session_id
-    )
-    assert stored, "Pin must be stored for a numeric api_key_id (precondition)."
-
-    # Bind the current MCP context to that same (api_key_id, mcp_session_id) so the
-    # real resolution path (_get_api_key_id / _get_mcp_session_id -> resolve_profile_v2)
-    # picks up the pin we just wrote — no mock of _resolve_profile (we test behavior,
-    # not the mock).
-    tok_key = server._api_key_id_var.set(pinned_api_key_id)
-    tok_sid = server._mcp_session_id_var.set(mcp_session_id)
+    with neo4j_driver.session() as s:
+        for name in _PRIVATE_MODULES:
+            s.run(
+                "MERGE (m:Module {name: $name, odoo_version: $v}) "
+                "SET m.profile = ['wi4_tenant_17'], m.edition = 'community', "
+                "m.repo = 'tenant_repo'",
+                name=name, v=_WI4_VERSION,
+            )
     try:
-        result = _call_profile_inspect(
-            name=None,
-            method="modules",
-            odoo_version=_WI4_VERSION,
-        )
-    finally:
-        server._api_key_id_var.reset(tok_key)
-        server._mcp_session_id_var.reset(tok_sid)
-        sess._cache_invalidate(pinned_api_key_id, mcp_session_id)
+        unpinned_admin = _call_profile_inspect(
+            name=None, method="modules", odoo_version=_WI4_VERSION, limit=50)
+        assert "wi4_acme_000" in unpinned_admin, (
+            "precondition: an unpinned admin sees the tenant-private modules\n"
+            f"{unpinned_admin}")
 
-    assert "wi4_mod_" not in result, (
-        "Session pin to a foreign profile must narrow _scope(None) and hide all "
-        f"modules whose profile[] does not include the pin.\nResult:\n{result}"
-    )
+        with _pinned(server, sess, api_key_id="424242", mcp_session_id="wi4-pin-admin",
+                     profile=pinned):
+            admin = _call_profile_inspect(
+                name=None, method="modules", odoo_version=_WI4_VERSION, limit=50)
+        with _pinned(server, sess, api_key_id="424243", mcp_session_id="wi4-pin-tenant",
+                     profile=pinned, tenant_id=wi4_db["tenant_id"]):
+            tenant = _call_profile_inspect(
+                name=None, method="modules", odoo_version=_WI4_VERSION, limit=50)
+    finally:
+        with neo4j_driver.session() as s:
+            s.run("MATCH (m:Module {odoo_version: $v}) WHERE m.name IN $names "
+                  "DETACH DELETE m", v=_WI4_VERSION, names=_PRIVATE_MODULES)
+
+    assert "wi4_acme_" not in admin, (
+        f"a pin to {pinned} must hide modules owned only by another profile:\n{admin}")
+    assert "wi4_mod_000" in admin, (
+        "modules stamped only with shared profiles stay visible under the pin, "
+        f"as they are for a tenant:\n{admin}")
+    assert _page_rows(admin) == _page_rows(tenant), (
+        f"admin and tenant pinned to {pinned} must see the same rows.\n"
+        f"ADMIN:\n{admin}\nTENANT:\n{tenant}")
+
+
+# ---------------------------------------------------------------------------
+# ADR-0023 tree grammar (lane-mcpfix defect 2) and truthful count labels
+# (defect 5)
+# ---------------------------------------------------------------------------
+
+_PROFILE_OUTPUTS = [
+    pytest.param(dict(name="wi4_viindoo_97", method="summary"), id="summary"),
+    pytest.param(dict(name="wi4_internal_97", method="summary"), id="summary-leaf"),
+    pytest.param(dict(name="wi4_viindoo_97", method="modules", start_index=0, limit=50),
+                 id="modules-first-page"),
+    pytest.param(dict(name="wi4_viindoo_97", method="modules", start_index=50, limit=50),
+                 id="modules-last-page"),
+    pytest.param(dict(name="wi4_viindoo_97", method="repos"), id="repos"),
+    pytest.param(dict(name="wi4_viindoo_97", method="coverage"), id="coverage"),
+    pytest.param(dict(name="wi4_internal_97", method="modules"), id="modules-empty"),
+]
+
+
+def _assert_one_closing_root_line(out: str) -> None:
+    """Header, then tree items only; exactly one root-level └─ and it is the last line."""
+    lines = out.rstrip("\n").split("\n")
+    assert len(lines) >= 2, out
+    assert not lines[0].startswith(("├", "└", "│", " ")), f"header missing:\n{out}"
+    for ln in lines[1:]:
+        assert ln.startswith(("├─ ", "└─ ", "│", "    ")), (
+            f"line is not part of the tree: {ln!r}\n{out}")
+    closing = [ln for ln in lines[1:] if ln.startswith("└─ ")]
+    assert len(closing) == 1, f"expected exactly one root └─, got {len(closing)}:\n{out}"
+    assert lines[-1] == closing[0], f"the root └─ must be the last line:\n{out}"
+
+
+@pytest.mark.parametrize("kwargs", _PROFILE_OUTPUTS)
+def test_every_profile_inspect_answer_closes_its_root_exactly_once(wi4_db, kwargs):
+    """ADR-0023 §1: one root └─, last. Pre-fix summary and modules printed a
+    second root └─ (Module count / '... and N more') before the Next footer."""
+    out = _call_profile_inspect(odoo_version=_WI4_VERSION, **kwargs)
+    _assert_one_closing_root_line(out)
+
+
+@pytest.mark.parametrize("kwargs", [
+    pytest.param(dict(name="wi4_viindoo_97", method="summary"), id="summary"),
+    pytest.param(dict(name="wi4_internal_97", method="summary"), id="summary-leaf"),
+    pytest.param(dict(name="wi4_viindoo_97", method="modules", start_index=0, limit=50),
+                 id="modules-first-page"),
+    pytest.param(dict(name="wi4_viindoo_97", method="repos"), id="repos"),
+    pytest.param(dict(name="wi4_viindoo_97", method="coverage"), id="coverage"),
+    pytest.param(dict(name="wi4_internal_97", method="coverage"), id="coverage-leaf"),
+    pytest.param(dict(name="wi4_internal_97", method="modules"), id="modules-empty"),
+])
+def test_profile_inspect_answers_pass_the_adr0023_tree_validator(wi4_db, kwargs):
+    """The full ADR-0023 validator (tests/test_mcp_module_lifecycle_read.py).
+
+    Round 2 (F1, 79914c5): the round-1 xfail(strict) marks are dropped. Every
+    sub-list indents with pipe + 3 spaces (ADR-0023 §1.3) and the coverage
+    legend is a root item with its own connector, so every answer - including
+    the two-level Module count block and the ancestor-labelled coverage block -
+    passes the full validator.
+    """
+    from tests.test_mcp_module_lifecycle_read import _assert_adr0023_tree
+
+    _assert_adr0023_tree(_call_profile_inspect(odoo_version=_WI4_VERSION, **kwargs))
+
+
+@pytest.mark.parametrize("method", ["summary", "modules", "repos", "coverage"])
+def test_profile_not_visible_answer_is_a_two_line_tree(wi4_db, method):
+    """A denied profile answers with the header and ONE closing └─ line that
+    carries the advice. Pre-fix the advice sat on a third, connector-less line."""
+    from unittest.mock import patch
+
+    from tests.test_mcp_module_lifecycle_read import _assert_adr0023_tree
+
+    def only_own(profile_name):
+        return [] if profile_name else ["wi4_tenant_17"]
+
+    with patch("src.mcp.server._effective_allowed", side_effect=only_own):
+        out = _call_profile_inspect(name="wi4_viindoo_97", method=method,
+                                    odoo_version=_WI4_VERSION)
+    lines = out.rstrip("\n").split("\n")
+    assert len(lines) == 2, out
+    assert lines[1].startswith("└─ Not found or not authorized"), out
+    assert "list_available_profiles()" in lines[1], out
+    _assert_adr0023_tree(out)
+
+
+def _count_block(out: str) -> list[str]:
+    """The Module count root item and its sub-items."""
+    lines = out.splitlines()
+    heads = [i for i, ln in enumerate(lines) if ln.startswith("├─ Module count")]
+    assert len(heads) == 1, out
+    i = heads[0]
+    block = [lines[i]]
+    for ln in lines[i + 1:]:
+        if not ln.startswith("│   "):
+            break
+        block.append(ln)
+    return block
+
+
+_COVERAGE_ROW = re.compile(
+    r"^│   [├└]─ (?P<cat>.+?): own=(?P<own>\d+), with_ancestors=(?P<chain>\d+),"
+    r" indexed_elsewhere=(?P<elsewhere>\d+)(?P<flag>  \[may be incomplete\])?$")
+
+
+def _coverage_rows(out: str) -> dict[str, tuple[int, int, int, bool]]:
+    rows = {}
+    for ln in out.splitlines():
+        m = _COVERAGE_ROW.match(ln)
+        if m:
+            rows[m["cat"]] = (int(m["own"]), int(m["chain"]), int(m["elsewhere"]),
+                              bool(m["flag"]))
+    return rows
+
+
+def test_module_count_label_does_not_claim_parent_profile_content(wi4_db):
+    """Defect 5 + round-2 owner decision C3: each number says what it counts.
+
+    wi4_internal_97 owns no module; its parent chain (wi4_viindoo_97 ->
+    wi4_odoo_97) holds the 60. Round 1 pinned a single "... parent profiles not
+    counted: 0" line. The owner then decided (C3, f7d4e22) that the summary
+    shows TWO labelled numbers: owned by this profile (0) and including the
+    ancestor profiles, naming the chain (60). The protection is unchanged: the
+    0 is never presented as an inheritance-inclusive count, and the parent's
+    modules are reported where they are counted.
+    """
+    block = _count_block(_call_profile_inspect(
+        name="wi4_internal_97", method="summary", odoo_version=_WI4_VERSION))
+    assert block == [
+        f"├─ Module count (version {_WI4_VERSION}):",
+        "│   ├─ Owned by this profile: 0",
+        "│   └─ Including ancestor profiles"
+        " (wi4_internal_97 -> wi4_viindoo_97 -> wi4_odoo_97): 60",
+    ], "\n".join(block)
+    assert not any("inheritance-inclusive" in ln for ln in block), block
+
+
+def test_coverage_label_does_not_claim_parent_profile_content(wi4_db):
+    """Defect 5 + round-2 owner decision C3 for the coverage block.
+
+    Round 1 asserted the single-number label said parent profiles were not
+    counted. After C3 each category row carries own and with_ancestors
+    separately, and the legend names the chain the second number walks. For
+    wi4_internal_97 the 60 parent-chain modules are with_ancestors, not own,
+    and nothing visible lies outside the chain (indexed_elsewhere=0, so no
+    "may be incomplete" flag).
+    """
+    out = _call_profile_inspect(name="wi4_internal_97", method="coverage",
+                                odoo_version=_WI4_VERSION)
+    assert list(_coverage_rows(out).values()) == [(0, 60, 0, False)], out
+    legend = [ln for ln in out.splitlines() if ln.startswith("├─ Legend:")]
+    assert len(legend) == 1, out
+    assert "(wi4_internal_97 -> wi4_viindoo_97 -> wi4_odoo_97)" in legend[0], out
+    assert "inheritance-inclusive" not in out, out
+
+
+# ---------------------------------------------------------------------------
+# Round 2 C2 (0b4fda3): a session pin never narrows an explicitly named profile
+# ---------------------------------------------------------------------------
+
+_C2_PROFILE = "wi4_c2_second"          # second profile owned by wi4_tenant
+_C2_MODULES = [f"wi4_c2mod_{i:03d}" for i in range(3)]
+_C2_CATEGORY = "C2 Tenant Domain"
+
+
+@pytest.fixture
+def c2_world(wi4_db, neo4j_driver):
+    """wi4_tenant owns wi4_tenant_17 AND wi4_c2_second (3 modules, one category)."""
+    pg = wi4_db["pg_conn"]
+    _profile(pg, _C2_PROFILE, tenant_id=wi4_db["tenant_id"])
+    with neo4j_driver.session() as s:
+        for name in _C2_MODULES:
+            s.run("MERGE (m:Module {name: $name, odoo_version: $v}) "
+                  "SET m.profile = [$p], m.edition = 'custom', m.repo = 'tenant_repo_2', "
+                  "m.category = $cat",
+                  name=name, v=_WI4_VERSION, p=_C2_PROFILE, cat=_C2_CATEGORY)
+    from src.mcp import session as sess
+    sess.invalidate_allowed_profiles()
+    yield
+    with neo4j_driver.session() as s:
+        s.run("MATCH (m:Module {odoo_version: $v}) WHERE m.name IN $names DETACH DELETE m",
+              v=_WI4_VERSION, names=_C2_MODULES)
+    with pg.cursor() as cur:
+        cur.execute("DELETE FROM profiles WHERE name = %s", (_C2_PROFILE,))
+    if not pg.autocommit:
+        pg.commit()
+    sess.invalidate_allowed_profiles()
+
+
+def _c2_numbers() -> tuple[str, list[str], tuple | None]:
+    summary = _call_profile_inspect(name=_C2_PROFILE, method="summary",
+                                    odoo_version=_WI4_VERSION)
+    modules = _call_profile_inspect(name=_C2_PROFILE, method="modules",
+                                    odoo_version=_WI4_VERSION, limit=50)
+    coverage = _call_profile_inspect(name=_C2_PROFILE, method="coverage",
+                                     odoo_version=_WI4_VERSION)
+    owned = [ln for ln in _count_block(summary) if "Owned by this profile" in ln]
+    listed = sorted(re.findall(r"\bwi4_c2mod_\d{3}\b", modules))
+    return owned[0] if owned else summary, listed, _coverage_rows(coverage).get(_C2_CATEGORY)
+
+
+@pytest.mark.parametrize("who", ["admin", "tenant"])
+def test_session_pin_does_not_zero_an_explicitly_named_profile(wi4_db, c2_world, who):
+    """C2 FIX: a session pinned to wi4_tenant_17 that asks profile_inspect about
+    wi4_c2_second (another profile the caller can see) gets wi4_c2_second's true
+    numbers - the same an unpinned session gets - in summary, modules and
+    coverage.
+
+    Real case: a tenant with two private profiles (e.g. a customer's prod and
+    staging) pins one with set_active_profile, then inspects the other by name.
+    Pre-fix the pin narrowed the read to the pinned profile and the named one
+    read Owned 0, an empty module list and no coverage row.
+    """
+    import importlib
+
+    from src.mcp import session as sess
+
+    server = importlib.import_module("src.mcp.server")
+    tenant_id = wi4_db["tenant_id"] if who == "tenant" else None
+    tok = server._tenant_id_var.set(tenant_id)
+    try:
+        sess.invalidate_allowed_profiles()
+        unpinned = _c2_numbers()
+    finally:
+        server._tenant_id_var.reset(tok)
+    expected = ("│   ├─ Owned by this profile: 3", _C2_MODULES, (3, 3, 0, False))
+    assert unpinned == expected, f"precondition (unpinned {who}): {unpinned}"
+
+    with _pinned(server, sess, api_key_id="424250" if who == "admin" else "424251",
+                 mcp_session_id=f"wi4-c2-{who}", profile="wi4_tenant_17",
+                 tenant_id=tenant_id):
+        pinned = _c2_numbers()
+    assert pinned == expected, (
+        f"{who} pinned to wi4_tenant_17 must read {_C2_PROFILE}'s true numbers: "
+        f"{pinned} != {expected}")
+
+
+def test_session_pin_does_not_open_a_profile_the_tenant_cannot_see(wi4_db, c2_world):
+    """C2 GUARD: ignoring the pin for a named profile never widens tenant
+    visibility - wi4_tenant, pinned to its own wi4_tenant_17, still gets the
+    not-visible answer for a private profile of ANOTHER tenant."""
+    # GUARD: pre-existing behaviour
+    import importlib
+
+    from src.mcp import session as sess
+
+    server = importlib.import_module("src.mcp.server")
+    pg = wi4_db["pg_conn"]
+    other = _tenant(pg, "wi4_c2_other_tenant")
+    _profile(pg, "wi4_c2_foreign", tenant_id=other)
+    sess.invalidate_allowed_profiles()
+    try:
+        with _pinned(server, sess, api_key_id="424252", mcp_session_id="wi4-c2-deny",
+                     profile="wi4_tenant_17", tenant_id=wi4_db["tenant_id"]):
+            answers = {m: _call_profile_inspect(name="wi4_c2_foreign", method=m,
+                                                odoo_version=_WI4_VERSION)
+                       for m in ("summary", "modules", "coverage")}
+    finally:
+        with pg.cursor() as cur:
+            cur.execute("DELETE FROM profiles WHERE name = 'wi4_c2_foreign'")
+            cur.execute("DELETE FROM tenants WHERE id = %s", (other,))
+        if not pg.autocommit:
+            pg.commit()
+        sess.invalidate_allowed_profiles()
+    for method, out in answers.items():
+        assert "Not found or not authorized" in out, f"{method}:\n{out}"
+
+
+# ---------------------------------------------------------------------------
+# Round 2 C3 (f7d4e22, owner decision): own vs with_ancestors, tenant-scoped
+# ---------------------------------------------------------------------------
+#
+# Chain wi4_c3_leaf -> wi4_c3_mid -> wi4_c3_root. Nodes carry the single
+# profile that owns their repo (ADR-0034), so each module is stamped with one
+# profile. wi4_c3_root is private to ANOTHER tenant; wi4_c3_mid is shared;
+# wi4_c3_leaf is owned by the calling tenant. wi4_c3_other (shared, outside
+# the chain) holds same-category modules the chain does not carry.
+
+_C3_CATEGORY = "C3 Accounting"
+_C3_SEED = {"wi4_c3_leaf": 3, "wi4_c3_mid": 2, "wi4_c3_root": 4, "wi4_c3_other": 2}
+_C3_CHAIN = "wi4_c3_leaf -> wi4_c3_mid -> wi4_c3_root"
+
+
+@pytest.fixture
+def c3_world(wi4_db, neo4j_driver):
+    from src.mcp import session as sess
+
+    pg = wi4_db["pg_conn"]
+    caller = _tenant(pg, "wi4_c3_caller")
+    owner_of_root = _tenant(pg, "wi4_c3_root_owner")
+    root = _profile(pg, "wi4_c3_root", tenant_id=owner_of_root)
+    mid = _profile(pg, "wi4_c3_mid", parent_id=root)
+    _profile(pg, "wi4_c3_leaf", parent_id=mid, tenant_id=caller)
+    _profile(pg, "wi4_c3_other")
+    names = []
+    with neo4j_driver.session() as s:
+        for prof, n in _C3_SEED.items():
+            for i in range(n):
+                name = f"{prof}_mod_{i}"
+                names.append(name)
+                s.run("MERGE (m:Module {name: $name, odoo_version: $v}) "
+                      "SET m.profile = [$p], m.edition = 'custom', m.repo = $p, "
+                      "m.category = $cat",
+                      name=name, v=_WI4_VERSION, p=prof, cat=_C3_CATEGORY)
+    sess.invalidate_allowed_profiles()
+    yield {"caller": caller}
+    with neo4j_driver.session() as s:
+        s.run("MATCH (m:Module {odoo_version: $v}) WHERE m.name IN $names DETACH DELETE m",
+              v=_WI4_VERSION, names=names)
+    with pg.cursor() as cur:
+        # children first (parent_profile_id FK)
+        for p in ("wi4_c3_leaf", "wi4_c3_mid", "wi4_c3_root", "wi4_c3_other"):
+            cur.execute("DELETE FROM profiles WHERE name = %s", (p,))
+        cur.execute("DELETE FROM tenants WHERE id = ANY(%s)", ([caller, owner_of_root],))
+    if not pg.autocommit:
+        pg.commit()
+    sess.invalidate_allowed_profiles()
+
+
+@contextmanager
+def _as_tenant(tenant_id):
+    import importlib
+
+    from src.mcp import session as sess
+
+    server = importlib.import_module("src.mcp.server")
+    sess.invalidate_allowed_profiles()
+    tok = server._tenant_id_var.set(tenant_id)
+    try:
+        yield
+    finally:
+        server._tenant_id_var.reset(tok)
+        sess.invalidate_allowed_profiles()
+
+
+def _ascii_label(line: str) -> str:
+    """The text after the tree prefix must be plain English (ASCII)."""
+    text = line.lstrip("│ ├└─")
+    assert text.isascii(), f"non-ASCII label: {line!r}"
+    return text
+
+
+def test_admin_summary_counts_own_and_with_ancestors_separately(wi4_db, c3_world):
+    """C3: owned = 3 (leaf only); with ancestors = 3 + 2 + 4 = 9 along
+    leaf -> mid -> root; the 2 modules of wi4_c3_other are in neither."""
+    block = _count_block(_call_profile_inspect(
+        name="wi4_c3_leaf", method="summary", odoo_version=_WI4_VERSION))
+    assert block == [
+        f"├─ Module count (version {_WI4_VERSION}):",
+        "│   ├─ Owned by this profile: 3",
+        f"│   └─ Including ancestor profiles ({_C3_CHAIN}): 9",
+    ], "\n".join(block)
+    for ln in block:
+        _ascii_label(ln)
+
+
+def test_admin_coverage_counts_own_with_ancestors_and_elsewhere(wi4_db, c3_world):
+    """C3: same numbers per category; the 2 same-category modules outside the
+    chain are indexed_elsewhere and flag the row as possibly incomplete."""
+    out = _call_profile_inspect(name="wi4_c3_leaf", method="coverage",
+                                odoo_version=_WI4_VERSION)
+    assert _coverage_rows(out)[_C3_CATEGORY] == (3, 9, 2, True), out
+    legend = [ln for ln in out.splitlines() if ln.startswith("├─ Legend:")]
+    assert len(legend) == 1 and f"({_C3_CHAIN})" in legend[0], out
+    _ascii_label(legend[0])
+
+
+def test_middle_profile_counts_only_its_own_ancestors_not_its_children(wi4_db, c3_world):
+    """C3: with_ancestors walks UP the chain only - mid owns 2, mid + root = 6;
+    its child wi4_c3_leaf's 3 modules are not added."""
+    block = _count_block(_call_profile_inspect(
+        name="wi4_c3_mid", method="summary", odoo_version=_WI4_VERSION))
+    assert block[1:] == [
+        "│   ├─ Owned by this profile: 2",
+        "│   └─ Including ancestor profiles (wi4_c3_mid -> wi4_c3_root): 6",
+    ], "\n".join(block)
+
+
+def test_tenant_never_counts_an_ancestor_it_cannot_see(wi4_db, c3_world):
+    """C3 tenant boundary: the caller owns wi4_c3_leaf and sees the shared
+    wi4_c3_mid, but wi4_c3_root is another tenant's private profile. Its 4
+    modules are excluded from with_ancestors (3 + 2 = 5), and the out-of-chain
+    wi4_c3_other modules (shared, visible) are the only indexed_elsewhere."""
+    with _as_tenant(c3_world["caller"]):
+        summary = _call_profile_inspect(name="wi4_c3_leaf", method="summary",
+                                        odoo_version=_WI4_VERSION)
+        coverage = _call_profile_inspect(name="wi4_c3_leaf", method="coverage",
+                                         odoo_version=_WI4_VERSION)
+    block = _count_block(summary)
+    assert block[1] == "│   ├─ Owned by this profile: 3", summary
+    assert block[2].startswith("│   └─ Including ancestor profiles ("), summary
+    assert block[2].endswith("): 5"), summary
+    assert _coverage_rows(coverage)[_C3_CATEGORY] == (3, 5, 2, True), coverage
+    assert "wi4_c3_root_mod_" not in summary + coverage
+
+
+def test_tenant_does_not_count_out_of_chain_modules_it_cannot_see(wi4_db, c3_world):
+    """C3 tenant boundary on indexed_elsewhere: the 4 modules of the foreign
+    private wi4_c3_root (same category) never inflate the tenant's
+    indexed_elsewhere. Asking about wi4_c3_other (no ancestors): own =
+    with_ancestors = 2; the rest of the category visible to the tenant is
+    leaf 3 + mid 2 = 5 (an admin would see 9)."""
+    with _as_tenant(c3_world["caller"]):
+        coverage = _call_profile_inspect(name="wi4_c3_other", method="coverage",
+                                         odoo_version=_WI4_VERSION)
+    # visible to the tenant in this category: leaf 3 + mid 2 + other 2 = 7;
+    # wi4_c3_other has no ancestors -> own = with_ancestors = 2, elsewhere = 5.
+    assert _coverage_rows(coverage)[_C3_CATEGORY] == (2, 2, 5, True), coverage
 
 
 # ---------------------------------------------------------------------------
@@ -739,3 +1189,152 @@ def test_summary_requires_name():
     assert "requires name=" in result or "Error" in result, (
         f"summary without name must report an error. Got: {result!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Round 3 (2054622): profile_inspect never names, or shows the repos of, a
+# profile outside the key's scope
+# ---------------------------------------------------------------------------
+#
+# Tenant T owns wi4_r3_child. Its parent wi4_r3_secretparent is PRIVATE to
+# tenant U; its grandparent wi4_r3_base is shared. wi4_r3_child has two
+# children: wi4_r3_kid_shared (shared) and wi4_r3_kid_hidden (private to U).
+# Real case: a partner's private customisation profile sits between a
+# customer's profile and the shared CE base - the customer's key must not
+# learn the partner profile's name or its private repository URL.
+
+_R3_SECRET = "wi4_r3_secretparent"
+_R3_SECRET_URL = "https://github.com/acme-private/secret-erp"
+_R3_HIDDEN_KID = "wi4_r3_kid_hidden"
+_R3_SEED = {"wi4_r3_child": 3, _R3_SECRET: 4, "wi4_r3_base": 2}
+_R3_CATEGORY = "R3 Sales"
+_R3_METHODS = ["summary", "modules", "repos", "coverage"]
+
+
+@pytest.fixture
+def r3_world(wi4_db, neo4j_driver):
+    from src.mcp import session as sess
+
+    pg = wi4_db["pg_conn"]
+    t = _tenant(pg, "wi4_r3_t")
+    u = _tenant(pg, "wi4_r3_u")
+    base = _profile(pg, "wi4_r3_base")
+    secret = _profile(pg, _R3_SECRET, parent_id=base, tenant_id=u)
+    child = _profile(pg, "wi4_r3_child", parent_id=secret, tenant_id=t)
+    _profile(pg, "wi4_r3_kid_shared", parent_id=child)
+    _profile(pg, _R3_HIDDEN_KID, parent_id=child, tenant_id=u)
+    _repo(pg, base, url="https://github.com/odoo/odoo-r3-base")
+    _repo(pg, secret, url=_R3_SECRET_URL)
+    _repo(pg, child, url="https://github.com/customer-t/erp")
+    names = []
+    with neo4j_driver.session() as s:
+        for prof, n in _R3_SEED.items():
+            for i in range(n):
+                name = f"{prof}_mod_{i}"
+                names.append(name)
+                s.run("MERGE (m:Module {name: $name, odoo_version: $v}) "
+                      "SET m.profile = [$p], m.edition = 'custom', m.repo = $p, "
+                      "m.category = $cat",
+                      name=name, v=_WI4_VERSION, p=prof, cat=_R3_CATEGORY)
+    sess.invalidate_allowed_profiles()
+    yield {"t": t}
+    with neo4j_driver.session() as s:
+        s.run("MATCH (m:Module {odoo_version: $v}) WHERE m.name IN $names DETACH DELETE m",
+              v=_WI4_VERSION, names=names)
+    with pg.cursor() as cur:
+        cur.execute("DELETE FROM repos WHERE profile_id = ANY(%s)", ([base, secret, child],))
+        for p in ("wi4_r3_kid_shared", _R3_HIDDEN_KID, "wi4_r3_child", _R3_SECRET,
+                  "wi4_r3_base"):
+            cur.execute("DELETE FROM profiles WHERE name = %s", (p,))
+        cur.execute("DELETE FROM tenants WHERE id = ANY(%s)", ([t, u],))
+    if not pg.autocommit:
+        pg.commit()
+    sess.invalidate_allowed_profiles()
+
+
+def _r3_answers(tenant_id) -> dict[str, str]:
+    with _as_tenant(tenant_id):
+        return {m: _call_profile_inspect(name="wi4_r3_child", method=m,
+                                         odoo_version=_WI4_VERSION, limit=50)
+                for m in _R3_METHODS}
+
+
+def _line(out: str, head: str) -> str:
+    found = [ln for ln in out.splitlines() if ln.startswith(head)]
+    assert len(found) == 1, f"{head!r}:\n{out}"
+    return found[0]
+
+
+@pytest.mark.parametrize("method", _R3_METHODS)
+def test_tenant_never_sees_a_foreign_private_profile_name_or_repo(wi4_db, r3_world, method):
+    """R3 FIX: no profile_inspect method shows T the name of U's private
+    ancestor or child, nor the private ancestor's repository URL."""
+    out = _r3_answers(r3_world["t"])[method]
+    for secret in (_R3_SECRET, _R3_HIDDEN_KID, _R3_SECRET_URL):
+        assert secret not in out, f"{method} leaks {secret!r}:\n{out}"
+
+
+def test_tenant_summary_discloses_every_withheld_item_as_a_count(wi4_db, r3_world):
+    """R3 FIX: each place that withholds something says how many - 1 ancestor
+    profile, 1 child profile, 1 repo - and still lists what T may see."""
+    out = _r3_answers(r3_world["t"])["summary"]
+    chain = _line(out, "├─ Ancestor chain:")
+    assert "wi4_r3_child" in chain and "wi4_r3_base" in chain, chain
+    assert "(+1 ancestor profile not visible to this key)" in chain, chain
+    kids = _line(out, "├─ Children")
+    assert "wi4_r3_kid_shared" in kids, kids
+    assert re.search(r"\(\+1 child profiles? not visible to this key\)", kids), kids
+    repos = _line(out, "├─ Repos (")
+    assert re.search(r"\(\+1 repo(s|\(s\))? not visible to this key\)", repos), repos
+    assert "https://github.com/customer-t/erp" in out, out
+    assert "https://github.com/odoo/odoo-r3-base" in out, out
+    including = _count_block(out)[2]
+    assert "+1 ancestor profile not visible to this key" in including, including
+
+
+def test_tenant_counts_are_unchanged_by_withholding_names(wi4_db, r3_world):
+    """R3: hiding the private parent's name does not change T's numbers - own
+    3, with ancestors 3 + 2 (the parent's 4 modules stay excluded by the
+    per-node choke, as in round 2)."""
+    # GUARD: pre-existing behaviour (round-2 counts)
+    ans = _r3_answers(r3_world["t"])
+    block = _count_block(ans["summary"])
+    assert block[1] == "│   ├─ Owned by this profile: 3", block
+    assert block[2].endswith(": 5"), block
+    assert _coverage_rows(ans["coverage"])[_R3_CATEGORY] == (3, 5, 0, False), ans["coverage"]
+
+
+def test_tenant_repos_and_coverage_disclose_the_withheld_count(wi4_db, r3_world):
+    """R3 FIX: repos(name) says one ancestor repo is withheld; the coverage
+    legend names the visible chain and the hidden-profile count."""
+    ans = _r3_answers(r3_world["t"])
+    assert re.search(r"\+1 ancestor repo(s|\(s\))? not visible to this key", ans["repos"]), \
+        ans["repos"]
+    assert "https://github.com/customer-t/erp" in ans["repos"], ans["repos"]
+    legend = _line(ans["coverage"], "├─ Legend:")
+    assert "wi4_r3_child" in legend and "wi4_r3_base" in legend, legend
+    assert "+1 ancestor profile not visible to this key" in legend, legend
+
+
+@pytest.mark.parametrize("method", _R3_METHODS)
+def test_tenant_withheld_answers_pass_the_adr0023_tree_validator(wi4_db, r3_world, method):
+    """R3: the disclosure suffixes keep every answer a valid ADR-0023 tree."""
+    from tests.test_mcp_module_lifecycle_read import _assert_adr0023_tree
+
+    _assert_adr0023_tree(_r3_answers(r3_world["t"])[method])
+
+
+def test_admin_still_sees_every_profile_and_repo(wi4_db, r3_world):
+    """R3 GUARD: an admin key is unrestricted - the private parent, the hidden
+    child and the private repo URL are all shown, with no withheld notice."""
+    # GUARD: pre-existing behaviour (admin output unchanged)
+    ans = _r3_answers(None)
+    summary = ans["summary"]
+    assert _R3_SECRET in _line(summary, "├─ Ancestor chain:"), summary
+    assert _R3_HIDDEN_KID in _line(summary, "├─ Children"), summary
+    assert _R3_SECRET_URL in summary and _R3_SECRET_URL in ans["repos"], ans
+    assert _R3_SECRET in _line(ans["coverage"], "├─ Legend:"), ans["coverage"]
+    assert all("not visible to this key" not in out for out in ans.values()), ans
+    block = _count_block(summary)
+    assert block[2] == ("│   └─ Including ancestor profiles"
+                        f" (wi4_r3_child -> {_R3_SECRET} -> wi4_r3_base): 9"), block

@@ -504,21 +504,11 @@ def test_set_active_version_docstring_distinguishes_pin_vs_reuse():
     )
 
 
-_PROFILE_DOC_STILL_CLAIMS_ANCESTORS = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "profile_name param doc still says 'inheritance-resolved' / ancestor chain, "
-        "which _scope does not do (#378 L9 fixed only check_module_exists and "
-        "module_inspect); fix the doc and drop this mark"
-    ),
-)
-
-
 @pytest.mark.parametrize("tool_name", [
     "module_inspect",
     "check_module_exists",
-    pytest.param("model_inspect", marks=_PROFILE_DOC_STILL_CLAIMS_ANCESTORS),
-    pytest.param("find_deprecated_usage", marks=_PROFILE_DOC_STILL_CLAIMS_ANCESTORS),
+    "model_inspect",
+    "find_deprecated_usage",
 ])
 def test_profile_name_doc_does_not_promise_parent_profile_content(tool_name):
     """The profile_name filter only narrows; it never pulls in parent profiles.
@@ -530,6 +520,9 @@ def test_profile_name_doc_does_not_promise_parent_profile_content(tool_name):
     narrows ``own`` to exactly ``[profile_name]`` - a private parent profile's
     modules are not included. An agent that believes the old wording concludes
     a module exists in a child profile when it is only in the parent.
+
+    model_inspect and find_deprecated_usage were xfail(strict) until lane-mcpfix
+    defect 5 corrected their docs; the mark is gone so all four stay guarded.
     """
     tool = _resolve_tool(tool_name)
     doc = tool.parameters["properties"]["profile_name"]["description"].lower()

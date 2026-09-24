@@ -788,16 +788,26 @@ class TestCheckModuleExists:
         assert "Do NOT" in result
 
     def test_check_module_exists_not_indexed_in_dict_fallback(self, clean_neo4j):
-        """Not indexed but in EE_CONFUSION dict → EE warning (dict fallback)."""
+        """Not indexed but on the EE guard list -> EE warning naming its real source.
+
+        Rewritten (lane-mcpfix defect 1): the old test pinned the label
+        "legacy hardcoded dict", which was false - the rows come from the
+        admin-managed ``ee_modules`` table (static list only when the DB is
+        down). "knowledge" is seeded with no ``since_version`` in both the
+        table (migrations/0001) and the fallback, so the warning must say the
+        guard list recorded no first version, and still warn.
+        """
+        from src.data.ee_modules import invalidate_ee_modules_cache
         from src.mcp.server import _check_module_exists
 
-        # Pick "knowledge" from EE_CONFUSION dict (not indexed)
+        invalidate_ee_modules_cache()
         result = _check_module_exists(
             "knowledge", odoo_version=TEST_VERSION, _driver=clean_neo4j,
         )
         assert "Indexed:         No" in result
         assert "Is EE confusion: Yes" in result
-        assert "legacy hardcoded dict" in result
+        assert "(EE guard list, no first version recorded)" in result, result
+        assert "legacy hardcoded dict" not in result, result
         assert "WARNING" in result
         assert "Do NOT" in result
 

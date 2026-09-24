@@ -19,12 +19,14 @@ Business rules protected (plan A3 table):
   R07  The resource body equals the tool body and has no placeholder.
   R20  A scoped tenant sees only its own + shared subclasses and methods;
        another tenant's private classes are neither listed nor counted (H6).
-  L4   xfail(strict): name-only INHERITS_TEST resolution links a child to a
-       same-named helper of ANOTHER module (known limitation, follow-up).
+  L4   A child is never listed under a same-named helper of ANOTHER module
+       it neither depends on nor imports from (F11: INHERITS_TEST resolves
+       a base through the child's import / module / dependency closure).
   FU   GUARD: the null-map pattern in ``orm_queries._ancestor_tagged_prologue``
        stays harmless (no phantom owner model, exact own-field set).
 
-The graph is seeded through the real indexer writers (``write_test_results``,
+The graph is seeded through the real indexer writers (``write_results`` for
+the Module + DEPENDS_ON edges, ``write_test_results``,
 ``write_framework_test_helpers``, ``reconcile_test_inherits``,
 ``finalize_is_helper``) so the TestClass/TestHelper twin topology is the one
 production builds, not a hand-drawn stand-in. Class names, bases and module
@@ -44,6 +46,7 @@ import pytest
 from src.constants import LIST_PREVIEW_MAX_ITEMS
 from src.indexer.models import (
     ModuleInfo,
+    ParseResult,
     TestClassInfo,
     TestHelperInfo,
     TestMethodInfo,
@@ -103,7 +106,13 @@ def _cls(name: str, module: str, bases: list[str], *, file_path: str | None = No
 
 
 def _write(writer, driver, module: str, classes: list[TestClassInfo], *,
-           repo: str = "odoo", profiles: list[str] | None = None) -> None:
+           repo: str = "odoo", profiles: list[str] | None = None,
+           depends: list[str] | None = None) -> None:
+    """Write *module* the way an index run does: its Module node with the
+    manifest ``depends`` as DEPENDS_ON edges (``write_results``), then its test
+    classes. A test base in another module resolves only through the child's
+    dependency closure or its import source (F11/L4), so every fixture that
+    links across modules declares the real manifest dependency."""
     profiles = [SHARED] if profiles is None else profiles
     with driver.session() as s:
         s.run(
@@ -112,7 +121,9 @@ def _write(writer, driver, module: str, classes: list[TestClassInfo], *,
             n=module, v=V, p=profiles,
         )
     mod = ModuleInfo(name=module, odoo_version=V, repo=repo,
-                     path=f"/{repo}/{module}", depends=[])
+                     path=f"/{repo}/{module}", depends=list(depends or []))
+    if depends:
+        writer.write_results([ParseResult(module=mod)], profiles=profiles)
     writer.write_test_results([TestParseResult(module=mod, test_classes=classes)],
                               profiles=profiles)
 
@@ -529,11 +540,17 @@ def _seed_test_sale_common_17(writer, driver, *, second_run: bool) -> None:
         class TestSaleCommon(AccountTestInvoicingCommon, TestSaleCommonBase)  (line 237)
     account/tests/common.py: class AccountTestInvoicingCommon(TransactionCase)
 
+    sale reaches account through its manifest closure (17.0: sale ->
+    account_payment -> account, shortened here to sale -> account) and
+    sale_stock depends on sale (17.0 manifest: ['sale', 'stock_account']).
+
     Run 1 (full index): edges resolve to the TestClass nodes, then
-    finalize_is_helper promotes the three helpers and MERGEs TestHelper twins.
-    Run 2 (incremental, adds sale_stock): reconcile resolves "TestHelper first",
-    so every child ALSO gets an edge to the twin and the new child ONLY has the
-    twin edge - the live TestSaleCommon@17.0 state.
+    finalize_is_helper promotes the helpers, MERGEs their TestHelper twins and
+    mirrors every child's edge onto the twin in the same run (F46).
+    Run 2 (incremental, adds sale_stock): the new child gets the same pair of
+    edges. Graphs written before F46 held the split (a child on the twin
+    only); the reader still handles that shape - see
+    test_child_whose_legacy_edge_reaches_only_the_twin_is_listed_once.
     """
     writer.write_framework_test_helpers([_fw("TransactionCase")], profiles=[SHARED])
     _write(writer, driver, "account", [
@@ -547,19 +564,25 @@ def _seed_test_sale_common_17(writer, driver, *, second_run: bool) -> None:
              file_path="addons/sale/tests/common.py", line=237),
         _cls("TestSaleOrder", "sale", ["TestSaleCommon"],
              tests=[("test_sale_order", 30)]),
-    ])
+    ], depends=["account"])
     _index_pass(writer)
     if second_run:
         _write(writer, driver, "sale_stock", [
             _cls("TestSaleStock", "sale_stock", ["TestSaleCommon"],
                  tests=[("test_00_sale_stock_invoice", 40)]),
-        ])
+        ], depends=["sale"])
         _index_pass(writer)
 
 
 def test_twin_topology_is_the_one_under_test(writer, clean_neo4j):
-    """Positive control for R04: the writers really produced the split edges
-    (child on the twin only, child on both) - otherwise R04 proves nothing."""
+    """Positive control for R04, restated for F46: every child of the promoted
+    TestSaleCommon reaches BOTH twin nodes - the TestClass and its TestHelper
+    projection - whichever run added it, so the reader's twin union is really
+    exercised (a child reachable only through one node would make R04 vacuous).
+
+    Rewritten: this test used to pin the pre-F46 run-dependent split
+    (TestSaleStock on the twin ONLY), i.e. the defect itself; rule F46 is that
+    one run leaves the edges complete."""
     _seed_test_sale_common_17(writer, clean_neo4j, second_run=True)
     with clean_neo4j.session() as s:
         rows = s.run(
@@ -572,7 +595,7 @@ def test_twin_topology_is_the_one_under_test(writer, clean_neo4j):
     targets = {r["child"]: sorted(r["targets"]) for r in rows}
     assert targets == {
         "TestSaleOrder": ["TestClass", "TestHelper"],
-        "TestSaleStock": ["TestHelper"],
+        "TestSaleStock": ["TestClass", "TestHelper"],
     }, targets
 
 
@@ -590,9 +613,32 @@ def test_children_on_the_helper_twin_are_listed_once(writer, clean_neo4j):
         _assert_closed(rows, out)
 
 
+def test_child_whose_legacy_edge_reaches_only_the_twin_is_listed_once(writer, clean_neo4j):
+    """R04 (reader side): a graph written before F46 can hold a child whose only
+    edge goes to the TestHelper twin (the live TestSaleCommon@17.0 state that
+    motivated R04). The writers no longer produce that shape, so it is recreated
+    by removing the child's TestClass edge; the reader must still list both
+    children once each."""
+    # GUARD: pre-existing behaviour
+    _seed_test_sale_common_17(writer, clean_neo4j, second_run=True)
+    with clean_neo4j.session() as s:
+        gone = s.run(
+            """
+            MATCH (:TestClass {name: 'TestSaleStock', odoo_version: $v})
+                  -[r:INHERITS_TEST]->(:TestClass {name: 'TestSaleCommon', odoo_version: $v})
+            DELETE r RETURN count(r) AS n
+            """, v=V,
+        ).single()["n"]
+    assert gone == 1, "positive control: the TestClass edge existed before the split"
+    out = _inspect(clean_neo4j, "TestSaleCommon", method="hierarchy")
+    header, rows = _subclass_block(out)
+    assert header == "├─ Subclassed by: 2 test classes", out
+    assert _row_names(rows) == ["[sale] TestSaleOrder", "[sale_stock] TestSaleStock"], out
+
+
 def test_children_right_after_promotion_resolve_through_the_testclass(writer, clean_neo4j):
-    """R04 (FIX): after the first full index the only edge points at the
-    TestClass node (twin just created) - the child is still listed once."""
+    """R04 (FIX): right after the first full index (twin just created, the
+    child's edge mirrored onto it in the same run) the child is listed once."""
     _seed_test_sale_common_17(writer, clean_neo4j, second_run=False)
     out = _inspect(clean_neo4j, "TestSaleCommon", method="hierarchy")
     header, rows = _subclass_block(out)
@@ -641,10 +687,13 @@ def test_subclasses_are_ordered_by_module_then_name_not_insertion(writer, clean_
         ("stock_account", "TestStockValuation"), ("stock_account", "TestStockValuationLayer"),
         ("website_sale", "TestWebsiteSaleInvoice"),
     ]
+    # Every child module's manifest closure reaches account (purchase and
+    # stock_account list it directly; sale / website_sale through
+    # account_payment / sale), declared here as a direct dependency.
     for module, name in reversed(expected):
         _write(writer, clean_neo4j, module, [
             _cls(name, module, ["AccountTestInvoicingCommon"], tests=[("test_it", 5)]),
-        ])
+        ], depends=[] if module == "account" else ["account"])
     _index_pass(writer)
 
     want = [f"[{m}] {n}" for m, n in expected]
@@ -706,7 +755,8 @@ def test_savepointcase_with_user_demo_is_not_a_savepointcase_subclass(writer, cl
 # ---------------------------------------------------------------------------
 
 def _seed_tenant_world(writer, driver) -> None:
-    """Shared CE helper sale/TestSaleCommon subclassed by:
+    """Shared CE helper sale/TestSaleCommon subclassed by (both acme_sale and
+    rival_sale declare ``depends: ['sale']``):
       - the tenant's own class   (repo acme_addons,  profile [OWN])
       - a shared CE class        (repo odoo,         profile [SHARED])
       - another tenant's class   (repo rival_addons, profile [FOREIGN, SHARED])
@@ -725,16 +775,16 @@ def _seed_tenant_world(writer, driver) -> None:
         _cls("TestAcmeDiscount", "acme_sale", ["TestSaleCommon"],
              file_path="acme_sale/tests/test_discount.py",
              tests=[("test_discount_capped", 15)]),
-    ], repo="acme_addons", profiles=[OWN])
+    ], repo="acme_addons", profiles=[OWN], depends=["sale"])
     _write(writer, driver, "rival_sale", [
         _cls("TestRivalSecretPricing", "rival_sale", ["TestSaleCommon"],
              tests=[("test_rival_margin", 22)]),
-    ], repo="rival_addons", profiles=[FOREIGN, SHARED])
+    ], repo="rival_addons", profiles=[FOREIGN, SHARED], depends=["sale"])
     _write(writer, driver, "acme_sale", [
         _cls("TestAcmeDiscount", "acme_sale", ["TestSaleCommon"],
              file_path="acme_sale/tests/test_discount.py",
              tests=[("test_rival_private_case", 16)]),
-    ], repo="rival_addons", profiles=[FOREIGN, SHARED])
+    ], repo="rival_addons", profiles=[FOREIGN, SHARED], depends=["sale"])
     _index_pass(writer)
     # Synthetic: the writers never emit an edge FROM a framework helper, so the
     # framework-child branch of the contract is seeded directly.
@@ -795,24 +845,17 @@ def test_scoped_tenant_never_sees_foreign_private_test_methods(writer, clean_neo
 
 
 # ---------------------------------------------------------------------------
-# Known limitation pin (L4) and follow-up GUARD (FU)
+# L4 (F11) and follow-up GUARD (FU)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known limitation (review L4 of #373, follow-up issue to be filed): "
-        "reconcile_test_inherits resolves a base by NAME only, so a child of "
-        "sale_coupon's TestSaleCouponCommon is also linked to loyalty's "
-        "same-named class. Flip to a plain test when resolution uses the "
-        "child's import/module context."
-    ),
-)
 def test_same_named_helper_in_another_module_does_not_gain_false_subclasses(
     writer, clean_neo4j,
 ):
-    """L4: two modules each define ``TestSaleCouponCommon``; a child of the
-    sale_coupon one must not appear under the loyalty one."""
+    """L4 (FIX, F11 - was a strict xfail pin of the known limitation): two
+    modules each define ``TestSaleCouponCommon``; a child of the sale_coupon one
+    must not appear under the loyalty one, because sale_coupon neither depends
+    on nor imports from loyalty - Python resolves the base to sale_coupon's own
+    class. Both helpers keep their real child."""
     writer.write_framework_test_helpers([_fw("TransactionCase")], profiles=[SHARED])
     _write(writer, clean_neo4j, "loyalty", [
         _cls("TestSaleCouponCommon", "loyalty", ["TransactionCase"],
@@ -831,6 +874,11 @@ def test_same_named_helper_in_another_module_does_not_gain_false_subclasses(
     out = _inspect(clean_neo4j, "TestSaleCouponCommon", module="loyalty", method="hierarchy")
     assert "[loyalty] TestLoyaltyProgram" in out, out
     assert "TestSaleCouponProgramRules" not in out, out
+    own = _inspect(clean_neo4j, "TestSaleCouponCommon", module="sale_coupon",
+                   method="hierarchy")
+    header, rows = _subclass_block(own)
+    assert header == "├─ Subclassed by: 1 test class", own
+    assert rows == ["└─ [sale_coupon] TestSaleCouponProgramRules"], own
 
 
 def test_ancestor_prologue_null_map_adds_no_phantom_owner_or_field(clean_neo4j):
@@ -872,3 +920,330 @@ def test_ancestor_prologue_null_map_adds_no_phantom_owner_or_field(clean_neo4j):
         ], child_fields
         assert _count_fields_with_inherited("res.partner.t373", V, s) == 2
         assert _count_fields_with_inherited("mail.thread", V, s) == 1
+
+
+# ---------------------------------------------------------------------------
+# lane-mcpfix defect 3 - module= / file_path= narrow the TestHelper fallback,
+# and the setUpClass preview discloses its cap.
+# ---------------------------------------------------------------------------
+
+# sale/tests/common.py (17.0) - the helper every sale test builds on. Its
+# setUpClass creates records of these models (8, more than the preview cap).
+_SALE_COMMON_FIXTURES = [
+    "res.partner", "product.product", "product.pricelist", "account.journal",
+    "account.account", "account.tax", "res.users", "sale.order",
+]
+
+
+def _seed_sale_helper(writer, driver, setup_summary=None) -> None:
+    """``TestSaleCommon`` as an addon TestHelper of ``sale`` only (no TestClass
+    twin), plus the framework ``TransactionCase`` / ``Form`` helpers."""
+    with driver.session() as s:
+        s.run("MERGE (m:Module {name: 'sale', odoo_version: $v}) SET m.profile = $p",
+              v=V, p=[SHARED])
+    writer.write_framework_test_helpers([
+        _fw("TransactionCase", line=600),
+        _fw("Form", file_path="odoo/tests/form.py", line=20, test_type="form"),
+        TestHelperInfo(
+            name="TestSaleCommon", module="sale", odoo_version=V, origin="addon",
+            test_type="transaction", file_path="addons/sale/tests/common.py", line=12,
+            setup_summary=list(_SALE_COMMON_FIXTURES if setup_summary is None
+                               else setup_summary),
+        ),
+    ], profiles=[SHARED])
+
+
+def _is_not_found(out: str) -> bool:
+    return "├─ Not found." in out
+
+
+def test_helper_is_not_found_under_a_module_that_does_not_define_it(writer, clean_neo4j):
+    """FIX: module='account' must not answer with sale's TestSaleCommon."""
+    _seed_sale_helper(writer, clean_neo4j)
+    out = _inspect(clean_neo4j, "TestSaleCommon", module="account")
+    assert _is_not_found(out), out
+    assert "addons/sale/tests/common.py" not in out, out
+
+
+def test_helper_is_found_under_the_module_that_defines_it(writer, clean_neo4j):
+    """GUARD: the positive control for the module filter."""
+    # GUARD: pre-existing behaviour
+    _seed_sale_helper(writer, clean_neo4j)
+    out = _inspect(clean_neo4j, "TestSaleCommon", module="sale")
+    assert out.startswith(f"TestSaleCommon (Odoo {V})"), out
+    assert "addons/sale/tests/common.py" in out, out
+
+
+def test_helper_is_not_found_under_a_file_that_does_not_define_it(writer, clean_neo4j):
+    """FIX: file_path narrows the helper fallback like it narrows TestClass."""
+    _seed_sale_helper(writer, clean_neo4j)
+    out = _inspect(clean_neo4j, "TestSaleCommon",
+                   file_path="addons/sale/tests/test_sale_order.py")
+    assert _is_not_found(out), out
+    found = _inspect(clean_neo4j, "TestSaleCommon", file_path="addons/sale/tests/common.py")
+    assert found.startswith(f"TestSaleCommon (Odoo {V})"), found
+
+
+def test_framework_helper_is_found_only_under_the_framework_module(writer, clean_neo4j):
+    """FIX: TransactionCase lives in module '@framework'; module='sale' is Not found."""
+    _seed_sale_helper(writer, clean_neo4j)
+    assert _inspect(clean_neo4j, "TransactionCase", module="@framework").startswith(
+        f"TransactionCase (Odoo {V})")
+    assert _is_not_found(_inspect(clean_neo4j, "TransactionCase", module="sale"))
+
+
+def test_framework_helper_file_path_filter(writer, clean_neo4j):
+    """FIX: Form is in odoo/tests/form.py (17.0 layout), not odoo/tests/common.py."""
+    _seed_sale_helper(writer, clean_neo4j)
+    assert _is_not_found(_inspect(clean_neo4j, "Form", file_path="odoo/tests/common.py"))
+    assert _inspect(clean_neo4j, "Form", file_path="odoo/tests/form.py").startswith(
+        f"Form (Odoo {V})")
+
+
+def test_test_resource_naming_the_wrong_module_is_not_found(
+    writer, clean_neo4j, monkeypatch,
+):
+    """FIX: odoo://V/test/sale/TransactionCase must not serve the framework helper."""
+    from src.mcp import server as srv
+    from src.mcp.resources import _render_test_class
+
+    _seed_sale_helper(writer, clean_neo4j)
+    monkeypatch.setattr(srv, "_driver", clean_neo4j)
+    body, _mime = _render_test_class(V, "sale", "TransactionCase")
+    assert _is_not_found(body), body
+    body, _mime = _render_test_class(V, "@framework", "TransactionCase")
+    assert body.startswith(f"TransactionCase (Odoo {V})"), body
+
+
+def _setup_line(out: str) -> str:
+    found = [ln for ln in out.splitlines() if ln.startswith("├─ setUpClass:")]
+    assert len(found) == 1, out
+    return found[0]
+
+
+def test_summary_setup_preview_discloses_how_many_fixtures_it_hides(writer, clean_neo4j):
+    """FIX (ADR-0023 §3): 8 fixtures -> the first 6 named, then "... and 2 more"
+    with a follow-up that lists them all. Pre-fix the last 2 vanished silently."""
+    _seed_sale_helper(writer, clean_neo4j)
+    line = _setup_line(_inspect(clean_neo4j, "TestSaleCommon", module="sale"))
+    for model in _SALE_COMMON_FIXTURES[:6]:
+        assert model in line, line
+    for model in _SALE_COMMON_FIXTURES[6:]:
+        assert model not in line, line
+    assert "... and 2 more" in line, line
+    assert "method='setup'" in line, line
+
+
+def test_setup_mode_lists_every_fixture(writer, clean_neo4j):
+    """FIX: method='setup' is the follow-up the preview points to - all 8, no cap."""
+    _seed_sale_helper(writer, clean_neo4j)
+    line = _setup_line(_inspect(clean_neo4j, "TestSaleCommon", "setup", module="sale"))
+    for model in _SALE_COMMON_FIXTURES:
+        assert model in line, line
+    assert "more" not in line, line
+
+
+def test_summary_setup_preview_at_the_cap_has_no_disclosure(writer, clean_neo4j):
+    """GUARD: 6 fixtures fit the preview - nothing is hidden, nothing disclosed."""
+    # GUARD: pre-existing behaviour
+    _seed_sale_helper(writer, clean_neo4j, setup_summary=_SALE_COMMON_FIXTURES[:6])
+    line = _setup_line(_inspect(clean_neo4j, "TestSaleCommon", module="sale"))
+    for model in _SALE_COMMON_FIXTURES[:6]:
+        assert model in line, line
+    assert "more" not in line, line
+
+
+# ---------------------------------------------------------------------------
+# lane-mcpfix defect 2 - module_inspect(method='tests') closes its list
+# ---------------------------------------------------------------------------
+
+# sale/tests/*.py (17.0) test classes - 12, above the 10-row preview.
+_SALE_TEST_CLASSES = [
+    "TestAccessRights", "TestOnchangeProductId", "TestSaleFlow", "TestSaleOrder",
+    "TestSaleOrderCancel", "TestSaleOrderDiscount", "TestSaleOrderDownPayment",
+    "TestSalePrices", "TestSaleProductAttributeValueConfig", "TestSaleRefund",
+    "TestSaleReport", "TestSaleToInvoice",
+]
+
+
+def _module_tests(driver, monkeypatch, module: str) -> str:
+    from src.mcp import server as srv
+    from src.mcp.inspect import _module_inspect
+
+    monkeypatch.setattr(srv, "_driver", driver)
+    return _module_inspect(module, "tests", V)
+
+
+def _seed_sale_tests(writer, driver, names) -> None:
+    _write(writer, driver, "sale", [
+        _cls(n, "sale", ["TransactionCase"], tests=[("test_a", 10)]) for n in names
+    ])
+
+
+def test_module_tests_over_the_preview_closes_with_the_hidden_count(
+    writer, clean_neo4j, monkeypatch,
+):
+    """FIX (ADR-0023 §3): 12 classes -> 10 rows, then a closing "... and 2 more"
+    row that says how to reach one class. Pre-fix row 10 stayed '├─' and the
+    remainder was a connector-less "+2 more" line with no follow-up."""
+    _seed_sale_tests(writer, clean_neo4j, _SALE_TEST_CLASSES)
+    out = _module_tests(clean_neo4j, monkeypatch, "sale")
+    assert "├─ Test classes: 12" in out.splitlines(), out
+    _hdr, rows = _block(out, "├─ Test classes:")
+    assert len(rows) == 11, out
+    assert all(r.startswith("├─ ") for r in rows[:10]), out
+    shown = [r[3:].split()[0] for r in rows[:10]]
+    assert len(set(shown)) == 10 and set(shown) <= set(_SALE_TEST_CLASSES), shown
+    assert rows[10].startswith("└─ ... and 2 more"), out
+    assert "test_class_inspect(" in rows[10] and "module='sale'" in rows[10], out
+    lines = out.splitlines()
+    assert lines[-1].startswith("└─ Next:"), out
+    assert sum(ln.startswith("└─ ") for ln in lines) == 1, out
+
+
+def test_module_tests_under_the_preview_closes_on_its_last_row(
+    writer, clean_neo4j, monkeypatch,
+):
+    """GUARD: 3 classes -> 3 rows, the last one closes the list, no disclosure."""
+    # GUARD: pre-existing behaviour
+    _seed_sale_tests(writer, clean_neo4j, _SALE_TEST_CLASSES[:3])
+    out = _module_tests(clean_neo4j, monkeypatch, "sale")
+    _hdr, rows = _block(out, "├─ Test classes:")
+    assert len(rows) == 3 and rows[-1].startswith("└─ ") and "more" not in out, out
+
+
+def test_module_tests_pass_the_adr0023_tree_validator(writer, clean_neo4j, monkeypatch):
+    """The full ADR-0023 validator (tests/test_mcp_module_lifecycle_read.py).
+
+    Round 2 (F1, 79914c5): the round-1 xfail(strict) mark is dropped - the class
+    rows and the closing disclosure indent with pipe + 3 spaces (ADR-0023 §1.3).
+    """
+    from tests.test_mcp_module_lifecycle_read import _assert_adr0023_tree
+
+    _seed_sale_tests(writer, clean_neo4j, _SALE_TEST_CLASSES)
+    _assert_adr0023_tree(_module_tests(clean_neo4j, monkeypatch, "sale"))
+
+
+# ---------------------------------------------------------------------------
+# lane-mcpfix round 2 C1 (bc79675) - module_inspect(method='tests') tells a
+# failed query from an empty module, and counts every class
+# ---------------------------------------------------------------------------
+
+
+class _FailingTestClassQuery:
+    """Driver stand-in: every query runs on the real driver except the
+    TestClass read, which raises a non-timeout driver error (a dropped
+    connection mid-read). The double sits BELOW the tool's error handling, at
+    the driver session, so the handling itself is what the test observes."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def session(self, *a, **kw):
+        outer = self
+
+        class _Session:
+            def __init__(self):
+                self._s = outer._real.session(*a, **kw)
+
+            def __enter__(self):
+                self._s.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self._s.__exit__(*exc)
+
+            def run(self, query, *args, **params):
+                text = getattr(query, "text", query)
+                if "TestClass" in str(text):
+                    from neo4j.exceptions import ServiceUnavailable
+                    raise ServiceUnavailable("connection lost while reading TestClass")
+                return self._s.run(query, *args, **params)
+
+            def __getattr__(self, name):
+                return getattr(self._s, name)
+
+        return _Session()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_module_tests_query_failure_is_reported_unavailable_not_empty(
+    writer, clean_neo4j, monkeypatch,
+):
+    """C1 FIX: sale has 3 indexed test classes; the TestClass read fails with a
+    driver error. The answer must say the list is unavailable and that this is
+    not evidence of no tests - never "No test classes indexed", which an agent
+    would take as a fact and act on (e.g. "sale has no tests, write them all")."""
+    _seed_sale_tests(writer, clean_neo4j, _SALE_TEST_CLASSES[:3])
+    out = _module_tests(_FailingTestClassQuery(clean_neo4j), monkeypatch, "sale")
+    assert "No test classes indexed" not in out, out
+    line = [ln for ln in out.splitlines() if "Test classes:" in ln]
+    assert len(line) == 1 and "unavailable" in line[0], out
+    assert "not evidence" in line[0] and "[sale]" in line[0], out
+    from tests.test_mcp_module_lifecycle_read import _assert_adr0023_tree
+    _assert_adr0023_tree(out)
+
+
+def test_module_tests_failure_is_not_cached_and_the_next_read_heals(
+    writer, clean_neo4j, monkeypatch,
+):
+    """C1 FIX: a body rendered from a failed read is not stored by the resource
+    cache (degraded), so the next read with the graph back serves the real
+    list. Pre-fix the failed read rendered a normal-looking "No test classes"
+    body that the cache kept for its whole TTL."""
+    from src.mcp.resources import ResourceCache
+
+    _seed_sale_tests(writer, clean_neo4j, _SALE_TEST_CLASSES[:3])
+    cache = ResourceCache(ttl=300.0)
+    key = f"{V}:module-tests:sale"
+
+    def render(driver):
+        return lambda: (_module_tests(driver, monkeypatch, "sale"), "text/markdown")
+
+    first, _ = cache.get_or_compute(key, render(_FailingTestClassQuery(clean_neo4j)))
+    second, _ = cache.get_or_compute(key, render(clean_neo4j))
+    # The healing read is checked first: it is the rule this test owns (the
+    # wording of the failed body is owned by the test above).
+    assert second != first, f"the failed body was served again from the cache:\n{second}"
+    assert "├─ Test classes: 3" in second.splitlines(), second
+    for cls in _SALE_TEST_CLASSES[:3]:
+        assert cls in second, second
+    assert "unavailable" in first, first
+
+
+def test_module_tests_healthy_body_is_still_cached(writer, clean_neo4j, monkeypatch):
+    """C1 GUARD: a healthy answer is cached as before (a later outage within the
+    TTL is invisible) - the degraded rule only skips failed renders."""
+    # GUARD: pre-existing behaviour
+    from src.mcp.resources import ResourceCache
+
+    _seed_sale_tests(writer, clean_neo4j, _SALE_TEST_CLASSES[:3])
+    cache = ResourceCache(ttl=300.0)
+    key = f"{V}:module-tests:sale"
+    healthy, _ = cache.get_or_compute(
+        key, lambda: (_module_tests(clean_neo4j, monkeypatch, "sale"), "text/markdown"))
+    again, _ = cache.get_or_compute(
+        key, lambda: (_module_tests(_FailingTestClassQuery(clean_neo4j), monkeypatch,
+                                    "sale"), "text/markdown"))
+    assert again == healthy, again
+
+
+def test_module_tests_count_is_exact_above_the_old_200_row_limit(
+    writer, clean_neo4j, monkeypatch,
+):
+    """C1 FIX: the header is the true class count. Real case: odoo/addons/base/tests
+    declares 219 classes at 17.0 (240 at 18.0, 252 at 19.0; counted in the local
+    checkouts 2026-09-24) - above the old LIMIT 200, which made the header read
+    200. Seeded: 250 classes -> header 250, the 10-row preview, then a closing
+    "... and 240 more"."""
+    names = [f"TestBaseCase{i:03d}" for i in range(250)]
+    _write(writer, clean_neo4j, "base", [
+        _cls(n, "base", ["TransactionCase"], tests=[("test_a", 10)]) for n in names
+    ])
+    out = _module_tests(clean_neo4j, monkeypatch, "base")
+    assert "├─ Test classes: 250" in out.splitlines(), out
+    _hdr, rows = _block(out, "├─ Test classes:")
+    assert len(rows) == 11, out
+    assert rows[10].startswith("└─ ... and 240 more"), out
