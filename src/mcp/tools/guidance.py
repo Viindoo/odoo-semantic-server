@@ -399,15 +399,18 @@ def _format_suggest_pattern(
     return "\n".join(lines)
 
 
-def _ee_confusion_live() -> dict[str, str | None]:
-    """Build EE confusion map from live DB (cached 60 s by get_ee_modules).
+def _ee_confusion_live(odoo_version: str | None) -> dict[str, dict]:
+    """EE guard rows that apply at *odoo_version*, keyed by module name.
 
-    Falls back to static list when DB is unreachable — same as get_ee_modules().
-    Called on every _check_module_exists invocation so admin CRUD changes
-    propagate within one 60 s cache window (WI-R F-007 fix).
+    Read from the live DB (cached 60 s by get_ee_modules; static list when the
+    DB is unreachable) on every _check_module_exists call, so admin CRUD changes
+    propagate within one cache window (WI-R F-007). A row whose ``since_version``
+    is later than *odoo_version* is left out (see ``ee_guard_applies``).
     """
-    from src.data.ee_modules import get_ee_modules
-    return {m["name"]: m["vt_equivalent"] for m in get_ee_modules()}
+    from src.data.ee_modules import ee_guard_applies, get_ee_modules
+    return {
+        m["name"]: m for m in get_ee_modules() if ee_guard_applies(m, odoo_version)
+    }
 
 
 def _check_module_exists(
@@ -417,10 +420,10 @@ def _check_module_exists(
 ) -> str:
     """Report whether `name` is indexed + flag EE-confusion (per ADR-0003 §2).
 
-    Edition-first strategy: query Neo4j for indexed edition (OEEL-1 detected),
-    fallback to DB-backed guard list if not indexed.  Both paths produce the same
-    EE warning.  Guard list is read via get_ee_modules() (60 s cache) so that
-    admin CRUD changes take effect within one cache window (WI-R F-007).
+    Edition-first: an indexed edition (OEEL-1 detected at index time) decides;
+    the DB-backed guard list only fills the gap when the module is not indexed at
+    this version (or has no edition). Both produce the same EE warning. The guard
+    list is read via get_ee_modules() (60 s cache, WI-R F-007).
     """
     driver = _driver or _srv._get_driver()
     with driver.session() as session:
@@ -479,7 +482,7 @@ def _check_module_exists(
 
     # Build live EE confusion map from DB (cached 60 s).  Falls back to static
     # list when DB is unreachable — transparent to callers (WI-R F-007 fix).
-    confusion = _ee_confusion_live()
+    confusion = _ee_confusion_live(v)
     scope_profile = profile_name or _srv._resolve_profile(None)
 
     # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
@@ -491,6 +494,8 @@ def _check_module_exists(
     is_ee_confusion = False
     ee_source = ""  # track source for output messaging
     viindoo_equivalent = None
+    guard_row = confusion.get(name)
+    guard_vt = guard_row.get("vt_equivalent") if guard_row else None
 
     # Gate EE-confusion on the indexed `edition` enum only (ADR-0036). OEEL-1
     # (Odoo S.A.'s OWN Enterprise license) is detected as edition="enterprise" at
@@ -501,18 +506,20 @@ def _check_module_exists(
     if indexed and edition == "enterprise":
         is_ee_confusion = True
         ee_source = "indexed"
-        viindoo_equivalent = vvq_db or confusion.get(name)
-    elif name in confusion:
-        # Not indexed (or not marked 'enterprise') but in guard list
+        viindoo_equivalent = vvq_db or guard_vt
+    elif guard_row is not None and not (indexed and edition):
+        # The guard only fills a gap (not indexed here, or no edition): an indexed
+        # edition from the manifest license always wins over the curated list.
         is_ee_confusion = True
         ee_source = "dict"
-        viindoo_equivalent = confusion.get(name)
+        viindoo_equivalent = guard_vt
 
     return _format_check_module_exists(
         name=name, version=v, indexed=indexed, edition=edition,
         license_val=license_val, repo=repo,
         is_ee_confusion=is_ee_confusion, viindoo_equivalent=viindoo_equivalent,
         ee_source=ee_source,
+        ee_guard_since=guard_row.get("since_version") if guard_row else None,
         shortdesc=shortdesc, summary=summary, author=author,
         website=website, price=price, currency=currency,
         old_technical_name=old_technical_name,
@@ -534,6 +541,7 @@ def _format_check_module_exists(
     license_val: str | None = None,
     repo: str | None, is_ee_confusion: bool, viindoo_equivalent: str | None,
     ee_source: str = "",
+    ee_guard_since: str | None = None,
     shortdesc: str | None = None, summary: str | None = None,
     author: str | None = None,
     website: str | None = None, price: float | None = None,
@@ -610,7 +618,10 @@ def _format_check_module_exists(
         if ee_source == "indexed":
             source_hint = f" (license={license_val})" if license_val else ""
         elif ee_source == "dict":
-            source_hint = " (legacy hardcoded dict)"
+            source_hint = (
+                f" (EE guard list, since {ee_guard_since})" if ee_guard_since
+                else " (EE guard list, no first version recorded)"
+            )
         # ADR-0023 §2: English-only tool output.
         lines.append(
             f"├─ ⚠ WARNING: this is an Odoo Enterprise module{source_hint}. "
