@@ -160,6 +160,110 @@ def _get_base_classes_ordered(
     return result
 
 
+def _normalize_import_source(dotted: str) -> str:
+    """``openerp.*`` (v8-v9) -> ``odoo.*`` so both eras share one namespace."""
+    if dotted == "openerp" or dotted.startswith("openerp."):
+        return "odoo" + dotted[len("openerp"):]
+    return dotted
+
+
+def _module_package(module_info: ModuleInfo, file_path: str) -> str:
+    """Dotted package of *file_path* inside its addon: ``odoo.addons.<m>.<dirs>``."""
+    try:
+        rel_parts = Path(file_path).relative_to(Path(module_info.path)).parts[:-1]
+    except ValueError:
+        rel_parts = ()
+    return ".".join(("odoo", "addons", module_info.name, *rel_parts))
+
+
+def _build_import_source_map(
+    tree: ast.Module, package: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Where each top-level imported name comes from.
+
+    Returns ``(name_sources, module_bindings)``:
+      * ``name_sources``: local name -> dotted module it was imported FROM
+        (``from odoo.addons.sale.tests.common import X`` -> X:
+        ``odoo.addons.sale.tests.common``; relative imports resolved against
+        *package*);
+      * ``module_bindings``: local name -> dotted module it is bound TO, for
+        attribute bases (``from odoo.addons.sale.tests import common`` ->
+        common: ``odoo.addons.sale.tests.common``; ``import odoo`` -> odoo).
+    """
+    name_sources: dict[str, str] = {}
+    module_bindings: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                parts = package.split(".")
+                if node.level > 1:
+                    parts = parts[: max(len(parts) - (node.level - 1), 0)]
+                if node.module:
+                    parts.append(node.module)
+                src = ".".join(parts)
+            else:
+                src = node.module or ""
+            src = _normalize_import_source(src)
+            for alias in node.names:
+                local = alias.asname or alias.name
+                name_sources[local] = src
+                module_bindings[local] = f"{src}.{alias.name}" if src else alias.name
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    module_bindings[alias.asname] = _normalize_import_source(alias.name)
+                else:
+                    root = alias.name.split(".")[0]
+                    module_bindings[root] = _normalize_import_source(root)
+    return name_sources, module_bindings
+
+
+def _get_base_sources_ordered(
+    cls_node: ast.ClassDef,
+    alias_map: dict[str, str],
+    name_sources: dict[str, str],
+    module_bindings: dict[str, str],
+    local_classes: set[str],
+    own_module_path: str,
+) -> list[str]:
+    """Dotted module each base of *cls_node* is imported from, aligned with
+    :func:`_get_base_classes_ordered` (same order, same de-duplication).
+
+    A base defined earlier in the same file -> *own_module_path*; an imported
+    name -> its ``from`` module; ``mod.Name`` -> the module ``mod`` is bound
+    to. ``""`` when the origin cannot be told from the file (star import,
+    runtime expression, ...). reconcile_test_inherits uses it to link the base
+    Python actually imports.
+    """
+    result: list[str] = []
+    seen: set[str] = set()
+    for base in cls_node.bases:
+        if isinstance(base, ast.Name):
+            name = base.id
+            if name in local_classes:
+                source = own_module_path
+            else:
+                source = name_sources.get(name, "")
+        elif isinstance(base, ast.Attribute):
+            name = base.attr
+            chain: list[str] = []
+            node = base.value
+            while isinstance(node, ast.Attribute):
+                chain.append(node.attr)
+                node = node.value
+            if isinstance(node, ast.Name) and node.id in module_bindings:
+                source = ".".join([module_bindings[node.id], *reversed(chain)])
+            else:
+                source = ""
+        else:
+            continue
+        name = alias_map.get(name, name)
+        if name not in seen:
+            result.append(source)
+            seen.add(name)
+    return result
+
+
 def _classify_test_type(base_classes_ordered: list[str]) -> str:
     """Return test_type from first base in MRO order that maps in TEST_TYPE_MAP (HIGH-1).
 
@@ -439,12 +543,22 @@ def _parse_era2_test_file(
     # LOW-3: file-level import-alias map so `class Foo(Common)` where
     # `... import TestXCommon as Common` resolves to the real base name.
     alias_map = _build_import_alias_map(tree)
+    package = _module_package(module_info, file_path)
+    name_sources, module_bindings = _build_import_source_map(tree, package)
+    stem = Path(file_path).stem
+    own_module_path = package if stem == "__init__" else f"{package}.{stem}"
+    local_classes: set[str] = set()
 
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
             continue
 
         base_classes_ordered = _get_base_classes_ordered(node, alias_map)
+        base_sources_ordered = _get_base_sources_ordered(
+            node, alias_map, name_sources, module_bindings, local_classes,
+            own_module_path,
+        )
+        local_classes.add(node.name)
         test_type = _classify_test_type(base_classes_ordered)
         docstring = ast.get_docstring(node)
 
@@ -531,6 +645,7 @@ def _parse_era2_test_file(
             odoo_version=ver,
             test_type=test_type,
             base_classes_ordered=base_classes_ordered,
+            base_sources_ordered=base_sources_ordered,
             tagged=tagged,
             commit_allowed=commit_allowed,
             defines_no_test_methods=defines_no_test_methods,

@@ -128,9 +128,10 @@ _MODULE_LINT_VIOLATION_PREDICATE = """
 # longer extends its parent ...) and the entity prune deletes them. Not listed,
 # hence never pruned here:
 #   * derived by version-wide post-passes, not by a module's parse:
-#     TestClass-[:INHERITS_TEST], TestMethod-[:COVERS_MODEL|COVERS_FIELD|
-#     COVERS_METHOD] (reconcile_test_surface), addon TestHelper-[:DEFINED_IN]
-#     (finalize_is_helper projection);
+#     TestClass-[:INHERITS_TEST] and TestMethod-[:COVERS_MODEL|COVERS_FIELD|
+#     COVERS_METHOD]; reconcile_test_surface recomputes them every run and
+#     deletes the ones it no longer derives (addon TestHelper projections
+#     carry no DEFINED_IN);
 #   * starting at a shared node: AssetBundle-[:INCLUDES_BUNDLE];
 #   * spec layer (CoreSymbol / LintRule / CLI*), not module-scoped.
 # reconcile_same_name_inherits also MERGEs INHERITS from module Models; its edges
@@ -2843,77 +2844,114 @@ class Neo4jWriter:
             return deleted
 
     def reconcile_test_inherits(self, odoo_version: str) -> int:
-        """MERGE missing INHERITS_TEST edges for all TestClass nodes at odoo_version.
+        """Derive the INHERITS_TEST edges of every TestClass at *odoo_version*.
 
-        Post-pass (like reconcile_same_name_inherits): runs VERSION-WIDE after all
-        repos for the version have been written. Resolves base class names to
-        TestHelper OR TestClass nodes, creating directed INHERITS_TEST edges.
+        Version-wide post-pass (runs after all repos of the version are
+        written; the base of a test class may live in another repo). Each
+        declared base name is resolved to what the class imports
+        (:func:`resolve_test_base_targets`): the module its import statement
+        names, else its own module, then an ``@framework`` TestHelper, then the
+        nearest module in its dependency closure (``base`` implied). Without
+        import evidence a same-named class in a module the child's module does
+        not depend on is never a base.
 
-        Resolution priority: TestHelper first (framework bases), then TestClass.
-        Multi-base fan-out is correct (one TestClass can inherit N bases -> N edges).
-        Uses flat OPTIONAL MATCH, no VLP (ADR-0048).
+        The edges this pass owns - TestClass -> TestClass and TestClass ->
+        ``@framework`` TestHelper - are made EXACTLY the derived set: missing
+        ones are created and ones no longer derived (a removed base, a base now
+        resolved elsewhere, a former false cross-module link) are deleted -
+        except, for a base whose origin is unknown (a node parsed before import
+        sources were recorded, a star import) and that nothing resolves, the
+        edges already recorded are kept rather than guessed away. Edges to
+        addon TestHelper projections belong to :meth:`finalize_is_helper`.
+        Deletion is limited to edges read in this pass's snapshot, so an edge
+        a concurrent run adds for a node written after the snapshot is never
+        removed. Flat reads, no VLP (ADR-0048).
 
-        Idempotent (MERGE). Safe in both incremental and full-reindex runs.
-        Returns count of edges created.
+        Returns the number of edges created. Non-fatal: a failure is logged
+        and the next run retries.
         """
         try:
             with self.driver.session() as session:
-                row = session.run(
-                    """
-                    // For each TestClass, unwind its ordered base list and resolve
-                    // each base to a TestHelper or TestClass at the same version.
-                    // INHERITS_TEST fan-out is OK (K x D, not K^2).
-                    MATCH (tc:TestClass {odoo_version: $version})
-                    UNWIND tc.base_classes_ordered AS base_name
-                    // Resolve to TestHelper first (framework + addon helpers)
-                    OPTIONAL MATCH (h:TestHelper {name: base_name, odoo_version: $version})
-                    // If no TestHelper, resolve to a same-version TestClass
-                    OPTIONAL MATCH (bc:TestClass {name: base_name, odoo_version: $version})
-                    WHERE h IS NULL
-                    WITH tc, base_name,
-                         CASE WHEN h IS NOT NULL THEN h ELSE bc END AS target
-                    WHERE target IS NOT NULL
-                      AND NOT (tc)-[:INHERITS_TEST]->(target)
-                    MERGE (tc)-[:INHERITS_TEST]->(target)
-                    RETURN count(*) AS created
-                    """,
-                    version=odoo_version,
-                ).single()
-                created = row["created"] if row is not None else 0
-                if created > 0:
+                snap = session.execute_read(_read_test_inherits_snapshot, odoo_version)
+                classes = snap["classes"]
+                framework_ids = snap["framework"]
+                pairs, undetermined = resolve_test_base_targets(
+                    classes, set(framework_ids), snap["depends"],
+                )
+                desired: set[tuple[str, str]] = set()
+                for child_idx, target in pairs:
+                    child_id = classes[child_idx]["id"]
+                    if isinstance(target, int):
+                        desired.add((child_id, classes[target]["id"]))
+                    else:
+                        desired.add((child_id, framework_ids[target]))
+                keep = {(classes[i]["id"], base) for i, base in undetermined}
+                existing = {
+                    (e["c"], e["t"]) for e in snap["edges"]
+                    if (e["c"], e["tn"]) not in keep
+                }
+                names = {c["id"]: c["name"] for c in classes}
+                names.update({fid: fname for fname, fid in framework_ids.items()})
+                to_create = [
+                    {"c": c, "t": t, "cn": names[c], "tn": names[t]}
+                    for c, t in sorted(desired - existing)
+                ]
+                to_delete = [{"c": c, "t": t} for c, t in sorted(existing - desired)]
+                created = 0
+                for start in range(0, len(to_create), _TEST_EDGE_BATCH_ROWS):
+                    created += session.execute_write(
+                        _create_test_inherits_edges,
+                        to_create[start:start + _TEST_EDGE_BATCH_ROWS],
+                    )
+                deleted = 0
+                for start in range(0, len(to_delete), _TEST_EDGE_BATCH_ROWS):
+                    deleted += session.execute_write(
+                        _delete_test_inherits_edges,
+                        to_delete[start:start + _TEST_EDGE_BATCH_ROWS],
+                    )
+                if created or deleted:
                     _logger.info(
-                        "INHERITS_TEST reconciliation: created %d edge(s) for version %s",
-                        created, odoo_version,
+                        "INHERITS_TEST reconciliation: created %d, deleted %d edge(s) "
+                        "for version %s",
+                        created, deleted, odoo_version,
                     )
                 else:
                     _logger.debug(
-                        "INHERITS_TEST reconciliation: no gaps found for version %s",
+                        "INHERITS_TEST reconciliation: no change for version %s",
                         odoo_version,
                     )
                 return created
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
-                "INHERITS_TEST reconciliation failed for version %s: %s — "
+                "INHERITS_TEST reconciliation failed for version %s: %s - "
                 "indexer run continues; next run will retry",
                 odoo_version, exc,
             )
             return 0
 
     def reconcile_test_coverage(self, odoo_version: str) -> int:
-        """MERGE COVERS_MODEL/COVERS_FIELD/COVERS_METHOD edges from TestMethod refs.
+        """Make the COVERS_MODEL/FIELD/METHOD edges exactly what TestMethod refs derive.
 
-        Post-pass (VERSION-WIDE, idempotent MERGE). Resolves model_refs/field_refs
+        Post-pass (VERSION-WIDE, idempotent). Resolves model_refs/field_refs
         to is_definition=true nodes only (ADR-0013, ADR-0048 K x D rule).
         Gracefully skips unknown refs (no dangling edges, design §2.3).
 
+        Edges the current refs no longer derive - a ref removed from the test,
+        a Model that is no longer the definition, a field/method no longer
+        reached through a covered model - are deleted first
+        (:func:`_delete_stale_coverage`); the per-module entity prune does not
+        cover these derived edges.
+
         COVERS_* edges carry a `via` property ('setup'|'assert'|'body') from
-        TestMethod.via, enabling tools to rank assert-coverage above setup-coverage.
+        TestMethod.via, enabling tools to rank assert-coverage above
+        setup-coverage; it is refreshed when the method's via changes.
 
         Returns total count of edges created.
         """
         total = 0
         try:
             with self.driver.session() as session:
+                removed = _delete_stale_coverage(session, odoo_version, "COVERS_MODEL")
                 # COVERS_MODEL: from model_refs -> is_definition Model node
                 row_m = session.run(
                     """
@@ -2930,6 +2968,8 @@ class Neo4jWriter:
                     version=odoo_version,
                 ).single()
                 total += row_m["created"] if row_m is not None else 0
+                removed += _delete_stale_coverage(session, odoo_version, "COVERS_FIELD")
+                removed += _delete_stale_coverage(session, odoo_version, "COVERS_METHOD")
 
                 # COVERS_FIELD: from field_refs (attr names) -> Field nodes on definition model
                 # field_refs are simple attr names; we need the model to scope the lookup.
@@ -2971,11 +3011,25 @@ class Neo4jWriter:
                     version=odoo_version,
                 ).single()
                 total += row_m2["created"] if row_m2 is not None else 0
+                _run_single_with_retry(
+                    session, "reconcile_test_coverage[via]",
+                    f"""
+                    MATCH (tm:TestMethod {{odoo_version: $version}})
+                          -[r:COVERS_MODEL|COVERS_FIELD|COVERS_METHOD]->()
+                    WHERE r.via IS NULL OR r.via <> coalesce(tm.via, 'body')
+                    CALL (r, tm) {{
+                        SET r.via = coalesce(tm.via, 'body')
+                    }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+                    RETURN count(*) AS updated
+                    """,
+                    version=odoo_version,
+                )
 
-                if total > 0:
+                if total > 0 or removed > 0:
                     _logger.info(
-                        "COVERS_* reconciliation: created %d edge(s) for version %s",
-                        total, odoo_version,
+                        "COVERS_* reconciliation: created %d, deleted %d edge(s) "
+                        "for version %s",
+                        total, removed, odoo_version,
                     )
                 else:
                     _logger.debug(
@@ -2992,65 +3046,128 @@ class Neo4jWriter:
             return 0
 
     def finalize_is_helper(self, odoo_version: str) -> int:
-        """Promote TestClass nodes to TestHelper when: subclassed AND defines_no_test_methods.
+        """Set TestClass.is_helper = subclassed AND defines_no_test_methods.
 
         Post-pass (MISSED-1): is_helper is provisional at parse time (parser only
         sets defines_no_test_methods). This pass finalizes it after INHERITS_TEST
         edges exist, counting actual inbound edges from other TestClass nodes.
+        The flag is recomputed both ways: a class that gains a test method or
+        loses its last subclass is demoted, and its addon TestHelper projection
+        (no TestClass of that name + module is a helper any more) is deleted.
 
         Also creates a TestHelper projection node for each promoted class so that
         test_base_classes queries can find them consistently (the TestClass node
-        still exists; the TestHelper node is the canonical query target).
+        still exists; the TestHelper node is the canonical query target), and
+        gives every child of a helper TestClass the same INHERITS_TEST edge to
+        its projection in this same run (:func:`_mirror_helper_projection_edges`),
+        so one run leaves the edges complete.
 
-        Idempotent (SET + MERGE). Returns count of TestClass nodes promoted.
+        Idempotent. Returns the number of TestClass nodes that are helpers.
         """
         try:
             with self.driver.session() as session:
-                # Step 1: mark TestClass.is_helper=true where subclassed and no test methods
-                row = session.run(
+                # Step 1: is_helper = subclassed AND no test methods, both ways - a
+                # class that gained a test method or lost its last subclass is
+                # demoted.
+                _run_single_with_retry(
+                    session, "finalize_is_helper[flag]",
                     """
-                    MATCH (tc:TestClass {odoo_version: $version, defines_no_test_methods: true})
-                    WHERE COUNT { ()-[:INHERITS_TEST]->(tc) } > 0
-                    SET tc.is_helper = true
+                    MATCH (tc:TestClass {odoo_version: $version})
+                    WITH tc, (coalesce(tc.defines_no_test_methods, false) AND EXISTS {
+                        MATCH (child:TestClass)-[:INHERITS_TEST]->(tc)
+                        WHERE child <> tc
+                    }) AS helper
+                    WHERE coalesce(tc.is_helper, false) <> helper
+                    SET tc.is_helper = helper
+                    RETURN count(tc) AS changed
+                    """,
+                    version=odoo_version,
+                )
+                row = _run_single_with_retry(
+                    session, "finalize_is_helper[count]",
+                    """
+                    MATCH (tc:TestClass {odoo_version: $version, is_helper: true})
                     RETURN count(tc) AS promoted
                     """,
                     version=odoo_version,
-                ).single()
+                )
                 promoted = row["promoted"] if row is not None else 0
 
+                # Step 1b: an addon projection whose class is no longer a helper
+                # (or no longer exists) is stale.
+                _run_single_with_retry(
+                    session, "finalize_is_helper[stale projections]",
+                    """
+                    MATCH (th:TestHelper {odoo_version: $version})
+                    WHERE NOT th.module IN $non_retirable
+                      AND coalesce(th.origin, 'addon') <> 'framework'
+                      AND NOT EXISTS {
+                          MATCH (tc:TestClass {
+                              name: th.name, module: th.module, odoo_version: $version
+                          })
+                          WHERE tc.is_helper = true
+                      }
+                    DETACH DELETE th
+                    RETURN count(*) AS deleted
+                    """,
+                    version=odoo_version,
+                    non_retirable=sorted(NON_RETIRABLE_MODULE_NAMES),
+                )
+
                 if promoted > 0:
-                    # Step 2: ensure a TestHelper projection node exists for each promoted class
-                    session.run(
+                    # Step 2: one TestHelper projection per helper (name, module).
+                    # Its tenant visibility is EXACTLY the union of the profiles
+                    # of every TestClass of that name + module - one per repo
+                    # shipping the module - so each owner's tenant sees it and a
+                    # departed owner's profile (drop_module_owner reset) is not
+                    # kept. Descriptive properties come from the first helper
+                    # copy by (file_path, repo).
+                    _run_single_with_retry(
+                        session, "finalize_is_helper[projections]",
                         """
                         MATCH (tc:TestClass {odoo_version: $version, is_helper: true})
-                        MERGE (th:TestHelper {
-                            name: tc.name, module: tc.module, odoo_version: $version
-                        })
-                        ON CREATE SET th.origin = 'addon',
-                                      th.test_type = tc.test_type,
-                                      th.commit_allowed = tc.commit_allowed,
-                                      th.file_path = tc.file_path,
-                                      th.line = tc.line,
-                                      th.profile = coalesce(tc.profile, [])
-                        ON MATCH SET th.origin = 'addon',
-                                     th.test_type = tc.test_type,
-                                     th.profile = [
-                                         x IN coalesce(th.profile, [])
-                                         WHERE NOT x IN coalesce(tc.profile, [])
-                                     ] + coalesce(tc.profile, [])
+                        WHERE NOT tc.module IN $non_retirable
+                        WITH DISTINCT tc.name AS name, tc.module AS module
+                        WITH name, module,
+                             COLLECT {
+                                 MATCH (h:TestClass {
+                                     name: name, module: module, odoo_version: $version
+                                 })
+                                 WHERE h.is_helper = true
+                                 RETURN h ORDER BY h.file_path ASC, coalesce(h.repo, '') ASC
+                                 LIMIT 1
+                             }[0] AS rep,
+                             COLLECT {
+                                 MATCH (o:TestClass {
+                                     name: name, module: module, odoo_version: $version
+                                 })
+                                 UNWIND coalesce(o.profile, []) AS p
+                                 WITH DISTINCT p
+                                 RETURN p ORDER BY p ASC
+                             } AS profiles
+                        MERGE (th:TestHelper {name: name, module: module, odoo_version: $version})
+                        SET th.origin = 'addon',
+                            th.test_type = rep.test_type,
+                            th.commit_allowed = rep.commit_allowed,
+                            th.file_path = rep.file_path,
+                            th.line = rep.line,
+                            th.profile = profiles
+                        RETURN count(th) AS projected
                         """,
                         version=odoo_version,
+                        non_retirable=sorted(NON_RETIRABLE_MODULE_NAMES),
                     )
                     _logger.info(
-                        "finalize_is_helper: promoted %d TestClass nodes to is_helper=true "
-                        "and created TestHelper projections for version %s",
+                        "finalize_is_helper: %d helper TestClass node(s) and their "
+                        "TestHelper projections for version %s",
                         promoted, odoo_version,
                     )
                 else:
                     _logger.debug(
-                        "finalize_is_helper: no promotions needed for version %s",
+                        "finalize_is_helper: no helpers for version %s",
                         odoo_version,
                     )
+                _mirror_helper_projection_edges(session, odoo_version)
                 return promoted
         except Exception as exc:  # noqa: BLE001
             _logger.warning(
@@ -3268,6 +3385,330 @@ from .writer_neo4j_ui import (  # noqa: E402,I001
 # WI-1: test surface write helpers (module-level, called via execute_write)
 # ---------------------------------------------------------------------------
 
+# Rows per write transaction of the test-surface post-pass edge reconciliation.
+_TEST_EDGE_BATCH_ROWS = 5000
+
+# Every Odoo module implicitly depends on ``base`` (the loader always installs
+# it first), whether or not its manifest lists it.
+_IMPLICIT_DEPENDENCY_MODULE = "base"
+
+
+def _dependency_distances(
+    module: str, depends: Mapping[str, Iterable[str]],
+) -> dict[str, int]:
+    """Shortest DEPENDS_ON distance from *module* to every module it depends on.
+
+    Breadth-first over the manifest dependency graph; ``base`` is implied at
+    distance 1 when the graph does not reach it. *module* itself is absent.
+    """
+    distances: dict[str, int] = {}
+    seen = {module}
+    frontier = [module]
+    depth = 0
+    while frontier:
+        depth += 1
+        next_frontier: list[str] = []
+        for name in frontier:
+            for dep in sorted(depends.get(name, ())):
+                if dep not in seen:
+                    seen.add(dep)
+                    distances[dep] = depth
+                    next_frontier.append(dep)
+        frontier = next_frontier
+    if module != _IMPLICIT_DEPENDENCY_MODULE:
+        distances.setdefault(_IMPLICIT_DEPENDENCY_MODULE, 1)
+    return distances
+
+
+def _import_hint(source: str) -> tuple[str | None, tuple[str, ...]]:
+    """``(module, file suffixes)`` a base's import source points at.
+
+    ``odoo.addons.<m>.<path>`` -> ``(m, ('<m>/<path>.py', '<m>/<path>/__init__.py'))``;
+    any other ``odoo.*`` source -> ``('@framework', ())``; anything else
+    (a third-party module, unknown) -> ``(None, ())``.
+    """
+    parts = source.split(".") if source else []
+    if len(parts) >= 3 and parts[0] == "odoo" and parts[1] == "addons" and parts[2]:
+        rel = "/".join(parts[2:])
+        return parts[2], (f"{rel}.py", f"{rel}/__init__.py")
+    if parts and parts[0] == "odoo":
+        return "@framework", ()
+    return None, ()
+
+
+def _file_matches(file_path: str, suffixes: tuple[str, ...]) -> bool:
+    return any(file_path == sfx or file_path.endswith("/" + sfx) for sfx in suffixes)
+
+
+def resolve_test_base_targets(
+    classes: "list[Mapping]",
+    framework_names: "set[str]",
+    depends: Mapping[str, Iterable[str]],
+) -> tuple[list[tuple[int, "int | str"]], set[tuple[int, str]]]:
+    """Resolve every declared test base to the class Python would import.
+
+    ``classes``: TestClass rows with ``name``, ``module``, ``file_path``,
+    ``bases`` (declared base names, MRO order) and ``sources`` (aligned with
+    ``bases``: the dotted module each base is imported from, ``''`` unknown;
+    None for a node written before sources were recorded).
+    ``framework_names``: the ``@framework`` TestHelper names of the version.
+    ``depends``: module name -> names of the modules its manifest depends on.
+
+    For each base name of each class the candidates are ranked:
+
+    0. the import says where it comes from: ``odoo.addons.<m>...`` -> the
+       class of that name in module ``m`` (the imported file first), whether
+       or not the child's manifest depends on ``m`` (tests do import helpers
+       of modules outside their dependency closure); any other ``odoo.*`` ->
+       the ``@framework`` TestHelper. When the pointed-at module has no such
+       class (a re-export) the ranking below applies;
+    1. a class of that name in the child's OWN module, its own file first (a
+       class is never its own base: ``class X(X)`` names another module's or
+       file's ``X``),
+    2. the ``@framework`` TestHelper of that name,
+    3. a class of that name in a module the child's module depends on,
+       nearest first (``base`` implied).
+
+    Without import evidence a class of a module outside the dependency
+    closure is never a candidate. Ties break on ``(module, file_path)``
+    ascending. The winning definition is linked through every copy of it
+    (same name, module and file path - one per repo shipping the module).
+
+    Returns ``(pairs, undetermined)``: ``pairs`` are ``(child_index,
+    target)`` with ``target`` an index into *classes* or a framework helper
+    name; ``undetermined`` are the ``(child_index, base_name)`` whose origin
+    is unknown AND that nothing above resolves - the caller keeps the edges
+    already recorded for those rather than guess.
+    """
+    by_name: dict[str, list[int]] = {}
+    for idx, cls in enumerate(classes):
+        by_name.setdefault(cls["name"], []).append(idx)
+    closure_cache: dict[str, dict[str, int]] = {}
+    pairs: list[tuple[int, int | str]] = []
+    undetermined: set[tuple[int, str]] = set()
+    for child_idx, child in enumerate(classes):
+        module = child["module"]
+        distances = closure_cache.get(module)
+        if distances is None:
+            distances = _dependency_distances(module, depends)
+            closure_cache[module] = distances
+        child_file = child.get("file_path") or ""
+        sources = child.get("sources") or []
+        seen: set[str] = set()
+        for pos, base in enumerate(child.get("bases") or ()):
+            if base in seen:
+                continue
+            seen.add(base)
+            source = sources[pos] if pos < len(sources) else ""
+            hint_module, hint_files = _import_hint(source)
+            best: tuple | None = None
+            if base in framework_names:
+                best = ((-1, 0) if hint_module == "@framework" else (1, 0), "", "")
+            for cand_idx in by_name.get(base, ()):
+                cand = classes[cand_idx]
+                cand_file = cand.get("file_path") or ""
+                if (cand["module"] == module and cand_file == child_file
+                        and base == child["name"]):
+                    continue
+                if hint_module is not None and cand["module"] == hint_module:
+                    rank = (-1, 0) if _file_matches(cand_file, hint_files) else (-1, 1)
+                elif cand["module"] == module:
+                    rank = (0, 0) if cand_file == child_file else (0, 1)
+                else:
+                    distance = distances.get(cand["module"])
+                    if distance is None:
+                        continue
+                    rank = (2, distance)
+                key = (rank, cand["module"], cand_file)
+                if best is None or key < best:
+                    best = key
+            if best is None:
+                if not source:
+                    undetermined.add((child_idx, base))
+                continue
+            _, target_module, target_file = best
+            if target_module == "":
+                pairs.append((child_idx, base))
+                continue
+            for cand_idx in by_name[base]:
+                cand = classes[cand_idx]
+                if (cand["module"] == target_module
+                        and (cand.get("file_path") or "") == target_file):
+                    pairs.append((child_idx, cand_idx))
+    return pairs, undetermined
+
+
+def _read_test_inherits_snapshot(tx, odoo_version: str) -> dict:
+    """Read what :meth:`Neo4jWriter.reconcile_test_inherits` derives from.
+
+    Returns ``{classes, framework: {name: id}, depends: {module: [dep]},
+    edges: [{c, t, tn}]}``; ``edges`` are the INHERITS_TEST edges the pass owns
+    (TestClass -> same-version TestClass or ``@framework`` TestHelper).
+    """
+    classes = [
+        dict(row) for row in tx.run(
+            """
+            MATCH (tc:TestClass {odoo_version: $v})
+            RETURN elementId(tc) AS id, tc.name AS name, tc.module AS module,
+                   tc.file_path AS file_path,
+                   coalesce(tc.base_classes_ordered, []) AS bases,
+                   tc.base_sources_ordered AS sources
+            ORDER BY id
+            """,
+            v=odoo_version,
+        )
+    ]
+    framework = {
+        row["name"]: row["id"] for row in tx.run(
+            """
+            MATCH (h:TestHelper {module: '@framework', odoo_version: $v})
+            RETURN h.name AS name, elementId(h) AS id
+            """,
+            v=odoo_version,
+        )
+    }
+    depends = {
+        row["module"]: row["deps"] for row in tx.run(
+            f"""
+            MATCH (m:Module {{odoo_version: $v}})-[:{REL_DEPENDS_ON}]->(d:Module)
+            WHERE d.odoo_version = $v
+            RETURN m.name AS module, collect(DISTINCT d.name) AS deps
+            """,
+            v=odoo_version,
+        )
+    }
+    edges = [
+        dict(row) for row in tx.run(
+            """
+            MATCH (c:TestClass {odoo_version: $v})-[:INHERITS_TEST]->(t)
+            WHERE (t:TestClass AND t.odoo_version = $v)
+               OR (t:TestHelper AND t.module = '@framework' AND t.odoo_version = $v)
+            RETURN elementId(c) AS c, elementId(t) AS t, t.name AS tn
+            """,
+            v=odoo_version,
+        )
+    ]
+    return {"classes": classes, "framework": framework, "depends": depends, "edges": edges}
+
+
+def _create_test_inherits_edges(tx, rows: list[dict]) -> int:
+    # The name checks guard against an element id reused by a node created
+    # after the snapshot.
+    row = tx.run(
+        """
+        UNWIND $rows AS row
+        MATCH (c:TestClass) WHERE elementId(c) = row.c AND c.name = row.cn
+        MATCH (t) WHERE elementId(t) = row.t AND t.name = row.tn
+          AND (t:TestClass OR t:TestHelper)
+        MERGE (c)-[:INHERITS_TEST]->(t)
+        RETURN count(*) AS n
+        """,
+        rows=rows,
+    ).single()
+    return row["n"] if row is not None else 0
+
+
+def _delete_test_inherits_edges(tx, rows: list[dict]) -> int:
+    row = tx.run(
+        """
+        UNWIND $rows AS row
+        MATCH (c:TestClass) WHERE elementId(c) = row.c
+        MATCH (c)-[r:INHERITS_TEST]->(t) WHERE elementId(t) = row.t
+        DELETE r
+        RETURN count(r) AS n
+        """,
+        rows=rows,
+    ).single()
+    return row["n"] if row is not None else 0
+
+
+# Stale predicate per COVERS_* type, bound as (tm)-[r]->(x): true when the
+# TestMethod's current refs no longer derive the edge. Mirrors the creation
+# queries of reconcile_test_coverage.
+_STALE_COVERAGE_PREDICATES: dict[str, str] = {
+    "COVERS_MODEL": """
+        NOT (x:Model AND x.odoo_version = $v AND x.is_definition = true
+             AND x.name IN coalesce(tm.model_refs, []))
+    """,
+    "COVERS_FIELD": """
+        NOT (x:Field AND x.odoo_version = $v
+             AND x.name IN coalesce(tm.field_refs, [])
+             AND EXISTS {
+                 MATCH (tm)-[:COVERS_MODEL]->(md:Model {name: x.model, odoo_version: $v})
+                 WHERE md.is_definition = true
+             })
+    """,
+    "COVERS_METHOD": """
+        NOT (x:Method AND x.odoo_version = $v
+             AND x.name IN coalesce(tm.method_refs, [])
+             AND EXISTS {
+                 MATCH (tm)-[:COVERS_MODEL]->(md:Model {name: x.model, odoo_version: $v})
+                 WHERE md.is_definition = true
+             })
+    """,
+}
+
+
+def _delete_stale_coverage(session, odoo_version: str, rel_type: str) -> int:
+    """Delete the *rel_type* coverage edges at *odoo_version* the refs no longer derive."""
+    row = _run_single_with_retry(
+        session, f"reconcile_test_coverage[stale {rel_type}]",
+        f"""
+        MATCH (tm:TestMethod {{odoo_version: $v}})-[r:{rel_type}]->(x)
+        WHERE {_STALE_COVERAGE_PREDICATES[rel_type]}
+        CALL (r) {{
+            DELETE r
+        }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
+        RETURN count(*) AS deleted
+        """,
+        v=odoo_version,
+    )
+    return row["deleted"] if row is not None else 0
+
+
+def _mirror_helper_projection_edges(session, odoo_version: str) -> tuple[int, int]:
+    """Make the INHERITS_TEST edges into addon TestHelper projections mirror the TestClass ones.
+
+    A child that inherits a helper TestClass also inherits that class's
+    TestHelper projection (same name + module); an edge into a projection
+    with no such TestClass edge behind it is deleted. Framework helpers are
+    never touched. Returns ``(created, deleted)``.
+    """
+    created = _run_single_with_retry(
+        session, "finalize_is_helper[mirror create]",
+        """
+        MATCH (child:TestClass {odoo_version: $v})-[:INHERITS_TEST]->(tc:TestClass)
+        WHERE tc.odoo_version = $v AND tc.is_helper = true
+        MATCH (th:TestHelper {name: tc.name, module: tc.module, odoo_version: $v})
+        WITH DISTINCT child, th
+        WHERE NOT (child)-[:INHERITS_TEST]->(th)
+        MERGE (child)-[:INHERITS_TEST]->(th)
+        RETURN count(*) AS n
+        """,
+        v=odoo_version,
+    )
+    deleted = _run_single_with_retry(
+        session, "finalize_is_helper[mirror delete]",
+        """
+        MATCH (child:TestClass {odoo_version: $v})-[r:INHERITS_TEST]->(th:TestHelper)
+        WHERE th.odoo_version = $v AND NOT th.module IN $non_retirable
+          AND NOT EXISTS {
+              MATCH (child)-[:INHERITS_TEST]->(tc:TestClass {
+                  name: th.name, module: th.module, odoo_version: $v
+              })
+              WHERE tc.is_helper = true
+          }
+        DELETE r
+        RETURN count(r) AS n
+        """,
+        v=odoo_version, non_retirable=sorted(NON_RETIRABLE_MODULE_NAMES),
+    )
+    return (
+        created["n"] if created is not None else 0,
+        deleted["n"] if deleted is not None else 0,
+    )
+
+
 def _write_test_classes_batch(
     tx, result: "TestParseResult", profiles: list[str], run_id: str | None = None,
 ) -> None:
@@ -3300,6 +3741,7 @@ def _write_test_classes_batch(
             }})
             SET tc.test_type = $test_type,
                 tc.base_classes_ordered = $base_classes_ordered,
+                tc.base_sources_ordered = $base_sources_ordered,
                 tc.tagged = $tagged,
                 tc.commit_allowed = $commit_allowed,
                 tc.defines_no_test_methods = $defines_no_test_methods,
@@ -3320,6 +3762,7 @@ def _write_test_classes_batch(
             ver=tc.odoo_version,
             test_type=tc.test_type,
             base_classes_ordered=tc.base_classes_ordered,
+            base_sources_ordered=tc.base_sources_ordered,
             tagged=tc.tagged,
             commit_allowed=tc.commit_allowed,
             defines_no_test_methods=tc.defines_no_test_methods,

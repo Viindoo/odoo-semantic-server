@@ -166,10 +166,10 @@ def build_test_class_inspect_query(
 
     Subclasses are searched from the resolved node AND its same-name, same-module
     twin of the other label: ``finalize_is_helper`` MERGEs a TestHelper
-    projection for every promoted TestClass and ``reconcile_test_inherits``
-    resolves bases "TestHelper first", so inbound edges are split across the
-    pair. Each child ``(module, name)`` is reported once, ordered
-    ``module ASC, name ASC``.
+    projection for every promoted TestClass and mirrors each child's edge onto
+    it, so a child reaches the pair through both nodes (and graphs written
+    before that mirror may hold an edge to only one of them). Each child
+    ``(module, name)`` is reported once, ordered ``module ASC, name ASC``.
 
     Returned columns beyond the node properties:
       - ``all_bases``: distinct direct-base names, in declaration order.

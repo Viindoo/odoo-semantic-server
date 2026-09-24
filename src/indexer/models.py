@@ -788,6 +788,10 @@ class TestClassInfo:
     # test_type ∈ 'transaction'|'savepoint'|'single_transaction'|'http'|'form'|'unittest'|'unknown'
     test_type: str = "unknown"
     base_classes_ordered: list[str] = field(default_factory=list)  # MRO order (HIGH-1)
+    # Aligned with base_classes_ordered: the dotted module each base is imported
+    # from ('odoo.addons.sale.tests.common', 'odoo.tests.common', ...), '' when
+    # the file does not tell. [] on the era1 (v8-v9) text path.
+    base_sources_ordered: list[str] = field(default_factory=list)
     tagged: list[str] = field(default_factory=list)  # raw incl '-tag' entries (MISSED)
     commit_allowed: bool = False  # True only for @standalone (PP3)
     defines_no_test_methods: bool = False  # provisional; is_helper finalized in reconcile
