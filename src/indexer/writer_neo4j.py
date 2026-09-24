@@ -1553,34 +1553,6 @@ class Neo4jWriter:
             ).data()
         return [dict(r) for r in result]
 
-    def delete_modules_scoped(self, repo_basename: str, odoo_version: str) -> dict:
-        """Retire every module whose ``Module.repo`` is *repo_basename* at *odoo_version*.
-
-        Web UI repo/profile delete path, on the :meth:`retire_modules` cascade
-        (full MODULE_CHILD_LABELS subtree, same guards). The module names are
-        taken from ``Module.repo``, i.e. the repo that last wrote the node; a
-        name another repo still ships must be reconciled through the ledger
-        (drop_module_owner) by the caller before this runs.
-
-        Returns ``{"modules": N, "children": M}``.
-        """
-        with self.driver.session() as session:
-            names_row = session.run(
-                """
-                MATCH (m:Module {repo: $repo, odoo_version: $version})
-                RETURN collect(DISTINCT m.name) AS names
-                """,
-                repo=repo_basename,
-                version=odoo_version,
-            ).single()
-        names = list(names_row["names"]) if names_row is not None else []
-        if not names:
-            return {"modules": 0, "children": 0}
-        counts = self.retire_modules(
-            odoo_version, names, run_started_at=self.server_now(),
-        )
-        return {"modules": counts["modules"], "children": counts["children"]}
-
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE inert '__unresolved__' placeholder nodes for odoo_version.
 

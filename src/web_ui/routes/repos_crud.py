@@ -10,9 +10,10 @@ Mounted by ``repos.py`` under the shared ``/api/repos`` prefix via
 ``src.web_ui.routes.repos.subprocess.Popen`` still reaches this module because
 ``subprocess`` is a shared module singleton (patching ``Popen`` on it is global).
 
-Neo4j + pgvector cleanup helpers used by ``delete_repo`` / ``core_symbol_counts``
-are resolved through the ``repos`` namespace at call time (``repos._*``) so the
-existing test patch surface ``src.web_ui.routes.repos._*`` keeps working.
+The ledger-first removal helper used by ``delete_repo`` and the Neo4j writer
+factory used by ``core_symbol_counts`` are resolved through the ``repos``
+namespace at call time (``repos._*``) so the test patch surface
+``src.web_ui.routes.repos._*`` keeps working.
 """
 import logging
 import subprocess
@@ -23,6 +24,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from src.db.audit import audit_action
@@ -38,6 +40,10 @@ from src.web_ui.auth import (
 
 _logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Retry-After (seconds) on a 409 "lock busy" removal: a reconcile or git
+# operation typically finishes within a minute.
+_RETRY_AFTER_SECONDS = "60"
 
 
 class AddRepoBody(BaseModel):
@@ -352,13 +358,23 @@ async def update_repo(
 async def delete_repo(
     request: Request, repo_id: int, _user_id: int = Depends(require_authenticated)
 ):
-    """Delete a single repo, then clean Neo4j + pgvector scoped to that repo.
+    """Delete a single repo, reconciling its modules through the ledger first.
 
     W2: open to authenticated non-admin users within their tenant scope.
     Non-admin may only delete repos belonging to their tenant (shared/null is admin-only).
+
+    ADR-0056 (review H3): the repo's ledger rows are flagged ``repo_removed``
+    and its modules decided under the per-repo and per-version locks BEFORE
+    the repos row is deleted: a module another repo still ships keeps its
+    node (ownership moves to the survivor); a module nobody else ships is
+    retired with its subtree and this profile's embeddings. The ledger history
+    survives the delete (``repo_id`` NULL). 409 when an index run of the
+    profile, a git operation on the repo or a lifecycle reconcile of its
+    version holds a lock past ``WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS``; nothing is
+    changed in that case.
     """
-    # Resolve the cleanup helpers through the repos namespace at call time so the
-    # test patch surface (src.web_ui.routes.repos._delete_*) keeps working.
+    # Resolve the removal helper through the repos namespace at call time so the
+    # test patch surface (src.web_ui.routes.repos._*) keeps working.
     from src.web_ui.routes import repos
 
     try:
@@ -378,10 +394,9 @@ async def delete_repo(
             )
 
         profile_name = repo["profile_name"]
-        odoo_version = repo["odoo_version"]
         basename = Path(repo["local_path"]).name
 
-        # Guard: reject if indexer is running for the containing profile
+        # Fast guard; the removal itself takes the profile lock race-free.
         with get_pool().checkout() as conn:
             running = indexer_is_running(conn, profile_name)
         if running:
@@ -392,29 +407,29 @@ async def delete_repo(
                 status_code=409,
             )
 
-        # PG delete
-        repo_store().delete_repo(repo_id)
+        _deleted, summary = await run_in_threadpool(
+            repos._remove_repos_through_ledger,
+            [repo],
+            profile_name=profile_name,
+            pg_delete=lambda: repo_store().delete_repo(repo_id),
+        )
 
     except HTTPException:
         raise  # W2: re-raise 403 scope denials before generic catch
+    except repos.RemovalBusy as e:
+        return JSONResponse(
+            _json_safe({"error": str(e)}),
+            status_code=409,
+            headers={"Retry-After": _RETRY_AFTER_SECONDS},
+        )
     except Exception as e:
         _logger.warning("Delete repo %s failed: %s", repo_id, e)
         return JSONResponse(_json_safe({"error": f"Delete failed: {e}"}), status_code=500)
 
-    # Neo4j + pgvector cleanup
-    cleanup_pairs = [{"basename": basename, "version": odoo_version}]
-    module_names_by_version = repos._collect_module_names_for_repos(cleanup_pairs)
-    total_modules, total_children = repos._delete_neo4j_for_repos(cleanup_pairs)
-    total_embeddings = repos._delete_embeddings_for_repos(
-        cleanup_pairs, module_names_by_version
-    )
-
     return JSONResponse(_json_safe({
         "ok": True,
         "basename": basename,
-        "neo4j_modules": total_modules,
-        "neo4j_children": total_children,
-        "embeddings": total_embeddings,
+        **summary,
     }))
 
 

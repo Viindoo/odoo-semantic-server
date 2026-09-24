@@ -3,18 +3,27 @@
 """Integration tests for DELETE /api/repos/profiles/{id} (M8 W1 pure JSON API).
 
 Tests cover:
-- Happy path: profile + 2 repos → PG cascaded, Neo4j modules gone, embeddings gone.
-- Guard: indexer running for profile → 409 JSON, profile NOT deleted.
+- Happy path: profile + 2 repos -> PG cascaded, Neo4j modules gone, embeddings gone.
+- Guard: indexer running for profile -> 409 JSON, profile NOT deleted.
 - 404 JSON when profile_id not found.
+
+ADR-0056 B10 rewrite (was: seeded Module nodes with only ``m.repo`` and patched
+the removed ``repos._collect_module_names_for_repos`` / ``_delete_neo4j_for_repos``
+/ ``_delete_embeddings_for_repos``). Ownership is now decided from the lifecycle
+ledger and an unattributed node is a dependency stub that is never deleted, so
+the tests seed what an index run leaves: modules indexed under the profile,
+ledger rows committed by a scan, embeddings under the owning profile (the old
+seed wrote them under an unrelated ``test_profile``). Full ledger rules:
+``tests/test_web_ui_repo_removal_ledger.py``.
 """
-import os
 import unittest.mock as mock
 
 import httpx
 import pytest
 
-from src.db.migrate import run_migrations
+from src.db.migrate import _vector_extension_available, run_migrations
 from src.web_ui.app import create_app
+from tests import _ledger_seed as ls
 from tests.conftest import TEST_VERSION
 
 pytestmark = [pytest.mark.postgres, pytest.mark.neo4j]
@@ -40,83 +49,19 @@ def migrated_pg(clean_pg):
 
 
 @pytest.fixture
-def neo4j_writer(neo4j_driver):
-    """Neo4jWriter connected to the test Neo4j instance."""
-    from src.indexer.writer_neo4j import Neo4jWriter
-
-    uri = os.environ["NEO4J_URI"]
-    user = os.environ["NEO4J_USER"]
-    password = os.environ["NEO4J_PASSWORD"]
-    w = Neo4jWriter(uri, user, password)
+def writer(migrated_pg, clean_neo4j):
+    w = ls.open_writer()
     yield w
     w.close()
 
 
-def _seed_neo4j_module(driver, repo_basename: str, module_name: str, version: str) -> None:
-    """Seed a Module node + child Model node in Neo4j."""
-    with driver.session() as session:
-        session.run(
-            """
-            MERGE (m:Module {name: $mod_name, odoo_version: $v})
-            SET m.repo = $repo, m.path = '/fake/path'
-            """,
-            mod_name=module_name,
-            v=version,
-            repo=repo_basename,
-        )
-        session.run(
-            """
-            MERGE (mdl:Model {name: $model_name, module: $mod_name, odoo_version: $v})
-            """,
-            model_name=f"model_{module_name}",
-            mod_name=module_name,
-            v=version,
-        )
-
-
-def _count_neo4j_modules(driver, repo_basename: str, version: str) -> int:
-    with driver.session() as session:
-        row = session.run(
-            "MATCH (m:Module {repo: $repo, odoo_version: $v}) RETURN count(m) AS n",
-            repo=repo_basename,
-            v=version,
-        ).single()
-    return row["n"] if row else 0
-
-
-def _seed_embeddings(pg_conn, module_name: str, version: str) -> None:
-    """Insert a minimal embeddings row for testing (skips if pgvector missing)."""
-    try:
-        from pgvector.psycopg2 import register_vector
-        register_vector(pg_conn)
-        import numpy as np
-        vec = np.zeros(1024, dtype=np.float32)
-        with pg_conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO embeddings
-                    (chunk_type, module, odoo_version, entity_name, file_path,
-                     chunk_idx, content, vec, profile_name)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT DO NOTHING
-                """,
-                ("model", module_name, version, "entity", f"/fake/{module_name}.py",
-                 0, "fake content", vec, "test_profile"),
-            )
-    except Exception:
-        pass  # pgvector not installed — embeddings tests degrade gracefully
-
-
-def _count_embeddings(pg_conn, module_name: str, version: str) -> int:
-    try:
-        with pg_conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM embeddings WHERE module = %s AND odoo_version = %s",
-                (module_name, version),
-            )
-            return cur.fetchone()[0]
-    except Exception:
-        return -1  # table absent (pgvector not installed) — skip assertion
+def _indexed_repo(tmp_path, writer, profile_id: int, profile: str, basename: str,
+                  module: str, head: str = "h1") -> int:
+    repo_dir = ls.write_repo(tmp_path, profile, basename, modules=(module,))
+    rid = ls.add_repo(profile_id, repo_dir)
+    ls.index_graph(writer, repo_dir, profile=profile, repo_id=rid)
+    ls.observe(rid, profile, (module,), head=head)
+    return rid
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +71,7 @@ def _count_embeddings(pg_conn, module_name: str, version: str) -> int:
 class TestDeleteProfileHappyPath:
     @pytest.mark.asyncio
     async def test_delete_profile_removes_pg_rows(self, migrated_pg, clean_neo4j):
-        """DELETE /api/repos/profiles/{id} → profile + repos gone from PG, 200 ok JSON."""
+        """DELETE /api/repos/profiles/{id} -> profile + repos gone from PG, 200 ok JSON."""
         from src.db.pg import repo_store
 
         pid = repo_store().add_profile(name="victim_99", odoo_version=TEST_VERSION)
@@ -144,20 +89,8 @@ class TestDeleteProfileHappyPath:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._collect_module_names_for_repos",
-            return_value={},
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_neo4j_for_repos",
-            return_value=(0, 0),
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_embeddings_for_repos",
-            return_value=0,
-        ):
-            async with _async_client(app) as client:
-                resp = await client.delete(
-                    f"/api/repos/profiles/{pid}",
-                )
+        async with _async_client(app) as client:
+            resp = await client.delete(f"/api/repos/profiles/{pid}")
 
         assert resp.status_code == 200
         body = resp.json()
@@ -174,83 +107,55 @@ class TestDeleteProfileHappyPath:
             assert cur.fetchone()[0] == 0
 
     @pytest.mark.asyncio
-    async def test_delete_profile_cleans_neo4j(self, migrated_pg, clean_neo4j):
-        """DELETE → Neo4j Module nodes for profile repos are removed,
-        and any indexed embeddings for those modules are also cleaned up."""
-        from src.db.pg import repo_store
-
-        repo_a_basename = f"test_repo_a_{TEST_VERSION}"
-        repo_b_basename = f"test_repo_b_{TEST_VERSION}"
-        module_a = f"module_{repo_a_basename}"
-        module_b = f"module_{repo_b_basename}"
-
-        pid = repo_store().add_profile(name="neo4j_victim_99", odoo_version=TEST_VERSION)
-        repo_store().add_repo(
-            profile_id=pid,
-            url="file://local/neo4j_a", branch=TEST_VERSION,
-            local_path=f"/tmp/{repo_a_basename}",
-        )
-        repo_store().add_repo(
-            profile_id=pid,
-            url="file://local/neo4j_b", branch=TEST_VERSION,
-            local_path=f"/tmp/{repo_b_basename}",
-        )
-
+    async def test_delete_profile_cleans_neo4j(self, migrated_pg, clean_neo4j, writer,
+                                               tmp_path):
+        """DELETE -> Neo4j Module nodes of the profile's repos are removed,
+        and the profile's embeddings for those modules are also cleaned up."""
+        if not _vector_extension_available(migrated_pg):
+            pytest.skip("pgvector extension not installed")
+        pid = ls.add_profile("neo4j_victim_99")
+        _indexed_repo(tmp_path, writer, pid, "neo4j_victim_99", "test_repo_a", "module_a")
+        _indexed_repo(tmp_path, writer, pid, "neo4j_victim_99", "test_repo_b", "module_b")
+        ls.seed_embedding("module_a", "neo4j_victim_99")
+        ls.seed_embedding("module_b", "neo4j_victim_99")
         driver = clean_neo4j
-        _seed_neo4j_module(driver, repo_a_basename, module_a, TEST_VERSION)
-        _seed_neo4j_module(driver, repo_b_basename, module_b, TEST_VERSION)
-
-        # Seed real embeddings so the cleanup path can be exercised end-to-end
-        _seed_embeddings(migrated_pg, module_a, TEST_VERSION)
-        _seed_embeddings(migrated_pg, module_b, TEST_VERSION)
-
-        assert _count_neo4j_modules(driver, repo_a_basename, TEST_VERSION) == 1
-        assert _count_neo4j_modules(driver, repo_b_basename, TEST_VERSION) == 1
+        assert ls.module_node(driver, "module_a") and ls.module_node(driver, "module_b")
 
         app = create_app()
         async with _async_client(app) as client:
-            await client.delete(f"/api/repos/profiles/{pid}")
+            resp = await client.delete(f"/api/repos/profiles/{pid}")
+        assert resp.status_code == 200, resp.text
 
-        assert _count_neo4j_modules(driver, repo_a_basename, TEST_VERSION) == 0
-        assert _count_neo4j_modules(driver, repo_b_basename, TEST_VERSION) == 0
-
-        # Embeddings for both modules must be gone
-        assert _count_embeddings(migrated_pg, module_a, TEST_VERSION) in (0, -1)
-        assert _count_embeddings(migrated_pg, module_b, TEST_VERSION) in (0, -1)
+        assert ls.module_node(driver, "module_a") is None
+        assert ls.module_node(driver, "module_b") is None
+        assert ls.subtree(driver, "module_a") == ls.subtree(driver, "module_b") == {}
+        assert ls.embedding_groups(migrated_pg) == {}
 
     @pytest.mark.asyncio
-    async def test_delete_profile_response_contains_counts(self, migrated_pg, clean_neo4j):
-        """Response body mentions profile name and counts."""
-        from src.db.pg import repo_store
-
-        pid = repo_store().add_profile(name="flash_test_99", odoo_version=TEST_VERSION)
-        repo_store().add_repo(
-            profile_id=pid,
-            url="file://local/flash_repo", branch=TEST_VERSION,
-            local_path="/tmp/flash_repo_99",
-        )
+    async def test_delete_profile_response_contains_counts(self, migrated_pg, clean_neo4j,
+                                                           writer, tmp_path):
+        """Response body mentions profile name and what was actually deleted."""
+        if not _vector_extension_available(migrated_pg):
+            pytest.skip("pgvector extension not installed")
+        pid = ls.add_profile("flash_test_99")
+        _indexed_repo(tmp_path, writer, pid, "flash_test_99", "flash_repo_a", "flash_a")
+        _indexed_repo(tmp_path, writer, pid, "flash_test_99", "flash_repo_b", "flash_b")
+        ls.seed_embedding("flash_a", "flash_test_99")
+        driver = clean_neo4j
+        children = sum(ls.subtree(driver, "flash_a").values()) + sum(
+            ls.subtree(driver, "flash_b").values())
 
         app = create_app()
-        with mock.patch(
-            "src.web_ui.routes.repos._collect_module_names_for_repos",
-            return_value={},
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_neo4j_for_repos",
-            return_value=(2, 10),
-        ), mock.patch(
-            "src.web_ui.routes.repos._delete_embeddings_for_repos",
-            return_value=5,
-        ):
-            async with _async_client(app) as client:
-                resp = await client.delete(f"/api/repos/profiles/{pid}")
+        async with _async_client(app) as client:
+            resp = await client.delete(f"/api/repos/profiles/{pid}")
 
         assert resp.status_code == 200
         body = resp.json()
         assert body.get("ok") is True
         assert body.get("profile_name") == "flash_test_99"
         assert body.get("neo4j_modules") == 2
-        assert body.get("neo4j_children") == 10
-        assert body.get("embeddings") == 5
+        assert body.get("neo4j_children") == children
+        assert body.get("embeddings") == 1
 
 
 class TestDeleteProfileGuard:

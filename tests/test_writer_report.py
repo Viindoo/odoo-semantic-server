@@ -236,34 +236,38 @@ def test_reports_on_legacy_report_indexed_module_is_debug_not_warning(
     assert any("sale.order" in m for m in debugs), debugs
 
 
-def test_report_removed_by_module_scoped_delete(writer, clean_neo4j):
-    """integration MED-2: Report was added to the delete_modules_scoped child
-    cascade (writer_neo4j.py). A re-index/repo-delete of the owning module must
-    remove its Report node — otherwise a stale Report orphans on --full reindex.
-    Red-before-green: drop 'Report' from the cascade label list and this fails.
+def test_report_removed_when_its_module_is_retired(writer, clean_neo4j):
+    """integration MED-2: a Report belongs to its module's subtree, so retiring the
+    owning module must remove it - otherwise a stale Report orphans after the
+    module is gone. Red-before-green: drop 'Report' from MODULE_CHILD_LABELS and
+    this fails.
+
+    Ported from ``delete_modules_scoped`` (removed, F1: deleting by
+    ``Module.repo`` bypassed ledger ownership and collided across profiles) to
+    ``retire_modules``, the one module-deletion primitive every removal path
+    (index-run reconcile, Web UI repo/profile delete) goes through.
     """
+    from datetime import timedelta
+
     driver = clean_neo4j
-    # Write the owning module FIRST via write_results so the Module node carries
-    # repo='test_repo' (write_view_results does not set Module.repo, and
-    # delete_modules_scoped collects victims by Module {repo, version}).
     writer.write_results([_model_result("sale", "sale.order")], profiles=["test_repo"])
     res = ViewParseResult(module=_mod("sale"), reports=[
         _report("sale.action_report_saleorder", "sale.order", "sale", None),
     ])
     writer.write_view_results([res], profiles=["test_repo"])
 
-    # Sanity: the Report exists before the delete.
+    # Sanity: the Report exists before the retirement.
     assert _count(
         driver,
         "MATCH (rp:Report {xmlid:'sale.action_report_saleorder', odoo_version:$v}) "
         "RETURN count(rp) AS n",
     ) == 1
 
-    # The owning module's repo basename is 'test_repo' (see _mod), version TEST_VERSION.
-    writer.delete_modules_scoped("test_repo", TEST_VERSION)
+    result = writer.retire_modules(
+        TEST_VERSION, ["sale"], run_started_at=writer.server_now() + timedelta(seconds=5),
+    )
 
-    # The Report node must be gone (it carries module='sale', so it is matched by
-    # the module-scoped cascade now that 'Report' is in the child-label list).
+    assert result["retired"] == ["sale"]
     assert _count(
         driver,
         "MATCH (rp:Report {xmlid:'sale.action_report_saleorder', odoo_version:$v}) "

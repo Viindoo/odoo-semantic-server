@@ -7,17 +7,16 @@ This sub-router carries the profile CRUD endpoints. It is mounted by
 so every path string here is relative and stays byte-identical to the
 pre-split paths.
 
-The Neo4j + pgvector cleanup helpers used by ``delete_profile`` are resolved
-through the ``repos`` module namespace at call time (``repos._delete_*``) so
-that the existing test patch surface ``src.web_ui.routes.repos._delete_*``
-keeps working unchanged.
+The ledger-first removal helper used by ``delete_profile`` is resolved
+through the ``repos`` module namespace at call time (``repos._*``) so the
+test patch surface ``src.web_ui.routes.repos._*`` keeps working.
 """
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from src.db.audit import audit_action
@@ -26,7 +25,7 @@ from src.web_ui.auth import (
     ALL_TENANTS,
     is_in_scope,
     require_admin,
-    resolve_tenant_scope_web,
+    resolve_read_scope,
 )
 
 _logger = logging.getLogger(__name__)
@@ -41,7 +40,9 @@ async def list_profiles(request: Request):
     in their tenant scope (own tenant + shared/null). tenant_id is included in every
     profile and repo entry so the portal can route writes correctly.
     """
-    scope = resolve_tenant_scope_web(request)
+    from src.web_ui.routes import repos as repos_module
+
+    is_admin, scope = resolve_read_scope(request)
     profiles = []
     error = None
     all_job_id = None
@@ -49,6 +50,7 @@ async def list_profiles(request: Request):
     try:
         from src.db.pg import job_store, repo_store
 
+        all_repos: list[dict] = []
         for p in repo_store().list_profiles():
             profile_tenant_id = p.get("tenant_id")
             # READ filter: is_in_scope allows null (shared) for all; admin sees all
@@ -58,11 +60,13 @@ async def list_profiles(request: Request):
             # Attach last_job to each repo for status badge; expose tenant_id
             for repo in repos:
                 repo["last_job"] = job_store().get_last_job(p["name"])
+            all_repos.extend(repos)
             profiles.append({
                 **p,
                 "tenant_id": profile_tenant_id,
                 "repos": repos,
             })
+        repos_module._attach_lifecycle(all_repos, is_admin=is_admin)
 
         # Fetch most recent bulk "all" job for top-of-page badge (admin-only usage)
         if scope is ALL_TENANTS:
@@ -191,10 +195,14 @@ async def update_profile(
       has indexed repos and name/version change is requested (re-index required).
     - 422 if new version conflicts with a descendant or ancestor profile version
       (ADR-0016).
+    - 409 if a rename cannot take the module lifecycle ledger lock within
+      ``WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS`` (nothing changed; the ledger's
+      profile_name is rewritten in the same transaction, ADR-0056 L7).
     - 200 + updated_fields list on success.
     """
     try:
         from src.db.exceptions import (
+            LifecycleLockTimeout,
             ProfileIndexedError,
             ProfileNameConflictError,
             ProfileNotFoundError,
@@ -214,7 +222,10 @@ async def update_profile(
             except Exception:
                 pass
 
-        updated_fields = repo_store().update_profile(
+        # A rename waits for the ledger lock (up to WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS):
+        # off the event loop.
+        updated_fields = await run_in_threadpool(
+            repo_store().update_profile,
             profile_id,
             name=body.name,
             version=body.version,
@@ -254,6 +265,14 @@ async def update_profile(
     except ProfileVersionMismatchError as e:
         _logger.warning("Update profile: version mismatch: %s", e)
         raise HTTPException(status_code=422, detail=str(e))
+    except LifecycleLockTimeout as e:
+        _logger.warning("Update profile %s: ledger lock busy: %s", profile_id, e)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Profile rename deferred: a module lifecycle reconcile is running "
+                   f"({e}); retry when the index run finished",
+            headers={"Retry-After": "60"},
+        )
     except Exception as e:
         _logger.warning("Update profile %s failed: %s", profile_id, e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
@@ -270,24 +289,31 @@ async def update_profile(
 async def delete_profile(
     request: Request, profile_id: int, _user_id: int = Depends(require_admin)
 ):
-    """Delete a profile (and cascade-delete its repos), then clean Neo4j + pgvector."""
-    # Resolve the cleanup helpers through the repos namespace at call time so the
-    # test patch surface (src.web_ui.routes.repos._delete_*) keeps working.
+    """Delete a profile and its repos, reconciling their modules through the ledger first.
+
+    Same ledger-first order as the repo delete (ADR-0056, review H3): every
+    repo of the profile is flagged ``repo_removed`` and its modules decided
+    under the profile, per-repo and per-version locks BEFORE the profile row
+    (and, by FK cascade, its repos) is deleted. Modules another profile still
+    ships keep their node; the rest are retired with this profile's
+    embeddings. 409 (nothing changed) when a lock is not obtained within
+    ``WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS``.
+    """
+    # Resolve the removal helper through the repos namespace at call time so the
+    # test patch surface (src.web_ui.routes.repos._*) keeps working.
     from src.web_ui.routes import repos
 
     try:
         from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
 
-        # Lookup profile name
-        profiles = repo_store().list_profiles()
-        profile = next((p for p in profiles if p["id"] == profile_id), None)
+        profile = repo_store().get_profile_by_id(profile_id)
         if profile is None:
             return JSONResponse(_json_safe({"error": "Profile not found."}), status_code=404)
 
         profile_name = profile["name"]
 
-        # Guard: reject if indexer is running for this profile
+        # Fast guard; the removal itself takes the profile lock race-free.
         with get_pool().checkout() as conn:
             running = indexer_is_running(conn, profile_name)
         if running:
@@ -298,18 +324,13 @@ async def delete_profile(
                 status_code=409,
             )
 
-        # Snapshot repos BEFORE PG delete (for Neo4j + pgvector cleanup)
-        repos_for_profile = repo_store().get_repos_for_profile(profile_name)
-        repo_cleanup_pairs = [
-            {
-                "basename": Path(r["local_path"]).name,
-                "version": r["odoo_version"],
-            }
-            for r in repos_for_profile
-        ]
-
-        # PG delete (CASCADE removes child repos automatically)
-        result = repo_store().delete_profile(profile_id)
+        repos_for_profile = repo_store().get_repos_for_profile_by_id(profile_id)
+        result, summary = await run_in_threadpool(
+            repos._remove_repos_through_ledger,
+            repos_for_profile,
+            profile_name=profile_name,
+            pg_delete=lambda: repo_store().delete_profile(profile_id),
+        )
         repo_count = len(result["repos"])
 
         # WG-3t T4: deleting a profile removes it from every tenant's own/shared
@@ -317,22 +338,19 @@ async def delete_profile(
         from src.mcp.session import invalidate_allowed_profiles
         invalidate_allowed_profiles()
 
+    except repos.RemovalBusy as e:
+        return JSONResponse(
+            _json_safe({"error": str(e)}),
+            status_code=409,
+            headers={"Retry-After": "60"},
+        )
     except Exception as e:
         _logger.warning("Delete profile %s failed: %s", profile_id, e)
         return JSONResponse(_json_safe({"error": f"Delete failed: {e}"}), status_code=500)
-
-    # Neo4j + pgvector cleanup (outside PG conn)
-    module_names_by_version = repos._collect_module_names_for_repos(repo_cleanup_pairs)
-    total_modules, total_children = repos._delete_neo4j_for_repos(repo_cleanup_pairs)
-    total_embeddings = repos._delete_embeddings_for_repos(
-        repo_cleanup_pairs, module_names_by_version
-    )
 
     return JSONResponse(_json_safe({
         "ok": True,
         "profile_name": profile_name,
         "repo_count": repo_count,
-        "neo4j_modules": total_modules,
-        "neo4j_children": total_children,
-        "embeddings": total_embeddings,
+        **summary,
     }))
