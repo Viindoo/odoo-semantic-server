@@ -49,6 +49,9 @@ class ModuleInfo:
     path: str
     depends: list[str]
     version_raw: str = ""
+    # True when version_raw is long-form (X.Y.a.b[.c]) and its X.Y prefix differs
+    # from odoo_version (the branch version wins, the raw string is kept).
+    version_mismatch: bool = False
     edition: str = "community"
     viindoo_equivalent_qname: str | None = None
     commit_sha: str | None = None
@@ -122,6 +125,80 @@ class ModuleOwner:
     path: str | None = None
     repo_id: int | None = None
     repo_url: str | None = None
+
+
+# Exclusion reasons a tracked manifest can carry (ledger `exclusion_reason`).
+EXCLUSION_INSTALLABLE_FALSE = "installable_false"
+EXCLUSION_LICENSE_SKIP = "license_skip"
+EXCLUSION_UNPARSEABLE = "unparseable"
+
+
+@dataclass(frozen=True)
+class ExcludedModule:
+    """A tracked module manifest that is observed but NOT indexed.
+
+    ``reason`` is one of ``installable_false`` (manifest parsed and says so),
+    ``license_skip`` (license policy ``skip``, ADR-0036) or ``unparseable``
+    (manifest could not be read or parsed, or no Odoo version could be placed).
+    ``path`` is the repo-relative module directory.
+    """
+    name: str
+    reason: str
+    path: str
+    manifest_file: str
+    version_raw: str = ""
+    version_mismatch: bool = False
+
+
+@dataclass
+class RegistryScan:
+    """Scan truth for ONE repo checkout (ADR-0056), built by
+    ``registry.build_registry_scan``.
+
+    All paths are repo-relative. A name appears in at most one of ``modules``
+    (present) and ``excluded``; every other copy of that name inside the repo is
+    listed in ``shadowed`` (loser module directories, sorted).
+
+    - ``modules``: ``{odoo_version: {name: ModuleInfo}}`` - the indexable set, same
+      shape as ``build_registry``.
+    - ``tracked_paths``: git-tracked manifest paths after the version dispatch
+      filter (Legacy / Dual / Modern); None when git tracking is unavailable.
+    - ``finder_paths``: manifest paths the version-dispatched finder found on disk.
+    - ``untracked``: finder paths git does not track (cruft, ignored dirs) - never
+      indexed, never counted live.
+    - ``missing``: tracked paths the finder did not find on disk (half checkout,
+      permissions).
+    - ``unreadable``: manifest paths that exist but could not be read
+      (permission or I/O error); such a module is neither present nor excluded.
+    - ``complete``: no tracked manifest is missing or unreadable (with tracking
+      unavailable only unreadable manifests count - trust must come from git).
+    - ``attention``: human-readable signals the operator must see (non-standard
+      branch, branch vs profile version mismatch, untracked or missing manifests).
+    """
+    repo_path: str
+    odoo_version: str
+    branch: str | None
+    modules: dict[str, dict[str, "ModuleInfo"]]
+    excluded: dict[str, ExcludedModule]
+    shadowed: dict[str, list[str]]
+    tracked_paths: frozenset[str] | None
+    finder_paths: frozenset[str]
+    untracked: frozenset[str]
+    missing: frozenset[str]
+    complete: bool
+    attention: list[str] = field(default_factory=list)
+    unreadable: frozenset[str] = frozenset()
+
+    def present_names(self) -> set[str]:
+        """Names of every indexable module in the scan, across version keys."""
+        return {name for mods in self.modules.values() for name in mods}
+
+    def module(self, name: str) -> "ModuleInfo | None":
+        """The indexable ModuleInfo for *name*, or None."""
+        for mods in self.modules.values():
+            if name in mods:
+                return mods[name]
+        return None
 
 
 @dataclass

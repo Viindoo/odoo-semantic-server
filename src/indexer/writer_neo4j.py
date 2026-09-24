@@ -1245,10 +1245,12 @@ class Neo4jWriter:
 
         *rows*: one mapping per module name the stamping repo observed present
         at its HEAD, with key ``name`` and optional ``repos`` (the ledger's
-        present owners for that name, all repos - L6). Per matched Module:
-        ``last_seen_sha = head``, ``last_seen_at = now`` (server ``datetime()``
-        when *now* is None), and ``repos = sorted(repos)`` when ``repos`` is
-        given (left unchanged otherwise).
+        present owners for that name, all repos - L6), ``version_mismatch``
+        and ``version_raw`` (the version rule's verdict for the manifest).
+        Per matched Module: ``last_seen_sha = head``, ``last_seen_at = now``
+        (server ``datetime()`` when *now* is None), and ``repos`` /
+        ``version_mismatch`` / ``version_raw`` when given (left unchanged
+        otherwise). A mismatch that disappeared is stamped False.
 
         MATCH only - never creates a Module node. The return value is the
         number of Module nodes matched; a count below the number of rows means
@@ -1260,9 +1262,12 @@ class Neo4jWriter:
         for r in rows:
             name = r["name"]
             repos = r.get("repos")
+            mismatch = r.get("version_mismatch")
             payload.append({
                 "name": name,
                 "repos": sorted(set(repos)) if repos is not None else None,
+                "version_mismatch": bool(mismatch) if mismatch is not None else None,
+                "version_raw": r.get("version_raw"),
             })
         if not payload:
             return 0
@@ -1276,7 +1281,9 @@ class Neo4jWriter:
                     MATCH (m:Module {name: r.name, odoo_version: $v})
                     SET m.last_seen_sha = $head,
                         m.last_seen_at = coalesce($now, datetime()),
-                        m.repos = coalesce(r.repos, m.repos)
+                        m.repos = coalesce(r.repos, m.repos),
+                        m.version_mismatch = coalesce(r.version_mismatch, m.version_mismatch),
+                        m.version_raw = coalesce(r.version_raw, m.version_raw)
                     RETURN count(m) AS matched
                     """,
                     rows=batch, v=odoo_version, head=head, now=now_value,
