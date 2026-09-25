@@ -22,6 +22,17 @@ def _serialize_datetimes(row: dict) -> dict:
     return row
 
 
+def _parse_starttime(raw: str) -> int | None:
+    """Field 22 (``starttime``, clock ticks after boot) of a /proc/<pid>/stat
+    line, None when it cannot be read. ``comm`` (field 2) may hold spaces and
+    parentheses, so the fields are split after the LAST ')'."""
+    try:
+        fields = raw[raw.rindex(")") + 2:].split()
+        return int(fields[22 - 3])
+    except (ValueError, IndexError):
+        return None
+
+
 class ProcInfo:
     """Linux ``/proc`` reader for process identity; every answer is None
     where it cannot be read (other OS, hidepid, race with exit)."""
@@ -45,12 +56,11 @@ class ProcInfo:
             return None
         try:
             with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
-                raw = fh.read()
-            # comm (field 2) may hold spaces and parens: split after the last ')'.
-            fields = raw[raw.rindex(")") + 2:].split()
-            ticks = int(fields[22 - 3])
+                ticks = _parse_starttime(fh.read())
+            if ticks is None:
+                return None
             return boot + ticks / os.sysconf("SC_CLK_TCK")
-        except (OSError, ValueError, IndexError):
+        except (OSError, ValueError):
             return None
 
 

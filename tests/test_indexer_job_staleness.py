@@ -189,3 +189,25 @@ def test_reset_refuses_a_job_whose_own_process_is_alive(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_real_ttl_override(monkeypatch):
     monkeypatch.setattr(constants, "INDEXER_JOB_QUEUED_TTL_SECONDS", 600.0)
+
+
+# --- /proc/<pid>/stat parsing ---------------------------------------------
+
+def _stat(comm: str, starttime: int) -> str:
+    # fields 3.. after "(comm)": state then 18 numbers, field 22 = starttime.
+    rest = ["S"] + [str(i) for i in range(4, 22)] + [str(starttime), "999", "0"]
+    return f"4242 ({comm}) " + " ".join(rest)
+
+
+def test_parse_starttime_reads_field_22():
+    assert job_registry._parse_starttime(_stat("python", 123456)) == 123456
+
+
+def test_parse_starttime_splits_after_the_last_paren():
+    # A process may name itself anything, spaces and parens included.
+    assert job_registry._parse_starttime(_stat("x) (y z) 1 2", 777)) == 777
+
+
+def test_parse_starttime_of_garbage_is_none():
+    assert job_registry._parse_starttime("") is None
+    assert job_registry._parse_starttime("4242 (python) S 1 2") is None
