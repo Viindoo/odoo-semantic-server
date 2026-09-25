@@ -137,10 +137,12 @@ sudo -u odoo-semantic $PY -m src.db.migrate          # applies 0003_module_prese
 bash ops/regrant_osm_reader_after_migration.sh       # osm_reader gets SELECT on module_presence
 ```
 
-Verify:
+Verify (match the migration id exactly: ids are text, so `ORDER BY migration_id` sorts
+`m9_*` after `m13_*` and both after every `0NNN_*`, and never names the latest one):
 
 ```bash
-psql "$PG_DSN" -c "SELECT migration_id FROM _yoyo_migration ORDER BY migration_id DESC LIMIT 1;"   # 0003_module_presence
+psql "$PG_DSN" -c "SELECT migration_id, applied_at_utc FROM _yoyo_migration
+                   WHERE migration_id = '0003_module_presence';"               # exactly 1 row
 psql "$PG_DSN" -c "\d module_presence" | head -5
 psql "$PG_DSN" -c "SELECT count(*) FROM module_presence;"                      # 0 before the first run
 psql "$PG_DSN" -c "SELECT privilege_type FROM information_schema.role_table_grants
