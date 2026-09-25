@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import ast
 import pathlib
+import signal
 from unittest.mock import MagicMock
 
 import pytest
@@ -111,7 +112,9 @@ def core_run(monkeypatch):
         main_mod.job_registry, "update_job",
         lambda _pg, job_id, **kw: updates.append({"job_id": job_id, **kw}),
     )
-    return state, updates
+    previous = signal.getsignal(signal.SIGTERM)
+    yield state, updates
+    signal.signal(signal.SIGTERM, previous)  # main() installs its own
 
 
 _CORE_ARGV = ["index-core", "--source", "/src", "--version", "17.0"]

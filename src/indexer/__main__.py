@@ -306,6 +306,45 @@ def _track_job(pg, job_id: int, **fields) -> None:
         )
 
 
+def _mark_job_terminated(job_id: int) -> None:
+    """Write the SIGTERM error on the job row through a connection of its own.
+
+    Never the run's main connection: SIGTERM can land while it is inside a
+    ``_write_scope`` transaction (autocommit off), and an update written there
+    is rolled back when the process exits - the job then stayed ``running``
+    with a dead pid (#381 F6). ``open_production_pg`` returns an autocommit
+    connection, so the update is committed before ``sys.exit``."""
+    try:
+        conn = open_production_pg()
+    except Exception as exc:  # noqa: BLE001 - the process is exiting anyway
+        logging.getLogger(__name__).warning(
+            "index job %s: cannot record SIGTERM: %s: %s", job_id, type(exc).__name__, exc,
+        )
+        return
+    try:
+        _track_job(
+            conn, job_id,
+            status="error",
+            finished_at=datetime.now(UTC),
+            error_msg="Process received SIGTERM",
+        )
+    finally:
+        conn.close()
+
+
+def _install_sigterm_handler(job_id: int | None) -> None:
+    """On SIGTERM: record the error on the Web UI job (if any), then exit 1
+    through ``SystemExit`` so the run's ``finally`` blocks close its
+    connections."""
+
+    def _sigterm_handler(signum, frame):
+        if job_id is not None:
+            _mark_job_terminated(job_id)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
+
 EXIT_LIFECYCLE_ATTENTION = 3
 # lifecycle-audit --fail-on-findings: drift found (distinct from 1, a crash).
 EXIT_AUDIT_FINDINGS = 4
@@ -436,21 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         max_workers = getattr(args, "max_workers", 1)
         profile_workers = getattr(args, "profile_workers", 1)
 
-        _sigterm_state: dict = {"pg": pg, "job_id": job_id}
-
-        def _sigterm_handler(signum, frame):
-            _pg = _sigterm_state.get("pg")
-            _job_id = _sigterm_state.get("job_id")
-            if _job_id is not None and _pg is not None:
-                _track_job(
-                    _pg, _job_id,
-                    status="error",
-                    finished_at=datetime.now(UTC),
-                    error_msg="Process received SIGTERM",
-                )
-            sys.exit(1)
-
-        signal.signal(signal.SIGTERM, _sigterm_handler)
+        _install_sigterm_handler(job_id)
 
         try:
             if job_id is not None:
@@ -547,6 +572,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.subcommand == "index-core":
         job_id = getattr(args, "job_id", None)
         pg = open_production_pg() if job_id is not None else None
+        _install_sigterm_handler(job_id)
         try:
             if job_id is not None:
                 _track_job(
