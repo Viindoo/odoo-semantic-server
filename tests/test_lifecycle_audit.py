@@ -15,7 +15,8 @@ Business rules protected here:
   soft-gate-held entity prune is a finding, ``held_prunes``; ``/3``: the
   shared-module entity prune of F49 is a finding, ``shared_prunes``, with
   ``shared_prune_waiting`` / ``shared_prune_rewrites`` per version and the
-  post-deploy ``shared_parse_backlog`` per repo).
+  post-deploy ``shared_parse_backlog`` per repo; additive under ``/3`` per
+  version: ``child_orphans_deferred``).
 - F36: ONE plain run heals Module nodes whose path is not the registry winner
   (F15 posbox stub, F7 untracked ``.odoo-ai`` copy) or that name a stale repo;
   two co-owners of one module never re-write each other every night.
@@ -605,6 +606,10 @@ def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch
         "errors": dict, "prune_rewrites": list, "shared_prunes": list,
         "shared_prune_waiting": dict, "shared_prune_rewrites": dict,
         "orphans_unparseable": list, "excluded_owner_waiting": dict,
+        # PR #379 review (additive under /3): module-less names whose children
+        # wait for an unsynced repo. It feeds an existing finding counter, so
+        # the timer must see the key.
+        "child_orphans_deferred": list,
     }
     ver = _version_entry(report)
     for key, typ in ver_keys.items():

@@ -104,8 +104,11 @@ class ReconcileReport:
     ``blocked`` maps a pending name to the reason it was not evaluated (a repo
     gate trip, ``no_retire``);
     ``orphans_deferred`` maps an orphan Module to the unsynced profiles that
-    still claim it. ``modules_deleted`` / ``children_deleted`` count the Neo4j
-    nodes the cascade removed (0 in a dry run). ``gates_tripped`` holds
+    still claim it; ``child_orphans_deferred`` lists the module-less names
+    whose children the sweep keeps because some repo at the version is not
+    synced (children carry no profile, so any unsynced repo holds them).
+    ``modules_deleted`` / ``children_deleted`` count the Neo4j nodes the
+    cascade removed (0 in a dry run). ``gates_tripped`` holds
     ``orphan_sweep:<gate>`` when the sweep was stopped by G-B.
     ``needs_attention`` is what makes the CLI exit 3.
 
@@ -129,6 +132,7 @@ class ReconcileReport:
     orphans_swept: list[str] = field(default_factory=list)
     orphans_deferred: dict[str, list[str]] = field(default_factory=dict)
     child_orphans_swept: list[str] = field(default_factory=list)
+    child_orphans_deferred: list[str] = field(default_factory=list)
     embedding_orphans: list[tuple[str, str, int]] = field(default_factory=list)
     embeddings_deleted: int = 0
     modules_deleted: int = 0
@@ -1091,12 +1095,20 @@ class _Reconciler:
                         f"{r['profile_name']} kept until this repo is synced",
                     )
 
-        child_names: list[str] = []
-        if all_synced:
-            child_names = [
-                n for n in self.writer.orphan_child_keys(self.v)
-                if n not in present and n not in set(orphans) and n not in unparseable
-            ]
+        orphan_set = set(orphans)
+        child_keys = [
+            n for n in self.writer.orphan_child_keys(self.v)
+            if n not in present and n not in orphan_set and n not in unparseable
+        ]
+        child_names: list[str] = child_keys if all_synced else []
+        if not all_synced and child_keys:
+            self.report.child_orphans_deferred = sorted(child_keys)
+            for r in blocking:
+                self._attend(
+                    r["repo_id"],
+                    f"orphan sweep at {self.v}: the children of {len(child_keys)} "
+                    f"module-less name(s) kept until every repo at this version is synced",
+                )
 
         # Nodes of modules the ledger positively saw become installable False /
         # license-skipped are removals by design, not a mass event (real case:
@@ -1501,10 +1513,12 @@ def reconcile_version(
         setattr(report, key, sorted(set(getattr(report, key))))
     _logger.info(
         "reconcile %s: retired %d, owner dropped %d, undecidable %d, blocked %d, "
-        "orphans swept %d (deferred %d), child orphans %d, embedding orphan groups %d%s",
+        "orphans swept %d (deferred %d), child orphans %d (deferred %d), "
+        "embedding orphan groups %d%s",
         odoo_version, len(report.retired), len(report.owner_dropped),
         len(report.undecidable), len(report.blocked), len(report.orphans_swept),
         len(report.orphans_deferred), len(report.child_orphans_swept),
+        len(report.child_orphans_deferred),
         len(report.embedding_orphans),
         " (dry run)" if dry_run else ("" if retire else " (--no-retire)"),
     )
