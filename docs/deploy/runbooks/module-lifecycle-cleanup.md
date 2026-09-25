@@ -66,6 +66,9 @@ manifests; modules indexed from untracked copies (a local `.odoo-ai/` folder, a 
 become orphans or get their path re-written. Count them per clone:
 
 ```bash
+# comm needs both lists sorted in the same collation; under en_US.UTF-8 sort and
+# comm disagree on '_' / '/' and comm aborts with "file is not in sorted order".
+export LC_ALL=C
 psql "$PG_DSN" -Atc "SELECT local_path FROM repos WHERE local_path IS NOT NULL ORDER BY 1" |
 while read -r p; do
   [ -d "$p/.git" ] || { echo "no checkout: $p"; continue; }
@@ -205,7 +208,8 @@ jq .findings ~/osm-rollout/lifecycle-preview.json
   step 5 decides. Totals per version, for the rollout record:
 
   ```bash
-  jq -r '.versions[] | "\(.odoo_version) groups=\(.embedding_orphans | length) rows=\([.embedding_orphans[].rows] | add // 0)"' \
+  # groups/rows: deleted by the first run; held_*: kept by gate G-B (step 5 decides)
+  jq -r '.versions[] | "\(.odoo_version) groups=\(.embedding_orphans | length) rows=\([.embedding_orphans[].rows] | add // 0) held_groups=\((.embedding_orphans_held // []) | length) held_rows=\([(.embedding_orphans_held // [])[].rows] | add // 0)"' \
      ~/osm-rollout/lifecycle-preview.json
   # the GUC lifts the tenant RLS policy (FORCEd after ops/rls_cutover.sh) for this session
   psql "$PG_DSN" -At -c "SET app.allowed_profiles = '*'" \
@@ -253,6 +257,15 @@ echo "exit=$?"
 
 Before it, repeat the step 0c check (no line).
 
+**Shared GPU embedder (M1):** the shared-module bootstrap re-parses up to
+`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` modules (default 60) per repo per run, and each re-parsed
+module is written and embedded again. On a host whose GPU embedder shares its card with another
+model or workload, set
+`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` in the indexer unit's environment for the first week, so
+the nightly run's extra embed load stays small while the backlog drains (about three times as
+many runs); restore the default (remove the override) once `shared_parse_backlog` in
+`lifecycle-audit` is 0. The code default is unchanged.
+
 - `exit=0` - every decision was taken.
 - `exit=1` - a repo or profile failed to index (the traceback ends with `N repo(s) failed: id=...`
   or `N profile(s) failed: ...`); every other repo was still indexed and reconciled. The
@@ -260,7 +273,9 @@ Before it, repeat the step 0c check (no line).
   repos, act on them as for exit 3. A missing checkout is fixed per step 0c; any other repo
   error is in `repos.error_msg`. Fix it and run again: step 6 cannot pass while a repo fails.
 - `exit=3` - the index was written, something was held. Read the stderr tail
-  (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` lines)
+  (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` lines,
+  plus `embedding_orphans_held: <v>: N group(s) of profile(s) ...` when gate G-B held the
+  embedding sweep)
   and `repos.lifecycle_attention`, then act per the exit-code-3 table in `docs/deploy.md` s3.6.
   A held sweep or retirement keeps the data; nothing is lost by waiting.
 
