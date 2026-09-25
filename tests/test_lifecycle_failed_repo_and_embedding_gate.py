@@ -14,7 +14,8 @@ Business rules protected here:
   lifecycle outcome and reach stderr of ``index-repo``.
 - ``index-repo --all`` exits 1 whenever a repo or profile failed, whatever
   ``--profile-workers`` is (a failed run outranks exit 3, never reads as 0/3),
-  still prints the "Lifecycle needs attention" lines.
+  still prints the "Lifecycle needs attention" lines and marks the job error
+  (``test_index_repo_marks_the_job_of_a_failed_run_as_error``).
 - A registered repo with no checkout holds its profile's orphans and the
   module-less children of the version (fail-safe), but never silently: the
   unsynced repo carries attention, ``lifecycle-audit`` lists the held names in
@@ -41,7 +42,7 @@ import pytest
 
 from src.constants import GLOBAL_PROFILE
 from src.db.migrate import _vector_extension_available, run_migrations
-from src.db.pg import repo_store
+from src.db.pg import job_store, repo_store
 from src.indexer.embedder import FakeEmbedder
 from src.indexer.pipeline import index_all
 from tests._lifecycle_repo import (
@@ -278,6 +279,22 @@ def test_index_repo_all_exits_1_on_a_failed_profile_and_still_prints_the_attenti
     ]
     assert gate_lines and "total_wipe" in gate_lines[0], err
     assert _synced(pg, s["rid_healthy"], s["healthy"])
+
+
+def test_index_repo_marks_the_job_of_a_failed_run_as_error(
+    pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
+):
+    """The Web UI polls indexer_jobs: a run with a failed profile must leave its
+    job in ``error``, never ``queued``/``running``/``done``."""
+    _failed_profile_night(tmp_path, pg)
+    job_id = job_store().create_job("all")
+
+    code, _, err = _cli(
+        monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--all", "--job-id", str(job_id),
+    )
+
+    assert code == 1, err
+    assert job_store().get_job(job_id)["status"] == "error"
 
 
 def test_index_repo_profile_exits_1_on_a_failed_repo_and_prints_its_healthy_repos_gate(

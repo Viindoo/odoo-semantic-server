@@ -21,6 +21,58 @@ def _serialize_datetimes(row: dict) -> dict:
     return row
 
 
+def update_job(
+    conn,
+    job_id: int,
+    *,
+    status: str | None = None,
+    pid: int | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    error_msg: str | None = None,
+) -> None:
+    """Partial update of one indexer_jobs row on *conn* - only non-None fields
+    are written. The caller owns the transaction (the indexer CLI passes its
+    autocommit connection; :meth:`JobStore.update_job` commits a pool one).
+
+    Raises ValueError if job_id does not exist or status is not a valid value.
+    """
+    if status is not None and status not in _VALID_STATUSES:
+        raise ValueError(
+            f"Invalid status {status!r}. Must be one of: {sorted(_VALID_STATUSES)}"
+        )
+
+    col_values: list[tuple[str, object]] = []
+    if status is not None:
+        col_values.append(("status", status))
+    if pid is not None:
+        col_values.append(("pid", pid))
+    if started_at is not None:
+        col_values.append(("started_at", started_at))
+    if finished_at is not None:
+        col_values.append(("finished_at", finished_at))
+    if error_msg is not None:
+        col_values.append(("error_msg", error_msg))
+
+    if not col_values:
+        return  # nothing to update
+
+    # Build safe SQL using psycopg2.sql.Identifier (escapes column names properly)
+    col_names = [cv[0] for cv in col_values]
+    values = [cv[1] for cv in col_values] + [job_id]
+
+    sql_obj = pgsql.SQL("UPDATE indexer_jobs SET {fields} WHERE id = %s").format(
+        fields=pgsql.SQL(", ").join(
+            pgsql.SQL("{col} = %s").format(col=pgsql.Identifier(c))
+            for c in col_names
+        )
+    )
+    with conn.cursor() as cur:
+        cur.execute(sql_obj, values)
+        if cur.rowcount == 0:
+            raise ValueError(f"Job {job_id} not found")
+
+
 class JobStore:
     """Encapsulates all CRUD for the indexer_jobs table."""
 
@@ -71,48 +123,16 @@ class JobStore:
         finished_at: datetime | None = None,
         error_msg: str | None = None,
     ) -> None:
-        """Partial update — only non-None fields are written.
-
-        Raises ValueError if job_id does not exist (rowcount == 0 after UPDATE).
-        Raises ValueError if status is not a valid value.
-        """
-        if status is not None and status not in _VALID_STATUSES:
-            raise ValueError(
-                f"Invalid status {status!r}. Must be one of: {sorted(_VALID_STATUSES)}"
-            )
-
-        col_values: list[tuple[str, object]] = []
-        if status is not None:
-            col_values.append(("status", status))
-        if pid is not None:
-            col_values.append(("pid", pid))
-        if started_at is not None:
-            col_values.append(("started_at", started_at))
-        if finished_at is not None:
-            col_values.append(("finished_at", finished_at))
-        if error_msg is not None:
-            col_values.append(("error_msg", error_msg))
-
-        if not col_values:
-            return  # nothing to update
-
-        # Build safe SQL using psycopg2.sql.Identifier (escapes column names properly)
-        col_names = [cv[0] for cv in col_values]
-        values = [cv[1] for cv in col_values] + [job_id]
-
-        sql_obj = pgsql.SQL("UPDATE indexer_jobs SET {fields} WHERE id = %s").format(
-            fields=pgsql.SQL(", ").join(
-                pgsql.SQL("{col} = %s").format(col=pgsql.Identifier(c))
-                for c in col_names
-            )
-        )
-
+        """Partial update on a pool connection; see :func:`update_job`."""
         with self._pool.checkout() as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql_obj, values)
-                if cur.rowcount == 0:
-                    conn.rollback()
-                    raise ValueError(f"Job {job_id} not found")
+            try:
+                update_job(
+                    conn, job_id, status=status, pid=pid, started_at=started_at,
+                    finished_at=finished_at, error_msg=error_msg,
+                )
+            except ValueError:
+                conn.rollback()
+                raise
             conn.commit()
 
     def list_running_jobs(self) -> list[dict]:
