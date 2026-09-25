@@ -199,3 +199,20 @@ class TestMarkDeadJobs:
 
         assert job_store().mark_dead_jobs() == 1
         assert job_store().get_job(job)["status"] == "error"
+
+    def test_running_job_started_before_the_last_boot_expires(self, pg_jobs_conn):
+        """A live pid that cannot be the job's process (the job started before
+        the machine booted: pid reused) no longer keeps the job running."""
+        import os
+        from datetime import timedelta
+
+        job = job_store().create_job("odoo17")
+        job_store().update_job(
+            job, status="running", pid=os.getpid(),
+            started_at=datetime.now(tz=UTC) - timedelta(days=3650),
+        )
+
+        assert job_store().mark_dead_jobs() == 1
+        row = job_store().get_job(job)
+        assert row["status"] == "error"
+        assert "boot" in row["error_msg"]

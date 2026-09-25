@@ -184,8 +184,9 @@ async def job_status(request: Request, job_id: int):
 @router.post("/{job_id}/reset")
 @audit_action("jobs.reset", target_param="job_id")
 async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends(require_admin)):
-    """Force-mark a stuck running or queued job as error when its PID is dead
-    (or it has none: a queued job whose child never started, #381 F1)."""
+    """Force-mark a stuck running or queued job as error when its process is
+    gone (:func:`src.db.job_registry.job_staleness`: dead or reused pid, never
+    started past the TTL) or it has no pid (#381)."""
     try:
         from src.db.pg import job_store
 
@@ -202,9 +203,13 @@ async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends
                 status_code=409,
             )
         else:
+            # Same rule as the start-up sweep (job_staleness, #381).
+            from src.db.job_registry import job_staleness
+
             pid = job.get("pid")
-            if pid is not None and _is_pid_alive(pid):
-                error_msg = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
+            reason = job_staleness(job)
+            if reason is None and pid is not None:
+                error_msg = f"Job {job_id} process (PID {pid}) is still alive - cannot reset."
                 return JSONResponse(
                     _json_safe({"error": error_msg}),
                     status_code=409,
@@ -214,7 +219,7 @@ async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends
                     job_id,
                     status="error",
                     finished_at=_dt.datetime.now(_dt.UTC),
-                    error_msg="Reset by admin (process not found)",
+                    error_msg=f"Reset by admin: {reason or 'process not found'}",
                 )
                 msg = f"Job {job_id} has been reset to error state."
                 return JSONResponse(
