@@ -856,6 +856,13 @@ psql "$PG_DSN" -c "SELECT id, url, branch, lifecycle_attention_at, lifecycle_att
 | `entity prune of M@v skipped: parse degraded` | file của M không đọc/parse được | sửa file; module được re-parse khi file đổi (lỗi đọc tạm thời: tự thử lại một lần) |
 | `errors: ...` (vd `LifecycleLockTimeout`) | reconcile không lấy được lock `retire:<v>` trong `RETIRE_LOCK_WAIT_SECONDS` hoặc lỗi Neo4j/PG | xem traceback trong log; lượt chạy kế tự làm lại, tên vẫn `retire_pending` |
 
+**Exit 1 (một repo hoặc profile index lỗi)** vượt exit 3: các repo còn lại vẫn được index và
+reconcile, các dòng `Lifecycle needs attention (exit 1):` (nếu có) là kết quả vòng đời của chúng,
+xử lý như exit 3. Repo đăng ký mà không có checkout (`local_path does not exist`) làm mọi lượt
+chạy exit 1 và giữ orphan của profile nó cùng children module-less của cả version cho tới khi
+clone lại (`python -m src.cloner --repo-id <id>` qua `osm-fernet-run`) hoặc gỡ đăng ký repo -
+xem bước 0c của runbook rollout.
+
 Không có gì bị xóa trong mọi trường hợp trên: dữ liệu được giữ lại cho tới khi lượt chạy sạch
 kế tiếp (hoặc lượt `--allow-mass-retire` có người quyết) xử lý.
 

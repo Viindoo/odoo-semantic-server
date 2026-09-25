@@ -83,7 +83,33 @@ Expected: 0 everywhere. A large number in one clone means many orphan modules at
 if they are more than half of the version's modules (and at least 20), the sweep gate holds
 them in step 4 (exit 3) until a one-shot `--allow-mass-retire` (step 5).
 
-**0c. Baseline probes (for the before/after record).** With an MCP key, capture
+**0c. Registered repos without a checkout (blocks steps 4, 6 and 7).** A registered repo whose
+`local_path` is not a directory fails its index run every night (`FileNotFoundError: local_path
+does not exist`), so `index-repo` exits **1**, not 0 or 3. The run still indexes and reconciles
+every other repo, but that repo never syncs, so at its version the sweep keeps every orphan
+Module of its profile and the children of every module-less name (attention on that repo, audit
+findings `orphan_modules` / `child_orphans`). Step 6 "findings 0" and step 7 "exit=0" cannot pass
+until it is fixed. List them:
+
+```bash
+psql "$PG_DSN" -Atc "SELECT r.id, p.name, r.url, r.branch, r.local_path, r.clone_status
+                     FROM repos r JOIN profiles p ON p.id = r.profile_id ORDER BY r.id" |
+while IFS='|' read -r id prof url branch path cs; do
+  sudo -u odoo-semantic test -d "$path" || echo "MISSING checkout: repo id=$id profile=$prof $url@$branch path=$path clone_status=$cs"
+done
+```
+
+Expected: no line. Fix every listed repo BEFORE step 1, one of:
+- still wanted: clone it again, `sudo osm-fernet-run $PY -m src.cloner --repo-id <id>` (clones
+  into the default clone dir and writes `local_path`; works whatever `clone_status` says, while the
+  Web UI "clone all" (`POST /profiles/{id}/clone-all`) only picks repos in `manual` / `pending` /
+  `error` and skips one still marked `cloned`);
+- no longer wanted: delete the repo registration in the Web UI (the delete reconciles its
+  modules through the ledger).
+
+Re-run the check until it prints nothing, and record what was done in the rollout record.
+
+**0d. Baseline probes (for the before/after record).** With an MCP key, capture
 `check_module_exists` for the known ghosts above and one live module per version, and
 `describe_module(name='viin_ai_rag', odoo_version='17.0')`.
 
@@ -163,7 +189,9 @@ Review, per version:
   branch version - trips `mass_retire`, stays unsynced, and the sweep keeps every orphan of its
   profile (exit 3 + `lifecycle_attention`). Normal ghost cleanup of the other repos proceeds.
 - `undecidable`, `unsynced_repos` - repos that must sync before a name can be decided; a
-  registered repo with no checkout (`not_cloned`) keeps its profile's orphans.
+  registered repo with no checkout (`not_cloned`, unsynced `why` = `no checkout`) keeps its
+  profile's orphans and, version-wide, the module-less children (`child_orphans_deferred`):
+  go back to step 0c.
 - `modules_without_profile` - the F24 list from step 0a.
 - `would_rewrite` - nodes the first run re-writes (posbox stub path, `.odoo-ai` copies, lost
   profile). Expected on a pre-ledger graph.
@@ -180,7 +208,14 @@ sudo osm-fernet-run $PY -m src.indexer index-repo --all --profile-workers 2
 echo "exit=$?"
 ```
 
+Before it, repeat the step 0c check (no line).
+
 - `exit=0` - every decision was taken.
+- `exit=1` - a repo or profile failed to index (the traceback ends with `N repo(s) failed: id=...`
+  or `N profile(s) failed: ...`); every other repo was still indexed and reconciled. The
+  `Lifecycle needs attention (exit 1):` lines, if any, are the lifecycle outcome of the healthy
+  repos, act on them as for exit 3. A missing checkout is fixed per step 0c; any other repo
+  error is in `repos.error_msg`. Fix it and run again: step 6 cannot pass while a repo fails.
 - `exit=3` - the index was written, something was held. Read the stderr tail
   (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` lines)
   and `repos.lifecycle_attention`, then act per the exit-code-3 table in `docs/deploy.md` s3.6.
@@ -215,7 +250,7 @@ psql "$PG_DSN" -c "SELECT odoo_version, name, retire_reason, removing_commit_sha
                    ORDER BY odoo_version, name;"
 ```
 
-MCP probes (compare with step 0c):
+MCP probes (compare with step 0d):
 - `check_module_exists(name='test_pylint', odoo_version='17.0')` -> `Indexed: No`, a lifecycle
   block with the removing commit subject and `Renamed to: test_viin_pylint`, and a
   `Next: check_module_exists(name='test_viin_pylint', ...)` line.

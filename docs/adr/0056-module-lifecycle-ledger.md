@@ -475,8 +475,13 @@ the new columns are inert to it); a wrongly retired module comes back with
 - First deploy: shared-module residue drains over ~11 daily runs per CE clone
   (D10 budget); a repo whose parse of a shared copy stays untrusted keeps its
   module out of the shared prune.
-- A never-cloned repo keeps its profile's pre-ledger orphans (attention, audit
-  finding `orphan_modules`, not exit 3).
+- A registered repo with no checkout on disk (never cloned, or its directory
+  removed) fails its index run: `index-repo` exits 1 while every other repo is
+  still indexed and reconciled. Until it is cloned or unregistered it keeps its
+  profile's pre-ledger orphans and, at its version, the children of every
+  module-less name (children carry no profile to attribute them by): attention
+  on that repo, audit findings `orphan_modules` / `child_orphans`
+  (`child_orphans_deferred`).
 - Multi-owner Module node properties (`version_mismatch`, `version_raw`,
   `last_seen_sha`) are the last stamping repo's; the per-repo truth is the
   ledger row.

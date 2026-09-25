@@ -553,6 +553,7 @@ def _audit_version(
             for name in orphans
         ],
         "child_orphans": report.child_orphan_candidates,
+        "child_orphans_deferred": report.child_orphans_deferred,
         "embedding_orphans": [
             {"module": m, "profile": p, "rows": n} for m, p, n in report.embedding_orphans
         ],
@@ -596,6 +597,7 @@ def _findings(repos: list[dict], versions: list[dict]) -> dict[str, int]:
         counts["shared_prunes"] += len(v["shared_prunes"])
         counts["orphan_modules"] += len(v["orphan_modules"])
         counts["child_orphans"] += len(v["child_orphans"])
+        counts["child_orphans"] += len(v.get("child_orphans_deferred") or [])
         counts["embedding_orphans"] += len(v["embedding_orphans"])
         counts["modules_without_profile"] += len(v["modules_without_profile"])
         counts["errors"] += len(v["errors"])
@@ -909,6 +911,11 @@ def render_text(report: dict) -> str:
             lines.append(f"  orphan module: {item['name']} ({how}{proof})")
         if v["child_orphans"]:
             lines.append(f"  module-less children of: {', '.join(v['child_orphans'])}")
+        if v.get("child_orphans_deferred"):
+            lines.append(
+                "  module-less children kept until every repo at this version is synced: "
+                + ", ".join(v["child_orphans_deferred"])
+            )
         for item in v["embedding_orphans"]:
             lines.append(
                 f"  embedding orphans: {item['module']} / {item['profile']} ({item['rows']} rows)"

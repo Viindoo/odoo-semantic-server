@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A failed repo or profile keeps the lifecycle outcome of the healthy ones
-(PR #379 review, ADR-0056).
+"""A failed repo or profile keeps the lifecycle outcome of the healthy ones and a
+missing checkout never holds a version's cleanup silently (PR #379 review,
+ADR-0056).
 
 Business rules protected here:
 
@@ -14,12 +15,19 @@ Business rules protected here:
 - ``index-repo --all`` exits 1 whenever a repo or profile failed, whatever
   ``--profile-workers`` is (a failed run outranks exit 3, never reads as 0/3),
   still prints the "Lifecycle needs attention" lines.
+- A registered repo with no checkout holds its profile's orphans and the
+  module-less children of the version (fail-safe), but never silently: the
+  unsynced repo carries attention, ``lifecycle-audit`` lists the held names in
+  ``child_orphans_deferred`` and counts them in ``findings.child_orphans``
+  (``--fail-on-findings`` exits 4). Once the repo is cloned and synced, the
+  next run sweeps those children.
 
 Every test drives the real ``index_profile`` / ``index_all`` / CLI ``main`` over
 temp git repos with a bare origin, against real Neo4j and PostgreSQL + pgvector.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -33,10 +41,12 @@ from tests._lifecycle_repo import (
     V,
     assert_gone,
     assert_live,
+    children,
     lc,
     ledger,
     register,
     repo_row,
+    run,
     write_module,
 )
 
@@ -100,8 +110,33 @@ def _cli(monkeypatch, capsys, dsn: str, *argv: str) -> tuple[int, str, str]:
     return code, out.out, out.err
 
 
+def _audit(monkeypatch, capsys, dsn: str, *argv: str) -> tuple[int, dict]:
+    code, out, err = _cli(monkeypatch, capsys, dsn, "lifecycle-audit", *argv, "--json")
+    assert out.strip(), err
+    return code, json.loads(out)
+
+
+def _version_entry(report: dict) -> dict:
+    [entry] = [v for v in report["versions"] if v["odoo_version"] == V]
+    return entry
+
+
+def _attention(pg_conn, rid: int) -> str:
+    return repo_row(pg_conn, rid).get("lifecycle_attention") or ""
+
+
 def _synced(pg_conn, rid: int, repo: GitRepo) -> bool:
     return repo_row(pg_conn, rid)["presence_head_sha"] == repo.head()
+
+
+def _add_module_less_child(driver, module: str) -> None:
+    """A Model the index attributes to *module*, which has no Module node (the
+    shape a vanished repo leaves behind)."""
+    with driver.session() as s:
+        s.run(
+            "CREATE (:Model {name: $m, module: $mod, odoo_version: $v})",
+            m=f"x_{module}.thing", mod=module, v=V,
+        ).consume()
 
 
 # ---------------------------------------------------------------------------
@@ -230,3 +265,61 @@ def test_index_repo_profile_exits_1_on_a_failed_repo_and_prints_its_healthy_repo
     ), err
     assert _synced(pg, s["rid_healthy"], s["healthy"])
     assert_gone(neo4j_driver, pg, "healthy_drop")
+
+
+# ---------------------------------------------------------------------------
+# e89ae75b - a missing checkout holds the version's module-less children, loudly
+# ---------------------------------------------------------------------------
+
+def test_missing_checkout_holds_module_less_children_with_attention_and_an_audit_finding(
+    pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
+):
+    """A registered repo without a clone dir: the other repo's removed module
+    still retires, the version's module-less children are kept (fail-safe), the
+    unsynced repo names the hold, and lifecycle-audit reports the held name
+    (``child_orphans_deferred``, a ``child_orphans`` finding, exit 4). After the
+    repo is cloned the next run syncs it and sweeps the children."""
+    monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
+    healthy = GitRepo(tmp_path, "healthy_addons")
+    write_module(healthy, "healthy_keep")
+    write_module(healthy, "healthy_drop")
+    healthy.commit("add")
+    (rid_healthy,) = register("live_99", healthy)
+    run(pg, "live_99")
+    rid_missing = _register_missing_checkout("late_99", tmp_path, "late_addons")
+    _add_module_less_child(neo4j_driver, "gone_mod")
+    healthy.rm("healthy_drop")
+    healthy.commit("[REM] healthy_drop")
+
+    summary, _exc = _index_all(pg, 1)
+
+    assert summary["profiles_failed"] == ["late_99"], summary
+    assert_gone(neo4j_driver, pg, "healthy_drop")
+    assert children(neo4j_driver, "gone_mod") == 1, "the hold keeps the module-less child"
+    attention = _attention(pg, rid_missing)
+    assert "module-less" in attention and "synced" in attention, (
+        f"the unsynced repo does not name the version-wide hold: {attention!r}"
+    )
+
+    code, report = _audit(monkeypatch, capsys, _ephemeral_pg_db, "--all", "--fail-on-findings")
+    ver = _version_entry(report)
+    assert ver.get("child_orphans_deferred") == ["gone_mod"], ver
+    assert report["findings"]["child_orphans"] == 1, report["findings"]
+    assert code == 4
+
+    # Clone the repo at its registered path; the next run syncs it and sweeps.
+    late = GitRepo(tmp_path, "late_addons")
+    write_module(late, "late_mod")
+    late.commit("add")
+    assert repo_row(pg, rid_missing)["url"] == late.url
+
+    summary, exc = _index_all(pg, 1)
+
+    assert exc is None and summary["profiles_failed"] == [], (exc, summary)
+    assert _synced(pg, rid_missing, late)
+    assert children(neo4j_driver, "gone_mod") == 0, "once every repo is synced the children go"
+    assert "module-less" not in _attention(pg, rid_missing)
+    _, report = _audit(monkeypatch, capsys, _ephemeral_pg_db, "--all")
+    assert _version_entry(report).get("child_orphans_deferred") == []
+    assert report["findings"]["child_orphans"] == 0
+    assert _synced(pg, rid_healthy, healthy)
