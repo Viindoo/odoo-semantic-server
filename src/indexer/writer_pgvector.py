@@ -942,32 +942,16 @@ def shared_module_stale_embeddings(
     return n
 
 
-def orphan_embedding_keys(
-    conn,
-    version: str,
-    live: Iterable[tuple[str, str]],
-) -> list[tuple[str, str, int]]:
-    """Embedding groups at *version* that no live owner accounts for (M6).
-
-    *live* is the set of ``(module, profile_name)`` pairs that may keep
-    embeddings: every live Module's ``profile`` entries plus the ledger's
-    present rows. Returns ``[(module, profile_name, row_count), ...]`` sorted
-    by module then profile for every group NOT in *live*. Catalogue rows
-    (``profile_name = GLOBAL_PROFILE``) are never reported. Read-only; delete
-    a reported group with :func:`delete_module_embeddings`. Reads with the
-    unrestricted RLS scope (:func:`_write_scope`): a tenant-scoped view would
-    report no orphans at all.
-    """
-    live_set = {(m, p) for m, p in live}
-    return [g for g in embedding_groups(conn, version) if (g[0], g[1]) not in live_set]
-
-
 def embedding_groups(conn, version: str) -> list[tuple[str, str, int]]:
     """Every ``(module, profile_name, row_count)`` embedding group at *version*.
 
     Catalogue rows (``profile_name = GLOBAL_PROFILE``) are left out; sorted by
-    module then profile. Read-only, unrestricted RLS scope like
-    :func:`orphan_embedding_keys` (the baseline of the embedding sweep gate).
+    module then profile. Read-only; the reconcile's orphan embedding sweep
+    subtracts the live ``(module, profile)`` owners from it and judges the
+    rest (and its size, the baseline of the embedding sweep gate). Reads with
+    the unrestricted RLS scope (:func:`_write_scope`): a tenant-scoped view
+    would see no orphans at all. Delete a group with
+    :func:`delete_module_embeddings`.
     """
     with _write_scope(conn), conn.cursor() as cur:
         cur.execute(
