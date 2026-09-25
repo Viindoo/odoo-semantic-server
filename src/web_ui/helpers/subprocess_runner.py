@@ -5,13 +5,17 @@ Extracted from src/web_ui/routes/repos.py to be reused by W3-W8 routes
 that all need the same pattern: create indexer_jobs row, spawn detached
 subprocess with --job-id, return job_id for status polling.
 """
+import logging
 import subprocess
 import sys
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 from src.db.pg import job_store
+
+_logger = logging.getLogger(__name__)
 
 
 def spawn_indexer_subcommand(
@@ -33,20 +37,58 @@ def spawn_indexer_subcommand(
 
     Returns:
         The new job_id (also passed as --job-id to the subprocess).
+
+    Raises:
+        ValueError: the subcommand does not declare ``--job-id`` (no job row
+            is created and nothing is spawned).
+        Exception: the log file or the spawn failed; the job row is marked
+            'error' with the reason first, then the error is re-raised.
     """
+    # The child reports running / done / error through --job-id; a subcommand
+    # that does not declare it would die on argparse exit 2 and leave its job
+    # queued forever (#381 F2). Refuse before any job row exists.
+    from src.indexer.__main__ import subcommand_accepts_job_id  # noqa: PLC0415
+
+    subcommand = subcommand_argv[0] if subcommand_argv else ""
+    if not subcommand_accepts_job_id(subcommand):
+        raise ValueError(
+            f"indexer subcommand {subcommand!r} does not accept --job-id: "
+            "a Web UI job could never leave 'queued'"
+        )
     job_id = job_store().create_job(job_label)
     argv = [sys.executable, "-m", "src.indexer", *subcommand_argv, "--job-id", str(job_id)]
 
     # Capture subprocess output to /tmp/osm-job-{job_id}.log.
     # Popen dup2()s the fd into the child — parent can close its copy right after.
     log_path = Path(tempfile.gettempdir()) / f"osm-job-{job_id}.log"
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            argv,
-            start_new_session=True,
-            stdout=log_file,
-            stderr=log_file,
-        )
+    try:
+        with open(log_path, "w") as log_file:
+            proc = subprocess.Popen(
+                argv,
+                start_new_session=True,
+                stdout=log_file,
+                stderr=log_file,
+            )
+    except Exception as exc:
+        # Nothing started: the job must not stay 'queued' (#381).
+        try:
+            job_store().update_job(
+                job_id,
+                status="error",
+                finished_at=datetime.now(UTC),
+                error_msg=f"Spawn failed: {type(exc).__name__}: {exc}"[:1000],
+            )
+        except Exception as update_exc:  # noqa: BLE001 - re-raise the spawn error
+            _logger.warning(
+                "index job %s: recording spawn failure failed: %s", job_id, update_exc,
+            )
+        raise
+    # Record the child's pid now: a child that dies before its own 'running'
+    # report still leaves a pid the start-up sweep can check (#381 F1).
+    try:
+        job_store().update_job(job_id, pid=proc.pid)
+    except Exception as exc:  # noqa: BLE001 - the run itself is started
+        _logger.warning("index job %s: recording pid %s failed: %s", job_id, proc.pid, exc)
     # Reap the child when it exits so it doesn't linger as a zombie.
     # Without this, the web server (parent) never calls wait() and the process
     # stays in Z (zombie) state indefinitely after the indexer finishes.

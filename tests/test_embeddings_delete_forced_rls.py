@@ -12,7 +12,7 @@ role with FORCE ROW LEVEL SECURITY on:
 
 * ``delete_module_embeddings`` removes exactly the rows of the given profiles
   (other profiles, other modules and the global catalogue stay).
-* ``orphan_embedding_keys`` sees every profile's groups.
+* ``embedding_groups`` (the orphan embedding sweep's read) sees every profile's groups.
 * A delete that removes fewer rows than a prior read reported logs a WARNING.
 * The unrestricted scope is transaction-local: it is gone after the call.
 """
@@ -139,10 +139,10 @@ def test_retiring_embeddings_under_forced_rls_deletes_exactly_the_given_profiles
 
 
 def test_orphan_scan_under_forced_rls_sees_every_profile(owner_conn):
-    from src.indexer.writer_pgvector import orphan_embedding_keys
+    from src.indexer.writer_pgvector import embedding_groups
 
-    assert orphan_embedding_keys(owner_conn, V, [("viin_ai", "viindoo_99")]) == [
-        (RAG, "tvtma_99", 1), (RAG, "viindoo_99", 2),
+    assert embedding_groups(owner_conn, V) == [
+        ("viin_ai", "viindoo_99", 1), (RAG, "tvtma_99", 1), (RAG, "viindoo_99", 2),
     ]
 
 
@@ -168,10 +168,10 @@ def test_a_complete_delete_is_not_reported(owner_conn, caplog):
 
 def test_the_unrestricted_scope_does_not_outlive_the_call(owner_conn):
     # GUARD: safety bound of the fix (before it no scope was ever set).
-    from src.indexer.writer_pgvector import delete_module_embeddings, orphan_embedding_keys
+    from src.indexer.writer_pgvector import delete_module_embeddings, embedding_groups
 
     delete_module_embeddings(owner_conn, RAG, V, ["viindoo_99"])
-    orphan_embedding_keys(owner_conn, V, [])
+    embedding_groups(owner_conn, V)
     with owner_conn.cursor() as cur:
         cur.execute("SELECT coalesce(current_setting('app.allowed_profiles', true), '')")
         assert cur.fetchone()[0] == ""

@@ -6,8 +6,9 @@ Business rules protected:
 * Retiring a module deletes its pgvector embeddings for the retiring profiles
   ONLY: another tenant's chunks for the same module name, other modules, other
   versions and the global pattern catalogue survive (M6, ADR-0034).
-* ``orphan_embedding_keys`` reports embedding groups no live owner accounts for,
-  never the global catalogue.
+* ``embedding_groups`` (what the reconcile's orphan embedding sweep judges)
+  lists every tenant group at the version, never another version's or the
+  global catalogue.
 * M4: after a module moves from repo A (profile A) to repo B (profile B),
   ``drop_module_owner`` makes the module's models and fields visible to a tenant
   scoped ONLY to B through the real read-side scope predicate, and A's tenant no
@@ -111,19 +112,16 @@ def test_retiring_embeddings_never_touches_the_global_catalogue(emb):
     assert (RAG, V, "viindoo_99") in rows
 
 
-def test_orphan_embedding_keys_reports_unowned_groups_only(emb):
-    """Groups at the version with no live (module, profile) owner are reported,
-    sorted by module then profile; live groups, other versions and the global
-    catalogue are not."""
-    from src.indexer.writer_pgvector import orphan_embedding_keys
+def test_embedding_groups_lists_every_tenant_group_at_the_version_only(emb):
+    """Every (module, profile) group at the version with its row count, sorted
+    by module then profile; other versions and the global catalogue are not
+    listed (the reconcile subtracts the live owners from this list)."""
+    from src.indexer.writer_pgvector import embedding_groups
 
-    live = [("viin_ai", "viindoo_99"), (RAG, "viindoo_99")]
-
-    assert orphan_embedding_keys(emb, V, live) == [(RAG, "tvtma_99", 1)]
-    assert orphan_embedding_keys(emb, V, live + [(RAG, "tvtma_99")]) == []
-    assert orphan_embedding_keys(emb, V, []) == [
+    assert embedding_groups(emb, V) == [
         ("viin_ai", "viindoo_99", 1), (RAG, "tvtma_99", 1), (RAG, "viindoo_99", 1),
     ]
+    assert embedding_groups(emb, "98.0") == [(RAG, "viindoo_98", 1)]
 
 
 # ---------------------------------------------------------------------------

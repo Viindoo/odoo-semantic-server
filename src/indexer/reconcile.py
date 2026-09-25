@@ -138,6 +138,11 @@ class ReconcileReport:
     child_orphans_deferred: list[str] = field(default_factory=list)
     embedding_orphans: list[tuple[str, str, int]] = field(default_factory=list)
     embedding_orphans_held: list[tuple[str, str, int]] = field(default_factory=list)
+    # The profile whose one-shot ``index-repo --profile <p> --allow-mass-retire``
+    # reconciles this version and deletes the held groups: a held profile with
+    # a repo here, else any profile with one (a run reconciles only the
+    # versions of its own repos). None when no repo is registered at it.
+    embedding_sweep_run_profile: str | None = None
     embeddings_deleted: int = 0
     modules_deleted: int = 0
     children_deleted: int = 0
@@ -380,6 +385,17 @@ def _owner_embedding_marks(owners: Iterable[Mapping]) -> list[tuple[str, object]
 
 def _repo_label(row: Mapping) -> str:
     return f"{row.get('repo_basename') or '?'} (repo id={row.get('repo_id')})"
+
+
+def embedding_sweep_hint(version: str, run_profile: str | None) -> str:
+    """How to delete a held embedding sweep of *version* once confirmed."""
+    if run_profile is None:
+        return f" (no repo is registered at {version}: no index run reconciles it)"
+    return (
+        f"; once confirmed, run once `index-repo --profile {run_profile} "
+        "--allow-mass-retire` (it reconciles this version; the flag lifts every "
+        "mass gate of that run)"
+    )
 
 
 class _Reconciler:
@@ -1278,8 +1294,9 @@ class _Reconciler:
         deletes, as Modules are for the orphan sweep - against every group at
         the version: more than half (and at least 20) of them, or any while the
         ledger shows nothing present at the version (total wipe), holds the
-        whole sweep (``embedding_sweep:<gate>``, attention on the repos of the
-        affected profiles) unless
+        whole sweep (``embedding_sweep:<gate>``, attention naming the held
+        profiles on the repos of those profiles, or on every repo of the
+        version when none of them has a repo at it) unless
         ``allow_mass_retire``.
         """
         from src.indexer.writer_pgvector import embedding_groups
@@ -1298,22 +1315,35 @@ class _Reconciler:
         # ledger shows nothing present at the version.
         gate = mass_gate_trips(len(groups), len(all_groups), len(present)) if groups else None
         if gate is not None:
-            rows = sum(n for _m, _p, n in groups)
+            row_total = sum(n for _m, _p, n in groups)
             message = (
                 f"embedding sweep at {self.v}: {len(groups)} of {len(all_groups)} "
-                f"embedding group(s) ({rows} rows) would be removed"
+                f"embedding group(s) ({row_total} rows) would be removed"
             )
             if self.allow_mass_retire:
                 _logger.warning("reconcile %s: %s; applied (--allow-mass-retire)", self.v, message)
             else:
                 self.report.gates_tripped.append(f"embedding_sweep:{gate}")
                 self.report.embedding_orphans_held = groups
-                text = f"{message}; nothing deleted (use --allow-mass-retire)"
+                profiles = sorted({p for _m, p, _n in groups})
+                repo_rows = list(sync_rows)
+                targets = [r for r in repo_rows if r["profile_name"] in profiles]
+                if not targets:
+                    # No repo of a held profile at this version (its rows are
+                    # leftovers): the version's repos carry the attention so
+                    # the exit-3 run always names what holds it (#381 F3).
+                    targets = repo_rows
+                # A run reconciles only the versions of its own repos, so the
+                # one-shot must name a profile with a repo at this version.
+                run_profile = min((r["profile_name"] for r in targets), default=None)
+                self.report.embedding_sweep_run_profile = run_profile
+                text = (
+                    f"{message} for profile(s) {', '.join(profiles)}; nothing deleted"
+                    + embedding_sweep_hint(self.v, run_profile)
+                )
                 _logger.warning("reconcile %s: %s", self.v, text)
-                profiles = {p for _m, p, _n in groups}
-                for r in sync_rows:
-                    if r["profile_name"] in profiles:
-                        self._attend(r["repo_id"], text)
+                for r in targets:
+                    self._attend(r["repo_id"], text)
                 return
         self.report.embedding_orphans = groups
         if not delete:

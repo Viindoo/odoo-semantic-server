@@ -8,7 +8,6 @@ prefix="/api/jobs" fixes the URL mismatch without changing client code.
 """
 import datetime as _dt
 import logging
-import os
 import re
 
 from fastapi import APIRouter, Depends
@@ -26,17 +25,6 @@ from src.web_ui.auth import (
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Return True if process pid is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # process exists, different UID — assume alive
 
 
 # Owner-facing error categories (#237 follow-up). A job owner (tenant) legitimately
@@ -159,8 +147,12 @@ async def job_status(request: Request, job_id: int):
 
     pid = job.get("pid")
     is_alive: bool | None = None
-    if pid is not None and job.get("status") == "running":
-        is_alive = _is_pid_alive(pid)
+    if pid is not None and job.get("status") in ("running", "queued"):
+        # Same rule as the start-up sweep and the reset route (#381): a live
+        # pid that is not the job's process (reused) is not alive.
+        from src.db.job_registry import job_staleness
+
+        is_alive = job_staleness(job) is None
 
     # Three-way error disclosure (#237 + follow-up):
     #   - admin           → full raw error_msg (operators need the detail)
@@ -184,25 +176,32 @@ async def job_status(request: Request, job_id: int):
 @router.post("/{job_id}/reset")
 @audit_action("jobs.reset", target_param="job_id")
 async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends(require_admin)):
-    """Force-mark a stuck running job as error when its PID is dead."""
+    """Force-mark a stuck running or queued job as error when its process is
+    gone (:func:`src.db.job_registry.job_staleness`: dead or reused pid, never
+    started past the TTL) or it has no pid (#381)."""
     try:
         from src.db.pg import job_store
 
         job = job_store().get_job(job_id)
         if job is None:
             return JSONResponse(_json_safe({"error": f"Job {job_id} not found."}), status_code=404)
-        elif job["status"] != "running":
+        elif job["status"] not in ("running", "queued"):
             error_msg = (
-                f"Job {job_id} is not in 'running' state (current: {job['status']})."
+                f"Job {job_id} is not in 'running' or 'queued' state "
+                f"(current: {job['status']})."
             )
             return JSONResponse(
                 _json_safe({"error": error_msg}),
                 status_code=409,
             )
         else:
+            # Same rule as the start-up sweep (job_staleness, #381).
+            from src.db.job_registry import job_staleness
+
             pid = job.get("pid")
-            if pid is not None and _is_pid_alive(pid):
-                error_msg = f"Job {job_id} process (PID {pid}) is still alive — cannot reset."
+            reason = job_staleness(job)
+            if reason is None and pid is not None:
+                error_msg = f"Job {job_id} process (PID {pid}) is still alive - cannot reset."
                 return JSONResponse(
                     _json_safe({"error": error_msg}),
                     status_code=409,
@@ -212,7 +211,7 @@ async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends
                     job_id,
                     status="error",
                     finished_at=_dt.datetime.now(_dt.UTC),
-                    error_msg="Reset by admin (process not found)",
+                    error_msg=f"Reset by admin: {reason or 'process not found'}",
                 )
                 msg = f"Job {job_id} has been reset to error state."
                 return JSONResponse(

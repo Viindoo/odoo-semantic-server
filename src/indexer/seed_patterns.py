@@ -803,15 +803,9 @@ def _get_job_store() -> object | None:
         return None
 
 
-def main(argv: list[str] | None = None) -> int:
-    # ADR-0031: load `.env` at the CLI entry point so PG_DSN / NEO4J_* / EMBEDDER_*
-    # (with secrets) resolve on a fresh prod box without manually sourcing .env.
-    # Idempotent + main()-only (never at import) so pytest is unaffected; mirrors
-    # src/db/migrate.py::main().
-    config.init_dotenv()
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s",
-    )
+def _build_parser() -> argparse.ArgumentParser:
+    """The seed-patterns CLI parser (no side effects; tested against the argv
+    ``python -m src.indexer seed-patterns`` forwards)."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--version", default=None,
@@ -837,7 +831,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="indexer_jobs row to update (queued→running→done/error).",
     )
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    # ADR-0031: load `.env` at the CLI entry point so PG_DSN / NEO4J_* / EMBEDDER_*
+    # (with secrets) resolve on a fresh prod box without manually sourcing .env.
+    # Idempotent + main()-only (never at import) so pytest is unaffected; mirrors
+    # src/db/migrate.py::main().
+    config.init_dotenv()
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s",
+    )
+    args = _build_parser().parse_args(argv)
 
     # Initialize PostgreSQL pool (must be done before job_store() is called).
     dsn = config.from_env_or_ini("PG_DSN", "database", "pg_dsn", fallback=None)

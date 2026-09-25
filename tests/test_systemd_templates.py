@@ -205,3 +205,50 @@ def test_service_files_pass_systemd_analyze_verify():
         "Common causes: %i/%h specifiers in a regular (non-instance) unit, "
         "malformed section headers, or unknown directives."
     )
+
+
+# ---------------------------------------------------------------------------
+# MCP entrypoint + Documentation URL guard (#381 systemd drift)
+# ---------------------------------------------------------------------------
+
+def _directive(path: Path, key: str) -> list[str]:
+    return [
+        line.split("=", 1)[1].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith(f"{key}=") and line.split("=", 1)[1].strip()
+    ]
+
+
+def test_mcp_units_start_the_single_instance_entrypoint():
+    """GUARD: the MCP unit (and its override example) runs ``python -m src.mcp``.
+
+    ``-m src.mcp.server`` runs server.py as ``__main__``: the tool modules then
+    re-import it under its real name and the process holds two FastMCP
+    instances (issue behind src/mcp/__main__.py). Production's installed unit
+    still carried that legacy form (#381); the template is the target it
+    converges to, so it must never drift back.
+    """
+    import importlib.util
+
+    units = [
+        REPO_ROOT / "docs" / "deploy" / "odoo-semantic-mcp.service",
+        REPO_ROOT / "docs" / "deploy" / "overrides" / "odoo-semantic-mcp.service.d"
+        / "local-paths.conf.example",
+    ]
+    for unit in units:
+        (exec_start,) = _directive(unit, "ExecStart")
+        argv = exec_start.split()
+        module = argv[argv.index("-m") + 1]
+        assert module == "src.mcp", f"{unit.name}: ExecStart runs -m {module}"
+        assert importlib.util.find_spec(f"{module}.__main__") is not None
+
+
+def test_documentation_urls_name_the_server_repo():
+    """GUARD: every template's Documentation= points at this repo
+    (Viindoo/odoo-semantic-server), not the pre-rename odoo-semantic-mcp."""
+    for unit in _collect_service_files():
+        for url in _directive(unit, "Documentation"):
+            if "github.com/Viindoo/" in url:
+                assert url.startswith("https://github.com/Viindoo/odoo-semantic-server"), (
+                    f"{unit.name}: {url}"
+                )

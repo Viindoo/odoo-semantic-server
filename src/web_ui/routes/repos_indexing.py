@@ -276,7 +276,7 @@ async def index_repo(
         raise  # W2: re-raise 403 scope denials before generic catch
     except Exception as e:
         _logger.warning("Index trigger for repo %s failed: %s", repo_id, e)
-        return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+        return JSONResponse(_json_safe({"ok": False, "error": str(e)}), status_code=500)
 
 
 @router.post("/repos/{repo_id}/reset-embed")
@@ -323,7 +323,9 @@ async def reset_embed(
 
     except Exception as e:
         _logger.warning("Reset embed for repo %s failed: %s", repo_id, e)
-        return JSONResponse(_json_safe({"error": f"Reset embed failed: {e}"}), status_code=500)
+        return JSONResponse(
+            _json_safe({"ok": False, "error": f"Reset embed failed: {e}"}), status_code=500,
+        )
 
 
 class IndexAllBody(BaseModel):
@@ -423,4 +425,6 @@ async def index_all(
 
     except Exception as e:
         _logger.warning("index-all trigger failed: %s", e)
-        return JSONResponse(_json_safe({"error": f"index-all failed: {e}"}), status_code=500)
+        return JSONResponse(
+            _json_safe({"ok": False, "error": f"index-all failed: {e}"}), status_code=500,
+        )

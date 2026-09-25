@@ -66,6 +66,9 @@ manifests; modules indexed from untracked copies (a local `.odoo-ai/` folder, a 
 become orphans or get their path re-written. Count them per clone:
 
 ```bash
+# comm needs both lists sorted in the same collation; under en_US.UTF-8 sort and
+# comm disagree on '_' / '/' and comm aborts with "file is not in sorted order".
+export LC_ALL=C
 psql "$PG_DSN" -Atc "SELECT local_path FROM repos WHERE local_path IS NOT NULL ORDER BY 1" |
 while read -r p; do
   [ -d "$p/.git" ] || { echo "no checkout: $p"; continue; }
@@ -205,7 +208,8 @@ jq .findings ~/osm-rollout/lifecycle-preview.json
   step 5 decides. Totals per version, for the rollout record:
 
   ```bash
-  jq -r '.versions[] | "\(.odoo_version) groups=\(.embedding_orphans | length) rows=\([.embedding_orphans[].rows] | add // 0)"' \
+  # groups/rows: deleted by the first run; held_*: kept by gate G-B (step 5 decides)
+  jq -r '.versions[] | "\(.odoo_version) groups=\(.embedding_orphans | length) rows=\([.embedding_orphans[].rows] | add // 0) held_groups=\((.embedding_orphans_held // []) | length) held_rows=\([(.embedding_orphans_held // [])[].rows] | add // 0)"' \
      ~/osm-rollout/lifecycle-preview.json
   # the GUC lifts the tenant RLS policy (FORCEd after ops/rls_cutover.sh) for this session
   psql "$PG_DSN" -At -c "SET app.allowed_profiles = '*'" \
@@ -260,9 +264,25 @@ Before it, repeat the step 0c check (no line).
   repos, act on them as for exit 3. A missing checkout is fixed per step 0c; any other repo
   error is in `repos.error_msg`. Fix it and run again: step 6 cannot pass while a repo fails.
 - `exit=3` - the index was written, something was held. Read the stderr tail
-  (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` lines)
+  (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` lines,
+  plus `embedding_orphans_held: <v>: N group(s) of profile(s) ...` when gate G-B held the
+  embedding sweep)
   and `repos.lifecycle_attention`, then act per the exit-code-3 table in `docs/deploy.md` s3.6.
   A held sweep or retirement keeps the data; nothing is lost by waiting.
+
+**Shared GPU embedder (M1):** the shared-module bootstrap re-parses up to
+`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` modules (default 60) per repo per run, and each re-parsed
+module is written and embedded again. On a host whose GPU embedder shares its card with another
+model or workload, add `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` to the app `.env`
+(`/home/odoo-semantic/odoo-semantic-mcp/.env`) before step 4 and keep it for the first week, so
+the nightly run's extra embed load stays small while the backlog drains (about three times as
+many runs). That one file reaches every index run: `odoo-semantic-reindex.service` loads it
+(`EnvironmentFile=`), `osm-fernet-run` passes it to its transient unit (`-p EnvironmentFile=`;
+the transient unit does not inherit your shell's environment, so an `export` never reaches
+the run), and a Web
+UI-started run inherits `odoo-semantic-webui.service`'s environment, which loads the same file
+(restart the Web UI to pick up the change). The value is read on every run. Remove the line
+once `shared_parse_backlog` in `lifecycle-audit` is 0. The code default is unchanged.
 
 ## Step 5 - Only if the run exited 3 on a gate
 
@@ -272,6 +292,13 @@ manual run, scoped to the profile, with the bypass:
 ```bash
 sudo osm-fernet-run $PY -m src.indexer index-repo --profile <profile> --allow-mass-retire
 ```
+
+`<profile>` must have a repo at the gate's version: a run reconciles only the versions of its
+own profile's repos. For a held embedding sweep use the profile the attention / stderr line names
+(`run once index-repo --profile <p> --allow-mass-retire`); when the held profile has no repo at
+that version any more, that is another profile of the version, and running the held profile
+itself deletes nothing. The flag lifts every mass gate (G-B) of that run, not only the one you
+checked: read all of that profile's `gates_tripped` first.
 
 Never put `--allow-mass-retire` in the timer or a drop-in. For `undecidable`: index the profile
 of the repo named in the message (or unregister a repo that is no longer used); the next

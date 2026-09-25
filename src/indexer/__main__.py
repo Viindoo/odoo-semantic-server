@@ -32,8 +32,10 @@ from src.indexer.pipeline import (
     index_core,
     index_profile,
     open_production_pg,
+    production_pg_dsn,
     reembed_stubs_for_profile,
 )
+from src.indexer.reconcile import embedding_sweep_hint
 from src.indexer.writer_neo4j import Neo4jWriter
 
 
@@ -181,6 +183,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--static-data-dir", default=None,
         help="Override path for static spec_data JSON files (optional).",
     )
+    sub_core.add_argument(
+        "--job-id",
+        type=int,
+        default=None,
+        help="(Optional) indexer_jobs.id to update lifecycle status during run.",
+    )
 
     # --- reembed-stubs subcommand (M10 WI-3) -----------------------------------
     sub_reembed = subparsers.add_parser(
@@ -273,6 +281,18 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def subcommand_accepts_job_id(subcommand: str) -> bool:
+    """True when *subcommand* declares ``--job-id`` (it reports its state on
+    its Web UI job row). Read from the real parser, so the Web UI spawn helper
+    never hands the flag to a subcommand whose argparse would exit 2 on it."""
+    parser = _build_parser()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            sub = action.choices.get(subcommand)
+            return sub is not None and "--job-id" in sub._option_string_actions
+    return False
+
+
 def _track_job(pg, job_id: int, **fields) -> None:
     """Report the run's state on its Web UI job row (``indexer_jobs``).
 
@@ -286,6 +306,59 @@ def _track_job(pg, job_id: int, **fields) -> None:
             "index job %s: status update %s failed: %s: %s",
             job_id, fields.get("status"), type(exc).__name__, exc,
         )
+
+
+# Seconds the SIGTERM handler waits to reach PostgreSQL before giving up the
+# job update and exiting anyway.
+_SIGTERM_CONNECT_TIMEOUT_S = 5
+
+
+def _mark_job_terminated(job_id: int) -> None:
+    """Write the SIGTERM error on the job row through a connection of its own.
+
+    Never the run's main connection: SIGTERM can land while it is inside a
+    ``_write_scope`` transaction (autocommit off), and an update written there
+    is rolled back when the process exits - the job then stayed ``running``
+    with a dead pid (#381 F6). ``open_production_pg`` returns an autocommit
+    connection, so the update is committed before ``sys.exit``.
+
+    A plain ``psycopg2.connect`` with a short ``connect_timeout``: an
+    unreachable database must not hold the exit until systemd's SIGKILL, and a
+    signal handler must not bootstrap the shared pool (``open_production_pg``)."""
+    try:
+        import psycopg2  # noqa: PLC0415
+
+        conn = psycopg2.connect(
+            production_pg_dsn(), connect_timeout=_SIGTERM_CONNECT_TIMEOUT_S,
+        )
+        conn.autocommit = True
+    except Exception as exc:  # noqa: BLE001 - the process is exiting anyway
+        logging.getLogger(__name__).warning(
+            "index job %s: cannot record SIGTERM: %s: %s", job_id, type(exc).__name__, exc,
+        )
+        return
+    try:
+        _track_job(
+            conn, job_id,
+            status="error",
+            finished_at=datetime.now(UTC),
+            error_msg="Process received SIGTERM",
+        )
+    finally:
+        conn.close()
+
+
+def _install_sigterm_handler(job_id: int | None) -> None:
+    """On SIGTERM: record the error on the Web UI job (if any), then exit 1
+    through ``SystemExit`` so the run's ``finally`` blocks close its
+    connections."""
+
+    def _sigterm_handler(signum, frame):
+        if job_id is not None:
+            _mark_job_terminated(job_id)
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _sigterm_handler)
 
 
 EXIT_LIFECYCLE_ATTENTION = 3
@@ -314,6 +387,22 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     for key in ("gates_tripped", "undecidable", "errors"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
+    # The embedding gate id names no profile; say which ones it holds (#381 F3).
+    for report in lifecycle.get("reports") or []:
+        held = report.get("embedding_orphans_held") or []
+        if not held:
+            continue
+        profiles = sorted({
+            g["profile"] if isinstance(g, dict) else g[1] for g in held
+        })
+        print(
+            f"  embedding_orphans_held: {report.get('odoo_version')}: "
+            f"{len(held)} group(s) of profile(s) {', '.join(profiles)}"
+            + embedding_sweep_hint(
+                str(report.get("odoo_version")), report.get("embedding_sweep_run_profile"),
+            ),
+            file=sys.stderr,
+        )
     return code
 
 
@@ -418,21 +507,7 @@ def main(argv: list[str] | None = None) -> int:
         max_workers = getattr(args, "max_workers", 1)
         profile_workers = getattr(args, "profile_workers", 1)
 
-        _sigterm_state: dict = {"pg": pg, "job_id": job_id}
-
-        def _sigterm_handler(signum, frame):
-            _pg = _sigterm_state.get("pg")
-            _job_id = _sigterm_state.get("job_id")
-            if _job_id is not None and _pg is not None:
-                _track_job(
-                    _pg, _job_id,
-                    status="error",
-                    finished_at=datetime.now(UTC),
-                    error_msg="Process received SIGTERM",
-                )
-            sys.exit(1)
-
-        signal.signal(signal.SIGTERM, _sigterm_handler)
+        _install_sigterm_handler(job_id)
 
         try:
             if job_id is not None:
@@ -527,11 +602,41 @@ def main(argv: list[str] | None = None) -> int:
         return exit_code
 
     elif args.subcommand == "index-core":
-        _run_index_core(
-            source=args.source,
-            version=args.version,
-            static_data_dir=args.static_data_dir,
-        )
+        job_id = getattr(args, "job_id", None)
+        pg = open_production_pg() if job_id is not None else None
+        # Only a tracked run has a job to record; an untracked index-core keeps
+        # the default SIGTERM (killed, exit 143) as before #381. index-repo
+        # always installs it (pre-existing: its finally closes the embedder).
+        if job_id is not None:
+            _install_sigterm_handler(job_id)
+        try:
+            if job_id is not None:
+                _track_job(
+                    pg, job_id,
+                    status="running",
+                    pid=os.getpid(),
+                    started_at=datetime.now(UTC),
+                )
+            try:
+                _run_index_core(
+                    source=args.source,
+                    version=args.version,
+                    static_data_dir=args.static_data_dir,
+                )
+            except BaseException as e:
+                if job_id is not None and not isinstance(e, SystemExit):
+                    _track_job(
+                        pg, job_id,
+                        status="error",
+                        finished_at=datetime.now(UTC),
+                        error_msg=str(e)[:1000],
+                    )
+                raise
+            if job_id is not None:
+                _track_job(pg, job_id, status="done", finished_at=datetime.now(UTC))
+        finally:
+            if pg is not None:
+                pg.close()
 
     elif args.subcommand == "reembed-stubs":
         embedder = _build_embedder()

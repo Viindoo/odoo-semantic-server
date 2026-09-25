@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """CRUD for indexer_jobs table — track indexer subprocess lifecycle."""
-from datetime import datetime
+import os
+from datetime import UTC, datetime
 
 from psycopg2 import sql as pgsql
 
@@ -19,6 +20,123 @@ def _serialize_datetimes(row: dict) -> dict:
         if row.get(key) is not None:
             row[key] = str(row[key])
     return row
+
+
+def _parse_starttime(raw: str) -> int | None:
+    """Field 22 (``starttime``, clock ticks after boot) of a /proc/<pid>/stat
+    line, None when it cannot be read. ``comm`` (field 2) may hold spaces and
+    parentheses, so the fields are split after the LAST ')'."""
+    try:
+        fields = raw[raw.rindex(")") + 2:].split()
+        return int(fields[22 - 3])
+    except (ValueError, IndexError):
+        return None
+
+
+class ProcInfo:
+    """Linux ``/proc`` reader for process identity; every answer is None
+    where it cannot be read (other OS, hidepid, race with exit)."""
+
+    def boot_time(self) -> float | None:
+        """Epoch seconds of the last boot (``btime`` in /proc/stat)."""
+        try:
+            with open("/proc/stat", encoding="ascii") as fh:
+                for line in fh:
+                    if line.startswith("btime "):
+                        return float(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
+    def start_time(self, pid: int) -> float | None:
+        """Epoch seconds process *pid* started (/proc/<pid>/stat field 22
+        in clock ticks after boot), None when unknown."""
+        boot = self.boot_time()
+        if boot is None:
+            return None
+        try:
+            with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
+                ticks = _parse_starttime(fh.read())
+            if ticks is None:
+                return None
+            return boot + ticks / os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError):
+            return None
+
+
+_PROC = ProcInfo()
+
+# A job's process starts before the job reports 'running' (started_at), so a
+# process that started later - or a boot after started_at - means the pid is
+# not the job's. Known limit: /proc gives the boot time and a process's start
+# only relative to the CURRENT wall clock (btime = now - uptime), while
+# started_at is the wall clock at report time; a forward step of the clock
+# after the job started (NTP step, manual set) shifts both by the step and
+# would make a live job look reused. The slack absorbs such steps up to 120 s
+# (plus btime's whole-second resolution); a larger forward step can still
+# expire a live job's row (the run itself continues and reports done). A
+# clock-step-immune check needs the child's own boot-relative starttime ticks
+# recorded on the job, which indexer_jobs has no column for (#381). The cost:
+# a pid reused (or a reboot) within 120 s of the job's start is not detected.
+_START_SLACK_S = 120.0
+
+
+def _as_datetime(value) -> datetime | None:
+    if value is None or isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def job_staleness(row: dict, *, now: datetime | None = None) -> str | None:
+    """Why the unfinished (queued / running) job *row*'s process is gone, or
+    None while it may still be alive. The one rule of the start-up sweep
+    (:meth:`JobStore.mark_dead_jobs`) and the admin reset route (#381).
+
+    * queued, never started (``started_at`` NULL), older than
+      ``INDEXER_JOB_QUEUED_TTL_SECONDS``: a live child reports 'running'
+      within seconds, whatever pid the row holds;
+    * its pid does not exist;
+    * its pid exists (or belongs to another user) but is not the job's
+      process: the machine booted after the job started, or that process
+      started after the job did (pid reused), beyond a 120 s slack for
+      wall-clock steps (see ``_START_SLACK_S`` for the limit). Needs /proc;
+      elsewhere a live pid is given the benefit of the doubt.
+    """
+    from src import constants  # noqa: PLC0415
+
+    now = now or datetime.now(UTC)
+    ttl = constants.INDEXER_JOB_QUEUED_TTL_SECONDS
+    pid = row.get("pid")
+    started_at = _as_datetime(row.get("started_at"))
+    created_at = _as_datetime(row.get("created_at"))
+    age = (now - created_at).total_seconds() if created_at else None
+    if row.get("status") == "queued" and started_at is None and age is not None and age > ttl:
+        return (
+            f"Job stayed queued for {int(age)}s (limit {int(ttl)}s, "
+            f"pid {pid if pid is not None else 'none'}): the indexer process "
+            "never started or died before reporting"
+        )
+    if pid is None:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return f"Process died unexpectedly (PID {pid} not found)"
+    except PermissionError:
+        pass  # exists, another user's: identity decides below
+    if started_at is None:
+        return None
+    ref = started_at.timestamp()
+    boot = _PROC.boot_time()
+    if boot is not None and boot > ref + _START_SLACK_S:
+        return f"PID {pid} is not the job's process: the machine booted after the job started"
+    begun = _PROC.start_time(pid)
+    if begun is not None and begun > ref + _START_SLACK_S:
+        return f"PID {pid} is not the job's process: it started after the job did (pid reused)"
+    return None
 
 
 def update_job(
@@ -161,41 +279,29 @@ class JobStore:
         return _serialize_datetimes(row)
 
     def mark_dead_jobs(self) -> int:
-        """Mark running/queued jobs whose PID is no longer alive as 'error'.
+        """Mark running/queued jobs whose process is gone as 'error'.
 
-        Called on Web UI startup to clean up jobs left over from crashed subprocesses.
-        Returns the number of jobs marked as error.
+        Called on Web UI startup to clean up jobs left over from crashed
+        subprocesses; the rule is :func:`job_staleness` (shared with the
+        admin reset route). Returns the number of jobs marked as error.
         """
-        import os  # noqa: PLC0415
-        from datetime import UTC  # noqa: PLC0415
-        from datetime import datetime as dt
-
         with self._pool.checkout() as conn:
             rows = self._pool.fetch_all(
                 conn,
                 "SELECT * FROM indexer_jobs"
                 " WHERE status IN ('running', 'queued') ORDER BY created_at ASC",
             )
+        now = datetime.now(UTC)
         count = 0
         for row in rows:
-            pid = row.get("pid")
-            if pid is None:
+            reason = job_staleness(row, now=now)
+            if reason is None:
                 continue
-            try:
-                os.kill(pid, 0)
-                # Process exists — leave it alone
-            except ProcessLookupError:
-                # PID is dead
-                self.update_job(
-                    row["id"],
-                    status="error",
-                    finished_at=dt.now(UTC),
-                    error_msg=f"Process died unexpectedly (PID {pid} not found at server startup)",
-                )
-                count += 1
-            except PermissionError:
-                # Process exists but different UID — leave it alone
-                pass
+            self.update_job(
+                row["id"], status="error", finished_at=now,
+                error_msg=f"{reason} (found at Web UI startup)",
+            )
+            count += 1
         return count
 
     def list_all_jobs(self) -> list[dict]:
