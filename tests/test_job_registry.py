@@ -186,3 +186,16 @@ class TestMarkDeadJobs:
         assert stale_row["finished_at"] is not None
         assert "queued" in stale_row["error_msg"]
         assert job_store().get_job(fresh)["status"] == "queued"
+
+    def test_stale_queued_job_with_a_live_pid_expires_to_error(self, pg_jobs_conn):
+        """The recorded pid was reused by a live process: never-started + stale wins."""
+        import os
+
+        from src.constants import INDEXER_JOB_QUEUED_TTL_SECONDS
+
+        job = job_store().create_job("odoo17")
+        job_store().update_job(job, pid=os.getpid())
+        self._age(pg_jobs_conn, job, INDEXER_JOB_QUEUED_TTL_SECONDS + 60)
+
+        assert job_store().mark_dead_jobs() == 1
+        assert job_store().get_job(job)["status"] == "error"
