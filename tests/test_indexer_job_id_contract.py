@@ -224,3 +224,24 @@ def test_index_core_with_job_id_installs_a_sigterm_handler(core_run):
     before = signal.getsignal(signal.SIGTERM)
     main_mod.main([*_CORE_ARGV, "--job-id", "5"])
     assert signal.getsignal(signal.SIGTERM) is not before
+
+
+def test_seed_patterns_forwards_an_argv_its_own_parser_accepts(monkeypatch):
+    """``python -m src.indexer seed-patterns`` re-builds an argv for seed_patterns'
+    own parser; the job id (and every Web UI flag) must survive that hop."""
+    from src.indexer import seed_patterns
+
+    forwarded: list[list[str]] = []
+    monkeypatch.setattr(seed_patterns, "main", lambda argv: forwarded.append(argv) or 0)
+
+    main_mod.main([
+        "seed-patterns", "--version", "17.0", "--no-embed", "--force",
+        "--patterns-file", "/p.json", "--job-id", "1",
+    ])
+
+    (argv,) = forwarded
+    inner = seed_patterns._build_parser().parse_args(argv)
+    assert inner.job_id == 1
+    assert (inner.version, inner.no_embed, inner.force, inner.patterns_file) == (
+        "17.0", True, True, "/p.json",
+    )
