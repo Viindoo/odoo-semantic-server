@@ -959,6 +959,16 @@ def orphan_embedding_keys(
     report no orphans at all.
     """
     live_set = {(m, p) for m, p in live}
+    return [g for g in embedding_groups(conn, version) if (g[0], g[1]) not in live_set]
+
+
+def embedding_groups(conn, version: str) -> list[tuple[str, str, int]]:
+    """Every ``(module, profile_name, row_count)`` embedding group at *version*.
+
+    Catalogue rows (``profile_name = GLOBAL_PROFILE``) are left out; sorted by
+    module then profile. Read-only, unrestricted RLS scope like
+    :func:`orphan_embedding_keys` (the baseline of the embedding sweep gate).
+    """
     with _write_scope(conn), conn.cursor() as cur:
         cur.execute(
             "SELECT module, profile_name, count(*) FROM embeddings "
@@ -967,8 +977,4 @@ def orphan_embedding_keys(
             (version, GLOBAL_PROFILE),
         )
         rows = cur.fetchall()
-    return [
-        (module, profile, int(count))
-        for module, profile, count in rows
-        if (module, profile) not in live_set
-    ]
+    return [(module, profile, int(count)) for module, profile, count in rows]

@@ -199,7 +199,10 @@ jq .findings ~/osm-rollout/lifecycle-preview.json
   version.
 - `embedding_orphans` - embedding rows (`module` / `profile` / `rows`) that no live Module node
   and no present ledger row account for; the first run deletes every listed group.
-  Totals per version, for the rollout record:
+  `embedding_orphans_held` + a `gates_tripped` entry `embedding_sweep:<gate>` - the mass gate G-B
+  holds the version's embedding sweep (more than half, and at least 20, of the version's
+  `(module, profile)` embedding groups, or any while nothing is present at the version): nothing is deleted, the run exits 3, and
+  step 5 decides. Totals per version, for the rollout record:
 
   ```bash
   jq -r '.versions[] | "\(.odoo_version) groups=\(.embedding_orphans | length) rows=\([.embedding_orphans[].rows] | add // 0)"' \

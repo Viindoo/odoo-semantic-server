@@ -16,7 +16,7 @@ Business rules protected here:
   shared-module entity prune of F49 is a finding, ``shared_prunes``, with
   ``shared_prune_waiting`` / ``shared_prune_rewrites`` per version and the
   post-deploy ``shared_parse_backlog`` per repo; additive under ``/3`` per
-  version: ``child_orphans_deferred``).
+  version: ``child_orphans_deferred`` and ``embedding_orphans_held``).
 - F36: ONE plain run heals Module nodes whose path is not the registry winner
   (F15 posbox stub, F7 untracked ``.odoo-ai`` copy) or that name a stale repo;
   two co-owners of one module never re-write each other every night.
@@ -607,9 +607,9 @@ def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch
         "shared_prune_waiting": dict, "shared_prune_rewrites": dict,
         "orphans_unparseable": list, "excluded_owner_waiting": dict,
         # PR #379 review (additive under /3): module-less names whose children
-        # wait for an unsynced repo. It feeds an existing finding counter, so
-        # the timer must see the key.
-        "child_orphans_deferred": list,
+        # wait for an unsynced repo, and orphan embedding groups held by G-B.
+        # Both feed existing finding counters, so the timer must see the keys.
+        "child_orphans_deferred": list, "embedding_orphans_held": list,
     }
     ver = _version_entry(report)
     for key, typ in ver_keys.items():
@@ -619,7 +619,7 @@ def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch
         assert {"name", "deferred_for", "evidence"} <= set(o)
     for m in ver["modules_without_profile"]:
         assert {"name", "path", "repo", "repo_id", "children"} <= set(m)
-    for e in ver["embedding_orphans"]:
+    for e in ver["embedding_orphans"] + ver["embedding_orphans_held"]:
         assert {"module", "profile", "rows"} <= set(e)
 
 

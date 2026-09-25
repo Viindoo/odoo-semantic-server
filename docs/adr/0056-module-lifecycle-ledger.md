@@ -201,6 +201,7 @@ the branch (`16.0.1.0.0` on a 17.0 branch was keyed 16.0).
 | G-B `mass_retire` | per repo | soft drops > 50% of the previously present modules AND >= 20; while the repo was never synced, drops of the graph baseline (below) | pending rows blocked `gate:mass_retire`; presence not synced |
 | G-B `total_wipe` | per repo | modules were present before, some drop, and NONE is present now | same; no floor |
 | G-B `orphan_sweep:<gate>` | per version sweep | the same ratio over orphan + child-orphan names | nothing swept |
+| G-B `embedding_sweep:<gate>` | per version embedding sweep | the same ratio over orphan `(module, profile)` embedding groups vs every non-catalogue group at the version; total wipe as for the orphan sweep (nothing present in the ledger at the version) | no embedding deleted (`embedding_orphans_held`); attention on the repos of the affected profiles |
 | soft signal `manifest_unparseable` | per repo | a tracked manifest of an indexed module (ledger `present` before, or a graph node) was read but does not parse | the module is kept as it is - never swept, never dropped as an excluding co-owner - until it parses; attention + exit 3; the repo's other retirements proceed |
 | soft prune gate `entity_prune:<M>@<v>` | per module prune (D9, D10) | stale > 50% of the module's nodes or relationships AND >= 20 | prune held, graph and embeddings kept |
 

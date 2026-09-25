@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A failed repo or profile keeps the lifecycle outcome of the healthy ones and a
-missing checkout never holds a version's cleanup silently (PR #379 review,
-ADR-0056).
+"""A failed repo or profile keeps the lifecycle outcome of the healthy ones, a
+missing checkout never holds a version's cleanup silently, and a mass orphan
+embedding delete is held by the mass-retire gate (PR #379 review, ADR-0056).
 
 Business rules protected here:
 
@@ -21,6 +21,13 @@ Business rules protected here:
   ``child_orphans_deferred`` and counts them in ``findings.child_orphans``
   (``--fail-on-findings`` exits 4). Once the repo is cloned and synced, the
   next run sweeps those children.
+- Gate G-B holds a mass orphan embedding delete: more than half, and at least
+  20, of a version's (module, profile) embedding groups being orphans keeps
+  every row (exit 3, ``embedding_sweep:<gate>``, attention on the affected
+  profile's repos) and ``lifecycle-audit`` predicts it
+  (``embedding_orphans_held``, counted in ``findings.embedding_orphans``);
+  ``--allow-mass-retire`` deletes them; below the floor or the ratio they are
+  deleted on a normal run; the pattern catalogue (``__global__``) never counts.
 
 Every test drives the real ``index_profile`` / ``index_all`` / CLI ``main`` over
 temp git repos with a bare origin, against real Neo4j and PostgreSQL + pgvector.
@@ -32,6 +39,7 @@ from pathlib import Path
 
 import pytest
 
+from src.constants import GLOBAL_PROFILE
 from src.db.migrate import _vector_extension_available, run_migrations
 from src.db.pg import repo_store
 from src.indexer.embedder import FakeEmbedder
@@ -42,6 +50,7 @@ from tests._lifecycle_repo import (
     assert_gone,
     assert_live,
     children,
+    embeddings,
     lc,
     ledger,
     register,
@@ -137,6 +146,30 @@ def _add_module_less_child(driver, module: str) -> None:
             "CREATE (:Model {name: $m, module: $mod, odoo_version: $v})",
             m=f"x_{module}.thing", mod=module, v=V,
         ).consume()
+
+
+def _add_embedding_groups(pg_conn, modules: list[str], profile: str) -> None:
+    """One embedding row per (module, profile) group that no Module and no
+    present ledger row accounts for (an orphan group)."""
+    zero = "[" + ",".join(["0.0"] * 1024) + "]"
+    with pg_conn.cursor() as cur:
+        for m in modules:
+            cur.execute(
+                "INSERT INTO embeddings (chunk_type, module, odoo_version, entity_name, "
+                "model_name, file_path, chunk_idx, content, vec, profile_name) VALUES "
+                "('method', %s, %s, %s, NULL, '/x.py', 0, 'x', %s::vector, %s)",
+                (m, V, f"{m}.x", zero, profile),
+            )
+
+
+def _rows(pg_conn, modules: list[str], profile: str) -> int:
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM embeddings WHERE odoo_version = %s "
+            "AND module = ANY(%s) AND profile_name = %s",
+            (V, modules, profile),
+        )
+        return cur.fetchone()[0]
 
 
 # ---------------------------------------------------------------------------
@@ -323,3 +356,119 @@ def test_missing_checkout_holds_module_less_children_with_attention_and_an_audit
     assert _version_entry(report).get("child_orphans_deferred") == []
     assert report["findings"]["child_orphans"] == 0
     assert _synced(pg, rid_healthy, healthy)
+
+
+# ---------------------------------------------------------------------------
+# 167b7360 - the orphan embedding sweep goes through gate G-B
+# ---------------------------------------------------------------------------
+
+def _embedding_profile(tmp_path: Path, pg_conn, n_live: int = 1) -> tuple[GitRepo, int]:
+    """Profile ``emb_99`` with *n_live* indexed modules, then a new upstream
+    commit, so the next run scans the repo (the orphan sweep, embeddings
+    included, runs only for a version a repo was scanned at)."""
+    repo = GitRepo(tmp_path, "emb_addons")
+    for i in range(n_live):
+        write_module(repo, f"emb_live_{i:02d}")
+    repo.commit("add")
+    (rid,) = register("emb_99", repo)
+    run(pg_conn, "emb_99")
+    assert embeddings(pg_conn, "emb_live_00", "emb_99") > 0, "precondition: live rows"
+    record = repo.path / "emb_live_00" / "models" / "record.py"
+    record.write_text(record.read_text() + "\n# touched\n")
+    repo.commit("[IMP] emb_live_00: touch")
+    return repo, rid
+
+
+def _add_catalogue_rows(pg_conn, n: int) -> None:
+    """Pattern-catalogue rows: the only shape a ``__global__`` row may take."""
+    zero = "[" + ",".join(["0.0"] * 1024) + "]"
+    with pg_conn.cursor() as cur:
+        for i in range(n):
+            cur.execute(
+                "INSERT INTO embeddings (chunk_type, module, odoo_version, entity_name, "
+                "model_name, file_path, chunk_idx, content, vec, profile_name) VALUES "
+                "('pattern_example', '__patterns__', %s, %s, NULL, '/p.json', 0, 'p', "
+                "%s::vector, %s)",
+                (V, f"lifecycle_test_pattern_{i}", zero, GLOBAL_PROFILE),
+            )
+
+
+def _catalogue_rows(pg_conn) -> int:
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM embeddings WHERE odoo_version = %s AND profile_name = %s",
+            (V, GLOBAL_PROFILE),
+        )
+        return cur.fetchone()[0]
+
+
+def test_mass_orphan_embedding_groups_are_held_by_the_gate_until_allow_mass_retire(
+    pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
+):
+    """1 live module + exactly 20 orphan embedding groups (20/21 > 50%, at the
+    floor of 20) under the profile: the audit predicts the hold, the run keeps
+    every row, exits 3 with ``embedding_sweep:mass_retire`` and attention on the
+    profile's repo; ``--allow-mass-retire`` deletes the 20 groups. The pattern
+    catalogue (``__global__``) is never listed, held or deleted."""
+    _repo, rid = _embedding_profile(tmp_path, pg)
+    ghosts = [f"ghost_{i:02d}" for i in range(20)]
+    _add_embedding_groups(pg, ghosts, "emb_99")
+    _add_catalogue_rows(pg, 3)
+    catalogue = _catalogue_rows(pg)
+
+    code, report = _audit(monkeypatch, capsys, _ephemeral_pg_db, "--profile", "emb_99")
+    ver = _version_entry(report)
+    assert "embedding_sweep:mass_retire" in ver["gates_tripped"], ver["gates_tripped"]
+    held = ver.get("embedding_orphans_held") or []
+    assert sorted(g["module"] for g in held) == ghosts, held
+    assert {g["profile"] for g in held} == {"emb_99"}
+    assert report["findings"]["embedding_orphans"] == 20, report["findings"]
+
+    code, _, err = _cli(monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--profile", "emb_99")
+
+    assert code == 3, err
+    assert "embedding_sweep:mass_retire" in err, err
+    assert _rows(pg, ghosts, "emb_99") == 20, "the gate keeps every orphan row"
+    assert "embedding sweep" in _attention(pg, rid), _attention(pg, rid)
+    assert _catalogue_rows(pg) == catalogue
+
+    summary = run(pg, "emb_99", allow_mass_retire=True)
+
+    assert not any("embedding_sweep" in g for g in lc(summary).get("gates_tripped", []))
+    assert _rows(pg, ghosts, "emb_99") == 0, "--allow-mass-retire deletes the held groups"
+    assert _catalogue_rows(pg) == catalogue, "the catalogue is never an orphan"
+    assert embeddings(pg, "emb_live_00", "emb_99") > 0
+
+
+def test_orphan_embedding_groups_below_the_floor_are_deleted_on_a_normal_run(
+    pg, neo4j_driver, tmp_path,
+):
+    """19 orphan groups next to 1 live module (95% but under the floor of 20):
+    deleted by a normal run, no gate, no attention."""
+    # GUARD: pre-existing behaviour (small orphan sets were always deleted).
+    _repo, rid = _embedding_profile(tmp_path, pg)
+    ghosts = [f"ghost_{i:02d}" for i in range(19)]
+    _add_embedding_groups(pg, ghosts, "emb_99")
+
+    summary = run(pg, "emb_99")
+
+    assert not lc(summary).get("needs_attention"), lc(summary)
+    assert _rows(pg, ghosts, "emb_99") == 0
+    assert "embedding sweep" not in _attention(pg, rid)
+    assert embeddings(pg, "emb_live_00", "emb_99") > 0
+
+
+def test_orphan_embedding_groups_below_half_the_version_are_deleted_on_a_normal_run(
+    pg, neo4j_driver, tmp_path,
+):
+    """20 orphan groups (at the floor) next to 21 live modules (20/41 < 50%):
+    deleted by a normal run, no gate."""
+    # GUARD: pre-existing behaviour (the ratio rule only adds a hold above 50%).
+    _repo, _rid = _embedding_profile(tmp_path, pg, n_live=21)
+    ghosts = [f"ghost_{i:02d}" for i in range(20)]
+    _add_embedding_groups(pg, ghosts, "emb_99")
+
+    summary = run(pg, "emb_99")
+
+    assert not lc(summary).get("needs_attention"), lc(summary)
+    assert _rows(pg, ghosts, "emb_99") == 0

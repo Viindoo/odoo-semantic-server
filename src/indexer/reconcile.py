@@ -109,7 +109,10 @@ class ReconcileReport:
     synced (children carry no profile, so any unsynced repo holds them).
     ``modules_deleted`` / ``children_deleted`` count the Neo4j nodes the
     cascade removed (0 in a dry run). ``gates_tripped`` holds
-    ``orphan_sweep:<gate>`` when the sweep was stopped by G-B.
+    ``orphan_sweep:<gate>`` when the sweep was stopped by G-B, and
+    ``embedding_sweep:<gate>`` when G-B held the orphan embedding groups
+    (``embedding_orphans_held``; ``embedding_orphans`` lists only groups that
+    were, or in a dry run would be, deleted).
     ``needs_attention`` is what makes the CLI exit 3.
 
     Also filled, executed or dry, for the operator and ``lifecycle-audit``:
@@ -134,6 +137,7 @@ class ReconcileReport:
     child_orphans_swept: list[str] = field(default_factory=list)
     child_orphans_deferred: list[str] = field(default_factory=list)
     embedding_orphans: list[tuple[str, str, int]] = field(default_factory=list)
+    embedding_orphans_held: list[tuple[str, str, int]] = field(default_factory=list)
     embeddings_deleted: int = 0
     modules_deleted: int = 0
     children_deleted: int = 0
@@ -1156,7 +1160,7 @@ class _Reconciler:
         if not self.execute:
             self.report.orphans_swept.extend(decidable)
             self.report.child_orphans_swept.extend(child_names)
-            self._embedding_orphans(present, unsynced_profiles, delete=False)
+            self._embedding_orphans(present, unsynced_profiles, sync_rows, delete=False)
             return all_synced
 
         targets = sorted(set(decidable) | set(child_names))
@@ -1200,7 +1204,7 @@ class _Reconciler:
                     len(self.report.child_orphans_swept),
                     ", ".join(self.report.child_orphans_swept),
                 )
-        self._embedding_orphans(present, unsynced_profiles, delete=True)
+        self._embedding_orphans(present, unsynced_profiles, sync_rows, delete=True)
         return all_synced
 
     def _orphan_evidence(
@@ -1265,19 +1269,52 @@ class _Reconciler:
             self.report.ledger_orphan_rows += 1
 
     def _embedding_orphans(
-        self, present: set[str], unsynced_profiles: set[str], *, delete: bool,
+        self, present: set[str], unsynced_profiles: set[str],
+        sync_rows: Iterable[Mapping], *, delete: bool,
     ) -> None:
-        from src.indexer.writer_pgvector import orphan_embedding_keys
+        """Orphan embedding groups: listed, then deleted under gate G-B.
+
+        The gate judges ``(module, profile)`` groups - the unit the sweep
+        deletes, as Modules are for the orphan sweep - against every group at
+        the version: more than half (and at least 20) of them, or any while the
+        ledger shows nothing present at the version (total wipe), holds the
+        whole sweep (``embedding_sweep:<gate>``, attention on the repos of the
+        affected profiles) unless
+        ``allow_mass_retire``.
+        """
+        from src.indexer.writer_pgvector import embedding_groups
         live = {
             (m, p)
             for m, profiles in self.writer.module_profiles(self.v).items()
             for p in profiles
         } | self.store.present_pairs(self.v, conn=self.conn)
         with self._vec_conn() as conn:
-            groups = [
-                g for g in orphan_embedding_keys(conn, self.v, live)
-                if g[1] not in unsynced_profiles
-            ]
+            all_groups = embedding_groups(conn, self.v)
+        groups = [
+            g for g in all_groups
+            if (g[0], g[1]) not in live and g[1] not in unsynced_profiles
+        ]
+        # Total wipe as for the orphan sweep: every group would go while the
+        # ledger shows nothing present at the version.
+        gate = mass_gate_trips(len(groups), len(all_groups), len(present)) if groups else None
+        if gate is not None:
+            rows = sum(n for _m, _p, n in groups)
+            message = (
+                f"embedding sweep at {self.v}: {len(groups)} of {len(all_groups)} "
+                f"embedding group(s) ({rows} rows) would be removed"
+            )
+            if self.allow_mass_retire:
+                _logger.warning("reconcile %s: %s; applied (--allow-mass-retire)", self.v, message)
+            else:
+                self.report.gates_tripped.append(f"embedding_sweep:{gate}")
+                self.report.embedding_orphans_held = groups
+                text = f"{message}; nothing deleted (use --allow-mass-retire)"
+                _logger.warning("reconcile %s: %s", self.v, text)
+                profiles = {p for _m, p, _n in groups}
+                for r in sync_rows:
+                    if r["profile_name"] in profiles:
+                        self._attend(r["repo_id"], text)
+                return
         self.report.embedding_orphans = groups
         if not delete:
             return
