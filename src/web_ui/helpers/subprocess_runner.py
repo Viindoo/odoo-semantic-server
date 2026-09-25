@@ -5,6 +5,7 @@ Extracted from src/web_ui/routes/repos.py to be reused by W3-W8 routes
 that all need the same pattern: create indexer_jobs row, spawn detached
 subprocess with --job-id, return job_id for status polling.
 """
+import logging
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,8 @@ import threading
 from pathlib import Path
 
 from src.db.pg import job_store
+
+_logger = logging.getLogger(__name__)
 
 
 def spawn_indexer_subcommand(
@@ -62,6 +65,12 @@ def spawn_indexer_subcommand(
             stdout=log_file,
             stderr=log_file,
         )
+    # Record the child's pid now: a child that dies before its own 'running'
+    # report still leaves a pid the start-up sweep can check (#381 F1).
+    try:
+        job_store().update_job(job_id, pid=proc.pid)
+    except Exception as exc:  # noqa: BLE001 - the run itself is started
+        _logger.warning("index job %s: recording pid %s failed: %s", job_id, proc.pid, exc)
     # Reap the child when it exits so it doesn't linger as a zombie.
     # Without this, the web server (parent) never calls wait() and the process
     # stays in Z (zombie) state indefinitely after the indexer finishes.

@@ -157,3 +157,32 @@ class TestListAndLast:
     def test_get_last_job_missing_returns_none(self, pg_jobs_conn):
         result = job_store().get_last_job("nonexistent_profile")
         assert result is None
+
+
+class TestMarkDeadJobs:
+    """#381 F1: a queued job with no pid cannot stay queued forever."""
+
+    def _age(self, conn, job_id, seconds):
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE indexer_jobs SET created_at = now() - make_interval(secs => %s)"
+                " WHERE id = %s",
+                (seconds, job_id),
+            )
+        if not conn.autocommit:
+            conn.commit()
+
+    def test_stale_queued_job_without_pid_expires_to_error(self, pg_jobs_conn):
+        from src.constants import INDEXER_JOB_QUEUED_TTL_SECONDS
+
+        stale = job_store().create_job("odoo17")
+        fresh = job_store().create_job("odoo17")
+        self._age(pg_jobs_conn, stale, INDEXER_JOB_QUEUED_TTL_SECONDS + 60)
+
+        assert job_store().mark_dead_jobs() == 1
+
+        stale_row = job_store().get_job(stale)
+        assert stale_row["status"] == "error"
+        assert stale_row["finished_at"] is not None
+        assert "queued" in stale_row["error_msg"]
+        assert job_store().get_job(fresh)["status"] == "queued"

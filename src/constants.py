@@ -548,3 +548,14 @@ LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS: float = float(
 WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS: float = float(
     os.getenv("WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS", "20")
 )
+
+# INDEXER_JOB_QUEUED_TTL_SECONDS: age after which the Web UI start-up sweep
+# (JobStore.mark_dead_jobs) marks a 'queued' indexer job with no pid as
+# 'error'. The Web UI records the child's pid on the job right after the spawn,
+# so a queued row still without a pid past this age is a spawn that never
+# happened or a row from before the pid was recorded (#381 F1); a row younger
+# than this is left alone so a spawn in progress is never expired. Override
+# via INDEXER_JOB_QUEUED_TTL_SECONDS.
+INDEXER_JOB_QUEUED_TTL_SECONDS: float = float(
+    os.getenv("INDEXER_JOB_QUEUED_TTL_SECONDS", "600")
+)

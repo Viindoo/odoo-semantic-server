@@ -159,7 +159,7 @@ async def job_status(request: Request, job_id: int):
 
     pid = job.get("pid")
     is_alive: bool | None = None
-    if pid is not None and job.get("status") == "running":
+    if pid is not None and job.get("status") in ("running", "queued"):
         is_alive = _is_pid_alive(pid)
 
     # Three-way error disclosure (#237 + follow-up):
@@ -184,16 +184,18 @@ async def job_status(request: Request, job_id: int):
 @router.post("/{job_id}/reset")
 @audit_action("jobs.reset", target_param="job_id")
 async def reset_stuck_job(request: Request, job_id: int, _user_id: int = Depends(require_admin)):
-    """Force-mark a stuck running job as error when its PID is dead."""
+    """Force-mark a stuck running or queued job as error when its PID is dead
+    (or it has none: a queued job whose child never started, #381 F1)."""
     try:
         from src.db.pg import job_store
 
         job = job_store().get_job(job_id)
         if job is None:
             return JSONResponse(_json_safe({"error": f"Job {job_id} not found."}), status_code=404)
-        elif job["status"] != "running":
+        elif job["status"] not in ("running", "queued"):
             error_msg = (
-                f"Job {job_id} is not in 'running' state (current: {job['status']})."
+                f"Job {job_id} is not in 'running' or 'queued' state "
+                f"(current: {job['status']})."
             )
             return JSONResponse(
                 _json_safe({"error": error_msg}),

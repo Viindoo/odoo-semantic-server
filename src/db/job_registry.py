@@ -161,14 +161,22 @@ class JobStore:
         return _serialize_datetimes(row)
 
     def mark_dead_jobs(self) -> int:
-        """Mark running/queued jobs whose PID is no longer alive as 'error'.
+        """Mark running/queued jobs whose process is gone as 'error'.
 
-        Called on Web UI startup to clean up jobs left over from crashed subprocesses.
+        Called on Web UI startup to clean up jobs left over from crashed subprocesses:
+
+        * a job whose PID is no longer alive;
+        * a 'queued' job with no PID older than ``INDEXER_JOB_QUEUED_TTL_SECONDS``
+          - its child never started (or died before reporting), and nothing
+          else would ever move it out of 'queued' (#381 F1).
+
         Returns the number of jobs marked as error.
         """
         import os  # noqa: PLC0415
         from datetime import UTC  # noqa: PLC0415
         from datetime import datetime as dt
+
+        from src import constants  # noqa: PLC0415
 
         with self._pool.checkout() as conn:
             rows = self._pool.fetch_all(
@@ -176,10 +184,26 @@ class JobStore:
                 "SELECT * FROM indexer_jobs"
                 " WHERE status IN ('running', 'queued') ORDER BY created_at ASC",
             )
+        ttl = constants.INDEXER_JOB_QUEUED_TTL_SECONDS
+        now = dt.now(UTC)
         count = 0
         for row in rows:
             pid = row.get("pid")
             if pid is None:
+                created_at = row.get("created_at")
+                age = (now - created_at).total_seconds() if created_at else None
+                if row.get("status") == "queued" and age is not None and age > ttl:
+                    self.update_job(
+                        row["id"],
+                        status="error",
+                        finished_at=now,
+                        error_msg=(
+                            f"Job stayed queued with no pid for {int(age)}s "
+                            f"(limit {int(ttl)}s): the indexer process never "
+                            "started or died before reporting"
+                        ),
+                    )
+                    count += 1
                 continue
             try:
                 os.kill(pid, 0)
