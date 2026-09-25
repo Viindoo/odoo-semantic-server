@@ -1278,8 +1278,9 @@ class _Reconciler:
         deletes, as Modules are for the orphan sweep - against every group at
         the version: more than half (and at least 20) of them, or any while the
         ledger shows nothing present at the version (total wipe), holds the
-        whole sweep (``embedding_sweep:<gate>``, attention on the repos of the
-        affected profiles) unless
+        whole sweep (``embedding_sweep:<gate>``, attention naming the held
+        profiles on the repos of those profiles, or on every repo of the
+        version when none of them has a repo at it) unless
         ``allow_mass_retire``.
         """
         from src.indexer.writer_pgvector import embedding_groups
@@ -1308,12 +1309,21 @@ class _Reconciler:
             else:
                 self.report.gates_tripped.append(f"embedding_sweep:{gate}")
                 self.report.embedding_orphans_held = groups
-                text = f"{message}; nothing deleted (use --allow-mass-retire)"
+                profiles = sorted({p for _m, p, _n in groups})
+                text = (
+                    f"{message} for profile(s) {', '.join(profiles)}; "
+                    "nothing deleted (use --allow-mass-retire)"
+                )
                 _logger.warning("reconcile %s: %s", self.v, text)
-                profiles = {p for _m, p, _n in groups}
-                for r in sync_rows:
-                    if r["profile_name"] in profiles:
-                        self._attend(r["repo_id"], text)
+                rows = list(sync_rows)
+                targets = [r for r in rows if r["profile_name"] in profiles]
+                if not targets:
+                    # No repo of a held profile at this version (its rows are
+                    # leftovers): the version's repos carry the attention so
+                    # the exit-3 run always names what holds it (#381 F3).
+                    targets = rows
+                for r in targets:
+                    self._attend(r["repo_id"], text)
                 return
         self.report.embedding_orphans = groups
         if not delete:

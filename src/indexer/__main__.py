@@ -371,6 +371,19 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     for key in ("gates_tripped", "undecidable", "errors"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
+    # The embedding gate id names no profile; say which ones it holds (#381 F3).
+    for report in lifecycle.get("reports") or []:
+        held = report.get("embedding_orphans_held") or []
+        if not held:
+            continue
+        profiles = sorted({
+            g["profile"] if isinstance(g, dict) else g[1] for g in held
+        })
+        print(
+            f"  embedding_orphans_held: {report.get('odoo_version')}: "
+            f"{len(held)} group(s) of profile(s) {', '.join(profiles)}",
+            file=sys.stderr,
+        )
     return code
 
 
