@@ -181,6 +181,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--static-data-dir", default=None,
         help="Override path for static spec_data JSON files (optional).",
     )
+    sub_core.add_argument(
+        "--job-id",
+        type=int,
+        default=None,
+        help="(Optional) indexer_jobs.id to update lifecycle status during run.",
+    )
 
     # --- reembed-stubs subcommand (M10 WI-3) -----------------------------------
     sub_reembed = subparsers.add_parser(
@@ -271,6 +277,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
+
+
+def subcommand_accepts_job_id(subcommand: str) -> bool:
+    """True when *subcommand* declares ``--job-id`` (it reports its state on
+    its Web UI job row). Read from the real parser, so the Web UI spawn helper
+    never hands the flag to a subcommand whose argparse would exit 2 on it."""
+    parser = _build_parser()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            sub = action.choices.get(subcommand)
+            return sub is not None and "--job-id" in sub._option_string_actions
+    return False
 
 
 def _track_job(pg, job_id: int, **fields) -> None:
@@ -527,11 +545,36 @@ def main(argv: list[str] | None = None) -> int:
         return exit_code
 
     elif args.subcommand == "index-core":
-        _run_index_core(
-            source=args.source,
-            version=args.version,
-            static_data_dir=args.static_data_dir,
-        )
+        job_id = getattr(args, "job_id", None)
+        pg = open_production_pg() if job_id is not None else None
+        try:
+            if job_id is not None:
+                _track_job(
+                    pg, job_id,
+                    status="running",
+                    pid=os.getpid(),
+                    started_at=datetime.now(UTC),
+                )
+            try:
+                _run_index_core(
+                    source=args.source,
+                    version=args.version,
+                    static_data_dir=args.static_data_dir,
+                )
+            except BaseException as e:
+                if job_id is not None and not isinstance(e, SystemExit):
+                    _track_job(
+                        pg, job_id,
+                        status="error",
+                        finished_at=datetime.now(UTC),
+                        error_msg=str(e)[:1000],
+                    )
+                raise
+            if job_id is not None:
+                _track_job(pg, job_id, status="done", finished_at=datetime.now(UTC))
+        finally:
+            if pg is not None:
+                pg.close()
 
     elif args.subcommand == "reembed-stubs":
         embedder = _build_embedder()
