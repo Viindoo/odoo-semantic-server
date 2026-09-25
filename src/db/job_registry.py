@@ -66,9 +66,19 @@ class ProcInfo:
 
 _PROC = ProcInfo()
 
-# A job's process starts before the job reports 'running' (started_at); allow
-# for btime's whole-second resolution and clock-tick rounding.
-_START_SLACK_S = 5.0
+# A job's process starts before the job reports 'running' (started_at), so a
+# process that started later - or a boot after started_at - means the pid is
+# not the job's. Known limit: /proc gives the boot time and a process's start
+# only relative to the CURRENT wall clock (btime = now - uptime), while
+# started_at is the wall clock at report time; a forward step of the clock
+# after the job started (NTP step, manual set) shifts both by the step and
+# would make a live job look reused. The slack absorbs such steps up to 120 s
+# (plus btime's whole-second resolution); a larger forward step can still
+# expire a live job's row (the run itself continues and reports done). A
+# clock-step-immune check needs the child's own boot-relative starttime ticks
+# recorded on the job, which indexer_jobs has no column for (#381). The cost:
+# a pid reused (or a reboot) within 120 s of the job's start is not detected.
+_START_SLACK_S = 120.0
 
 
 def _as_datetime(value) -> datetime | None:
@@ -91,8 +101,9 @@ def job_staleness(row: dict, *, now: datetime | None = None) -> str | None:
     * its pid does not exist;
     * its pid exists (or belongs to another user) but is not the job's
       process: the machine booted after the job started, or that process
-      started after the job did (pid reused). Needs /proc; elsewhere a live
-      pid is given the benefit of the doubt.
+      started after the job did (pid reused), beyond a 120 s slack for
+      wall-clock steps (see ``_START_SLACK_S`` for the limit). Needs /proc;
+      elsewhere a live pid is given the benefit of the doubt.
     """
     from src import constants  # noqa: PLC0415
 

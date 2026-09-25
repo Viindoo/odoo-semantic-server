@@ -225,6 +225,21 @@ def test_status_reports_the_jobs_own_process_as_alive(monkeypatch):
     assert body["is_alive"] is True
 
 
+# --- a wall-clock step does not expire a live job ----------------------------
+
+def test_a_small_forward_clock_step_does_not_expire_a_live_job(monkeypatch):
+    """btime and the pid's start time are derived from the current wall clock,
+    started_at from the clock when the job reported: a forward step of the
+    clock after the job started (NTP step, 30s) shifts both by the step. A
+    live job must survive such a step."""
+    step = 30
+    proc = _Proc(boot=(NOW - timedelta(days=2) + timedelta(seconds=step)).timestamp(),
+                 starts={ME: (NOW - timedelta(seconds=3601 - step)).timestamp()})
+    count, updates = _sweep([_row(11, "running", pid=ME, age_s=3700, started_s=3600)], proc,
+                            monkeypatch)
+    assert count == 0 and updates == {}
+
+
 # --- /proc/<pid>/stat parsing ---------------------------------------------
 
 def _stat(comm: str, starttime: int) -> str:
