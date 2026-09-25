@@ -107,6 +107,21 @@ install): units show `[~] non-canonical`, `Body drift: 0`,
 `Non-canonical: <count>`; verify a drop-in `*.conf` exists per
 customized unit.
 
+**Known stale bodies, not operator edits (#381, observed 2026-09-25 on
+prod).** Two drifts come from units installed before a template change,
+and the template is the side to keep - install the shipped template
+(section 5) instead of moving these lines to a drop-in:
+
+- `odoo-semantic-mcp.service`: `ExecStart=... -m src.mcp.server` ->
+  template `-m src.mcp`. `-m src.mcp.server` is the legacy entry (it
+  still serves, but runs `server.py` as `__main__` and loads it twice);
+  `src/mcp/__main__.py` is the single-instance entry every doc uses.
+- `odoo-semantic-astro.service`: `Documentation=` still names the
+  pre-rename repo `Viindoo/odoo-semantic-mcp` -> template
+  `Viindoo/odoo-semantic-server` (cosmetic).
+
+`tests/test_systemd_templates.py` keeps the templates on these values.
+
 ---
 
 ## 3. First-install procedure (canonical layout)
