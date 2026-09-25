@@ -210,3 +210,17 @@ def test_spawn_refuses_a_subcommand_that_cannot_report_its_job(spawn):
 
     assert store.created == [], "no job row may be left queued for a run that cannot report"
     assert popen_calls == []
+
+
+def test_index_core_without_job_id_keeps_the_default_sigterm(core_run):
+    """Nothing to record, so no handler: SIGTERM keeps killing the process
+    (exit 143) as before, like a plain CLI run."""
+    before = signal.getsignal(signal.SIGTERM)
+    main_mod.main(_CORE_ARGV)
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_index_core_with_job_id_installs_a_sigterm_handler(core_run):
+    before = signal.getsignal(signal.SIGTERM)
+    main_mod.main([*_CORE_ARGV, "--job-id", "5"])
+    assert signal.getsignal(signal.SIGTERM) is not before

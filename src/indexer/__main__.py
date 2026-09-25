@@ -600,7 +600,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.subcommand == "index-core":
         job_id = getattr(args, "job_id", None)
         pg = open_production_pg() if job_id is not None else None
-        _install_sigterm_handler(job_id)
+        # Only a tracked run has a job to record; an untracked index-core keeps
+        # the default SIGTERM (killed, exit 143) as before #381. index-repo
+        # always installs it (pre-existing: its finally closes the embedder).
+        if job_id is not None:
+            _install_sigterm_handler(job_id)
         try:
             if job_id is not None:
                 _track_job(
