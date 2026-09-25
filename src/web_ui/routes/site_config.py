@@ -8,7 +8,7 @@ anonymous visitors should appear here.
 Response shape (WI-1):
     {
         "helpdesk_url": "https://viindoo.com/ticket/team/88",
-        "site_version": "0.14.0",
+        "site_version": "<src._version.__version__>",
         "paid_checkout_enabled": false,
         "checkout_url_map": {"<plan_slug>": "<url>"},
         "ga_measurement_id": ""
