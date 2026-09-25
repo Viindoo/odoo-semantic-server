@@ -1299,10 +1299,10 @@ class _Reconciler:
         # ledger shows nothing present at the version.
         gate = mass_gate_trips(len(groups), len(all_groups), len(present)) if groups else None
         if gate is not None:
-            rows = sum(n for _m, _p, n in groups)
+            row_total = sum(n for _m, _p, n in groups)
             message = (
                 f"embedding sweep at {self.v}: {len(groups)} of {len(all_groups)} "
-                f"embedding group(s) ({rows} rows) would be removed"
+                f"embedding group(s) ({row_total} rows) would be removed"
             )
             if self.allow_mass_retire:
                 _logger.warning("reconcile %s: %s; applied (--allow-mass-retire)", self.v, message)
@@ -1315,13 +1315,13 @@ class _Reconciler:
                     "nothing deleted (use --allow-mass-retire)"
                 )
                 _logger.warning("reconcile %s: %s", self.v, text)
-                rows = list(sync_rows)
-                targets = [r for r in rows if r["profile_name"] in profiles]
+                repo_rows = list(sync_rows)
+                targets = [r for r in repo_rows if r["profile_name"] in profiles]
                 if not targets:
                     # No repo of a held profile at this version (its rows are
                     # leftovers): the version's repos carry the attention so
                     # the exit-3 run always names what holds it (#381 F3).
-                    targets = rows
+                    targets = repo_rows
                 for r in targets:
                     self._attend(r["repo_id"], text)
                 return
