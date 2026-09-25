@@ -32,6 +32,7 @@ from src.indexer.pipeline import (
     index_core,
     index_profile,
     open_production_pg,
+    production_pg_dsn,
     reembed_stubs_for_profile,
 )
 from src.indexer.writer_neo4j import Neo4jWriter
@@ -306,6 +307,11 @@ def _track_job(pg, job_id: int, **fields) -> None:
         )
 
 
+# Seconds the SIGTERM handler waits to reach PostgreSQL before giving up the
+# job update and exiting anyway.
+_SIGTERM_CONNECT_TIMEOUT_S = 5
+
+
 def _mark_job_terminated(job_id: int) -> None:
     """Write the SIGTERM error on the job row through a connection of its own.
 
@@ -313,9 +319,18 @@ def _mark_job_terminated(job_id: int) -> None:
     ``_write_scope`` transaction (autocommit off), and an update written there
     is rolled back when the process exits - the job then stayed ``running``
     with a dead pid (#381 F6). ``open_production_pg`` returns an autocommit
-    connection, so the update is committed before ``sys.exit``."""
+    connection, so the update is committed before ``sys.exit``.
+
+    A plain ``psycopg2.connect`` with a short ``connect_timeout``: an
+    unreachable database must not hold the exit until systemd's SIGKILL, and a
+    signal handler must not bootstrap the shared pool (``open_production_pg``)."""
     try:
-        conn = open_production_pg()
+        import psycopg2  # noqa: PLC0415
+
+        conn = psycopg2.connect(
+            production_pg_dsn(), connect_timeout=_SIGTERM_CONNECT_TIMEOUT_S,
+        )
+        conn.autocommit = True
     except Exception as exc:  # noqa: BLE001 - the process is exiting anyway
         logging.getLogger(__name__).warning(
             "index job %s: cannot record SIGTERM: %s: %s", job_id, type(exc).__name__, exc,

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import os
 import signal
+import time
 
 import pytest
 
 import src.indexer.__main__ as main_mod
 
 _DURABLE: list[dict] = []
+_CONNECTS: list[dict] = []
+_CONNECT_FAILS: list[BaseException] = []
 
 
 class _FakeConn:
@@ -64,6 +67,23 @@ def run(monkeypatch):
         return conn
 
     monkeypatch.setattr(main_mod, "open_production_pg", fake_open)
+    # The handler's own connection: a plain psycopg2.connect (autocommit off
+    # by default, as in psycopg2), never the pool bootstrap.
+    _CONNECTS.clear()
+    _CONNECT_FAILS.clear()
+
+    def fake_connect(dsn, **kw):
+        _CONNECTS.append({"dsn": dsn, **kw})
+        if _CONNECT_FAILS:
+            raise _CONNECT_FAILS[0]
+        conn = _FakeConn()
+        conn.autocommit = False
+        opened.append(conn)
+        return conn
+
+    import psycopg2
+    monkeypatch.setattr(psycopg2, "connect", fake_connect)
+    monkeypatch.setattr(main_mod, "production_pg_dsn", lambda: "dbname=osm", raising=False)
     monkeypatch.setattr(
         main_mod.job_registry, "update_job",
         lambda conn, job_id, **kw: conn.write({"job_id": job_id, **kw}),
@@ -115,3 +135,40 @@ def test_sigterm_during_index_core_commits_the_job_error(run, monkeypatch):
         ])
 
     assert (4, "error") in [(r["job_id"], r.get("status")) for r in _DURABLE]
+
+
+def test_the_sigterm_connection_is_bounded_and_does_not_touch_the_pool(run, monkeypatch):
+    opened = run
+
+    def fake_index_profile(pg, **_kw):
+        _sigterm_inside_a_write_transaction(opened)
+        return {}
+
+    monkeypatch.setattr(main_mod, "index_profile", fake_index_profile)
+
+    with pytest.raises(SystemExit):
+        main_mod.main(["index-repo", "--profile", "p", "--no-embed", "--job-id", "9"])
+
+    (connect,) = _CONNECTS
+    assert 0 < connect["connect_timeout"] <= 10, connect
+
+
+def test_an_unreachable_db_does_not_stop_the_sigterm_exit(run, monkeypatch):
+    import psycopg2
+
+    opened = run
+    _CONNECT_FAILS.append(psycopg2.OperationalError("could not connect"))
+
+    def fake_index_profile(pg, **_kw):
+        _sigterm_inside_a_write_transaction(opened)
+        return {}
+
+    monkeypatch.setattr(main_mod, "index_profile", fake_index_profile)
+
+    t0 = time.monotonic()
+    with pytest.raises(SystemExit) as exc:
+        main_mod.main(["index-repo", "--profile", "p", "--no-embed", "--job-id", "9"])
+
+    assert exc.value.code == 1
+    assert time.monotonic() - t0 < 5
+    assert not any(r.get("status") == "error" for r in _DURABLE)
