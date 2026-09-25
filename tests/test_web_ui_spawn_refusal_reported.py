@@ -18,23 +18,32 @@ from src.web_ui.helpers import subprocess_runner
 _REFUSAL = "indexer subcommand 'x' does not accept --job-id"
 
 
-@pytest.fixture
-def refuse(monkeypatch):
+@pytest.fixture(params=["refused", "spawn_failed"])
+def refuse(request, monkeypatch):
+    """Both ways a run does not start: the helper refuses the subcommand, or
+    the spawn itself fails (Popen / log file / job row). Either is an error
+    answer naming the reason, never ``ok: true``."""
+    exc = (
+        ValueError(_REFUSAL) if request.param == "refused"
+        else OSError("[Errno 12] Cannot allocate memory")
+    )
+
     def fake_spawn(_argv, job_label):
-        raise ValueError(_REFUSAL)
+        raise exc
 
     monkeypatch.setattr(subprocess_runner, "spawn_indexer_subcommand", fake_spawn)
+    return "--job-id" if request.param == "refused" else "Cannot allocate memory"
 
 
 def _body(resp) -> dict:
     return json.loads(resp.body)
 
 
-def _assert_refusal(resp):
+def _assert_refusal(resp, reason):
     body = _body(resp)
     assert resp.status_code == 500, body
     assert body.get("ok") is False, body
-    assert "--job-id" in body.get("error", ""), body
+    assert reason in body.get("error", ""), body
     assert body.get("job_id") is None
 
 
@@ -45,7 +54,7 @@ async def test_index_core_reports_a_refused_spawn(refuse, tmp_path):
     body = operations.IndexCoreBody(source=str(tmp_path), version="17.0")
     resp = await operations.post_index_core.__wrapped__(body, None, _user_id=1)
 
-    _assert_refusal(resp)
+    _assert_refusal(resp, refuse)
 
 
 @pytest.mark.asyncio
@@ -56,7 +65,7 @@ async def test_seed_patterns_reports_a_refused_spawn(refuse):
         operations.SeedPatternsBody(), None, _user_id=1,
     )
 
-    _assert_refusal(resp)
+    _assert_refusal(resp, refuse)
 
 
 @pytest.mark.asyncio
@@ -82,4 +91,29 @@ async def test_index_all_reports_a_refused_spawn(refuse, monkeypatch):
         None, repos_indexing.IndexAllBody(), _user_id=1,
     )
 
-    _assert_refusal(resp)
+    _assert_refusal(resp, refuse)
+
+
+def test_a_failed_spawn_leaves_its_job_in_error_not_queued(monkeypatch):
+    updates: list[dict] = []
+
+    class _Store:
+        def create_job(self, _label):
+            return 21
+
+        def update_job(self, job_id, **kw):
+            updates.append({"id": job_id, **kw})
+
+    def failing_popen(*_a, **_k):
+        raise OSError("[Errno 12] Cannot allocate memory")
+
+    monkeypatch.setattr(subprocess_runner, "job_store", lambda: _Store())
+    monkeypatch.setattr(subprocess_runner.subprocess, "Popen", failing_popen)
+
+    with pytest.raises(OSError):
+        subprocess_runner.spawn_indexer_subcommand(["index-repo", "--profile", "p"], "p")
+
+    (update,) = updates
+    assert update["id"] == 21 and update["status"] == "error"
+    assert update["finished_at"] is not None
+    assert "Cannot allocate memory" in update["error_msg"]

@@ -144,7 +144,6 @@ async def post_index_core(
         return JSONResponse(_json_safe({"error": error}), status_code=400)
 
     # --- Spawn subprocess ---
-    job_id: int | None = None
     try:
         from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
@@ -153,26 +152,21 @@ async def post_index_core(
             argv += ["--static-data-dir", body.static_data_dir.strip()]
         job_label = f"core:{body.version.strip()}"
         job_id = spawn_indexer_subcommand(argv, job_label=job_label)
-    except ValueError as exc:
-        # The spawn helper refused the run (no job row, nothing started):
-        # report it, never as a started job with tracking unavailable.
-        _logger.warning("index-core spawn refused: %s", exc)
+    except Exception as exc:
+        # Nothing was started: the helper refused the subcommand, or the job
+        # row / log file / spawn failed (the helper then marks its job error).
+        # Report it, never as a started job (#381).
+        _logger.warning("index-core spawn failed: %s", exc)
         return JSONResponse(
             _json_safe({"ok": False, "error": f"index-core not started: {exc}"}),
             status_code=500,
         )
-    except Exception as exc:
-        _logger.warning("index-core spawn failed: %s", exc)
 
     return JSONResponse(_json_safe({
         "ok": True,
         "job_id": job_id,
         "version": body.version.strip(),
-        "message": (
-            f"Indexing core specs for {body.version.strip()} (job {job_id})"
-            if job_id is not None
-            else f"Indexing core specs for {body.version.strip()} (job tracking unavailable)"
-        ),
+        "message": f"Indexing core specs for {body.version.strip()} (job {job_id})",
     }))
 
 
@@ -209,7 +203,6 @@ async def post_seed_patterns(
         return JSONResponse(_json_safe({"error": error}), status_code=400)
 
     # --- Spawn subprocess ---
-    job_id: int | None = None
     try:
         from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
@@ -225,26 +218,21 @@ async def post_seed_patterns(
 
         job_label = f"patterns:{version_stripped}" if version_stripped else "patterns"
         job_id = spawn_indexer_subcommand(argv, job_label=job_label)
-    except ValueError as exc:
-        # The spawn helper refused the run (no job row, nothing started):
-        # report it, never as a started job with tracking unavailable.
-        _logger.warning("seed-patterns spawn refused: %s", exc)
+    except Exception as exc:
+        # Nothing was started: the helper refused the subcommand, or the job
+        # row / log file / spawn failed (the helper then marks its job error).
+        # Report it, never as a started job (#381).
+        _logger.warning("seed-patterns spawn failed: %s", exc)
         return JSONResponse(
             _json_safe({"ok": False, "error": f"seed-patterns not started: {exc}"}),
             status_code=500,
         )
-    except Exception as exc:
-        _logger.warning("seed-patterns spawn failed: %s", exc)
 
     label = f"patterns:{version_stripped}" if version_stripped else "patterns"
     return JSONResponse(_json_safe({
         "ok": True,
         "job_id": job_id,
-        "message": (
-            f"Seeding pattern catalogue ({label}) (job {job_id})"
-            if job_id is not None
-            else "Seeding pattern catalogue (job tracking unavailable)"
-        ),
+        "message": f"Seeding pattern catalogue ({label}) (job {job_id})",
     }))
 
 

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 
 from src.db.pg import job_store
@@ -40,6 +41,8 @@ def spawn_indexer_subcommand(
     Raises:
         ValueError: the subcommand does not declare ``--job-id`` (no job row
             is created and nothing is spawned).
+        Exception: the log file or the spawn failed; the job row is marked
+            'error' with the reason first, then the error is re-raised.
     """
     # The child reports running / done / error through --job-id; a subcommand
     # that does not declare it would die on argparse exit 2 and leave its job
@@ -58,13 +61,28 @@ def spawn_indexer_subcommand(
     # Capture subprocess output to /tmp/osm-job-{job_id}.log.
     # Popen dup2()s the fd into the child — parent can close its copy right after.
     log_path = Path(tempfile.gettempdir()) / f"osm-job-{job_id}.log"
-    with open(log_path, "w") as log_file:
-        proc = subprocess.Popen(
-            argv,
-            start_new_session=True,
-            stdout=log_file,
-            stderr=log_file,
-        )
+    try:
+        with open(log_path, "w") as log_file:
+            proc = subprocess.Popen(
+                argv,
+                start_new_session=True,
+                stdout=log_file,
+                stderr=log_file,
+            )
+    except Exception as exc:
+        # Nothing started: the job must not stay 'queued' (#381).
+        try:
+            job_store().update_job(
+                job_id,
+                status="error",
+                finished_at=datetime.now(UTC),
+                error_msg=f"Spawn failed: {type(exc).__name__}: {exc}"[:1000],
+            )
+        except Exception as update_exc:  # noqa: BLE001 - re-raise the spawn error
+            _logger.warning(
+                "index job %s: recording spawn failure failed: %s", job_id, update_exc,
+            )
+        raise
     # Record the child's pid now: a child that dies before its own 'running'
     # report still leaves a pid the start-up sweep can check (#381 F1).
     try:
