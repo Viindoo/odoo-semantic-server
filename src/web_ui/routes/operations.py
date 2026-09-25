@@ -153,6 +153,14 @@ async def post_index_core(
             argv += ["--static-data-dir", body.static_data_dir.strip()]
         job_label = f"core:{body.version.strip()}"
         job_id = spawn_indexer_subcommand(argv, job_label=job_label)
+    except ValueError as exc:
+        # The spawn helper refused the run (no job row, nothing started):
+        # report it, never as a started job with tracking unavailable.
+        _logger.warning("index-core spawn refused: %s", exc)
+        return JSONResponse(
+            _json_safe({"ok": False, "error": f"index-core not started: {exc}"}),
+            status_code=500,
+        )
     except Exception as exc:
         _logger.warning("index-core spawn failed: %s", exc)
 
@@ -217,6 +225,14 @@ async def post_seed_patterns(
 
         job_label = f"patterns:{version_stripped}" if version_stripped else "patterns"
         job_id = spawn_indexer_subcommand(argv, job_label=job_label)
+    except ValueError as exc:
+        # The spawn helper refused the run (no job row, nothing started):
+        # report it, never as a started job with tracking unavailable.
+        _logger.warning("seed-patterns spawn refused: %s", exc)
+        return JSONResponse(
+            _json_safe({"ok": False, "error": f"seed-patterns not started: {exc}"}),
+            status_code=500,
+        )
     except Exception as exc:
         _logger.warning("seed-patterns spawn failed: %s", exc)
 
