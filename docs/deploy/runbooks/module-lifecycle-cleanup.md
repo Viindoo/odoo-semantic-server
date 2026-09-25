@@ -179,10 +179,40 @@ sudo osm-fernet-run $PY -m src.indexer lifecycle-audit --all > ~/osm-rollout/lif
 sudo osm-fernet-run $PY -m src.indexer lifecycle-audit --all --json > ~/osm-rollout/lifecycle-preview.json
 ```
 
-Review, per version:
+Review, per version. Every finding key of the report (`findings`, the categories are
+`FINDING_KEYS` in `src/indexer/lifecycle_audit.py`) is covered below; a key you cannot explain
+is a reason to stop before step 4:
+
+```bash
+jq .findings ~/osm-rollout/lifecycle-preview.json
+```
+
 - `would_retire` / `orphan_modules` - the ghosts that will go. **Abort (and investigate) if a
   listed name has a tracked manifest in ANY registered repo at that version** (`git -C <clone> ls-files
   | grep -E '(^|/)<name>/__(manifest|openerp)__\.py$'`): that would be a scan or version-rule problem, not a ghost.
+- `would_drop_owner` / `would_drop_excluded_owner` - a module two repos ship loses one owner (the
+  node stays, `kept_by` names the survivor). Abort if the dropping repo still tracks the manifest
+  (same `git ls-files` check).
+- `child_orphans` - Module-less names whose leftover children (models, fields, views, ...) the
+  sweep deletes; `child_orphans_deferred` - the same, held because a repo at the version is not
+  synced (step 0c). Abort if a listed name has a tracked manifest in a registered repo at that
+  version.
+- `embedding_orphans` - embedding rows (`module` / `profile` / `rows`) that no live Module node
+  and no present ledger row account for; the first run deletes every listed group.
+  Totals per version, for the rollout record:
+
+  ```bash
+  jq -r '.versions[] | "\(.odoo_version) groups=\(.embedding_orphans | length) rows=\([.embedding_orphans[].rows] | add // 0)"' \
+     ~/osm-rollout/lifecycle-preview.json
+  # the GUC lifts the tenant RLS policy (FORCEd after ops/rls_cutover.sh) for this session
+  psql "$PG_DSN" -At -c "SET app.allowed_profiles = '*'" \
+       -c "SELECT odoo_version, count(*) FROM embeddings
+           WHERE profile_name <> '__global__' GROUP BY 1 ORDER BY 1;"
+  ```
+
+  **Abort (and investigate) if a listed `module` has a tracked manifest in a registered repo of
+  the listed `profile` at that version** (same `git ls-files` check): that is a scan, profile or
+  ledger problem, not ghost residue.
 - `blocked` / `gates_tripped` and the repo entries' `gates` - a gate that will hold the first
   run (see step 5). On the first run the per-repo mass gate G-B compares each repo's scan with
   the Module nodes the GRAPH attributes to it (`gates.baseline = "graph"`: the ledger is still
@@ -197,6 +227,14 @@ Review, per version:
 - `modules_without_profile` - the F24 list from step 0a.
 - `would_rewrite` - nodes the first run re-writes (posbox stub path, `.odoo-ai` copies, lost
   profile). Expected on a pre-ledger graph.
+- repo entries `wrong_paths` / `unapplied_changes` - drift a repo's next run does not fix because
+  it is the unchanged skip; `index-repo --profile <p> --full` applies them (step 6).
+- repo entries `held_prunes` and version `shared_prunes` - entity prunes the soft gate holds, and
+  the shared-module prune (`would_prune` or `held`). A held prune exits 3 on the run (step 5).
+- repo entries `unparseable_kept` - an indexed module whose tracked manifest does not parse is
+  kept as it is (exit 3); fix the manifest upstream.
+- `errors` (version and repo entries) - the preview could not decide something; read the text and
+  fix it before step 4.
 - repo entries `shared_parse_backlog` (informational) - modules two or more repos ship, still to
   be re-parsed once each (at most `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN`, default 60, per repo per
   run; about 11 daily runs for a CE clone). Budget this extra parse time per run.
