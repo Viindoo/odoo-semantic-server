@@ -13,6 +13,26 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 _Nothing yet._
 
+## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)
+
+Follow-ups from the round-2 review of #379, fixed before the 0.19.0 production deploy. No migration, no tool or resource change (31 tools, 9 resources).
+
+### Fixed
+
+- **The Web UI "index core" button indexed nothing (#381 F2):** `spawn_indexer_subcommand` always appends `--job-id`, which `index-core` did not declare, so the child died on argparse exit 2 and its job stayed `queued`. `index-core` now accepts `--job-id` and reports running / done / error like `index-repo`; the spawn helper checks the real parser and refuses (no job row, nothing spawned) a subcommand that cannot report its job. A contract test parses every subcommand `src/web_ui` spawns with `--job-id 1`.
+- **A Web UI index job could stay `queued` forever (#381 F1):** a child that died before its first `running` report left a row with no pid, which the start-up sweep skipped and the reset route refused (prod: jobs 3, 4, 5). The Web UI now records the child's pid right after the spawn; `mark_dead_jobs` expires a `queued` job with no pid older than `INDEXER_JOB_QUEUED_TTL_SECONDS` (new, default 600s, env override; `docs/operations/timeouts.md`); `POST /api/jobs/{id}/reset` also accepts a `queued` job.
+- **A SIGTERM-ed index run could leave its job `running` (#381 F6):** the handler wrote the error on the run's main connection, which may be inside a `_write_scope` transaction and is rolled back at exit. It now writes on a fresh autocommit connection; `index-core` installs the same handler.
+- **A held orphan-embedding sweep could exit 3 with nothing actionable (#381 F3):** gate G-B's attention went only to repos of the held profiles registered at the version, so leftover rows of a profile with no repo there named nothing. The attention text names the held profile(s), falls back to every repo of the version, and the exit-3 stderr adds `embedding_orphans_held: <v>: N group(s) of profile(s) ...` (gate id unchanged).
+
+### Changed
+
+- **`writer_pgvector.orphan_embedding_keys` removed (#381 F7):** no caller in `src/`; its tests now assert on `embedding_groups`, the read the reconcile uses.
+
+### Docs
+
+- **Rollout runbook `module-lifecycle-cleanup.md` (#381 F4, F5):** the step 3 jq totals add `held_groups` / `held_rows` from `embedding_orphans_held`; the step 0b `sort | comm` check exports `LC_ALL=C` (under `en_US.UTF-8` `comm` aborts on unsorted input); step 4 recommends `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` for the first week on a host whose GPU embedder is shared (code default unchanged).
+- **systemd drift (#381):** the MCP template stays on `python -m src.mcp` (single-instance entry); an installed unit running `-m src.mcp.server` (legacy, loads `server.py` twice) or an astro unit whose `Documentation=` names the pre-rename repo is a stale body to replace with the shipped template (`install-runbook.md` section 2). Guard tests keep the templates on those values.
+
 ## [0.19.0] - 2026-09-24 - Module lifecycle ledger retires ghost modules on every run (#373, #378, ADR-0056); Web UI + test_class_inspect tenant-isolation fixes; curated data audit (issue #364, ADR-0055) + test_base_classes per-version fix (issue #362, ADR-0054)
 
 ### Security
