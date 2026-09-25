@@ -273,6 +273,21 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _track_job(pg, job_id: int, **fields) -> None:
+    """Report the run's state on its Web UI job row (``indexer_jobs``).
+
+    Never fatal - a deleted job row or a PG hiccup must not fail the index
+    run - but never silent either: the failure is logged at WARNING.
+    """
+    try:
+        job_registry.update_job(pg, job_id, **fields)
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "index job %s: status update %s failed: %s: %s",
+            job_id, fields.get("status"), type(exc).__name__, exc,
+        )
+
+
 EXIT_LIFECYCLE_ATTENTION = 3
 # lifecycle-audit --fail-on-findings: drift found (distinct from 1, a crash).
 EXIT_AUDIT_FINDINGS = 4
@@ -409,31 +424,24 @@ def main(argv: list[str] | None = None) -> int:
             _pg = _sigterm_state.get("pg")
             _job_id = _sigterm_state.get("job_id")
             if _job_id is not None and _pg is not None:
-                try:
-                    job_registry.update_job(
-                        _pg, _job_id,
-                        status="error",
-                        finished_at=datetime.now(UTC),
-                        error_msg="Process received SIGTERM",
-                    )
-                except Exception:
-                    pass
+                _track_job(
+                    _pg, _job_id,
+                    status="error",
+                    finished_at=datetime.now(UTC),
+                    error_msg="Process received SIGTERM",
+                )
             sys.exit(1)
 
         signal.signal(signal.SIGTERM, _sigterm_handler)
 
         try:
             if job_id is not None:
-                try:
-                    job_registry.update_job(
-                        pg, job_id,
-                        status="running",
-                        pid=os.getpid(),
-                        started_at=datetime.now(UTC),
-                    )
-                except Exception:
-                    # Don't block indexing if job tracking fails (job may have been deleted, etc.)
-                    pass
+                _track_job(
+                    pg, job_id,
+                    status="running",
+                    pid=os.getpid(),
+                    started_at=datetime.now(UTC),
+                )
             try:
                 # A run with a failed repo or profile still reconciled the
                 # healthy ones: its summary comes with the IndexRunError.
@@ -495,26 +503,20 @@ def main(argv: list[str] | None = None) -> int:
                         summary,
                     )
                 if job_id is not None:
-                    try:
-                        job_registry.update_job(
-                            pg, job_id,
-                            status="done",
-                            finished_at=datetime.now(UTC),
-                        )
-                    except Exception:
-                        pass
+                    _track_job(
+                        pg, job_id,
+                        status="done",
+                        finished_at=datetime.now(UTC),
+                    )
             except BaseException as e:
                 if job_id is not None and not isinstance(e, SystemExit):
                     # Don't overwrite job status already set by SIGTERM handler
-                    try:
-                        job_registry.update_job(
-                            pg, job_id,
-                            status="error",
-                            finished_at=datetime.now(UTC),
-                            error_msg=str(e)[:1000],
-                        )
-                    except Exception:
-                        pass
+                    _track_job(
+                        pg, job_id,
+                        status="error",
+                        finished_at=datetime.now(UTC),
+                        error_msg=str(e)[:1000],
+                    )
                 raise
         finally:
             if embedder is not None:
