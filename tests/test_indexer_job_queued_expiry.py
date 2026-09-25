@@ -136,3 +136,36 @@ async def test_the_admin_can_reset_a_queued_job(monkeypatch):
 
     assert resp.status_code == 200
     assert updates and updates[0]["id"] == 3 and updates[0]["status"] == "error"
+
+
+def test_a_stale_queued_job_is_expired_even_when_its_pid_is_alive():
+    # The pid recorded at spawn was reused (reboot) by a live process: the
+    # child never reported 'running' (started_at still NULL) within the TTL.
+    import os
+
+    ttl = constants.INDEXER_JOB_QUEUED_TTL_SECONDS
+    count, updates = _sweep([_row(12, "queued", pid=os.getpid(), age_s=ttl + 60)])
+
+    assert count == 1
+    assert updates[12]["status"] == "error"
+    assert "queued" in updates[12]["error_msg"]
+
+
+def test_a_stale_queued_job_whose_pid_belongs_to_another_user_is_expired(monkeypatch):
+    import os as _os
+
+    def kill(_pid, _sig):
+        raise PermissionError
+
+    monkeypatch.setattr(_os, "kill", kill)
+    ttl = constants.INDEXER_JOB_QUEUED_TTL_SECONDS
+    count, updates = _sweep([_row(13, "queued", pid=1, age_s=ttl + 60)])
+
+    assert count == 1 and updates[13]["status"] == "error"
+
+
+def test_a_fresh_queued_job_with_a_live_pid_is_left_alone():
+    import os
+
+    count, updates = _sweep([_row(14, "queued", pid=os.getpid(), age_s=1)])
+    assert count == 0 and updates == {}

@@ -166,9 +166,12 @@ class JobStore:
         Called on Web UI startup to clean up jobs left over from crashed subprocesses:
 
         * a job whose PID is no longer alive;
-        * a 'queued' job with no PID older than ``INDEXER_JOB_QUEUED_TTL_SECONDS``
-          - its child never started (or died before reporting), and nothing
-          else would ever move it out of 'queued' (#381 F1).
+        * a 'queued' job never started (``started_at`` NULL) older than
+          ``INDEXER_JOB_QUEUED_TTL_SECONDS``, whatever its PID: its child never
+          reported 'running' (a live one does within seconds), and nothing
+          else would ever move it out of 'queued' (#381 F1). The PID alone
+          cannot tell: it may be none, reused after a reboot, or another
+          user's process.
 
         Returns the number of jobs marked as error.
         """
@@ -189,21 +192,31 @@ class JobStore:
         count = 0
         for row in rows:
             pid = row.get("pid")
+            created_at = row.get("created_at")
+            age = (now - created_at).total_seconds() if created_at else None
+            # A live child reports 'running' (with started_at) within seconds.
+            # Still queued past the TTL = it never did, whatever the recorded
+            # pid says now: none, reused by another process after a reboot, or
+            # owned by another user (PermissionError below).
+            if (
+                row.get("status") == "queued"
+                and row.get("started_at") is None
+                and age is not None
+                and age > ttl
+            ):
+                self.update_job(
+                    row["id"],
+                    status="error",
+                    finished_at=now,
+                    error_msg=(
+                        f"Job stayed queued for {int(age)}s (limit {int(ttl)}s, "
+                        f"pid {pid if pid is not None else 'none'}): the indexer "
+                        "process never started or died before reporting"
+                    ),
+                )
+                count += 1
+                continue
             if pid is None:
-                created_at = row.get("created_at")
-                age = (now - created_at).total_seconds() if created_at else None
-                if row.get("status") == "queued" and age is not None and age > ttl:
-                    self.update_job(
-                        row["id"],
-                        status="error",
-                        finished_at=now,
-                        error_msg=(
-                            f"Job stayed queued with no pid for {int(age)}s "
-                            f"(limit {int(ttl)}s): the indexer process never "
-                            "started or died before reporting"
-                        ),
-                    )
-                    count += 1
                 continue
             try:
                 os.kill(pid, 0)
