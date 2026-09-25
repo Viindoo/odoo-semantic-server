@@ -30,7 +30,7 @@ Follow-ups from the round-2 review of #379, fixed before the 0.19.0 production d
 
 ### Docs
 
-- **Rollout runbook `module-lifecycle-cleanup.md` (#381 F4, F5):** the step 3 jq totals add `held_groups` / `held_rows` from `embedding_orphans_held`; the step 0b `sort | comm` check exports `LC_ALL=C` (under `en_US.UTF-8` `comm` aborts on unsorted input); step 4 recommends `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` for the first week on a host whose GPU embedder is shared (code default unchanged).
+- **Rollout runbook `module-lifecycle-cleanup.md` (#381 F4, F5):** the step 3 jq totals add `held_groups` / `held_rows` from `embedding_orphans_held`; the step 0b `sort | comm` check exports `LC_ALL=C` (under `en_US.UTF-8` `comm` aborts on unsorted input); step 4 recommends `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` in the app `.env` (read by the reindex unit, `osm-fernet-run` and the Web UI) for the first week on a host whose GPU embedder is shared (code default unchanged).
 - **systemd drift (#381):** the MCP template stays on `python -m src.mcp` (single-instance entry); an installed unit running `-m src.mcp.server` (legacy, loads `server.py` twice) or an astro unit whose `Documentation=` names the pre-rename repo is a stale body to replace with the shipped template (`install-runbook.md` section 2). Guard tests keep the templates on those values.
 
 ## [0.19.0] - 2026-09-24 - Module lifecycle ledger retires ghost modules on every run (#373, #378, ADR-0056); Web UI + test_class_inspect tenant-isolation fixes; curated data audit (issue #364, ADR-0055) + test_base_classes per-version fix (issue #362, ADR-0054)

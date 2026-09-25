@@ -257,15 +257,6 @@ echo "exit=$?"
 
 Before it, repeat the step 0c check (no line).
 
-**Shared GPU embedder (M1):** the shared-module bootstrap re-parses up to
-`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` modules (default 60) per repo per run, and each re-parsed
-module is written and embedded again. On a host whose GPU embedder shares its card with another
-model or workload, set
-`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` in the indexer unit's environment for the first week, so
-the nightly run's extra embed load stays small while the backlog drains (about three times as
-many runs); restore the default (remove the override) once `shared_parse_backlog` in
-`lifecycle-audit` is 0. The code default is unchanged.
-
 - `exit=0` - every decision was taken.
 - `exit=1` - a repo or profile failed to index (the traceback ends with `N repo(s) failed: id=...`
   or `N profile(s) failed: ...`); every other repo was still indexed and reconciled. The
@@ -278,6 +269,20 @@ many runs); restore the default (remove the override) once `shared_parse_backlog
   embedding sweep)
   and `repos.lifecycle_attention`, then act per the exit-code-3 table in `docs/deploy.md` s3.6.
   A held sweep or retirement keeps the data; nothing is lost by waiting.
+
+**Shared GPU embedder (M1):** the shared-module bootstrap re-parses up to
+`OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` modules (default 60) per repo per run, and each re-parsed
+module is written and embedded again. On a host whose GPU embedder shares its card with another
+model or workload, add `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN=20` to the app `.env`
+(`/home/odoo-semantic/odoo-semantic-mcp/.env`) before step 4 and keep it for the first week, so
+the nightly run's extra embed load stays small while the backlog drains (about three times as
+many runs). That one file reaches every index run: `odoo-semantic-reindex.service` loads it
+(`EnvironmentFile=`), `osm-fernet-run` passes it to its transient unit (`-p EnvironmentFile=`;
+the transient unit does not inherit your shell's environment, so an `export` never reaches
+the run), and a Web
+UI-started run inherits `odoo-semantic-webui.service`'s environment, which loads the same file
+(restart the Web UI to pick up the change). The value is read on every run. Remove the line
+once `shared_parse_backlog` in `lifecycle-audit` is 0. The code default is unchanged.
 
 ## Step 5 - Only if the run exited 3 on a gate
 
