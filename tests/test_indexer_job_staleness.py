@@ -191,6 +191,40 @@ def _no_real_ttl_override(monkeypatch):
     monkeypatch.setattr(constants, "INDEXER_JOB_QUEUED_TTL_SECONDS", 600.0)
 
 
+# --- the status route reports liveness by the same rule ----------------------
+
+def _status(monkeypatch, job, proc):
+    import asyncio
+
+    import src.db.pg as pg_mod
+    from src.web_ui.routes import jobs
+
+    class _Store:
+        def get_job(self, job_id):
+            return job_registry._serialize_datetimes(dict(job))
+
+    monkeypatch.setattr(pg_mod, "job_store", lambda: _Store())
+    monkeypatch.setattr(jobs, "resolve_read_scope", lambda _req: (True, None))
+    monkeypatch.setattr(job_registry, "_PROC", proc, raising=False)
+    resp = asyncio.run(jobs.job_status(None, job["id"]))
+    return json.loads(resp.body)
+
+
+def test_status_reports_a_reused_pid_as_not_alive(monkeypatch):
+    proc = _Proc(boot=(NOW - timedelta(days=2)).timestamp(),
+                 starts={ME: (NOW - timedelta(minutes=10)).timestamp()})
+    body = _status(monkeypatch, _row(9, "running", pid=ME, age_s=3700, started_s=3600), proc)
+    assert body["is_alive"] is False
+
+
+# GUARD: the job's own live process reads alive.
+def test_status_reports_the_jobs_own_process_as_alive(monkeypatch):
+    proc = _Proc(boot=(NOW - timedelta(days=2)).timestamp(),
+                 starts={ME: (NOW - timedelta(seconds=3601)).timestamp()})
+    body = _status(monkeypatch, _row(10, "running", pid=ME, age_s=3700, started_s=3600), proc)
+    assert body["is_alive"] is True
+
+
 # --- /proc/<pid>/stat parsing ---------------------------------------------
 
 def _stat(comm: str, starttime: int) -> str:

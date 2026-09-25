@@ -8,7 +8,6 @@ prefix="/api/jobs" fixes the URL mismatch without changing client code.
 """
 import datetime as _dt
 import logging
-import os
 import re
 
 from fastapi import APIRouter, Depends
@@ -26,17 +25,6 @@ from src.web_ui.auth import (
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Return True if process pid is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # process exists, different UID — assume alive
 
 
 # Owner-facing error categories (#237 follow-up). A job owner (tenant) legitimately
@@ -160,7 +148,11 @@ async def job_status(request: Request, job_id: int):
     pid = job.get("pid")
     is_alive: bool | None = None
     if pid is not None and job.get("status") in ("running", "queued"):
-        is_alive = _is_pid_alive(pid)
+        # Same rule as the start-up sweep and the reset route (#381): a live
+        # pid that is not the job's process (reused) is not alive.
+        from src.db.job_registry import job_staleness
+
+        is_alive = job_staleness(job) is None
 
     # Three-way error disclosure (#237 + follow-up):
     #   - admin           → full raw error_msg (operators need the detail)
