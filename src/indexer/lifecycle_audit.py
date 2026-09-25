@@ -557,6 +557,10 @@ def _audit_version(
         "embedding_orphans": [
             {"module": m, "profile": p, "rows": n} for m, p, n in report.embedding_orphans
         ],
+        "embedding_orphans_held": [
+            {"module": m, "profile": p, "rows": n}
+            for m, p, n in report.embedding_orphans_held
+        ],
         "gates_tripped": report.gates_tripped,
         "orphans_unparseable": report.orphans_unparseable,
         "prune_rewrites": report.prune_rewrites,
@@ -599,6 +603,7 @@ def _findings(repos: list[dict], versions: list[dict]) -> dict[str, int]:
         counts["child_orphans"] += len(v["child_orphans"])
         counts["child_orphans"] += len(v.get("child_orphans_deferred") or [])
         counts["embedding_orphans"] += len(v["embedding_orphans"])
+        counts["embedding_orphans"] += len(v.get("embedding_orphans_held") or [])
         counts["modules_without_profile"] += len(v["modules_without_profile"])
         counts["errors"] += len(v["errors"])
     for r in repos:
@@ -919,6 +924,11 @@ def render_text(report: dict) -> str:
         for item in v["embedding_orphans"]:
             lines.append(
                 f"  embedding orphans: {item['module']} / {item['profile']} ({item['rows']} rows)"
+            )
+        for item in v.get("embedding_orphans_held") or []:
+            lines.append(
+                f"  embedding orphans held by the gate: {item['module']} / {item['profile']} "
+                f"({item['rows']} rows)"
             )
         for item in v["modules_without_profile"]:
             lines.append(
