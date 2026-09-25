@@ -47,6 +47,20 @@ from src.indexer.writer_neo4j import Neo4jWriter
 _logger = logging.getLogger(__name__)
 
 
+class IndexRunError(RuntimeError):
+    """An index run that finished, post-passes and lifecycle reconcile included,
+    but with at least one repo or profile that failed to index.
+
+    ``summary`` is what the run would have returned (counters of what WAS
+    indexed and ``lifecycle``), so the caller still reports the lifecycle
+    outcome (tripped gates, deferred presence, attention) of the healthy repos.
+    """
+
+    def __init__(self, message: str, summary: dict) -> None:
+        super().__init__(message)
+        self.summary = summary
+
+
 def _profile_lock_id(profile_name: str) -> int:
     """Hash profile name to a 31-bit advisory lock id."""
     return int(hashlib.md5(f"odoo-semantic-{profile_name}".encode()).hexdigest(), 16) % (2**31)
@@ -548,7 +562,9 @@ def index_profile(
         True means a gate tripped, a name was undecidable or the reconcile
         failed (CLI exit code 3).
 
-    Raises RuntimeError after the post-passes when any repo failed to index.
+    Raises :class:`IndexRunError` after the post-passes (and the reconcile)
+    when any repo failed to index; its ``summary`` is the dict above for the
+    repos that did index.
     """
     repos = repo_store().get_repos_for_profile(profile_name)
     if not repos:
@@ -634,7 +650,7 @@ def index_profile(
             # A failed repo no longer skips the post-passes: the lifecycle
             # reconcile decides per name (a failed repo only blocks the names
             # it may still ship, review H5); the failure is raised at the end.
-            deferred_failure: RuntimeError | None = None
+            deferred_failure: str | None = None
 
             if max_workers <= 1:
                 # --- Sequential path (original behaviour, unchanged) ----------
@@ -683,9 +699,7 @@ def index_profile(
 
                 if failed_repos:
                     summary = "; ".join(f"id={rid}: {msg}" for rid, msg in failed_repos)
-                    deferred_failure = RuntimeError(
-                        f"{len(failed_repos)} repo(s) failed: {summary}"
-                    )
+                    deferred_failure = f"{len(failed_repos)} repo(s) failed: {summary}"
             else:
                 # --- Parallel path (ThreadPoolExecutor) ----------------------
                 if progress:
@@ -767,7 +781,7 @@ def index_profile(
                         summary = "; ".join(
                             f"id={rid}: {msg}" for rid, msg in failed_repo_ids
                         )
-                        deferred_failure = RuntimeError(
+                        deferred_failure = (
                             f"{len(failed_repo_ids)} repo(s) failed: {summary}"
                         )
 
@@ -848,9 +862,7 @@ def index_profile(
         finally:
             writer.close()
 
-        if deferred_failure is not None:
-            raise deferred_failure
-        return {
+        summary = {
             "modules": total_modules,
             "views": total_views,
             "qweb": total_qweb,
@@ -859,6 +871,9 @@ def index_profile(
             "owl_comps": total_owl_comps,
             "lifecycle": _finish_lifecycle(lifecycle),
         }
+        if deferred_failure is not None:
+            raise IndexRunError(deferred_failure, summary)
+        return summary
 
 
 # ---------------------------------------------------------------------------
@@ -1165,8 +1180,12 @@ def index_all(
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
-    Continues after per-profile failures — failed profiles are listed in
-    the returned summary under 'profiles_failed'.
+    Continues after per-profile failures - failed profiles are listed in
+    the summary under 'profiles_failed'. The healthy repos of a failed
+    profile still take part in the lifecycle reconcile (their presence heads
+    and tripped gates are absorbed from its :class:`IndexRunError`). With
+    ``profile_workers > 1`` the summary is carried by an :class:`IndexRunError`
+    raised after the reconcile instead of being returned.
 
     Args:
         pg_conn:         psycopg2 connection (autocommit OK).
@@ -1214,22 +1233,27 @@ def index_all(
     finally:
         _clock_writer.close()
 
+    counts = dict.fromkeys(("modules", "views", "qweb", "embeddings", "js_patches", "owl_comps"), 0)
+    profiles_ok = 0
+    profiles_failed: list[str] = []
+    profiles_empty: list[str] = []
+    failures: list[tuple[str, Exception]] = []
+
     def _absorb_profile(summary: dict) -> None:
         plc = summary.get("lifecycle") or {}
         lifecycle["versions"].extend(plc.get("versions") or [])
         lifecycle["gates_tripped"].extend(plc.get("gates_tripped") or [])
         lifecycle["deferred_presence"].update(plc.get("deferred_presence") or {})
+        for key in counts:
+            counts[key] += summary.get(key, 0)
 
-    agg_modules = 0
-    agg_views = 0
-    agg_qweb = 0
-    agg_embeddings = 0
-    agg_js_patches = 0
-    agg_owl_comps = 0
-    profiles_ok = 0
-    profiles_failed: list[str] = []
-    profiles_empty: list[str] = []
-    first_exc: Exception | None = None
+    def _absorb_failure(name: str, exc: Exception) -> None:
+        # The healthy repos of a profile with a failed repo were indexed:
+        # their presence heads, gates and counters still reach the reconcile.
+        profiles_failed.append(name)
+        failures.append((name, exc))
+        if isinstance(exc, IndexRunError):
+            _absorb_profile(exc.summary)
 
     if profile_workers <= 1:
         # --- Sequential path (original behaviour) ----------------------------
@@ -1250,19 +1274,13 @@ def index_all(
                     run_started_at=run_started_at,
                 )
                 _absorb_profile(summary)
-                agg_modules += summary["modules"]
-                agg_views += summary["views"]
-                agg_qweb += summary["qweb"]
-                agg_embeddings += summary.get("embeddings", 0)
-                agg_js_patches += summary.get("js_patches", 0)
-                agg_owl_comps += summary.get("owl_comps", 0)
                 if summary.get("no_repos"):
                     profiles_empty.append(name)
                 else:
                     profiles_ok += 1
-            except Exception:
+            except Exception as exc:
                 _logger.exception("index_all: profile %r failed — skipping", name)
-                profiles_failed.append(name)
+                _absorb_failure(name, exc)
     else:
         # --- Parallel path (ThreadPoolExecutor across profiles) --------------
         if progress:
@@ -1319,18 +1337,10 @@ def index_all(
                         name,
                         exc_info=exc,
                     )
-                    profiles_failed.append(name)
-                    if first_exc is None:
-                        first_exc = exc
+                    _absorb_failure(name, exc)
                 else:
                     summary = future.result()
                     _absorb_profile(summary)
-                    agg_modules += summary["modules"]
-                    agg_views += summary["views"]
-                    agg_qweb += summary["qweb"]
-                    agg_embeddings += summary.get("embeddings", 0)
-                    agg_js_patches += summary.get("js_patches", 0)
-                    agg_owl_comps += summary.get("owl_comps", 0)
                     if summary.get("no_repos"):
                         profiles_empty.append(name)
                     else:
@@ -1362,21 +1372,19 @@ def index_all(
             _gc_writer.close()
     # === End post-all-profiles lifecycle reconcile ===
 
-    if first_exc is not None:
-        raise first_exc
-
-    return {
+    summary = {
         "profiles_ok": profiles_ok,
         "profiles_failed": profiles_failed,
         "profiles_empty": sorted(profiles_empty),
-        "modules": agg_modules,
-        "views": agg_views,
-        "qweb": agg_qweb,
-        "embeddings": agg_embeddings,
-        "js_patches": agg_js_patches,
-        "owl_comps": agg_owl_comps,
+        **counts,
         "lifecycle": _finish_lifecycle(lifecycle),
     }
+    if failures and profile_workers > 1:
+        detail = "; ".join(f"{name}: {exc}" for name, exc in failures)
+        raise IndexRunError(
+            f"{len(failures)} profile(s) failed: {detail}", summary,
+        ) from failures[0][1]
+    return summary
 
 
 # ---------------------------------------------------------------------------

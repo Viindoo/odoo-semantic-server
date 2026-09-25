@@ -26,6 +26,7 @@ from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
 from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS
 from src.indexer.pipeline import (
+    IndexRunError,
     audit_repo_for_profile,
     index_all,
     index_core,
@@ -277,19 +278,28 @@ EXIT_LIFECYCLE_ATTENTION = 3
 EXIT_AUDIT_FINDINGS = 4
 
 
-def _lifecycle_exit_code(lifecycle: dict) -> int:
+def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     """0, or EXIT_LIFECYCLE_ATTENTION when the run's module lifecycle needs an
     operator: a safety gate tripped, a name was undecidable, or the reconcile
     failed (review H4 - systemd ``OnFailure=`` must fire, the data was indexed
     but ghosts may remain). The details go to stderr; the same text is in
-    ``repos.lifecycle_attention``."""
+    ``repos.lifecycle_attention``.
+
+    *run_failed*: a repo or profile failed to index. The run exits 1, which
+    outranks 3, but the lifecycle details are printed all the same."""
+    if run_failed:
+        code = 1
+    elif lifecycle.get("needs_attention"):
+        code = EXIT_LIFECYCLE_ATTENTION
+    else:
+        code = 0
     if not lifecycle.get("needs_attention"):
-        return 0
-    print("Lifecycle needs attention (exit 3):", file=sys.stderr)
+        return code
+    print(f"Lifecycle needs attention (exit {code}):", file=sys.stderr)
     for key in ("gates_tripped", "undecidable", "errors"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
-    return EXIT_LIFECYCLE_ATTENTION
+    return code
 
 
 def _print_empty_profiles(summary, profile: str | None) -> None:
@@ -425,36 +435,47 @@ def main(argv: list[str] | None = None) -> int:
                     # Don't block indexing if job tracking fails (job may have been deleted, etc.)
                     pass
             try:
-                if args.all:
-                    summary = index_all(
-                        pg,
-                        embedder=embedder,
-                        progress=verbose,
-                        max_workers=max_workers,
-                        full_reindex=full_reindex,
-                        profile_workers=profile_workers,
-                        refresh=refresh,
-                        retire=retire,
-                        allow_mass_retire=allow_mass_retire,
-                    )
-                else:
-                    summary = index_profile(
-                        pg,
-                        profile_name=args.profile,
-                        embedder=embedder,
-                        progress=verbose,
-                        max_workers=max_workers,
-                        full_reindex=full_reindex,
-                        refresh=refresh,
-                        retire=retire,
-                        allow_mass_retire=allow_mass_retire,
-                    )
+                # A run with a failed repo or profile still reconciled the
+                # healthy ones: its summary comes with the IndexRunError.
+                failure: IndexRunError | None = None
+                try:
+                    if args.all:
+                        summary = index_all(
+                            pg,
+                            embedder=embedder,
+                            progress=verbose,
+                            max_workers=max_workers,
+                            full_reindex=full_reindex,
+                            profile_workers=profile_workers,
+                            refresh=refresh,
+                            retire=retire,
+                            allow_mass_retire=allow_mass_retire,
+                        )
+                    else:
+                        summary = index_profile(
+                            pg,
+                            profile_name=args.profile,
+                            embedder=embedder,
+                            progress=verbose,
+                            max_workers=max_workers,
+                            full_reindex=full_reindex,
+                            refresh=refresh,
+                            retire=retire,
+                            allow_mass_retire=allow_mass_retire,
+                        )
+                except IndexRunError as exc:
+                    failure = exc
+                    summary = dict(exc.summary)
                 lifecycle = (
                     summary.pop("lifecycle", None) if isinstance(summary, dict) else None
                 )
                 if not isinstance(lifecycle, dict):
                     lifecycle = {}
-                print(f"Done: {summary}")
+                failed_profiles = (
+                    summary.get("profiles_failed") if isinstance(summary, dict) else None
+                ) or []
+                run_failed = failure is not None or bool(failed_profiles)
+                print(f"{'Finished with failures' if run_failed else 'Done'}: {summary}")
                 _print_empty_profiles(summary, args.profile)
                 if args.no_embed:
                     print("Embeddings skipped (--no-embed).", file=sys.stdout)
@@ -463,6 +484,15 @@ def main(argv: list[str] | None = None) -> int:
                         "Embeddings skipped — EMBEDDER_URL not configured. "
                         "Set [embedder] url in odoo-semantic.conf to enable.",
                         file=sys.stdout,
+                    )
+                exit_code = _lifecycle_exit_code(lifecycle, run_failed=run_failed)
+                if failure is not None:
+                    raise failure
+                if failed_profiles:
+                    raise IndexRunError(
+                        f"{len(failed_profiles)} profile(s) failed: "
+                        + ", ".join(failed_profiles),
+                        summary,
                     )
                 if job_id is not None:
                     try:
@@ -473,7 +503,6 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     except Exception:
                         pass
-                exit_code = _lifecycle_exit_code(lifecycle)
             except BaseException as e:
                 if job_id is not None and not isinstance(e, SystemExit):
                     # Don't overwrite job status already set by SIGTERM handler
