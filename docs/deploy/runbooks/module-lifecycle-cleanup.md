@@ -293,6 +293,13 @@ manual run, scoped to the profile, with the bypass:
 sudo osm-fernet-run $PY -m src.indexer index-repo --profile <profile> --allow-mass-retire
 ```
 
+`<profile>` must have a repo at the gate's version: a run reconciles only the versions of its
+own profile's repos. For a held embedding sweep use the profile the attention / stderr line names
+(`run once index-repo --profile <p> --allow-mass-retire`); when the held profile has no repo at
+that version any more, that is another profile of the version, and running the held profile
+itself deletes nothing. The flag lifts every mass gate (G-B) of that run, not only the one you
+checked: read all of that profile's `gates_tripped` first.
+
 Never put `--allow-mass-retire` in the timer or a drop-in. For `undecidable`: index the profile
 of the repo named in the message (or unregister a repo that is no longer used); the next
 reconcile decides the name.

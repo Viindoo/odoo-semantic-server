@@ -96,3 +96,38 @@ def test_exit_3_stderr_names_the_held_profile(monkeypatch, capsys):
 
     assert code == 3
     assert HELD in capsys.readouterr().err
+
+
+def test_the_fallback_names_a_profile_whose_run_reconciles_the_version(monkeypatch):
+    """The held profile has no repo at the version, so ``index-repo --profile
+    <held>`` never reconciles it (a run reconciles only its repos' versions).
+    The attention names the profile to run instead, and warns that the bypass
+    lifts every mass gate of that run."""
+    _report, store = _held_run(
+        monkeypatch, [{"repo_id": 7, "profile_name": "other_profile"}],
+    )
+    text = store.attention[7]
+    assert "index-repo --profile other_profile --allow-mass-retire" in text
+    assert f"--profile {HELD}" not in text
+    assert "every mass gate" in text
+
+
+def test_a_held_profile_with_a_repo_is_the_one_to_run(monkeypatch):
+    _report, store = _held_run(
+        monkeypatch,
+        [{"repo_id": 7, "profile_name": "other_profile"}, {"repo_id": 8, "profile_name": HELD}],
+    )
+    assert f"index-repo --profile {HELD} --allow-mass-retire" in store.attention[8]
+
+
+def test_exit_3_stderr_names_the_profile_to_run(monkeypatch, capsys):
+    report, _store = _held_run(
+        monkeypatch, [{"repo_id": 7, "profile_name": "other_profile"}],
+    )
+    lifecycle = pipeline._empty_lifecycle()
+    pipeline._absorb_report(lifecycle, report)
+    pipeline._finish_lifecycle(lifecycle)
+
+    _lifecycle_exit_code(lifecycle)
+
+    assert "index-repo --profile other_profile --allow-mass-retire" in capsys.readouterr().err

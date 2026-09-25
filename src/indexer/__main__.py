@@ -35,6 +35,7 @@ from src.indexer.pipeline import (
     production_pg_dsn,
     reembed_stubs_for_profile,
 )
+from src.indexer.reconcile import embedding_sweep_hint
 from src.indexer.writer_neo4j import Neo4jWriter
 
 
@@ -396,7 +397,10 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
         })
         print(
             f"  embedding_orphans_held: {report.get('odoo_version')}: "
-            f"{len(held)} group(s) of profile(s) {', '.join(profiles)}",
+            f"{len(held)} group(s) of profile(s) {', '.join(profiles)}"
+            + embedding_sweep_hint(
+                str(report.get("odoo_version")), report.get("embedding_sweep_run_profile"),
+            ),
             file=sys.stderr,
         )
     return code
