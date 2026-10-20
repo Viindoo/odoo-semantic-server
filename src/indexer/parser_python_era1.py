@@ -8,7 +8,14 @@ Era1 covers Odoo v8/v9 source that fails ``ast.parse`` (Python 2-only syntax
 like ``print 'x'`` or ``except E, e:``). This module is the text-regex fallback:
 it splits source by top-level ``class X(...):`` headers and pulls out
 ``_name`` / ``_inherit`` / fields-from-``_columns`` via regex + balanced-brace
-scanning.
+scanning. ``_inherit`` is read as a string, a list, a parenthesised tuple or a
+bare tuple (``_inherit = 'x',``).
+
+Only literals are recognised: a ``_name = SOME_CONSTANT`` (resolved statically
+by the era2 AST path, ``parser_python_consts``) is not followed here. This path
+runs only for files Python 3 cannot parse (v8-v10 Python-2 source), which have
+no AST to resolve names against, and the surveyed v8-v9 checkouts declare every
+``_name`` / ``_inherit`` as a literal.
 
 Shared constants (``FIELD_TYPES``, ``FIELD_TYPES_LEGACY``,
 ``RELATIONAL_FIELD_TYPES``) and the shared ``_classify_method_convention``
@@ -37,6 +44,16 @@ _RE_NAME_ASSIGN = re.compile(r"^[ \t]*_name\s*=\s*['\"]([^'\"]+)['\"]", re.MULTI
 _RE_INHERIT_STR = re.compile(r"^[ \t]*_inherit\s*=\s*['\"]([^'\"]+)['\"]", re.MULTILINE)
 _RE_INHERIT_LIST = re.compile(
     r"^[ \t]*_inherit\s*=\s*\[([^\]]*)\]", re.MULTILINE | re.DOTALL,
+)
+_RE_INHERIT_TUPLE = re.compile(
+    r"^[ \t]*_inherit\s*=\s*\(([^)]*)\)", re.MULTILINE | re.DOTALL,
+)
+# Bare tuple on one line: `_inherit = 'a',` / `_inherit = 'a', 'b'` (at least
+# one comma after a quoted name; `_RE_INHERIT_STR` alone would keep only 'a').
+_RE_INHERIT_BARE_TUPLE = re.compile(
+    r"^[ \t]*_inherit[ \t]*=[ \t]*"
+    r"((?:['\"][^'\"]+['\"][ \t]*,[ \t]*)+(?:['\"][^'\"]+['\"])?)",
+    re.MULTILINE,
 )
 _RE_COLUMNS_HEAD = re.compile(r"^[ \t]*_columns\s*=\s*\{", re.MULTILINE)
 _RE_COLUMNS_UPDATE = re.compile(r"_columns\.update\s*\(\s*\{", re.MULTILINE)
@@ -327,9 +344,11 @@ def _parse_era1_text(source: str, module_info: ModuleInfo) -> list[ModelInfo]:
         had_explicit_name = name is not None  # True when _name = "..." regex matched
 
         inherit: list[str] = []
-        if (m := _RE_INHERIT_STR.search(body)):
+        if (m := _RE_INHERIT_BARE_TUPLE.search(body)):
+            inherit = re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
+        elif (m := _RE_INHERIT_STR.search(body)):
             inherit = [m.group(1)]
-        elif (m := _RE_INHERIT_LIST.search(body)):
+        elif (m := _RE_INHERIT_LIST.search(body)) or (m := _RE_INHERIT_TUPLE.search(body)):
             items = re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))
             inherit = items
 

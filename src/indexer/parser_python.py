@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import parse_health
+from . import parser_python_consts as _consts
 from .models import FieldInfo, MethodInfo, ModelInfo, ModuleInfo, ParseResult
 from .parser_util import parse_external_source
 from .version_registry import python3_source_expected
@@ -730,21 +731,62 @@ def _compute_effective_readonly(
     return False
 
 
-def _extract_inherit(node: ast.expr) -> list[str]:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return [node.value]
-    if isinstance(node, ast.List):
-        return [s for elt in node.elts if (s := _extract_string(elt))]
+def _is_none_literal(node: ast.expr) -> bool:
+    """``_name = None`` / ``_inherit = None``: an explicit "no value", not a miss."""
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _bind_class_names(
+    stmt: ast.stmt,
+    class_bindings: dict[str, "_consts.ConstValue | None"],
+    lookup: "_consts.Lookup",
+) -> None:
+    """Record the names *stmt* binds in the class body (after it was processed).
+
+    A plain ``NAME = <constant>`` binds its value; every other binding (a field,
+    a method, tuple unpacking ...) binds None, hiding an outer constant of the
+    same name exactly as Python's class scope does.
+    """
+    if isinstance(stmt, ast.Assign) and all(isinstance(t, ast.Name) for t in stmt.targets):
+        value = _consts.evaluate(stmt.value, lookup)
+        for target in stmt.targets:
+            class_bindings[target.id] = value
+        return
+    for bound in _consts.bound_names(stmt):
+        class_bindings[bound] = None
+
+
+def _extract_inherit(node: ast.expr, lookup: _consts.Lookup | None = None) -> list[str]:
+    """``_inherit`` as a list of model names.
+
+    Accepts a string, a list or a tuple (``_inherit = 'x',`` is a 1-tuple) of
+    strings; with *lookup* a name bound to such a constant resolves too
+    (:mod:`parser_python_consts`). In a list / tuple an element that does not
+    evaluate to a string is dropped, the others are kept.
+    """
+    value = _consts.evaluate(node, lookup)
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [
+            s for elt in node.elts
+            if isinstance(s := _consts.evaluate(elt, lookup), str)
+        ]
     return []
 
 
-def _extract_inherits(node: ast.expr) -> dict[str, str]:
+def _extract_inherits(
+    node: ast.expr, lookup: _consts.Lookup | None = None,
+) -> dict[str, str]:
+    """``_inherits = {'parent.model': 'field_id'}``; keys / values may be constants."""
     result = {}
     if isinstance(node, ast.Dict):
         for k, v in zip(node.keys, node.values):
-            key = _extract_string(k)
-            val = _extract_string(v)
-            if key and val:
+            key = _consts.evaluate(k, lookup)
+            val = _consts.evaluate(v, lookup)
+            if isinstance(key, str) and isinstance(val, str) and key and val:
                 result[key] = val
     return result
 
@@ -858,7 +900,17 @@ def _parse_class(
     scope_map: dict[str, str] | None = None,
     local_defs: set[str] | None = None,
     class_map: dict[str, ast.ClassDef] | None = None,
+    module_scope: "_consts._FileScope | None" = None,
+    file_path: str | None = None,
 ) -> ModelInfo | None:
+    """One class body -> ModelInfo, or None when the class is not an Odoo model.
+
+    *module_scope* is the module-level constant scope of the file when the class
+    is defined at module level (None otherwise); with it ``_name`` / ``_inherit``
+    / ``_inherits`` given as a name bound to a string constant resolve
+    statically (:mod:`parser_python_consts`). *file_path* only labels the DEBUG
+    trace of an unresolvable value.
+    """
     base_names = _get_base_class_names(cls_node)
     is_model_class = bool(base_names & MODEL_BASE_CLASSES)
 
@@ -870,7 +922,11 @@ def _parse_class(
     fields_list: list[FieldInfo] = []
     methods_list: list[MethodInfo] = []
     has_columns_dict = False  # era1 marker — promotes class to model
-    had_explicit_name = False  # set True when _name = "..." literal found
+    had_explicit_name = False  # set True when _name resolves to a string
+    # Names bound so far in the class body (value None: not a constant), read by
+    # the lookup below so `_inherit = _name` sees the `_name` bound above it.
+    class_bindings: dict[str, _consts.ConstValue | None] = {}
+    lookup = _consts.class_lookup(class_bindings, module_scope, cls_node.lineno)
 
     for node in cls_node.body:
         # Normalize Assign and AnnAssign to a common (targets, value) pair so
@@ -893,13 +949,23 @@ def _parse_class(
                     continue
                 attr = target.id
                 if attr == '_name':
-                    name = _extract_string(node.value)
+                    value = _consts.evaluate(node.value, lookup)
+                    name = value if isinstance(value, str) else None
                     if name is not None:
                         had_explicit_name = True
+                    elif not _is_none_literal(node.value):
+                        _consts.log_unresolved(
+                            '_name', node.value, cls_node.name, file_path,
+                        )
                 elif attr == '_inherit':
-                    inherit = _extract_inherit(node.value)
+                    inherit = _extract_inherit(node.value, lookup)
+                    if (_consts.evaluate(node.value, lookup) is None
+                            and not _is_none_literal(node.value)):
+                        _consts.log_unresolved(
+                            '_inherit', node.value, cls_node.name, file_path,
+                        )
                 elif attr == '_inherits':
-                    inherits = _extract_inherits(node.value)
+                    inherits = _extract_inherits(node.value, lookup)
                 elif attr == '_abstract' and isinstance(node.value, ast.Constant):
                     is_abstract = bool(node.value.value)
                 elif attr == '_transient' and isinstance(node.value, ast.Constant):
@@ -1065,6 +1131,10 @@ def _parse_class(
                 line=node.lineno,  # A3: 1-based line of `def` statement (era2)
             ))
 
+        # Last, so a statement's own value is evaluated against the bindings
+        # made before it (`_inherit = _name` reads the `_name` bound above).
+        _bind_class_names(node, class_bindings, lookup)
+
     # _inherit without _name → name = inherit[0] (Odoo convention)
     if not name and inherit:
         name = inherit[0]
@@ -1106,6 +1176,7 @@ def _parse_class(
 
 def _parse_era2_ast(
     source: str, module_info: ModuleInfo, filename: str | None = None,
+    const_resolver: _consts.ConstantResolver | None = None,
 ) -> list[ModelInfo]:
     """Modern AST parser (v10+ and v8/v9 when source happens to be Py3-compatible).
 
@@ -1114,6 +1185,10 @@ def _parse_era2_ast(
     that _extract_core_symbol_refs (V0.5) can filter false-positive
     USES_CORE_SYMBOL refs caused by local name collisions, and so that same-file
     local base classes can be resolved for model-class detection (#285).
+
+    *const_resolver* (one per addon, see :func:`parse_module`) lets a top-level
+    class's ``_name`` / ``_inherit`` be a constant of this file or one imported
+    from another file of the addon; without one only same-file constants resolve.
     """
     # External third-party addon source — scope away SyntaxWarning noise, pass the
     # real path so any diagnostic is attributable (not <unknown>). See parser_util.
@@ -1127,6 +1202,10 @@ def _parse_era2_ast(
         for node in tree.body
         if isinstance(node, ast.ClassDef)
     }
+    if const_resolver is None:
+        const_resolver = _consts.ConstantResolver(module_info.path if filename else None)
+    module_scope = const_resolver.scope_for(tree, filename)
+    top_level = {id(node) for node in tree.body if isinstance(node, ast.ClassDef)}
     models = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -1134,6 +1213,8 @@ def _parse_era2_ast(
                 node, module_info, source=source,
                 scope_map=scope_map, local_defs=local_defs,
                 class_map=class_map,
+                module_scope=module_scope if id(node) in top_level else None,
+                file_path=filename,
             )
             if model:
                 models.append(model)
@@ -1144,6 +1225,7 @@ def parse_file(
     filepath: str,
     module_info: ModuleInfo,
     stats: dict[str, int] | None = None,
+    const_resolver: _consts.ConstantResolver | None = None,
 ) -> list[ModelInfo]:
     """Parse a Python file → list[ModelInfo]. Era-aware dispatch (M4.5 WI1.2).
 
@@ -1174,7 +1256,9 @@ def parse_file(
         return []
 
     try:
-        models = _parse_era2_ast(source, module_info, filename=filepath)
+        models = _parse_era2_ast(
+            source, module_info, filename=filepath, const_resolver=const_resolver,
+        )
     except SyntaxError as exc:
         if python3_source_expected(module_info.odoo_version):
             parse_health.note_failure(filepath, f"not valid Python 3: {exc}")
@@ -1238,12 +1322,17 @@ def parse_module(module_info: ModuleInfo) -> ParseResult:
     SKIP_DIRS = {'.git', 'static', 'migrations', 'tests', '__pycache__'}
 
     stats: dict[str, int] = {}
+    # One constant resolver per addon: a `_name = CONST` imported from a sibling
+    # file is resolved against (and caches) the files of this module only.
+    const_resolver = _consts.ConstantResolver(module_info.path)
     for py_file in sorted(module_path.rglob('*.py')):
         if py_file.name == '__manifest__.py':
             continue
         if SKIP_DIRS & set(py_file.parts):
             continue
-        models = parse_file(str(py_file), module_info, stats=stats)
+        models = parse_file(
+            str(py_file), module_info, stats=stats, const_resolver=const_resolver,
+        )
         result.models.extend(models)
 
     # One INFO summary per module (only when the Py2 fallback actually fired,
