@@ -431,6 +431,13 @@ class QWebInfo:
     # NEW primary view from the inherited one (a fresh copy), "extension" (default)
     # patches in place. None when absent.
     mode: str | None = None
+    # ir.model.data xmlid of a ``<record model="ir.ui.view">`` QWeb view
+    # (module-qualified record ``id``). Such a node is keyed by its website
+    # ``key`` (``xmlid`` above), but ``inherit_id ref=`` names the RECORD xmlid
+    # (website_forum.default_faq has key website_forum.faq_accordion), so the
+    # EXTENDS_TMPL / USES_TEMPLATE resolvers also match this alias. None for
+    # ``<template>`` elements, whose ``xmlid`` already is the record xmlid.
+    record_xmlid: str | None = None
 
 
 @dataclass
