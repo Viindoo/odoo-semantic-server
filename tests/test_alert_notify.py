@@ -355,6 +355,19 @@ def test_the_dummy_smoke_test_always_mails_but_obeys_the_cap(host, state):
     assert len(host.sent) == 6
 
 
+def test_an_unwritable_state_directory_still_sends_the_alert(host, state):
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    state.chmod(0o500)
+    try:
+        assert an.notify(UNIT, env=_env(state), now=NOW) == "sent"
+    finally:
+        state.chmod(0o700)
+    assert len(host.sent) == 1
+
+
 def test_a_failed_delivery_is_not_recorded_so_the_next_failure_retries(host, state):
     host.smtp_error = OSError("network unreachable")
     assert an.notify(UNIT, env=_env(state), now=NOW) == "delivery-failed"

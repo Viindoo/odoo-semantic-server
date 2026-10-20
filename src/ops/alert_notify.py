@@ -478,7 +478,15 @@ class AlertState:
 
     @contextlib.contextmanager
     def locked(self):
-        fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        """Hold the state lock; an unusable state directory degrades to "no
+        dedupe" (the alert still goes out) rather than losing the alert."""
+        try:
+            fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            logger.error("osm-alert: state lock %s unusable, sending without dedupe: %s",
+                         self._lock_path, exc)
+            yield self
+            return
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
