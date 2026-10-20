@@ -11,7 +11,17 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
-_Nothing yet._
+Issue #383 items 1, 3 and 4 (item 2, retrying a failed first clone, follows separately). Migration `0004_indexer_jobs_proc_identity` (additive, two nullable columns). No tool or resource change (31 tools, 9 resources).
+
+### Fixed
+
+- **`osm-alert@.service` now mails the admins (#383 item 1):** the hook only printed a journal line, so from 2026-08-25 to 2026-09-25 the nightly reindex failed 32 nights out of 32 unnoticed (and a DNS failure made the 2026-10-18/19 runs no-ops). It now runs `python -m src.ops.alert_notify --unit %i` as `odoo-semantic` and mails every active Web UI admin with an email (`webui_users.is_admin AND is_active`, read from PostgreSQL at send time) through the Web UI's SES `SMTP_*` settings: unit, host, exit status and its meaning, the `Lifecycle needs attention` block when this run wrote one, the last 60 lines of this run's output (its `append:` log file, else its journal) and a runbook pointer, with passwords, DSN credentials, tokens, API keys and private keys redacted. Database down: the last known admin list (`/var/lib/osm-alert/admins.json`, refreshed on every successful read) plus `OSM_ALERT_FALLBACK_TO`; no recipient at all is logged loudly. The same alert (unit, exit status, attention block) is mailed once per `OSM_ALERT_REPEAT_HOURS` (24), at most `OSM_ALERT_MAX_PER_HOUR` (6) mails an hour; a failed delivery logs `DELIVERY_FAILED` and the hook always exits 0. The reindex and lifecycle-audit units write an `osm-run-start ... invocation=<id>` line first so only this run's lines count. `OnFailure=` is spelled `osm-alert@%n` everywhere (the offsite-sync template used `osm-alert@%n.service`), and `make check-systemd-overrides` now audits `osm-alert@.service` (it also no longer aborts on an installed unit without `User=`). SMTP delivery moved to the leaf `src/mailer.py`, shared by the Web UI mails and the hook.
+- **The indexer CLI honours the admin-tuned embedder read timeout (#383 item 3):** `index-repo` and `reembed-stubs` built the embedder before the PostgreSQL pool existed, so `embedding.timeout_read_seconds` (resolved once, when the embedder is built) fell back to the constant on every CLI run and each run logged `overlay-only resolve failed: PostgreSQL pool is not initialized`. The pool is now opened first.
+- **Exact process identity for Web UI index jobs (#383 item 4):** the indexer child (index-repo, index-core, seed-patterns) writes its own `proc_start_ticks` (`/proc/self/stat` field 22) and `boot_id` with its `running` report, and `job_registry.job_staleness` compares them for equality: a wall-clock step no longer expires a live job, and a pid reused seconds after the job started is caught. Legacy rows (either column NULL) keep the 120 s heuristic. Code running before the migration still records `running` (the update retries without the two columns). A non-admin's repo listing no longer carries the attached job's `pid` (nor the new columns), matching `/api/jobs/{id}/status`.
+
+### Deploy
+
+- Apply migration 0004 (`python -m src.db.migrate`) before restarting the Web UI; install the new `osm-alert@.service`, `odoo-semantic-reindex.service` and `odoo-semantic-lifecycle-audit.service` templates, optionally `/home/odoo-semantic/etc/alert.env` (`OSM_ALERT_FALLBACK_TO`), `daemon-reload`, then the smoke test `sudo systemctl start osm-alert@dummy.service` must deliver a mail (`docs/deploy/db-tier-operations.md` section Alert wiring).
 
 ## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)
 
