@@ -139,23 +139,89 @@ Two new touchpoints for ops:
 
 ## Alert wiring (OnFailure=osm-alert@%n)
 
-Every shipped systemd unit (`odoo-semantic-{mcp,webui,astro,backup,reindex}`
-plus `osm-ttl-cleanup`) has `OnFailure=osm-alert@%n`. The pattern unit
-`osm-alert@.service` ships with a journal-only default — to wire real
-notifications (email, Slack webhook, PagerDuty), edit its `ExecStart=`
-to call your notifier and keep the `osm-alert:` log prefix so scrapers
-keep working.
+Every shipped systemd unit (`odoo-semantic-{mcp,webui,astro,backup,reindex,lifecycle-audit}`,
+`osm-ttl-cleanup`, the offsite-sync template) has `OnFailure=osm-alert@%n`
+(always that spelling). When one fails, systemd starts
+`osm-alert@<unit>.service`, which runs `python -m src.ops.alert_notify --unit %i`
+as `odoo-semantic` and **mails every OSM admin** (#383).
 
-Sanity test (no real failure needed):
+**Why it exists.** From 2026-08-25 to 2026-09-25 the nightly reindex failed
+32 nights out of 32 and nobody noticed: the hook only wrote a journal line. On
+2026-10-18/19 a DNS failure made two nightly runs no-ops. Alerts are for
+failures that stop OSM from reflecting the code and that the system cannot heal
+by itself: a unit crash or non-zero exit, PostgreSQL or Neo4j down, a DNS or
+network outage, a repo that cannot be cloned, the embedder down for a whole
+run, and exit 3 of the nightly reindex (indexed, but a lifecycle hold needs an
+operator, deploy.md s3.6).
+
+**What a mail holds.** Subject `[OSM ALERT] <host> <unit> exit <N>`. Body:
+unit, host, result, exit status with its meaning (1 crash or failed repo,
+3 lifecycle attention, 4 audit drift, 243 missing credential, ...), the run's
+start time, the `Lifecycle needs attention` block when this run wrote one, the
+last 60 lines of the unit's output and a runbook pointer. The output is the
+unit's `StandardOutput=append:` log file (read from `systemctl cat`) or else
+its journal for that invocation. A file-logged unit writes
+`osm-run-start <time> invocation=<id>` as its first `ExecStartPre=`, and only
+the lines after this invocation's marker count as this run. Passwords, DSN
+credentials, bearer tokens, `osm_` API keys, AWS key ids and private keys are
+redacted before sending.
+
+**Who gets it.** Every active Web UI admin with an email
+(`webui_users.is_admin AND is_active`, `email` not empty), read from PostgreSQL
+at send time with the owner `PG_DSN`. Each successful read refreshes
+`/var/lib/osm-alert/admins.json`. When the database is down (exactly when
+alerts matter) or lists no admin email, the mail goes to that last known list
+plus `OSM_ALERT_FALLBACK_TO`. With neither, nothing is sent and the journal
+logs `osm-alert: NO RECIPIENT ...`.
+
+**How often.** The same alert (unit, exit status, attention block) is mailed
+once per `OSM_ALERT_REPEAT_HOURS` (default 24): a lifecycle hold that persists
+every night mails once a day, a new hold or another exit status mails at once.
+At most `OSM_ALERT_MAX_PER_HOUR` (default 6) mails per hour over all units
+(crash loops). A suppressed alert still logs
+`osm-alert: <unit> alert suppressed: ...`. A failed delivery logs
+`osm-alert: DELIVERY_FAILED ...` and is not recorded, so the next failure
+retries. The hook always exits 0 and has no `OnFailure=`, so it can never
+alert about itself.
+
+**Configuration.** No new secret: the unit reads the same env files as the Web
+UI (`.env` for `PG_DSN`, `.env` / `webui.env` for the SES `SMTP_*`). Optional
+knobs go in `/home/odoo-semantic/etc/alert.env` (0600, odoo-semantic):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OSM_ALERT_FALLBACK_TO` | empty | Comma-separated addresses used when the database cannot give an admin. Set it: it is the only recipient on a fresh box whose database is down. |
+| `OSM_ALERT_REPEAT_HOURS` | 24 | Window in which the same alert is mailed once. |
+| `OSM_ALERT_MAX_PER_HOUR` | 6 | Cap on mails per hour, all units together. |
+
+State (`state.json`, `admins.json`) lives in `/var/lib/osm-alert`
+(`StateDirectory=osm-alert`). The unit body is managed: `make
+check-systemd-overrides` audits it like the other units; tune it through
+`alert.env` or a drop-in, never by editing `ExecStart=`.
+
+Smoke test (Human, sudo): `dummy` is not a unit, so it is a test alert that
+skips the 24h dedupe (not the hourly cap) and **must deliver a real mail**:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start osm-alert@dummy.service
 journalctl -u osm-alert@dummy.service --no-pager | tail
-# Expect a journal line matching:
-#   osm-alert: unit=dummy state=failed host=<hostname>
-# (`%i` resolves to the instance name `dummy`, not `dummy.service`.)
+# Expect:
+#   osm-alert: unit=dummy state=failed host=<hostname> ...
+#   osm-alert: dummy.service alert mailed to N recipient(s) (active Web UI admins (database))
+# and a mail "[OSM ALERT] <host> dummy.service test alert" in every admin inbox.
 ```
+
+Preview what a real unit's alert would say, without sending or recording
+(AI or Human, as odoo-semantic):
+
+```bash
+sudo -u odoo-semantic -H bash -c 'cd /home/odoo-semantic/odoo-semantic-mcp && set -a && . ./.env && set +a && \
+  /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.ops.alert_notify \
+  --unit odoo-semantic-reindex --dry-run'
+```
+
+`--force` sends even inside the dedupe window or over the cap (a manual resend).
 
 ## Degraded mode
 

@@ -243,6 +243,67 @@ def test_mcp_units_start_the_single_instance_entrypoint():
         assert importlib.util.find_spec(f"{module}.__main__") is not None
 
 
+# ---------------------------------------------------------------------------
+# osm-alert@.service actually notifies (#383 item 1)
+# ---------------------------------------------------------------------------
+
+_ALERT_UNIT = REPO_ROOT / "docs" / "deploy" / "osm-alert@.service"
+
+
+def test_alert_hook_runs_the_notifier_as_the_service_user():
+    """The shipped hook mails the admins; the printf-only body that let 32
+    failed nightly runs go unseen (2026-08-25..09-25) must not come back."""
+    import importlib.util
+
+    (exec_start,) = _directive(_ALERT_UNIT, "ExecStart")
+    argv = exec_start.split()
+    assert argv[argv.index("-m") + 1] == "src.ops.alert_notify"
+    assert argv[-2:] == ["--unit", "%i"]
+    assert importlib.util.find_spec("src.ops.alert_notify") is not None
+    assert "printf" not in exec_start
+    assert _directive(_ALERT_UNIT, "User") == ["odoo-semantic"]
+    assert _directive(_ALERT_UNIT, "StateDirectory") == ["osm-alert"]
+    # The SMTP_* and PG_DSN come from the files the Web UI already reads.
+    env_files = _directive(_ALERT_UNIT, "EnvironmentFile")
+    assert "-/home/odoo-semantic/odoo-semantic-mcp/.env" in env_files
+    assert "-/home/odoo-semantic/etc/webui.env" in env_files
+    # An alert must never fan out into more alerts.
+    assert _directive(_ALERT_UNIT, "OnFailure") == []
+
+
+def test_every_on_failure_hook_is_spelled_osm_alert_at_n():
+    """One spelling, so the dedupe key never splits between `x` and `x.service`."""
+    units = [
+        *_collect_service_files(),
+        *sorted((REPO_ROOT / "ops").rglob("*.service.template")),
+    ]
+    seen = 0
+    for unit in units:
+        for value in _directive(unit, "OnFailure"):
+            seen += 1
+            assert value == "osm-alert@%n", f"{unit.relative_to(REPO_ROOT)}: {value}"
+    assert seen >= 7
+
+
+def test_file_logged_units_write_the_run_start_marker_first():
+    """The notifier reads only this run's lines after `osm-run-start ...
+    invocation=<id>`; a file-logged unit without it would mail an older run's
+    lifecycle block as if it were this run's."""
+    for unit in _collect_service_files():
+        if not any(v.startswith(("append:", "file:")) for v in _directive(unit, "StandardOutput")):
+            continue
+        pre = _directive(unit, "ExecStartPre")
+        assert pre, f"{unit.name}: no ExecStartPre"
+        assert "osm-run-start" in pre[0] and "invocation=$$INVOCATION_ID" in pre[0], (
+            f"{unit.name}: first ExecStartPre must write the run-start marker"
+        )
+
+
+def test_drift_audit_covers_the_alert_hook():
+    script = (REPO_ROOT / "scripts" / "check-systemd-overrides.sh").read_text()
+    assert '"osm-alert@.service"' in script
+
+
 def test_documentation_urls_name_the_server_repo():
     """GUARD: every template's Documentation= points at this repo
     (Viindoo/odoo-semantic-server), not the pre-rename odoo-semantic-mcp."""

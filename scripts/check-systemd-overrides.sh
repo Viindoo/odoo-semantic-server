@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # check-systemd-overrides.sh — Drift audit for installed OSM systemd units.
 #
-# Compares each installed /etc/systemd/system/odoo-semantic-*.service body
+# Compares each installed /etc/systemd/system unit body in UNITS below
 # against the shipped template in docs/deploy/, and reports:
 #   - body drift     (someone edited the unit body in place — should be a drop-in)
 #   - missing unit   (template exists but no installed body)
@@ -32,10 +32,11 @@ TARGET_DIR="/etc/systemd/system"
 # (issue #145 review): every unit install.sh writes to /etc/systemd/system must
 # be auditable so hand-edits cannot slip past drift detection and then be
 # silently overwritten on the next install.sh run (the exact #144 risk).
-# `osm-alert@.service` is intentionally excluded — it is the documented
-# notifier-customization point (operators routinely replace ExecStart= to wire
-# email / Slack / PagerDuty), so drift there is expected operator divergence.
-# Timers (`*.timer`) have no body customization surface and are also excluded.
+# `osm-alert@.service` is audited too since #383: it ships the real notifier
+# (src.ops.alert_notify mails the admins), so a hand-edited body is drift - the
+# printf-only body it replaced is how a 32-night reindex outage went unseen.
+# Tune it through /home/odoo-semantic/etc/alert.env or a drop-in instead.
+# Timers (`*.timer`) have no body customization surface and are excluded.
 UNITS=(
     "odoo-semantic-mcp.service"
     "odoo-semantic-webui.service"
@@ -44,6 +45,7 @@ UNITS=(
     "odoo-semantic-reindex.service"
     "odoo-semantic-lifecycle-audit.service"
     "osm-ttl-cleanup.service"
+    "osm-alert@.service"
 )
 
 color_red()    { printf '\033[31m%s\033[0m' "$*"; }
@@ -96,7 +98,9 @@ for unit in "${UNITS[@]}"; do
     # operator's layout, so a direct body diff against the canonical template
     # would ALWAYS fire false drift. We can only verify body integrity by direct
     # comparison when the installed unit is itself canonical. Detect via User=.
-    installed_user=$(grep -E '^[[:space:]]*User=' "$installed" | head -1 | cut -d= -f2- | tr -d '[:space:]')
+    # `|| true`: a body with no User= (the pre-#383 osm-alert@ ran as root) makes
+    # grep exit 1, which under `set -euo pipefail` aborted the whole audit.
+    installed_user=$( (grep -E '^[[:space:]]*User=' "$installed" || true) | head -1 | cut -d= -f2- | tr -d '[:space:]')
     if [[ "$installed_user" != "odoo-semantic" ]]; then
         color_yellow "[~] $unit: non-canonical install (User=${installed_user:-<unset>})"
         echo

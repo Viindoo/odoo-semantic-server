@@ -1,34 +1,66 @@
-# osm-alert@.service — fan-out alert pattern triggered by OnFailure=
-# Đặt tại: /etc/systemd/system/osm-alert@.service
+# osm-alert@.service - mail the OSM admins when a unit fails (OnFailure=, #383)
+# Place at: /etc/systemd/system/osm-alert@.service
 #
-# Hook: any unit with `OnFailure=osm-alert@%n` will instance this
-# template, passing its own unit name as `%i`. Example: when
-# `odoo-semantic-mcp.service` enters `failed` state, systemd starts
-# the instance `osm-alert@odoo-semantic-mcp.service`.
+# Hook: every OSM unit has `OnFailure=osm-alert@%n`, so when
+# `odoo-semantic-reindex.service` fails systemd starts
+# `osm-alert@odoo-semantic-reindex.service` (`%i` = `odoo-semantic-reindex`).
+# Spell it `osm-alert@%n` everywhere (the notifier also accepts a trailing
+# `.service` in the instance).
 #
-# Default behaviour: write a structured WARNING line to journald
-# (`journalctl -u 'osm-alert@*'` shows the full alert history). This is
-# zero-dependency and works on any host. To wire real notifications
-# (email, Slack webhook, PagerDuty), edit ExecStart= below to call your
-# notifier script — keep the prefix `osm-alert:` so log scrapers can find
-# the line. See docs/deploy/db-tier-operations.md §Alerts.
+# What it does: `python -m src.ops.alert_notify` writes the journal line
+# `osm-alert: unit=<u> state=failed host=<h> ...` (journalctl -u 'osm-alert@*')
+# and mails every active Web UI admin with an email (webui_users.is_admin AND
+# is_active, read from PostgreSQL at send time). The mail holds the unit, host,
+# exit status, the last 60 lines of the unit's output (its append: log file,
+# else its journal), the `Lifecycle needs attention` block when this run wrote
+# one, and a runbook pointer; secrets are redacted. The same alert (unit, exit
+# status, attention block) is mailed once per OSM_ALERT_REPEAT_HOURS (24), at
+# most OSM_ALERT_MAX_PER_HOUR (6) mails an hour. Database down: the last admin
+# list cached in /var/lib/osm-alert/admins.json plus OSM_ALERT_FALLBACK_TO.
+# Full description: docs/deploy/db-tier-operations.md section "Alert wiring".
 #
-# Sanity test (no real failure required):
+# Credentials: it runs as odoo-semantic and reads the SAME env files as the Web
+# UI (the SES SMTP_* settings and the owner PG_DSN already live there, so no
+# new secret is minted or copied). /home/odoo-semantic/etc/alert.env is for the
+# OSM_ALERT_* knobs only (optional, 0600 odoo-semantic). No FERNET_KEY.
+#
+# Smoke test (a real mail must arrive; `dummy` is not a unit, so it is a test
+# alert that skips the 24h dedupe):
 #   sudo systemctl start osm-alert@dummy.service
 #   journalctl -u osm-alert@dummy.service --no-pager | tail
-# You should see a single journal line matching:
-#   osm-alert: unit=dummy state=failed host=<hostname>
-# (`%i` is the bare instance name `dummy`, not `dummy.service`.)
+# Expect `osm-alert: unit=dummy state=failed ...` then
+# `osm-alert: dummy.service alert mailed to N recipient(s) ...`.
 
 [Unit]
 Description=OSM alert hook for %i
+# No OnFailure= here: a failing alert must never fan out into more alerts.
 
 [Service]
 Type=oneshot
-# Best-effort: never let the alert itself fail loud and pile up more alerts.
-ExecStart=/bin/sh -c 'printf "osm-alert: unit=%%s state=failed host=%%s\\n" "%i" "$(hostname)" >&2'
+User=odoo-semantic
+Group=odoo-semantic
+# Read the journal of the failed unit (units without a log file).
+SupplementaryGroups=systemd-journal
+WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp
+Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
+# Same files, same order as odoo-semantic-webui.service (PG_DSN, SMTP_*), then
+# the optional OSM_ALERT_* overrides.
+EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+EnvironmentFile=-/home/odoo-semantic/etc/webui.env
+EnvironmentFile=-/home/odoo-semantic/etc/alert.env
+# Dedupe state + last known admin list: /var/lib/osm-alert ($STATE_DIRECTORY).
+StateDirectory=osm-alert
+StateDirectoryMode=0700
+ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.ops.alert_notify --unit %i
+# DB connect 5s + SMTP 20s + systemctl/journalctl reads: bounded well below this.
+TimeoutStartSec=120
 StandardOutput=journal
 StandardError=journal
-# Belt-and-braces: even if the script exits non-zero, mark success so we
-# do not recursively re-fire OnFailure= on the alert itself.
+# The notifier exits 0 whatever happens; belt-and-braces so the alert unit
+# itself never lands in failed state.
 SuccessExitStatus=0 1
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
