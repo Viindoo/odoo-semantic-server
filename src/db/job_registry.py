@@ -1,17 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """CRUD for indexer_jobs table — track indexer subprocess lifecycle."""
+import logging
 import os
 from datetime import UTC, datetime
 
+from psycopg2 import errors as pg_errors
 from psycopg2 import sql as pgsql
 
 from src.db.pg import PgPool
 
 _VALID_STATUSES = {"queued", "running", "done", "error"}
 
-_ALLOWED_JOB_COLUMNS = ("status", "pid", "started_at", "finished_at", "error_msg")
+_ALLOWED_JOB_COLUMNS = (
+    "status", "pid", "started_at", "finished_at", "error_msg",
+    "proc_start_ticks", "boot_id",
+)
+
+# Added by migration 0004_indexer_jobs_proc_identity (#383 item 4).
+_IDENTITY_COLUMNS = ("proc_start_ticks", "boot_id")
 
 _DATETIME_KEYS = ("started_at", "finished_at", "created_at")
+
+_logger = logging.getLogger(__name__)
 
 
 def _serialize_datetimes(row: dict) -> dict:
@@ -48,36 +58,69 @@ class ProcInfo:
             return None
         return None
 
+    def start_ticks(self, pid: int) -> int | None:
+        """Clock ticks after boot at which process *pid* started
+        (/proc/<pid>/stat field 22), None when unknown. Boot-relative, so a
+        wall-clock step does not move it."""
+        try:
+            with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
+                return _parse_starttime(fh.read())
+        except (OSError, ValueError):
+            return None
+
     def start_time(self, pid: int) -> float | None:
-        """Epoch seconds process *pid* started (/proc/<pid>/stat field 22
-        in clock ticks after boot), None when unknown."""
+        """Epoch seconds process *pid* started (:meth:`start_ticks` after
+        ``btime``), None when unknown."""
         boot = self.boot_time()
         if boot is None:
             return None
+        ticks = self.start_ticks(pid)
+        if ticks is None:
+            return None
         try:
-            with open(f"/proc/{int(pid)}/stat", encoding="utf-8", errors="replace") as fh:
-                ticks = _parse_starttime(fh.read())
-            if ticks is None:
-                return None
             return boot + ticks / os.sysconf("SC_CLK_TCK")
         except (OSError, ValueError):
             return None
 
+    def boot_id(self) -> str | None:
+        """This boot's random id (/proc/sys/kernel/random/boot_id): it changes
+        on every boot, so it tells a reboot apart without any clock."""
+        try:
+            with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as fh:
+                value = fh.read().strip()
+        except (OSError, UnicodeDecodeError):
+            return None
+        return value or None
+
 
 _PROC = ProcInfo()
 
-# A job's process starts before the job reports 'running' (started_at), so a
-# process that started later - or a boot after started_at - means the pid is
-# not the job's. Known limit: /proc gives the boot time and a process's start
-# only relative to the CURRENT wall clock (btime = now - uptime), while
-# started_at is the wall clock at report time; a forward step of the clock
-# after the job started (NTP step, manual set) shifts both by the step and
-# would make a live job look reused. The slack absorbs such steps up to 120 s
-# (plus btime's whole-second resolution); a larger forward step can still
-# expire a live job's row (the run itself continues and reports done). A
-# clock-step-immune check needs the child's own boot-relative starttime ticks
-# recorded on the job, which indexer_jobs has no column for (#381). The cost:
-# a pid reused (or a reboot) within 120 s of the job's start is not detected.
+
+def own_process_identity() -> dict:
+    """``proc_start_ticks`` + ``boot_id`` of the calling process, for its
+    'running' report on its job row (#383 item 4). A value that cannot be read
+    (not Linux) is left out, so the row keeps NULL and the 120 s heuristic of
+    :func:`job_staleness` applies to it."""
+    identity = {
+        "proc_start_ticks": _PROC.start_ticks(os.getpid()),
+        "boot_id": _PROC.boot_id(),
+    }
+    return {k: v for k, v in identity.items() if v is not None}
+
+
+# Legacy rows only (proc_start_ticks or boot_id NULL: written before migration
+# 0004, or where /proc could not be read). A job's process starts before the
+# job reports 'running' (started_at), so a process that started later - or a
+# boot after started_at - means the pid is not the job's. Known limit: /proc
+# gives the boot time and a process's start only relative to the CURRENT wall
+# clock (btime = now - uptime), while started_at is the wall clock at report
+# time; a forward step of the clock after the job started (NTP step, manual
+# set) shifts both by the step and would make a live job look reused. The slack
+# absorbs such steps up to 120 s (plus btime's whole-second resolution); a
+# larger forward step can still expire a live job's row (the run itself
+# continues and reports done), and a pid reused (or a reboot) within 120 s of
+# the job's start is not detected. Rows that carry the child's own identity
+# (#383) are compared exactly instead, see job_staleness.
 _START_SLACK_S = 120.0
 
 
@@ -100,10 +143,15 @@ def job_staleness(row: dict, *, now: datetime | None = None) -> str | None:
       within seconds, whatever pid the row holds;
     * its pid does not exist;
     * its pid exists (or belongs to another user) but is not the job's
-      process: the machine booted after the job started, or that process
-      started after the job did (pid reused), beyond a 120 s slack for
-      wall-clock steps (see ``_START_SLACK_S`` for the limit). Needs /proc;
-      elsewhere a live pid is given the benefit of the doubt.
+      process. A row whose child recorded its identity with the 'running'
+      report (``proc_start_ticks`` and ``boot_id``, #383) is compared
+      exactly: another ``boot_id`` (the machine rebooted) or other start ticks
+      for the pid (pid reused) - immune to wall-clock steps, and a reuse is
+      caught however soon after the job's start. A legacy row (either column
+      NULL) keeps the wall-clock heuristic: the machine booted after the job
+      started, or that process started after the job did, beyond a 120 s slack
+      for wall-clock steps (see ``_START_SLACK_S`` for its limits). Needs
+      /proc; elsewhere a live pid is given the benefit of the doubt.
     """
     from src import constants  # noqa: PLC0415
 
@@ -127,6 +175,21 @@ def job_staleness(row: dict, *, now: datetime | None = None) -> str | None:
         return f"Process died unexpectedly (PID {pid} not found)"
     except PermissionError:
         pass  # exists, another user's: identity decides below
+    ticks, boot_id = row.get("proc_start_ticks"), row.get("boot_id")
+    if ticks is not None and boot_id is not None:
+        current_boot = _PROC.boot_id()
+        if current_boot is not None and current_boot != str(boot_id):
+            return (
+                f"PID {pid} is not the job's process: the machine rebooted "
+                "after the job started (boot id differs)"
+            )
+        current_ticks = _PROC.start_ticks(pid)
+        if current_ticks is not None and current_ticks != int(ticks):
+            return (
+                f"PID {pid} is not the job's process: its start ticks differ "
+                "from the job's (pid reused)"
+            )
+        return None
     if started_at is None:
         return None
     ref = started_at.timestamp()
@@ -148,9 +211,13 @@ def update_job(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
     error_msg: str | None = None,
+    proc_start_ticks: int | None = None,
+    boot_id: str | None = None,
 ) -> None:
     """Partial update of one indexer_jobs row on *conn* - only non-None fields
-    are written. The caller owns the transaction (the indexer CLI passes its
+    are written. ``proc_start_ticks`` / ``boot_id`` are the child's own
+    process identity (:func:`own_process_identity`), sent with its 'running'
+    report. The caller owns the transaction (the indexer CLI passes its
     autocommit connection; :meth:`JobStore.update_job` commits a pool one).
 
     Raises ValueError if job_id does not exist or status is not a valid value.
@@ -171,24 +238,52 @@ def update_job(
         col_values.append(("finished_at", finished_at))
     if error_msg is not None:
         col_values.append(("error_msg", error_msg))
+    if proc_start_ticks is not None:
+        col_values.append(("proc_start_ticks", proc_start_ticks))
+    if boot_id is not None:
+        col_values.append(("boot_id", boot_id))
 
     if not col_values:
         return  # nothing to update
 
-    # Build safe SQL using psycopg2.sql.Identifier (escapes column names properly)
-    col_names = [cv[0] for cv in col_values]
-    values = [cv[1] for cv in col_values] + [job_id]
+    with conn.cursor() as cur:
+        identity = [cv for cv in col_values if cv[0] in _IDENTITY_COLUMNS]
+        if not identity:
+            _execute_update(cur, job_id, col_values)
+            return
+        # Code deployed before migration 0004: the identity columns do not
+        # exist yet. Still write the rest, or a live run would never report
+        # 'running' and its queued row would expire (#383 item 4).
+        savepoint = not getattr(conn, "autocommit", True)
+        if savepoint:
+            cur.execute("SAVEPOINT job_identity")
+        try:
+            _execute_update(cur, job_id, col_values)
+        except pg_errors.UndefinedColumn:
+            if savepoint:
+                cur.execute("ROLLBACK TO SAVEPOINT job_identity")
+            _logger.warning(
+                "indexer_jobs has no process identity columns (apply migration "
+                "0004_indexer_jobs_proc_identity); job %s updated without them", job_id,
+            )
+            _execute_update(cur, job_id, [cv for cv in col_values if cv not in identity])
+        else:
+            if savepoint:
+                cur.execute("RELEASE SAVEPOINT job_identity")
 
+
+def _execute_update(cur, job_id: int, col_values: list[tuple[str, object]]) -> None:
+    """UPDATE the given columns of one row (psycopg2.sql.Identifier escapes
+    the column names); ValueError when the row does not exist."""
     sql_obj = pgsql.SQL("UPDATE indexer_jobs SET {fields} WHERE id = %s").format(
         fields=pgsql.SQL(", ").join(
             pgsql.SQL("{col} = %s").format(col=pgsql.Identifier(c))
-            for c in col_names
+            for c, _ in col_values
         )
     )
-    with conn.cursor() as cur:
-        cur.execute(sql_obj, values)
-        if cur.rowcount == 0:
-            raise ValueError(f"Job {job_id} not found")
+    cur.execute(sql_obj, [v for _, v in col_values] + [job_id])
+    if cur.rowcount == 0:
+        raise ValueError(f"Job {job_id} not found")
 
 
 class JobStore:
@@ -220,8 +315,9 @@ class JobStore:
         """Fetch one job. Return dict with all columns OR None if not found.
 
         Returns dict with keys: id, profile_name, status, pid, started_at,
-        finished_at, error_msg, created_at. Datetime values are ISO strings
-        (str(value)) for JSON serialization friendliness.
+        finished_at, error_msg, created_at, proc_start_ticks, boot_id.
+        Datetime values are ISO strings (str(value)) for JSON serialization
+        friendliness.
         """
         with self._pool.checkout() as conn:
             row = self._pool.fetch_one(
@@ -240,6 +336,8 @@ class JobStore:
         started_at: datetime | None = None,
         finished_at: datetime | None = None,
         error_msg: str | None = None,
+        proc_start_ticks: int | None = None,
+        boot_id: str | None = None,
     ) -> None:
         """Partial update on a pool connection; see :func:`update_job`."""
         with self._pool.checkout() as conn:
@@ -247,6 +345,7 @@ class JobStore:
                 update_job(
                     conn, job_id, status=status, pid=pid, started_at=started_at,
                     finished_at=finished_at, error_msg=error_msg,
+                    proc_start_ticks=proc_start_ticks, boot_id=boot_id,
                 )
             except ValueError:
                 conn.rollback()
