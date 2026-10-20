@@ -589,6 +589,11 @@ class Neo4jWriter:
                 " ON (n.model, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:View) ON (n.xmlid, n.odoo_version)",
                 "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl) ON (n.xmlid, n.odoo_version)",
+                # Record-xmlid alias of a key-keyed record-form QWeb view: the
+                # EXTENDS_TMPL / USES_TEMPLATE fallback and the placeholder relink
+                # seek by it.
+                "CREATE INDEX IF NOT EXISTS FOR (n:QWebTmpl)"
+                " ON (n.record_xmlid, n.odoo_version)",
                 # GAP-2/GAP-5 report layer: composite key (xmlid, odoo_version)
                 # backs the Report MERGE; the (model, odoo_version) index backs the
                 # entity_lookup(kind='report', model=...) lookup by business model.
@@ -2458,6 +2463,135 @@ class Neo4jWriter:
             ).data()
         return [dict(r) for r in result]
 
+    def relink_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
+        """Move edges that point at an ``__unresolved__`` placeholder onto the real node.
+
+        The writers create a placeholder when a referenced node is not in the
+        graph YET: a Model parent (INHERITS / DELEGATES_TO) defined by a module
+        written later in the run - another repo, or a module outside the
+        child's ``depends`` - or a record-form QWeb base (EXTENDS_TMPL) whose
+        node is keyed by its website ``key`` while the extender names its record
+        xmlid. :meth:`gc_unresolved_placeholders` then DETACH DELETEs the
+        placeholder with its edges, so without this pass the relation was lost
+        until the child's module was re-parsed. Call it right before that GC.
+
+        For every placeholder edge at *odoo_version* whose target now exists:
+
+        * INHERITS / DELEGATES_TO: the real Model of the placeholder's name,
+          chosen by the writer's ranking (``is_definition`` DESC,
+          ``field_count`` DESC, ``module`` ASC; placeholders excluded);
+        * EXTENDS_TMPL: the real QWebTmpl whose ``record_xmlid`` is the
+          placeholder's xmlid (``xmlid`` ASC tiebreak);
+
+        the real edge is MERGEd carrying the placeholder edge's ``order``
+        (INHERITS), ``via_field`` (DELEGATES_TO) and run stamp (``written_run``
+        / ``written_at``), and the placeholder edge is deleted. The run stamp is
+        COPIED, not set to the current run: the edge is what the child's own
+        parse declared, so the intra-module prune (token mode) and the shared-
+        module prune (cutoff mode, ``module_unattributed_latest``) see it exactly
+        as if the writer had resolved the parent at parse time - it is neither
+        pruned as stale nor attributed to a run that did not parse the child.
+        When the real edge already exists with a stamp at least as recent, its
+        stamp and order are kept. No ``profile`` is written (ADR-0034: the
+        target is a referenced node this pass does not own).
+
+        Idempotent (a second call finds no placeholder edge with a target) and
+        version-scoped. A placeholder whose target is still missing is left for
+        the GC. Raises on a Neo4j error; the caller then skips the GC so no edge
+        is lost.
+
+        Returns the relinked edge counts, e.g.
+        ``{"INHERITS": 6, "DELEGATES_TO": 0, "EXTENDS_TMPL": 1}``.
+        """
+        # `take`: the placeholder edge's stamp replaces the real edge's unless
+        # the real edge is at least as recent (written by a later parse).
+        take = """
+            NOT EXISTS {
+                MATCH (child)-[e:%s]->(real)
+                WHERE e.written_at IS NOT NULL
+                  AND (r.written_at IS NULL
+                       OR e.written_at.epochMillis >= r.written_at.epochMillis)
+                  %s
+            } AS take
+        """
+        stamp = """
+            n.written_run = CASE WHEN take THEN r.written_run ELSE n.written_run END,
+            n.written_at = CASE WHEN take THEN r.written_at ELSE n.written_at END
+        """
+        model_target = """
+            CALL (child, ph) {
+                MATCH (real:Model {name: ph.name, odoo_version: $version})
+                WHERE real.module <> '__unresolved__'
+                  AND NOT coalesce(real.unresolved, false)
+                  AND real <> child
+                WITH real
+                ORDER BY coalesce(real.is_definition, false) DESC,
+                         coalesce(real.field_count, 0) DESC, real.module ASC
+                LIMIT 1
+                RETURN real
+            }
+        """
+        queries = {
+            REL_INHERITS: f"""
+                MATCH (ph:Model {{module: '__unresolved__', odoo_version: $version}})
+                WHERE coalesce(ph.unresolved, false)
+                MATCH (child:Model)-[r:{REL_INHERITS}]->(ph)
+                WHERE child.module <> '__unresolved__'
+                {model_target}
+                WITH child, r, real, {take % (REL_INHERITS, "")}
+                MERGE (child)-[n:{REL_INHERITS}]->(real)
+                SET n.order = CASE WHEN take OR n.order IS NULL
+                                   THEN r.order ELSE n.order END,
+                    {stamp}
+                DELETE r
+                RETURN count(*) AS relinked
+            """,
+            "DELEGATES_TO": f"""
+                MATCH (ph:Model {{module: '__unresolved__', odoo_version: $version}})
+                WHERE coalesce(ph.unresolved, false)
+                MATCH (child:Model)-[r:DELEGATES_TO]->(ph)
+                WHERE child.module <> '__unresolved__' AND r.via_field IS NOT NULL
+                {model_target}
+                WITH child, r, real, r.via_field AS via,
+                     {take % ("DELEGATES_TO", "AND e.via_field = r.via_field")}
+                MERGE (child)-[n:DELEGATES_TO {{via_field: via}}]->(real)
+                SET {stamp}
+                DELETE r
+                RETURN count(*) AS relinked
+            """,
+            "EXTENDS_TMPL": f"""
+                MATCH (ph:QWebTmpl {{module: '__unresolved__', odoo_version: $version}})
+                WHERE coalesce(ph.unresolved, false)
+                MATCH (child:QWebTmpl)-[r:EXTENDS_TMPL]->(ph)
+                WHERE child.module <> '__unresolved__'
+                CALL (child, ph) {{
+                    MATCH (real:QWebTmpl {{record_xmlid: ph.xmlid, odoo_version: $version}})
+                    WHERE real.module <> '__unresolved__'
+                      AND NOT coalesce(real.unresolved, false)
+                      AND real <> child
+                    WITH real ORDER BY real.xmlid ASC LIMIT 1
+                    RETURN real
+                }}
+                WITH child, r, real, {take % ("EXTENDS_TMPL", "")}
+                MERGE (child)-[n:EXTENDS_TMPL]->(real)
+                SET n.unresolved = CASE WHEN n.unresolved IS NULL THEN NULL ELSE false END,
+                    {stamp}
+                DELETE r
+                RETURN count(*) AS relinked
+            """,
+        }
+        counts: dict[str, int] = {}
+        with self.driver.session() as session:
+            for rel, query in queries.items():
+                row = session.run(query, version=odoo_version).single()
+                counts[rel] = row["relinked"] if row is not None else 0
+        if any(counts.values()):
+            _logger.info(
+                "Placeholder relink: moved %s edge(s) onto now-indexed nodes for version %s",
+                counts, odoo_version,
+            )
+        return counts
+
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE inert '__unresolved__' placeholder nodes for odoo_version.
 
@@ -2472,7 +2606,10 @@ class Neo4jWriter:
         This method deletes ALL placeholder nodes that carry ``unresolved=true``
         AND ``module='__unresolved__'``, scoped strictly to ``odoo_version``.
         DETACH DELETE removes incident edges (the ``{unresolved:true}`` relation
-        edges) along with the node — no orphan edges remain.
+        edges) along with the node - no orphan edges remain. An edge whose real
+        target was indexed after the placeholder was written is lost with it,
+        so run :meth:`relink_unresolved_placeholders` first (the lifecycle
+        reconcile does).
 
         After deleting placeholders this method also calls
         :meth:`heal_resolved_unresolved_flags` as a defense-in-depth step

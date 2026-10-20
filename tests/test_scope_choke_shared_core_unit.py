@@ -456,6 +456,9 @@ class _CapturingWriter:
         # IndexWriterProtocol contract (reconcile_same_name_inherits is declared there).
         return 0
 
+    def relink_unresolved_placeholders(self, *_a, **_kw):
+        return {}
+
     def gc_unresolved_placeholders(self, *_a, **_kw):
         return {}
 
