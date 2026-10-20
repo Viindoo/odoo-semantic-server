@@ -13,9 +13,10 @@ Usage:
 
 import logging
 import os
-import smtplib
 from email.message import EmailMessage
 from html import escape
+
+from src import mailer
 
 logger = logging.getLogger(__name__)
 
@@ -34,41 +35,27 @@ _FONT_STACK = "'Segoe UI', Roboto, Arial, sans-serif"
 
 
 # ---------------------------------------------------------------------------
-# SMTP helpers (unchanged)
+# SMTP helpers - delivery lives in the leaf src.mailer (shared with the ops
+# alert hook, #383); these names stay for the senders below.
 # ---------------------------------------------------------------------------
 
 
 def _smtp_host() -> str | None:
     """Return SMTP_HOST env var or None (dev-mode sentinel)."""
-    return os.getenv("SMTP_HOST") or None
+    return mailer.smtp_host()
 
 
 def _from_address() -> str:
-    return os.getenv("SMTP_FROM", "noreply@odoo-semantic.viindoo.com")
+    return mailer.from_address()
 
 
 def _send(msg: EmailMessage) -> None:
-    """Dispatch an EmailMessage via SMTP (STARTTLS).
+    """Dispatch an EmailMessage via SMTP (STARTTLS), see :func:`src.mailer.send`.
 
     Raises smtplib.SMTPException (or subclasses) on delivery failure.
     The caller is responsible for catching and logging.
     """
-    host = _smtp_host()
-    if not host:
-        logger.info(
-            "SMTP unset (dev mode) — email suppressed. To=%s Subject=%r",
-            msg["To"],
-            msg["Subject"],
-        )
-        return
-    port = int(os.getenv("SMTP_PORT", "587"))
-    with smtplib.SMTP(host, port) as srv:
-        srv.starttls()
-        smtp_user = os.getenv("SMTP_USER")
-        if smtp_user:
-            srv.login(smtp_user, os.getenv("SMTP_PASSWORD", ""))
-        srv.send_message(msg)
-    logger.info("Email sent to %s subject=%r", msg["To"], msg["Subject"])
+    mailer.send(msg)
 
 
 # ---------------------------------------------------------------------------
