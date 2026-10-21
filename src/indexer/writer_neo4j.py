@@ -280,7 +280,7 @@ def _prune_selector(label: str) -> tuple[str, str, str]:
         return (
             "lv",
             f"""
-            CALL {{
+            CALL () {{
                 UNWIND $file_prefixes AS prefix
                 MATCH (lv:LintViolation)
                 WHERE lv.file_path STARTS WITH prefix AND lv.odoo_version = $v

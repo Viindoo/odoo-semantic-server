@@ -435,11 +435,12 @@ def _find_deprecated_usage(
 
         union_body = "\n            UNION\n".join(legs)
         # B1: OPTIONAL MATCH Module (post-union) for repo so the agent can locate
-        # the file. CALL{} wraps the UNION so the outer ORDER BY/LIMIT applies to
-        # the combined result; no `WITH` import into the subquery (ADR-0048: avoid
-        # `CALL { WITH }`), the union legs are self-contained.
+        # the file. CALL () {} wraps the UNION so the outer ORDER BY/LIMIT applies
+        # to the combined result; the empty scope clause imports nothing (ADR-0048:
+        # avoid `CALL { WITH }`; Neo4j 5.23+ deprecates a CALL with no scope
+        # clause), the union legs are self-contained.
         cypher = f"""
-            CALL {{
+            CALL () {{
             {union_body}
             }}
             OPTIONAL MATCH (mod:Module {{name: module, odoo_version: $v}})
