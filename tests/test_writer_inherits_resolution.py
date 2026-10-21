@@ -32,6 +32,9 @@ from src.indexer.models import (
     ModelInfo,
     ModuleInfo,
     ParseResult,
+    QWebInfo,
+    ReportInfo,
+    ViewParseResult,
 )
 from src.indexer.writer_neo4j import Neo4jWriter
 from tests.conftest import TEST_VERSION
@@ -242,3 +245,74 @@ def test_relink_leaves_a_still_missing_parent_for_the_gc(writer, neo4j_driver):
     assert [(e["module"], e["unresolved"]) for e in edges] == [("__unresolved__", True)]
 
 
+# --- 3. QWeb record xmlid alias ---------------------------------------------------
+
+
+def _faq_base() -> ViewParseResult:
+    return ViewParseResult(module=_module("website_forum"), qweb=[QWebInfo(
+        xmlid="website_forum.faq_accordion", module="website_forum", odoo_version=V,
+        key="website_forum.faq_accordion", record_xmlid="website_forum.default_faq",
+    )])
+
+
+def _faq_extender() -> ViewParseResult:
+    return ViewParseResult(module=_module("viin_brand_website_forum"), qweb=[QWebInfo(
+        xmlid="viin_brand_website_forum.default_faq", module="viin_brand_website_forum",
+        odoo_version=V, inherit_xmlid="website_forum.default_faq",
+    )])
+
+
+def _extends(driver) -> list[dict]:
+    return _rows(driver, """
+        MATCH (:QWebTmpl {xmlid: 'viin_brand_website_forum.default_faq',
+                          odoo_version: $v})-[r:EXTENDS_TMPL]->(b)
+        RETURN b.xmlid AS base, coalesce(b.unresolved, false) AS unresolved
+    """)
+
+
+def test_extender_naming_the_record_xmlid_extends_the_key_keyed_base(
+    writer, neo4j_driver, caplog,
+):
+    writer.write_view_results([_faq_base()])
+    with caplog.at_level(logging.WARNING, logger="src.indexer.writer_neo4j"):
+        writer.write_view_results([_faq_extender()])
+    assert _extends(neo4j_driver) == [
+        {"base": "website_forum.faq_accordion", "unresolved": False},
+    ]
+    assert _placeholders(neo4j_driver) == 0
+    assert not [r for r in caplog.records if "unresolved EXTENDS_TMPL" in r.getMessage()]
+
+
+def test_extender_written_before_the_record_form_base_is_relinked(writer, neo4j_driver):
+    writer.begin_run("run-ext")
+    writer.write_view_results([_faq_extender()])
+    writer.begin_run("run-base")
+    writer.write_view_results([_faq_base()])
+
+    assert writer.relink_unresolved_placeholders(V)["EXTENDS_TMPL"] == 1
+    writer.gc_unresolved_placeholders(V)
+    assert _extends(neo4j_driver) == [
+        {"base": "website_forum.faq_accordion", "unresolved": False},
+    ]
+    run = _rows(neo4j_driver, """
+        MATCH (:QWebTmpl {xmlid: 'viin_brand_website_forum.default_faq',
+                          odoo_version: $v})-[r:EXTENDS_TMPL]->()
+        RETURN r.written_run AS run
+    """)
+    assert run == [{"run": "run-ext"}]
+
+
+def test_report_naming_the_record_xmlid_uses_the_template(writer, neo4j_driver):
+    base = _faq_base()
+    base.reports = [ReportInfo(
+        xmlid="website_forum.action_report_faq", name="FAQ", model="forum.forum",
+        report_type="qweb-pdf", module="website_forum", odoo_version=V,
+        report_name="website_forum.default_faq",
+    )]
+    writer.write_view_results([base])
+    rows = _rows(neo4j_driver, """
+        MATCH (:Report {xmlid: 'website_forum.action_report_faq', odoo_version: $v})
+              -[:USES_TEMPLATE]->(t:QWebTmpl)
+        RETURN t.xmlid AS tmpl
+    """)
+    assert rows == [{"tmpl": "website_forum.faq_accordion"}]

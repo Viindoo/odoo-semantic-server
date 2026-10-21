@@ -170,7 +170,8 @@ def test_parse_qweb_view_record_odoo_root(tmp_path, sale_module):
     result = parse_file(f, sale_module)
     assert len(result) == 1
     q = result[0]
-    # Keyed on the `key` field (the public xmlid extenders inherit by), not the id.
+    # Keyed on the `key` field (the name t-call uses); the record xmlid, which
+    # `inherit_id ref=` resolves against, is kept as record_xmlid.
     assert q.xmlid == "website.aboutus"
     assert q.module == "sale"
     assert q.odoo_version == "17.0"
@@ -339,3 +340,54 @@ def test_parse_template_key_mode_none_when_absent(tmp_path, sale_module):
     result = parse_file(f, sale_module)
     assert result[0].key is None
     assert result[0].mode is None
+
+
+# --- record-form QWeb view: record xmlid alias of a key-keyed node ---
+
+
+def test_qweb_record_keeps_its_record_xmlid_next_to_the_key(tmp_path):
+    """website_forum.default_faq: node keyed by `key`, extenders name the record id.
+
+    `inherit_id ref="website_forum.default_faq"` resolves through ir.model.data
+    (the record xmlid), not the website key, so the record xmlid must survive
+    the parse for the EXTENDS_TMPL resolver.
+    """
+    forum = ModuleInfo(
+        name="website_forum", odoo_version="19.0", repo="odoo_19.0",
+        path=str(tmp_path), depends=["website"], version_raw="19.0.1.0",
+    )
+    f = write_xml(
+        tmp_path,
+        "forum_forum_template_faq.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="default_faq" model="ir.ui.view">
+                <field name="name">FAQ Accordion</field>
+                <field name="type">qweb</field>
+                <field name="key">website_forum.faq_accordion</field>
+                <field name="arch" type="xml"><t t-name="x"><div/></t></field>
+            </record>
+        </odoo>
+    """,
+    )
+    [q] = parse_file(f, forum)
+    assert q.xmlid == "website_forum.faq_accordion"
+    assert q.key == "website_forum.faq_accordion"
+    assert q.record_xmlid == "website_forum.default_faq"
+
+
+def test_template_element_has_no_separate_record_xmlid(tmp_path, sale_module):
+    f = write_xml(
+        tmp_path,
+        "templates.xml",
+        """
+        <?xml version="1.0"?>
+        <odoo>
+            <template id="plain_tmpl" key="sale.other_key"><div/></template>
+        </odoo>
+    """,
+    )
+    [q] = parse_file(f, sale_module)
+    assert q.xmlid == "sale.plain_tmpl"
+    assert q.record_xmlid is None

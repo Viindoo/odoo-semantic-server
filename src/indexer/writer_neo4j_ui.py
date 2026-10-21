@@ -123,6 +123,31 @@ def _report_model_in_own_module(model_name: str, report_module: str) -> bool:
     return bool(prefix) and prefix == report_module
 
 
+def _extend_by_record_xmlid(tx, xmlid: str, inherit_xmlid: str, odoo_version: str,
+                            run_id: str | None):
+    """MERGE EXTENDS_TMPL to the QWebTmpl whose RECORD xmlid is *inherit_xmlid*.
+
+    ``inherit_id ref=`` names an ``ir.model.data`` xmlid; a ``<record
+    model="ir.ui.view">`` QWeb view is keyed by its website ``key`` instead and
+    keeps the record xmlid as ``record_xmlid`` (``parser_qweb._parse_qweb_record``).
+    Tried only after the ``xmlid`` match failed, so a node whose own xmlid is the
+    reference always wins. Returns the record, or None when no such node exists.
+    """
+    from .writer_neo4j import _written_run_set
+
+    return tx.run(f"""
+        MATCH (ext:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
+        MATCH (base:QWebTmpl {{record_xmlid: $inherit_xmlid, odoo_version: $ver}})
+        WHERE NOT coalesce(base.unresolved, false) AND base <> ext
+        WITH ext, base ORDER BY base.xmlid ASC LIMIT 1
+        MERGE (ext)-[r:EXTENDS_TMPL]->(base)
+        ON MATCH SET r.unresolved = false
+        SET {_written_run_set("r")}
+        RETURN 1 AS ok
+    """, xmlid=xmlid, ver=odoo_version, inherit_xmlid=inherit_xmlid,
+         run=run_id).single()
+
+
 def _write_view_parse_result(
     tx, result: ViewParseResult, profiles: list[str], run_id: str | None = None,
 ) -> None:
@@ -256,10 +281,12 @@ def _write_view_parse_result(
             SET t.module = $module,
                 t.key = coalesce($key, t.key),
                 t.mode = coalesce($mode, t.mode),
+                t.record_xmlid = coalesce($record_xmlid, t.record_xmlid),
                 t.unresolved = false,
                 {_written_run_set("t")}
         """, xmlid=qweb.xmlid, ver=qweb.odoo_version, module=qweb.module,
-             key=qweb.key, mode=qweb.mode, profiles=profiles, run=run_id)
+             key=qweb.key, mode=qweb.mode, record_xmlid=qweb.record_xmlid,
+             profiles=profiles, run=run_id)
 
         tx.run(f"""
             MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
@@ -291,6 +318,9 @@ def _write_view_parse_result(
                 RETURN 1 AS ok
             """, xmlid=qweb.xmlid, ver=qweb.odoo_version,
                  inherit_xmlid=qweb.inherit_xmlid, run=run_id).single()
+            if rec is None:
+                rec = _extend_by_record_xmlid(tx, qweb.xmlid, qweb.inherit_xmlid,
+                                              qweb.odoo_version, run_id)
             if rec is None:
                 # WI-D: the base may be an AssetBundle, not a QWebTmpl/View. In
                 # v15+ Odoo declares asset bundles (web.assets_backend, ...) in the
@@ -446,6 +476,19 @@ def _write_view_parse_result(
                 RETURN 1 AS ok
             """, xmlid=rep.xmlid, ver=rep.odoo_version,
                  tmpl_xmlid=rep.report_name, run=run_id).single()
+            if tmpl is None:
+                # A record-form QWeb view keyed by its website `key` is still
+                # reachable by its record xmlid (QWebInfo.record_xmlid).
+                tmpl = tx.run(f"""
+                    MATCH (rp:Report {{xmlid: $xmlid, odoo_version: $ver}})
+                    MATCH (t:QWebTmpl {{record_xmlid: $tmpl_xmlid, odoo_version: $ver}})
+                    WHERE NOT coalesce(t.unresolved, false)
+                    WITH rp, t ORDER BY t.xmlid ASC LIMIT 1
+                    MERGE (rp)-[r:{REL_USES_TEMPLATE}]->(t)
+                    SET {_written_run_set("r")}
+                    RETURN 1 AS ok
+                """, xmlid=rep.xmlid, ver=rep.odoo_version,
+                     tmpl_xmlid=rep.report_name, run=run_id).single()
             if tmpl is None:
                 _warn = (
                     report_template_warn_active(rep.odoo_version)
