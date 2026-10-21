@@ -502,8 +502,10 @@ def main(argv: list[str] | None = None) -> int:
         retire = not getattr(args, "no_retire", False)
         allow_mass_retire = getattr(args, "allow_mass_retire", False)
         refresh = not getattr(args, "no_fetch", False)
-        embedder = None if args.no_embed else _build_embedder()
+        # The pool first: building the embedder resolves the DB overlay of
+        # embedding.timeout_read_seconds once, at construction (#383 item 3).
         pg = open_production_pg()
+        embedder = None
         max_workers = getattr(args, "max_workers", 1)
         profile_workers = getattr(args, "profile_workers", 1)
 
@@ -518,6 +520,7 @@ def main(argv: list[str] | None = None) -> int:
                     started_at=datetime.now(UTC),
                 )
             try:
+                embedder = None if args.no_embed else _build_embedder()
                 # A run with a failed repo or profile still reconciled the
                 # healthy ones: its summary comes with the IndexRunError.
                 failure: IndexRunError | None = None
@@ -639,16 +642,18 @@ def main(argv: list[str] | None = None) -> int:
                 pg.close()
 
     elif args.subcommand == "reembed-stubs":
-        embedder = _build_embedder()
-        if embedder is None:
-            print(
-                "Error: [embedder] url not configured — cannot reembed. "
-                "Set [embedder] url in odoo-semantic.conf or EMBEDDER_URL env var.",
-                file=sys.stderr,
-            )
-            return 1
+        # The pool before the embedder, as in index-repo (#383 item 3).
         pg = open_production_pg()
+        embedder = None
         try:
+            embedder = _build_embedder()
+            if embedder is None:
+                print(
+                    "Error: [embedder] url not configured - cannot reembed. "
+                    "Set [embedder] url in odoo-semantic.conf or EMBEDDER_URL env var.",
+                    file=sys.stderr,
+                )
+                return 1
             summary = reembed_stubs_for_profile(
                 pg,
                 profile_name=args.profile,
@@ -661,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         finally:
             close = getattr(embedder, "close", None)
-            if callable(close):
+            if embedder is not None and callable(close):
                 close()
             pg.close()
 
