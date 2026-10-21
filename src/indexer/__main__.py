@@ -518,6 +518,7 @@ def main(argv: list[str] | None = None) -> int:
                     status="running",
                     pid=os.getpid(),
                     started_at=datetime.now(UTC),
+                    **job_registry.own_process_identity(),
                 )
             try:
                 embedder = None if args.no_embed else _build_embedder()
@@ -619,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
                     status="running",
                     pid=os.getpid(),
                     started_at=datetime.now(UTC),
+                    **job_registry.own_process_identity(),
                 )
             try:
                 _run_index_core(

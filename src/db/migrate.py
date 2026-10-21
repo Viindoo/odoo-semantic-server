@@ -213,6 +213,9 @@ CREATE TABLE IF NOT EXISTS indexer_jobs (
 CREATE INDEX IF NOT EXISTS ix_indexer_jobs_profile ON indexer_jobs(profile_name);
 CREATE INDEX IF NOT EXISTS ix_indexer_jobs_status  ON indexer_jobs(status);
 CREATE INDEX IF NOT EXISTS ix_indexer_jobs_created ON indexer_jobs(created_at DESC);
+-- migrations/0004_indexer_jobs_proc_identity (#383): the child's process identity.
+ALTER TABLE indexer_jobs ADD COLUMN IF NOT EXISTS proc_start_ticks BIGINT;
+ALTER TABLE indexer_jobs ADD COLUMN IF NOT EXISTS boot_id TEXT;
 """
 
 # Public alias — tests and callers that import SCHEMA_SQL get the full DDL string

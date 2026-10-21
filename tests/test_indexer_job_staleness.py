@@ -260,3 +260,184 @@ def test_parse_starttime_splits_after_the_last_paren():
 def test_parse_starttime_of_garbage_is_none():
     assert job_registry._parse_starttime("") is None
     assert job_registry._parse_starttime("4242 (python) S 1 2") is None
+
+
+# --- exact process identity (#383 item 4) -----------------------------------
+#
+# A row whose child wrote proc_start_ticks + boot_id with its 'running' report
+# is judged by equality on them: immune to wall-clock steps, and a pid reused
+# a few seconds after the job started is still caught. Legacy rows (either
+# column NULL) keep the 120 s heuristic above.
+
+BOOT = "bbc6c547-1620-4bd1-861e-7570428ced48"
+TICKS = 87_285_701
+
+
+class _IdProc(_Proc):
+    """Fake /proc that also answers the boot id and per-pid start ticks."""
+
+    def __init__(self, boot=None, starts=None, boot_id=BOOT, ticks=None):
+        super().__init__(boot, starts)
+        self._boot_id = boot_id
+        self.ticks = ticks or {}
+
+    def boot_id(self):
+        return self._boot_id
+
+    def start_ticks(self, pid):
+        return self.ticks.get(pid)
+
+
+def _id_row(job_id, *, ticks=TICKS, boot_id=BOOT):
+    return {**_row(job_id, "running", pid=ME, age_s=3700, started_s=3600),
+            "proc_start_ticks": ticks, "boot_id": boot_id}
+
+
+def test_a_live_job_survives_a_large_forward_clock_step_when_its_identity_matches(monkeypatch):
+    # The wall clock jumped 10 min forward after the job started: the legacy
+    # heuristic sees the pid "start" 10 min after started_at and expires it.
+    step = 600
+    proc = _IdProc(boot=(NOW - timedelta(days=2) + timedelta(seconds=step)).timestamp(),
+                   starts={ME: (NOW - timedelta(seconds=3601 - step)).timestamp()},
+                   ticks={ME: TICKS})
+    count, updates = _sweep([_id_row(20)], proc, monkeypatch)
+    assert count == 0 and updates == {}
+    # The same row without the identity (legacy) is expired by the heuristic:
+    legacy = _row(21, "running", pid=ME, age_s=3700, started_s=3600)
+    count, _ = _sweep([legacy], proc, monkeypatch)
+    assert count == 1
+
+
+def test_a_pid_reused_seconds_after_the_job_started_is_expired(monkeypatch):
+    # The new process started 5 s after started_at: inside the 120 s slack, so
+    # the heuristic misses it; the ticks do not.
+    proc = _IdProc(boot=(NOW - timedelta(days=2)).timestamp(),
+                   starts={ME: (NOW - timedelta(seconds=3595)).timestamp()},
+                   ticks={ME: TICKS + 500})
+    count, updates = _sweep([_id_row(22)], proc, monkeypatch)
+    assert count == 1
+    assert "start ticks differ" in updates[22]["error_msg"]
+
+
+def test_a_reboot_is_detected_by_the_boot_id(monkeypatch):
+    proc = _IdProc(boot=(NOW - timedelta(days=2)).timestamp(), boot_id="another-boot",
+                   ticks={ME: TICKS})
+    count, updates = _sweep([_id_row(23)], proc, monkeypatch)
+    assert count == 1 and "rebooted" in updates[23]["error_msg"]
+
+
+# GUARD: unreadable current identity (hidepid, not Linux) is not a mismatch.
+def test_unreadable_current_identity_gives_the_benefit_of_the_doubt(monkeypatch):
+    count, updates = _sweep([_id_row(24)], _IdProc(boot_id=None), monkeypatch)
+    assert count == 0 and updates == {}
+
+
+# GUARD: only one identity column set -> legacy heuristic, as specified.
+def test_a_row_with_ticks_but_no_boot_id_keeps_the_heuristic(monkeypatch):
+    proc = _IdProc(boot=(NOW - timedelta(days=2)).timestamp(),
+                   starts={ME: (NOW - timedelta(minutes=10)).timestamp()},
+                   ticks={ME: TICKS})
+    count, _ = _sweep([_id_row(25, boot_id=None)], proc, monkeypatch)
+    assert count == 1  # heuristic: the pid's process started after the job
+
+
+def test_the_real_proc_reader_returns_our_own_identity():
+    try:
+        with open("/proc/self/stat", encoding="utf-8") as fh:
+            expected = job_registry._parse_starttime(fh.read())
+    except OSError:
+        pytest.skip("no /proc on this platform")
+    ident = job_registry.own_process_identity()
+    assert ident["proc_start_ticks"] == expected
+    assert ident == job_registry.own_process_identity()  # stable
+    with open("/proc/sys/kernel/random/boot_id", encoding="ascii") as fh:
+        assert ident["boot_id"] == fh.read().strip()
+
+
+def test_identity_left_out_when_proc_is_unreadable(monkeypatch):
+    monkeypatch.setattr(job_registry, "_PROC", _IdProc(boot_id=None), raising=False)
+    assert job_registry.own_process_identity() == {}
+
+
+@pytest.mark.parametrize("argv", [
+    ["index-repo", "--profile", "p1", "--no-embed", "--job-id", "42"],
+    ["index-core", "--source", "/nonexistent", "--version", "17.0", "--job-id", "42"],
+])
+def test_the_indexer_child_reports_its_identity_with_running(monkeypatch, argv):
+    from unittest.mock import MagicMock
+
+    import src.indexer.__main__ as main_mod
+
+    fake = _IdProc(ticks={ME: TICKS})
+    monkeypatch.setattr(job_registry, "_PROC", fake, raising=False)
+    calls = []
+    monkeypatch.setattr(main_mod, "open_production_pg", lambda: MagicMock())
+    monkeypatch.setattr(main_mod, "index_profile", lambda pg, **kw: {"modules": 0})
+    monkeypatch.setattr(main_mod, "_run_index_core", lambda **kw: None)
+    monkeypatch.setattr(main_mod.job_registry, "update_job",
+                        lambda conn, job_id, **kw: calls.append(kw))
+    monkeypatch.setattr(main_mod, "_install_sigterm_handler", lambda job_id: None)
+    assert main_mod.main(argv) == 0
+    running = calls[0]
+    assert running["status"] == "running" and running["pid"] == ME
+    assert running["proc_start_ticks"] == TICKS and running["boot_id"] == BOOT
+
+
+class _RaisingCursor:
+    """Fake cursor: the identity columns do not exist (pre-0004 schema)."""
+
+    def __init__(self, log):
+        self.log = log
+        self.rowcount = 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        import psycopg2.errors
+
+        self.log.append((sql, params))
+        if params and TICKS in params:
+            raise psycopg2.errors.UndefinedColumn("column proc_start_ticks does not exist")
+
+
+@pytest.mark.parametrize("autocommit", [True, False])
+def test_update_job_without_the_columns_still_writes_running(autocommit):
+    """Code deployed before migration 0004: 'running' must still be recorded."""
+    log: list = []
+
+    class _Conn:
+        def __init__(self):
+            self.autocommit = autocommit
+
+        def cursor(self):
+            return _RaisingCursor(log)
+
+    job_registry.update_job(_Conn(), 7, status="running", pid=ME,
+                            proc_start_ticks=TICKS, boot_id=BOOT)
+    _final_sql, final_params = log[-1]
+    assert final_params == ["running", ME, 7]
+    savepoints = [s for s, _ in log if isinstance(s, str)]
+    if autocommit:
+        assert savepoints == []
+    else:
+        assert savepoints == ["SAVEPOINT job_identity", "ROLLBACK TO SAVEPOINT job_identity"]
+
+
+def test_non_admins_never_see_a_jobs_process_identity():
+    from src.web_ui.routes.repos import _redact_repo_rows
+
+    def rows():
+        return [{"id": 1, "last_job": {
+            "id": 5, "status": "running", "error_msg": None,
+            "pid": 4242, "proc_start_ticks": TICKS, "boot_id": BOOT,
+        }}]
+
+    job = _redact_repo_rows(rows(), is_admin=False)[0]["last_job"]
+    assert job["pid"] is None and job["proc_start_ticks"] is None and job["boot_id"] is None
+    assert job["id"] == 5 and job["status"] == "running"
+    admin = _redact_repo_rows(rows(), is_admin=True)[0]["last_job"]
+    assert admin["pid"] == 4242 and admin["boot_id"] == BOOT

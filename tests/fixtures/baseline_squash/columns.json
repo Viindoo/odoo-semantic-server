@@ -847,6 +847,20 @@
     "column_default": "now()"
   },
   {
+    "table_name": "indexer_jobs",
+    "column_name": "proc_start_ticks",
+    "data_type": "bigint",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
+    "table_name": "indexer_jobs",
+    "column_name": "boot_id",
+    "data_type": "text",
+    "is_nullable": "YES",
+    "column_default": null
+  },
+  {
     "table_name": "key_rotation_log",
     "column_name": "id",
     "data_type": "bigint",

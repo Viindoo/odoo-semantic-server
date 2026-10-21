@@ -77,7 +77,9 @@ def _redact_repo_rows(repos: list[dict], *, is_admin: bool) -> list[dict]:
     owner-facing category of :func:`jobs.sanitize_job_error` (the same rule as
     ``/api/jobs/{id}/status``), ``clone_error_msg`` None (the same rule as
     ``/repos/{id}/clone-status``) and an attached ``last_job['error_msg']``
-    sanitized likewise. ``local_path`` (the server-side checkout directory,
+    sanitized likewise; the attached job's process identity (``pid``,
+    ``proc_start_ticks``, ``boot_id``) becomes None, as ``pid`` already is on
+    ``/api/jobs/{id}/status``. ``local_path`` (the server-side checkout directory,
     derived by ``default_clone_dir``, never user input) becomes None: it
     discloses the server's filesystem layout. ``lifecycle_attention`` becomes
     None: the text can name repos of other tenants (an undecidable retirement
@@ -100,8 +102,15 @@ def _redact_repo_rows(repos: list[dict], *, is_admin: bool) -> list[dict]:
         if "lifecycle_attention" in repo:
             repo["lifecycle_attention"] = None
         job = repo.get("last_job")
-        if isinstance(job, dict) and "error_msg" in job:
-            repo["last_job"] = {**job, "error_msg": sanitize_job_error(job["error_msg"])}
+        if isinstance(job, dict):
+            job = {**job}
+            if "error_msg" in job:
+                job["error_msg"] = sanitize_job_error(job["error_msg"])
+            # Process identity stays admin-only, as on /api/jobs/{id}/status.
+            for key in ("pid", "proc_start_ticks", "boot_id"):
+                if key in job:
+                    job[key] = None
+            repo["last_job"] = job
     return repos
 
 
