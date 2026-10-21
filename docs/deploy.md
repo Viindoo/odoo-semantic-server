@@ -816,6 +816,16 @@ sudo systemctl enable --now odoo-semantic-reindex.timer
 systemctl list-timers odoo-semantic-reindex.timer --no-pager   # verify lần chạy kế
 ```
 
+Khi NÂNG CẤP (unit đã cài), sao lưu unit đang chạy TRƯỚC khi chép bản mới đè lên, để
+rollback có cái mà khôi phục (`<old-sha>` = commit đang chạy):
+
+```bash
+for u in odoo-semantic-reindex.service odoo-semantic-lifecycle-audit.service osm-alert@.service; do
+  [ -f "/etc/systemd/system/$u" ] && sudo cp -a "/etc/systemd/system/$u" "/etc/systemd/system/$u.bak-<old-sha>"
+done
+# rollback: sudo cp -a /etc/systemd/system/<unit>.bak-<old-sha> /etc/systemd/system/<unit> && sudo systemctl daemon-reload
+```
+
 Incremental `index-repo --all` chạy hằng đêm 03:30. Từ 0.19.0 (ADR-0056) mỗi lượt chạy đó
 cũng là lượt dọn vòng đời module: scan = manifest git-tracked, module biến mất được flag
 `retire_pending` trong ledger `module_presence`, rồi reconcile theo version xóa Module + cây con
