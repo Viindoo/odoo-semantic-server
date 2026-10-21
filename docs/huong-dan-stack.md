@@ -337,6 +337,20 @@ if not name and inherit:
     name = inherit[0]
 ```
 
+Đoạn trên chỉ minh hoạ. Parser thật (`parser_python._parse_class`) còn nhận:
+
+- **Tuple:** `_inherit = 'x',` (1-tuple) và `_inherit = ('a', 'b')` - trước đây chỉ nhận
+  string/list nên 1-tuple ra `[]` (mất cạnh INHERITS, vd `to_hr_employee_advance` 17.0).
+- **Hằng số (`parser_python_consts`):** `_name = INTROSPECT_SERVICE` khi tên đó gán string
+  (hoặc tuple/list string) ở module-level CÙNG file TRƯỚC class, hoặc import từ file khác
+  của CÙNG addon (`from .x import N`, `from ..x import N`, `from . import N`,
+  `from odoo.addons.<addon>.x import N`, có `as`, theo re-export, có giới hạn hop + chống
+  vòng lặp). Tên gán trước đó trong class body cũng được (`_inherit = _name` của `website`).
+  Không bao giờ execute code. Không resolve được (call, attribute `const.N`, gán trong
+  `if`/`try`, import ra ngoài addon) -> giữ hành vi cũ (literal-only) + log DEBUG kèm file.
+- **Era1 text-regex** (file Python 3 không parse được, v8-v10) nhận tuple nhưng KHÔNG
+  resolve hằng số (không có AST; v8-v9 khảo sát toàn literal).
+
 ### ast.walk ĐỂ dùng cho gì?
 
 Dùng `ast.walk` khi cần duyệt bên trong function body (không phải top-level):
