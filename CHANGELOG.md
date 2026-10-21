@@ -84,6 +84,10 @@ All notable changes to Odoo Semantic MCP are documented here.
   only at the clone directory OSM manages (else `unavailable_repos`); a clone-directory lock
   serializes repos whose URLs share a slug, and a directory holding another origin is never
   refreshed or indexed for a repo.
+- A pre-scan fetch failure is no longer silent: one failure is a WARNING plus a
+  `lifecycle_attention` line; the same repo failing two runs in a row (`stale_repos`), every
+  fetch of a run failing (`outages: fetch_outage`) or the embedder returning no vector all
+  run (`outages: embedder_down`) exits 3 so the admins are mailed.
 - A module moved from a repo that nested it at another path (`addons/<m>` there, `<m>`
   here) no longer keeps its old copy's file-keyed children (Stylesheet, JsTestSuite,
   JSPatch, LintViolation, test-class twins) for ever as a parser gap beside the new copy,

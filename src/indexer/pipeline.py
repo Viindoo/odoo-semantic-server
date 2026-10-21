@@ -318,6 +318,19 @@ def _empty_lifecycle() -> dict:
         # Registered repos with no checkout this run could create (#383 item 2):
         # "repo id=<id> (<url>): <cause>". Exit 3, no traceback.
         "unavailable_repos": [],
+        # Pre-scan fetches (refresh_before_scan): how many repos were fetched,
+        # the ones that failed ("repo id=<id> (<url>): <cause>", a WARNING
+        # each), and the ones whose fetch also failed in the previous run
+        # (``stale_repos``: exit 3 - OSM no longer follows that remote branch).
+        "fetch_attempted": 0,
+        "fetch_failed": [],
+        "stale_repos": [],
+        # Chunks sent to the embedder and the vectors it returned.
+        "embed_attempted": 0,
+        "embed_ok": 0,
+        # Run-wide failures derived by _finish_lifecycle (exit 3): every fetch
+        # of the run failed, or the embedder returned nothing all run.
+        "outages": [],
         "needs_attention": False,
     }
 
@@ -359,6 +372,16 @@ def _report_unavailable_repo(lc: dict, repo: dict, exc) -> None:
 
 def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
     """Fold one repo's ``_index_repo`` lifecycle counters into the run summary."""
+    fetch = counters.get("fetch") or {}
+    if fetch.get("attempted"):
+        lc["fetch_attempted"] += 1
+    if fetch.get("failed"):
+        item = f"repo id={repo['id']} ({repo.get('url')}): {fetch['failed']}"
+        lc["fetch_failed"].append(item)
+        if fetch.get("persistent"):
+            lc["stale_repos"].append(item)
+    lc["embed_attempted"] += counters.get("embed_attempted", 0) or 0
+    lc["embed_ok"] += counters.get("embed_ok", 0) or 0
     repo_lc = counters.get("lifecycle")
     if not repo_lc:
         return
@@ -381,11 +404,43 @@ def _absorb_report(lc: dict, report) -> None:
     lc["errors"].extend(f"{v}: {k}: {e}" for k, e in sorted(report.errors.items()))
 
 
+# A run-wide fetch outage needs at least this many fetched repos: with one
+# repo, "every fetch failed" is one failure, which the two-consecutive-runs
+# rule (``stale_repos``) covers instead.
+FETCH_OUTAGE_MIN_REPOS = 2
+
+
+def run_outages(lc: dict) -> list[str]:
+    """Run-wide failures that stop OSM reflecting code (exit 3): the pre-scan
+    fetch failed for every repo the run fetched (network / DNS outage, a
+    revoked credential shared by all repos), or the embedder returned no
+    vector for any chunk the run sent (down for the whole run). Derived from
+    the counts, so a merged summary (``index_all``) is judged as a whole."""
+    out: list[str] = []
+    attempted = lc.get("fetch_attempted", 0) or 0
+    failed = len(lc.get("fetch_failed") or [])
+    if attempted >= FETCH_OUTAGE_MIN_REPOS and failed >= attempted:
+        out.append(
+            f"fetch_outage: the pre-scan fetch failed for all {attempted} repos this run "
+            "fetched (network or DNS outage, or a credential they share); OSM indexed "
+            "the on-disk state and does not follow the remote branches"
+        )
+    sent = lc.get("embed_attempted", 0) or 0
+    if sent and not (lc.get("embed_ok", 0) or 0):
+        out.append(
+            f"embedder_down: the embedder returned no vector for any of the {sent} "
+            "chunk(s) this run sent; the graph was written, the embeddings were not "
+            "(existing rows kept)"
+        )
+    return out
+
+
 def _finish_lifecycle(lc: dict) -> dict:
     lc["versions"] = sorted(set(lc["versions"]))
+    lc["outages"] = run_outages(lc)
     lc["needs_attention"] = bool(
         lc["gates_tripped"] or lc["undecidable"] or lc["errors"]
-        or lc.get("unavailable_repos")
+        or lc.get("unavailable_repos") or lc.get("stale_repos") or lc["outages"]
     )
     return lc
 
@@ -1270,6 +1325,10 @@ def index_all(
         lifecycle["gates_tripped"].extend(plc.get("gates_tripped") or [])
         lifecycle["deferred_presence"].update(plc.get("deferred_presence") or {})
         lifecycle["unavailable_repos"].extend(plc.get("unavailable_repos") or [])
+        for key in ("fetch_failed", "stale_repos"):
+            lifecycle[key].extend(plc.get(key) or [])
+        for key in ("fetch_attempted", "embed_attempted", "embed_ok"):
+            lifecycle[key] += plc.get(key, 0) or 0
         for key in counts:
             counts[key] += summary.get(key, 0)
 

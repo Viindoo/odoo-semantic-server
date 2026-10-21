@@ -325,7 +325,8 @@ def _setup_rename_repo(tmp_path: Path, profile_suffix: str, pg_conn):
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run - establishes mod_foo Module node in Neo4j
-    summary1 = index_profile(pg_conn, profile_name=prof_name)
+    # The repo has no remote (url file://local): offline runs, like --no-fetch.
+    summary1 = index_profile(pg_conn, profile_name=prof_name, refresh=False)
     assert summary1["modules"] >= 1, "First run must index mod_foo"
 
     # git mv mod_foo → mod_bar and commit
@@ -365,7 +366,7 @@ def test_module_rename_retires_old_module_on_incremental_run(
     pid, repo, prof_name = _setup_rename_repo(tmp_path, "a", clean_pg)
 
     # Second run - incremental (no --full, no lifecycle flag)
-    summary2 = index_profile(clean_pg, profile_name=prof_name)
+    summary2 = index_profile(clean_pg, profile_name=prof_name, refresh=False)
     assert summary2["modules"] >= 1, "Second run must index mod_bar"
 
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (
@@ -388,7 +389,9 @@ def test_module_rename_full_flag_retires_old_module(
     that --full "is not a cleanup mechanism" pinned the #378 defect."""
     pid, repo, prof_name = _setup_rename_repo(tmp_path, "b", clean_pg)
 
-    summary2 = index_profile(clean_pg, profile_name=prof_name, full_reindex=True)
+    summary2 = index_profile(
+        clean_pg, profile_name=prof_name, full_reindex=True, refresh=False,
+    )
     assert summary2["modules"] >= 1, "--full run must index mod_bar"
 
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (

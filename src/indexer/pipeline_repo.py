@@ -34,6 +34,7 @@ import contextlib
 import functools
 import hashlib
 import logging
+import re
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -129,7 +130,7 @@ def _owning_profiles(
     return [owner]
 
 
-def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
+def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> str | None:
     """Fetch + reset the repo's local clone to its upstream branch tip.
 
     ROOT CAUSE this fixes (nightly-fetch): the incremental check in ``_index_repo``
@@ -167,7 +168,14 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
     ``TimeoutExpired``, ``FileNotFoundError``, or any other unexpected error) is
     caught, logged as a WARNING, and swallowed - the caller then indexes whatever is
     on disk. Network reachability must NEVER become a hard dependency of the nightly
-    job: a fetch failure must not abort the profile's reindex.
+    job: a fetch failure must not abort the profile's reindex. It is RETURNED
+    though (one line, None on success, on benign lock contention, and when
+    nothing failed): a fetch that keeps failing means OSM no longer reflects
+    the remote branch, so ``_index_repo`` records it in
+    ``repos.lifecycle_attention`` and the run summary, and the run exits 3 when
+    the same repo's fetch failed in two consecutive runs or every fetch of the
+    run failed (``pipeline._finish_lifecycle``). One failure that heals by the
+    next run stays a WARNING.
 
     Benign lock contention: if a concurrent ``clone-all`` already holds the per-repo
     advisory lock, ``_repo_git_lock`` raises ``RuntimeError`` at acquisition. That is
@@ -200,7 +208,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "(cannot reset --hard origin/<branch> without a branch name)",
             url,
         )
-        return
+        return "no branch recorded"
 
     # Resolve the SSH key BEFORE acquiring the lock. This keeps the ONLY RuntimeError
     # that can fire inside the `with` block below the lock-acquisition one (contention).
@@ -213,7 +221,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "Repo %s: %s - skipping pre-scan fetch, indexing on-disk state",
             url, exc,
         )
-        return
+        return str(exc)
     except Exception as exc:  # noqa: BLE001 - decrypt/DB error (e.g. FERNET_KEY absent)
         # A genuine config/crypto failure resolving the key. Non-fatal for the
         # nightly job, but a real error -> WARNING (not the INFO contention line).
@@ -222,7 +230,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "indexing on-disk state instead",
             url, type(exc).__name__, exc,
         )
-        return
+        return f"resolving the SSH key: {type(exc).__name__}: {exc}"
 
     # ADR-0035 D2: serialize the mutating fetch/reset behind the per-repo advisory
     # lock (same lock id the cloner uses) so a scheduled fetch and an on-demand
@@ -247,7 +255,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "fetch; indexing on-disk state",
             url, repo.get("id"),
         )
-        return
+        return None
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
@@ -259,7 +267,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "Repo %s: pre-scan fetch failed (%s: %s) - indexing on-disk state instead",
             url, type(exc).__name__, exc,
         )
-        return
+        return _fetch_cause(exc)
     except Exception as exc:  # noqa: BLE001 - defensive: any git error is non-fatal
         # Any other unexpected error (e.g. OSError from the subprocess machinery)
         # must ALSO not abort the profile reindex.
@@ -268,12 +276,57 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "indexing on-disk state instead",
             url, type(exc).__name__, exc,
         )
-        return
+        return f"{type(exc).__name__}: {exc}"
 
     _logger.info(
         "Repo %s: pre-scan refresh (fetch + reset --hard origin/%s) OK",
         url, branch,
     )
+    return None
+
+
+def _fetch_cause(exc: BaseException) -> str:
+    """One line naming a failed fetch: the error and git's last stderr line
+    (``Could not resolve hostname ...``, ``Permission denied (publickey)``)."""
+    cause = f"{type(exc).__name__}: {exc}"
+    stderr = getattr(exc, "stderr", None)
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if isinstance(stderr, str):
+        lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+        if lines:
+            cause += f" ({lines[-1]})"
+    # The line lands in lifecycle_attention and the alert mail: never the
+    # credentials of a URL git echoes back (https://user:token@host/...).
+    cause = re.sub(r"(://)[^/@\s]+@", r"\1***@", cause)
+    return " ".join(cause.split())[:300]
+
+
+# Marker of a failed pre-scan fetch in ``repos.lifecycle_attention``: the
+# next run reads it back to tell a transient failure (one run: WARNING plus
+# this line) from a persistent one (two consecutive runs: exit 3).
+FETCH_FAILED_MARK = "pre-scan fetch failed"
+
+
+def _fetch_attention(repo: dict, cause: str) -> tuple[str, bool]:
+    """The attention line of a failed pre-scan fetch and whether the previous
+    run's fetch of this repo failed too (its ``lifecycle_attention``, read at
+    the start of this run, carries :data:`FETCH_FAILED_MARK`)."""
+    previous = repo.get("lifecycle_attention") or ""
+    consecutive = FETCH_FAILED_MARK in previous
+    if consecutive:
+        line = (
+            f"{FETCH_FAILED_MARK} in two consecutive runs ({cause}): OSM indexes the "
+            "last fetched state and no longer follows the remote branch"
+        )
+    else:
+        line = (
+            f"{FETCH_FAILED_MARK} ({cause}): indexed the on-disk state; an alert follows "
+            "if the next run's fetch fails too"
+        )
+    return line, consecutive
+
+
 class RepoCheckoutUnavailable(FileNotFoundError):
     """A registered repo has no checkout on disk and this run could not create it.
 
@@ -810,6 +863,9 @@ def _parse_and_write(
     total_owl_comps = 0
     total_stylesheets = 0
     total_embed_calls = 0
+    # Chunks sent to the embedder / vectors it returned (an embedder down for
+    # the whole run is a lifecycle attention, ``pipeline._finish_lifecycle``).
+    embed_stats: dict[str, int] = {"attempted": 0, "embedded": 0}
     total_js_test_suites = 0
 
     # Pre-flight (once, not per module): the embeddings table is usable
@@ -966,6 +1022,7 @@ def _parse_and_write(
                         embed_calls = write_module_embeddings(
                             mod_name, version, chunks, embedder,
                             profile_name=owning_profile, replace=False,
+                            stats=embed_stats,
                         )
                         health.embeddings_written = True
                         total_embeddings += len(chunks)
@@ -1023,6 +1080,8 @@ def _parse_and_write(
         "asset_bundles": total_asset_bundles,
         "embeddings": total_embeddings,
         "embed_calls": total_embed_calls,
+        "embed_attempted": embed_stats["attempted"],
+        "embed_ok": embed_stats["embedded"],
         "js_patches": total_js_patches,
         "owl_comps": total_owl_comps,
         "stylesheets": total_stylesheets,
@@ -2044,8 +2103,14 @@ def _index_repo(
     # below instead of being invisible (local HEAD == repos.head_sha -> skip).
     # FAIL-SAFE inside refresh_before_scan: a fetch error is logged and we index
     # whatever is on disk. Gated by `refresh` (CLI --no-fetch turns it off).
-    if refresh:
-        refresh_before_scan(repo, pg_conn)
+    fetch_failure = refresh_before_scan(repo, pg_conn) if refresh else None
+    fetch_line: str | None = None
+    fetch_persistent = False
+    if fetch_failure:
+        fetch_line, fetch_persistent = _fetch_attention(repo, fetch_failure)
+    fetch_counters = {
+        "attempted": bool(refresh), "failed": fetch_failure, "persistent": fetch_persistent,
+    }
     # === End pre-scan refresh ===
 
     # === Incremental / sync decision (W2-4 + ADR-0056) ===
@@ -2107,10 +2172,11 @@ def _index_repo(
             "Repo %s unchanged (HEAD %s) - skipping reindex", url, current_head[:8],
         )
         if presence is not None:
-            _write_attention(
-                presence, repo, _standing_attention(repo, repo_path, degraded_records), url,
-            )
-        return dict(_EMPTY_COUNTERS)
+            standing = _standing_attention(repo, repo_path, degraded_records)
+            if fetch_line:
+                standing.append(fetch_line)
+            _write_attention(presence, repo, standing, url)
+        return {**_EMPTY_COUNTERS, "fetch": fetch_counters}
 
     diff_base: str | None = plan.diff_base
     if plan.force_push:
@@ -2157,6 +2223,8 @@ def _index_repo(
         writer=writer, owning_profile=owning_profile,
     )
     attention: list[str] = observation.attention
+    if fetch_line:
+        attention.append(fetch_line)
     lifecycle_on = observation.lifecycle_on
     # Before the first graph write: the version-wide post-pass must re-run
     # (E2E-D4), even if this run dies before reaching it.
@@ -2372,6 +2440,7 @@ def _index_repo(
 
     if lifecycle_counters is not None:
         counters["lifecycle"] = lifecycle_counters
+    counters["fetch"] = fetch_counters
     return counters
 
 

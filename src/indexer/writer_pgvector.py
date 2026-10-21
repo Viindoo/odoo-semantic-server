@@ -617,8 +617,14 @@ def write_module_embeddings(
     profile_name: str | None = None,
     *,
     replace: bool = True,
+    stats: dict | None = None,
 ) -> int:
     """Delete-then-insert embeddings for (module, version[, profile_name]) atomically.
+
+    *stats* (optional): ``stats["attempted"]`` / ``stats["embedded"]`` are
+    increased by the chunks sent to the embedder and the ones it returned a
+    vector for, so the run can tell an embedder that was down for the whole
+    run (zero embedded while chunks were attempted) from a partial failure.
 
     ``replace=False`` upserts without the delete: rows of chunks the parse did
     not produce are kept. The pipeline uses it for a module whose parse was
@@ -667,6 +673,9 @@ def write_module_embeddings(
     chunks = list(seen.values())
 
     live_chunks, vecs, embed_calls = _embed_chunks_resilient(embedder, chunks)
+    if stats is not None:
+        stats["attempted"] = stats.get("attempted", 0) + len(chunks)
+        stats["embedded"] = stats.get("embedded", 0) + len(live_chunks)
     if len(live_chunks) < len(chunks):
         parse_health.note_embeddings_incomplete()
 

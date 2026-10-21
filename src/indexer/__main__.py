@@ -376,8 +376,10 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     failed (review H4 - systemd ``OnFailure=`` must fire, the data was indexed
     but ghosts may remain), or a registered repo has no checkout the run could
     clone (``unavailable_repos``, #383 item 2: the other repos were indexed,
-    this one cannot be). The details go to stderr; the same text is in
-    ``repos.lifecycle_attention``.
+    this one cannot be), a repo's pre-scan fetch failed in two consecutive
+    runs (``stale_repos``), or a run-wide outage (``outages``: every fetch of
+    the run failed, or the embedder returned no vector all run). The details
+    go to stderr; the per-repo text is in ``repos.lifecycle_attention``.
 
     *run_failed*: a repo or profile failed to index. The run exits 1, which
     outranks 3, but the lifecycle details are printed all the same."""
@@ -390,7 +392,8 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     if not lifecycle.get("needs_attention"):
         return code
     print(f"Lifecycle needs attention (exit {code}):", file=sys.stderr)
-    for key in ("gates_tripped", "undecidable", "errors", "unavailable_repos"):
+    for key in ("gates_tripped", "undecidable", "errors", "unavailable_repos",
+                "stale_repos", "outages"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
     # The embedding gate id names no profile; say which ones it holds (#381 F3).

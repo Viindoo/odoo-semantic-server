@@ -223,6 +223,14 @@ silent. Each rule below is protected by a behaviour test.
   identity (labels, name, model, xmlid, qualified name; DELEGATES_TO also `via_field`):
   `module_stale_children` returns `twin`. A USES_CORE_SYMBOL edge whose CoreSymbol is no
   longer `deprecated` (the only status it is written to) is `superseded` too.
+- **R6 - Alerts and reports.** A pre-scan fetch failure is returned by
+  `refresh_before_scan` and written to `lifecycle_attention`; exit 3 when the same repo's
+  fetch failed in two consecutive runs (`stale_repos`, marker read back from the previous
+  run's attention) or every fetch of the run failed (at least two repos, `outages:
+  fetch_outage`), and when the embedder returned no vector for any chunk the run sent
+  (`outages: embedder_down`). One failure that heals is a WARNING. `lifecycle-audit` lists
+  `parser_gaps` / `unproven_drops` (`informational_findings`) but they do not set
+  `has_findings` and never exit 4: kept data is not an alert.
 - **R7 - Clones never replace an operator's checkout.** The nightly retry clones a `manual`
   row only when its `local_path` is the clone directory OSM manages (a Web UI registration);
   a `manual` row registered by path whose directory is missing is reported unavailable. A
@@ -245,3 +253,7 @@ silent. Each rule below is protected by a behaviour test.
   module's own Views (`view_xmlid IN` the module's View xmlids, index seek) whose path lies
   under no prefix but has a `<m>/` directory segment - a foreign-xmlid override raised in
   another module's file keeps that module's directory and is never selected.
+Known limits of rules R1-R9: the fetch-failure memory is the previous run's
+`lifecycle_attention` text (no migration); a run that crashes before writing attention keeps
+the earlier note. A test node the file-level GC removes for a module whose prune is skipped
+(shared / unsynced owner) still leaves without the oracle (ADR-0057 D4, unchanged).
