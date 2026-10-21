@@ -21,6 +21,8 @@ from src.db.migrate import _MIGRATIONS_DIR
 _ALTERING = (
     "0004_indexer_jobs_proc_identity.sql",
     "0004_indexer_jobs_proc_identity.rollback.sql",
+    "0006_module_presence_successor_merge.sql",
+    "0006_module_presence_successor_merge.rollback.sql",
 )
 
 
@@ -45,6 +47,7 @@ def test_lock_timeout_is_set_before_any_lock_taking_statement(name):
     ("name", "table"),
     [
         ("0004_indexer_jobs_proc_identity.sql", "indexer_jobs"),
+        ("0006_module_presence_successor_merge.sql", "module_presence"),
     ],
 )
 def test_migration_gives_up_behind_an_idle_lock_holder(clean_pg, name, table):

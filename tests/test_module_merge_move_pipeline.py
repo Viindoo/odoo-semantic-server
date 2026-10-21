@@ -20,6 +20,9 @@ a stylesheet, a JS test suite, Python test classes; ``_retirement_fixture``):
   the graph and the embeddings (nobody ships it installable);
 * a module moved to another directory of its repo keeps every child and
   drops every node of the old path;
+* an N:1 merge (X's files moved into the existing Y) retires X, records the
+  successor ``git_merge``, gives Y X's entities, and an unchanged extender of a
+  model X defined ends with an INHERITS edge to Y's definition (no placeholder);
 * a merge across repos retires X without naming a successor from git;
 * a same-name fork dropped by one repo keeps the other owner's data and loses
   what only the dropping copy defined;
@@ -164,6 +167,18 @@ def _emb_file_paths(pg_conn, module: str) -> set[str]:
             (V, module),
         )
         return {r[0] for r in cur.fetchall()}
+
+
+def _check_module_exists(monkeypatch, driver, name: str) -> str:
+    """check_module_exists as an admin key, on the test Neo4j."""
+    import src.mcp.server  # noqa: F401 - registers the tool hub
+    from src.mcp import describe, session
+    from src.mcp.tools import guidance
+
+    for hub in {id(h): h for h in (guidance._srv, describe._srv)}.values():
+        monkeypatch.setattr(hub, "_get_driver", lambda: driver)
+    session.invalidate_allowed_profiles()
+    return guidance._srv._check_module_exists(name, V)
 
 
 def _no_parser_gap(driver, module: str) -> None:
@@ -477,6 +492,93 @@ def test_module_moved_to_another_directory_of_its_repo_keeps_every_child(
 # ---------------------------------------------------------------------------
 
 _EXT = "viin_ai_rag_ext"
+
+
+def _merge_repo(parent: Path) -> GitRepo:
+    """viin_ai + viin_ai_rag + an unchanged extender of ai.rag.source that
+    depends only on viin_ai (so nothing resets it when viin_ai_rag goes)."""
+    repo = GitRepo(parent, "tvtmaaddons")
+    rf.write_viin_ai(repo.path)
+    rf.write_viin_ai_rag(repo.path)
+    write_module(repo, _EXT, depends=[Y], inherit="ai.rag.source",
+                 extra_field="ext_flag = fields.Boolean()")
+    repo.commit("add viin_ai, viin_ai_rag and the extender")
+    return repo
+
+
+def _merge_x_into_y(repo: GitRepo) -> str:
+    """Move every file of X but its manifest and root __init__ into Y (git mv),
+    wire them into Y, delete X: the shape of the 17.0 viin_ai_* merges."""
+    x_dir, y_dir = repo.path / X, repo.path / Y
+    for src in sorted(p for p in x_dir.rglob("*") if p.is_file()):
+        rel = src.relative_to(x_dir)
+        if str(rel) in ("__manifest__.py", "__init__.py", "models/__init__.py",
+                        "tests/__init__.py"):
+            continue
+        dest = y_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        run_git(repo.path, "mv", str(src.relative_to(repo.path)),
+                str(dest.relative_to(repo.path)))
+    (y_dir / "models" / "__init__.py").write_text(
+        "from . import ai_assistant\nfrom . import ai_rag_source\n")
+    (y_dir / "__init__.py").write_text("from . import models\n")
+    (y_dir / "tests" / "__init__.py").write_text("from . import test_rag_source\n")
+    report = y_dir / "report" / "rag_source_report.xml"
+    report.write_text(report.read_text().replace(f"{X}.", f"{Y}."))
+    owl = y_dir / "static" / "src" / "components" / "rag_source_panel.js"
+    owl.write_text(owl.read_text().replace(f"{X}.", f"{Y}."))
+    manifest = y_dir / "__manifest__.py"
+    manifest.write_text(rf._manifest(
+        Y, ["base", "web"], assets={"web.assets_backend": [f"{Y}/static/src/**/*"]},
+    ))
+    run_git(repo.path, "rm", "-r", "-q", X)
+    return repo.commit(f"[MERGE] {X}: merge into {Y}")
+
+
+def test_n_to_1_merge_retires_x_names_y_and_relinks_the_unchanged_extender(
+    pg, neo4j_driver, tmp_path, monkeypatch,
+):
+    """M6: X's files move into Y in one commit. X is retired (graph + rows) with
+    successor git_merge -> Y; Y now defines X's models and keeps its own; the
+    unchanged extender of ai.rag.source ends with an INHERITS edge to Y's
+    definition and none to a placeholder or to a deleted node; Y keeps no
+    parser gap; check_module_exists names the merge."""
+    repo = _merge_repo(tmp_path)
+    (rid,) = register("tvtma_99", repo)
+    run(pg, "tvtma_99")
+    sha = _merge_x_into_y(repo)
+
+    summary = run(pg, "tvtma_99")
+    run(pg, "tvtma_99")
+
+    assert not needs_attention(summary), lc(summary)
+    _assert_gone(neo4j_driver, pg, X)
+    row = ledger(pg, rid, X)
+    assert row["state"] == "retired" and row["removing_commit_sha"] == sha
+    assert (row["successor_names"], row["successor_source"]) == ([Y], "git_merge")
+    assert _count(neo4j_driver, "Model", Y, name="ai.rag.source") == 1
+    assert _count(neo4j_driver, "Field", Y, model="ai.assistant", name="rag_count") == 1
+    assert _count(neo4j_driver, "Method", Y, model="ai.assistant", name="action_ask") == 1
+    assert _count(neo4j_driver, "TestClass", Y, name="TestRagSource") == 1
+    assert _count(neo4j_driver, "Stylesheet", Y) == 1
+    with neo4j_driver.session() as s:
+        targets = s.run(
+            "MATCH (e:Model {name: 'ai.rag.source', module: $ext, odoo_version: $v})"
+            "-[:INHERITS]->(d:Model {name: 'ai.rag.source'}) RETURN collect(d.module) AS m",
+            ext=_EXT, v=V,
+        ).single()["m"]
+        placeholders = s.run(
+            "MATCH (:Model {module: $ext, odoo_version: $v})-[:INHERITS]->(d:Model) "
+            "WHERE d.module = '__unresolved__' OR d.module = $x RETURN count(d) AS n",
+            ext=_EXT, v=V, x=X,
+        ).single()["n"]
+    assert targets == [Y], f"extender INHERITS targets after the merge: {targets}"
+    assert placeholders == 0
+    _no_parser_gap(neo4j_driver, Y)
+    assert _bundle(neo4j_driver, "web.assets_backend") == (Y, ("tvtma_99",)), (
+        "the shared bundle names its live contributor, not the merged-away module")
+    answer = _check_module_exists(monkeypatch, neo4j_driver, X)
+    assert f"Merged into: {Y}" in answer, answer
 
 
 # ---------------------------------------------------------------------------

@@ -913,6 +913,29 @@ quyết): vẫn được liệt kê trong báo cáo (`informational_findings`, d
 not a finding): ...`) nhưng không tính vào `has_findings`, không exit 4, không mail. Chỉ bật SAU khi rollout 0.19.0 đã chạy sạch - xem
 [`docs/deploy/runbooks/module-lifecycle-cleanup.md`](deploy/runbooks/module-lifecycle-cleanup.md).
 
+**Successor backfill (#380 item 3, "Merged into"):** module retired TRƯỚC khi có merge oracle
+(vd viin_ai_rag / viin_ai_agent / viin_ai_skill / viin_ai_search / viin_ai_memory -> viin_ai
+@17.0) có removing commit nhưng không có successor. Sau khi apply migration 0006
+(`python -m src.db.migrate`), chạy (owner DSN như indexer; chỉ đọc git, không fetch, không
+Neo4j, không re-index):
+
+```bash
+cd /home/odoo-semantic/odoo-semantic-mcp
+sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+  ops/backfill_successors.py --version 17.0            # dry run: "would record ..."
+sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
+  ops/backfill_successors.py --version 17.0 --apply    # ghi; chạy lại = 0 recorded
+```
+
+Chỉ đọc row `state='retired' AND successor_names IS NULL AND removing_commit_sha IS NOT NULL`
+của repo còn đăng ký, ghi khi commit xóa mới nhất của manifest đúng là commit ledger đã ghi,
+không bao giờ ghi đè successor có sẵn; `--limit` (mặc định 200) chặn mỗi lượt, đọc theo thứ tự id
+của row ledger. Row git không có bằng chứng vẫn không có successor, nên khi trang đầy lượt chạy in
+`more candidate rows may follow: re-run with --after-id <id>` - chạy lại với `--after-id <id>` đó
+để tới các row phía sau (không có cursor thì luôn đọc lại cùng trang đầu). Không có 0006
+thì merge successor bị bỏ qua kèm WARNING (indexer cũng vậy - không lượt retire nào fail).
+Rollback 0006 xóa đúng các successor `git_merge` (row lịch sử giữ nguyên).
+
 **Env của vòng đời** (default + lý do: [`docs/operations/timeouts.md`](operations/timeouts.md)
 mục "Module lifecycle ledger"): `RETIRE_LOCK_WAIT_SECONDS` (900s, chờ lock `retire:<v>`),
 `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` (60 module/repo/lượt re-parse bootstrap cho module nhiều

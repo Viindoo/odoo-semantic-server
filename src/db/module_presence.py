@@ -63,6 +63,7 @@ This module is part of the DB layer: it must not import ``src.indexer`` or
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator, Iterable, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -79,13 +80,19 @@ from src.db.pg import PgPool, advisory_lock, advisory_lock_id
 ObservedState = Literal["present", "excluded"]
 ExclusionReason = Literal["installable_false", "license_skip", "unparseable"]
 RetireReason = Literal["absent", "repo_removed", "orphan_sweep"]
-SuccessorSource = Literal["git_rename", "old_technical_name"]
+SuccessorSource = Literal["git_rename", "git_merge", "old_technical_name"]
 
 EXCLUSION_REASONS: frozenset[str] = frozenset(
     {"installable_false", "license_skip", "unparseable"}
 )
 RETIRE_REASONS: frozenset[str] = frozenset({"absent", "repo_removed", "orphan_sweep"})
-SUCCESSOR_SOURCES: frozenset[str] = frozenset({"git_rename", "old_technical_name"})
+SUCCESSOR_SOURCES: frozenset[str] = frozenset({"git_rename", "git_merge", "old_technical_name"})
+# Added by migration 0006 (#380 item 3). Until it is applied the CHECK rejects
+# it; the store then drops such a successor (logged) instead of failing the
+# whole retirement transaction - the successor backfill restores it.
+SUCCESSOR_GIT_MERGE = "git_merge"
+
+logger = logging.getLogger(__name__)
 
 _RETIRE_LOCK_NAMESPACE = "osm-retire:"
 
@@ -308,6 +315,33 @@ class ModulePresenceStore:
     ) -> None:
         self._pool = pool
         self._lock_wait_seconds = lock_wait_seconds
+        self._merge_source_ok: bool | None = None
+
+    def _storable_successor(
+        self, conn: PgConn, name: str, successor: Successor | None,
+    ) -> Successor | None:
+        """*successor*, or None when it is a ``git_merge`` one the schema cannot
+        store yet (migration 0006 not applied: the CHECK would abort the whole
+        retirement transaction). Probed once per store from the catalog."""
+        if successor is None or successor.source != SUCCESSOR_GIT_MERGE:
+            return successor
+        if self._merge_source_ok is None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                    "WHERE conname = 'ck_module_presence_successor_source' "
+                    "AND conrelid = 'public.module_presence'::regclass"
+                )
+                row = cur.fetchone()
+            self._merge_source_ok = row is None or SUCCESSOR_GIT_MERGE in str(row[0])
+        if self._merge_source_ok:
+            return successor
+        logger.warning(
+            "module_presence: merge successor %s of %r not recorded - apply "
+            "migration 0006 (src.db.migrate), then run ops/backfill_successors.py",
+            list(successor.names), name,
+        )
+        return None
 
     # ------------------------------------------------------------------
     # Connection / transaction / lock plumbing
@@ -621,7 +655,8 @@ class ModulePresenceStore:
                 with c.cursor() as cur:
                     for name in flagged:
                         self._store_evidence(
-                            cur, repo_id, name, evidence.get(name), successors.get(name),
+                            cur, repo_id, name, evidence.get(name),
+                            self._storable_successor(c, name, successors.get(name)),
                         )
         return flagged
 
@@ -713,6 +748,7 @@ class ModulePresenceStore:
                 )
             if target is None:
                 return False
+            successor = self._storable_successor(c, name, successor)
             with self._write(c, [target["odoo_version"]]):
                 with c.cursor() as cur:
                     cur.execute(
@@ -1204,6 +1240,7 @@ class ModulePresenceStore:
         if not profile_name:
             raise ValueError("profile_name is required")
         with self._conn(conn) as c:
+            successor = self._storable_successor(c, name, successor)
             with self._write(c, [odoo_version]):
                 repo = self._repo_row(c, repo_id)
                 rows = self._fetch_all(
@@ -1463,6 +1500,82 @@ class ModulePresenceStore:
                 "SELECT * FROM module_presence WHERE repo_id = %s ORDER BY name",
                 (repo_id,),
             )
+
+    def retired_without_successor(
+        self,
+        *,
+        odoo_version: str | None = None,
+        profile_name: str | None = None,
+        limit: int = 500,
+        after_id: int | None = None,
+        conn: PgConn | None = None,
+    ) -> list[dict]:
+        """Retired rows with a recorded removing commit but no successor (backfill input).
+
+        Only rows whose repo is still registered (``local_path`` is needed to
+        read git). Ordered by row id: at most *limit* rows with an id above
+        *after_id* (the cursor - a row git has no evidence for keeps no
+        successor, so without a cursor every re-run would read the same first
+        page). Keys: id, repo_id, name, odoo_version, profile_name, path,
+        manifest_file, removing_commit_sha, local_path.
+        """
+        with self._conn(conn) as c:
+            return self._fetch_all(
+                c,
+                "SELECT mp.id, mp.repo_id, mp.name, mp.odoo_version, mp.profile_name, "
+                "mp.path, mp.manifest_file, mp.removing_commit_sha, r.local_path "
+                "FROM module_presence mp JOIN repos r ON r.id = mp.repo_id "
+                "WHERE mp.state = 'retired' AND mp.successor_names IS NULL "
+                "AND mp.removing_commit_sha IS NOT NULL "
+                "AND (%(v)s::text IS NULL OR mp.odoo_version = %(v)s) "
+                "AND (%(p)s::text IS NULL OR mp.profile_name = %(p)s) "
+                "AND (%(after)s::bigint IS NULL OR mp.id > %(after)s) "
+                "ORDER BY mp.id "
+                "LIMIT %(limit)s",
+                {"v": odoo_version, "p": profile_name, "after": after_id,
+                 "limit": max(0, int(limit))},
+            )
+
+    def shipped_names(
+        self, odoo_version: str, *, conn: PgConn | None = None,
+    ) -> set[str]:
+        """Names some repo's ledger row has ``present`` or ``excluded`` at the version."""
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                "SELECT DISTINCT name FROM module_presence "
+                "WHERE odoo_version = %s AND state <> 'retired'",
+                (odoo_version,),
+            )
+        return {r["name"] for r in rows}
+
+    def record_successor(
+        self, row_id: int, successor: Successor, *, conn: PgConn | None = None,
+    ) -> bool:
+        """Set the successor of a retired row that has none (successor backfill).
+
+        Never overwrites a recorded successor and never touches a live row, so
+        a re-run is a no-op. Returns True when the row was updated.
+        """
+        with self._conn(conn) as c:
+            target = self._fetch_one(
+                c, "SELECT odoo_version, name FROM module_presence WHERE id = %s",
+                (row_id,),
+            )
+            if target is None:
+                return False
+            stored = self._storable_successor(c, target["name"], successor)
+            if stored is None:
+                return False
+            with self._write(c, [target["odoo_version"]]):
+                with c.cursor() as cur:
+                    cur.execute(
+                        "UPDATE module_presence SET successor_names = %s, "
+                        "successor_source = %s, updated_at = now() "
+                        "WHERE id = %s AND state = 'retired' AND successor_names IS NULL",
+                        (list(stored.names), stored.source, row_id),
+                    )
+                    return cur.rowcount == 1
 
     def lifecycle_counts(
         self, repo_ids: Iterable[int], *, conn: PgConn | None = None,

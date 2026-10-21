@@ -9,7 +9,7 @@ Two sources are combined:
   the explicit per-version presence list;
 * the Postgres ``module_presence`` ledger, which also keeps history: why a name
   is not indexed (retired / excluded / pending), the removing commit and the
-  recorded successor.
+  recorded successor (git rename, git merge or manifest ``old_technical_name``);
 
 Every read is tenant-scoped. Graph reads go through the ADR-0034 choke
 (``_scope`` / ``_scope_pred``); ledger reads always pass an explicit profile
@@ -70,8 +70,18 @@ _BLOCKED_CLASS_TEXT = {
 }
 _SUCCESSOR_SOURCE_TEXT = {
     "git_rename": "git rename",
+    "git_merge": "git merge",
     "old_technical_name": "manifest old_technical_name",
 }
+# Successor sources whose names can be another tenant's module: shown only when
+# a module of that name is visible in the caller's scope (_visible_successors).
+_SCOPE_GATED_SOURCES = frozenset({"old_technical_name", "git_merge"})
+
+
+def _label(text: str) -> str:
+    """``"Renamed to"`` -> ``"Renamed to:      "`` (the tree's 17-column label)."""
+    return f"{text + ':':<17}"
+
 
 _VERSION_ORDER = (
     "CASE WHEN {v} =~ '[0-9]+[.][0-9]+' THEN toInteger(split({v}, '.')[0]) END, "
@@ -208,18 +218,22 @@ def read_ledger_rows(
 
 
 def _visible_successors(srv, session, rows, version: str, scope) -> list[dict] | None:
-    """Ledger rows whose manifest-declared successors are cut to the caller's scope.
+    """Ledger rows whose scope-gated successors are cut to the caller's scope.
 
-    A ``git_rename`` successor comes from the retiring repo's own history; an
-    ``old_technical_name`` successor is a module that declares the old name,
-    which another tenant's private module may do - such a name is never shown
-    unless an owned module of that name is visible in the caller's scope.
+    A ``git_rename`` successor is a module the retiring repo's own commit
+    created. An ``old_technical_name`` successor is a module that declares the
+    old name, which another tenant's private module may do; a ``git_merge``
+    successor is a module that existed before the merge and may since have
+    moved to a private repository (``viin_ai`` 17.0 went to
+    erponline-enterprise). Such a name is never shown unless an owned module
+    of that name is visible in the caller's scope; a hidden one is omitted
+    (fail-closed, ADR-0034), never counted.
     """
     if not rows:
         return rows
     declared = sorted({
         s for r in rows
-        if r.get("successor_source") == "old_technical_name"
+        if r.get("successor_source") in _SCOPE_GATED_SOURCES
         for s in (r.get("successor_names") or []) if s
     })
     if not declared:
@@ -240,7 +254,7 @@ def _visible_successors(srv, session, rows, version: str, scope) -> list[dict] |
     }
     out: list[dict] = []
     for r in rows:
-        if r.get("successor_source") == "old_technical_name":
+        if r.get("successor_source") in _SCOPE_GATED_SOURCES:
             kept = [s for s in (r.get("successor_names") or []) if s in visible]
             r = {**r, "successor_names": kept}
             if not kept:
@@ -466,7 +480,8 @@ def _ledger_row_lines(row: Mapping, *, blocker_detail: bool = False) -> list[str
         source = _SUCCESSOR_SOURCE_TEXT.get(
             row.get("successor_source"), row.get("successor_source") or "recorded",
         )
-        children.append(f"Renamed to: {', '.join(successors)} ({source})")
+        verb = "Merged into" if row.get("successor_source") == "git_merge" else "Renamed to"
+        children.append(f"{verb}: {', '.join(successors)} ({source})")
     if row.get("version_mismatch") and row.get("version_raw"):
         children.append(
             f"Manifest version: {row['version_raw']} (does not match the branch version)"

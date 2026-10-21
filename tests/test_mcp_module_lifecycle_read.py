@@ -38,6 +38,10 @@ expected values come from the rules and the real cases in the #378 survey
 - R18    without profile_name the NO line says "any accessible profile".
 - R19    a multi-line manifest summary / name / author renders on one line, so
          the ADR-0023 tree stays valid.
+- #380   a ``git_merge`` successor reads ``Merged into`` with a Next: to it, and
+         is never named to a key that cannot see the target (viin_ai moved to
+         a private repo); an OpenUpgrade cross-version edge is shown only when
+         the scoped index confirms it (reuse trap and private successor never).
 
 Versions: the asked version is ``TEST_VERSION`` (99.0); other-version presence
 uses the test-only slots in ``_OTHER_VERSIONS`` (never a real Odoo version, so
@@ -1231,3 +1235,68 @@ class TestRetiredStateNamesWhereItWasRecorded:
         assert line == (f"│   ├─ State: retired - removed from branch {V} "
                         f"(recorded at HEAD 281607a on {day})"), line
         assert _balanced(line)
+
+
+# ---------------------------------------------------------------------------
+# #380 item 3 - "Merged into" for N:1 merges, cut to the caller's scope
+# ---------------------------------------------------------------------------
+
+MERGE_SHA = "a231963d7a5e0c1b2d3f4a5b6c7d8e9f0a1b2c3d"
+MERGE_SUBJECT = "[MERGE] viin_ai_rag: merge into viin_ai"
+
+
+@pytest.fixture
+def merge_world(hub, ledger, pg_conn):
+    """acme's repo merged viin_ai_rag into viin_ai, and viin_ai later moved to
+    globex's PRIVATE repo (the 17.0 shape: tvtmaaddons -> erponline-enterprise).
+    acme_rag2 merged into acme's own acme_core."""
+    acme = _tenant(pg_conn, "lr_acme")
+    globex = _tenant(pg_conn, "lr_globex")
+    acme_pid = _profile(pg_conn, "lr_acme_p", tenant_id=acme)
+    globex_pid = _profile(pg_conn, "lr_globex_p", tenant_id=globex)
+    r_acme = _repo(pg_conn, acme_pid, "acme_addons")
+    _repo(pg_conn, globex_pid, GLOBEX_REPO)
+    _module("viin_ai", repo=GLOBEX_REPO, profiles=["lr_globex_p"])
+    _module("acme_core", repo="acme_addons", profiles=["lr_acme_p"])
+    at = datetime(2026, 8, 28, tzinfo=UTC)
+    _observe(ledger, r_acme, "lr_acme_p", PRE_RENAME_HEAD,
+             ["viin_ai_rag", "acme_rag2", "acme_core"], at=at)
+    _retire(ledger, r_acme, "viin_ai_rag", head=TVTMA_HEAD, sha=MERGE_SHA,
+            when="2026-08-29T10:12:00+07:00", subject=MERGE_SUBJECT,
+            successors=["viin_ai"], source="git_merge")
+    _retire(ledger, r_acme, "acme_rag2", head=TVTMA_HEAD, sha=MERGE_SHA,
+            when="2026-08-29T10:12:00+07:00", subject="[MERGE] acme_rag2: merge into acme_core",
+            successors=["acme_core"], source="git_merge")
+    return {"acme": acme, "globex": globex}
+
+
+class TestMergedIntoStaysInScope:
+    def test_a_merge_into_an_own_module_says_merged_into_and_points_next(self, merge_world):
+        with as_tenant(merge_world["acme"]):
+            out = _check("acme_rag2")
+        _assert_adr0023_tree(out)
+        assert "│   └─ Merged into: acme_core (git merge)" in _lines(out), out
+        assert "Renamed to" not in out, out
+        assert _lines(out)[-1] == (
+            f"└─ Next: check_module_exists(name='acme_core', odoo_version='{V}') "
+            "for the successor"), out
+
+    def test_a_merge_target_now_in_another_tenants_private_repo_is_never_named(
+            self, merge_world):
+        with as_tenant(merge_world["acme"]):
+            check = _check("viin_ai_rag")
+            describe = _describe("viin_ai_rag")
+        for out in (check, describe):
+            _assert_adr0023_tree(out)
+            assert "Lifecycle (acme_addons" in out, out  # positive control: acme's row shows
+            assert "Merged into" not in out, out
+            assert "describe_module(name='viin_ai'" not in out, out
+            assert "check_module_exists(name='viin_ai'" not in out, out
+
+    def test_the_owner_of_the_merge_target_sees_it(self, merge_world):
+        # positive control of the scope cut: admin is unscoped
+        with as_tenant(None):
+            out = _check("viin_ai_rag")
+        assert "│   └─ Merged into: viin_ai (git merge)" in _lines(out), out
+
+

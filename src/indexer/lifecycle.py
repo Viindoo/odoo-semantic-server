@@ -20,11 +20,14 @@ Import discipline: models, git_utils and incremental only.
 """
 from __future__ import annotations
 
+import functools
+import logging
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.git_utils import removing_commit, rev_parse
+from src.git_utils import MANIFEST_FILENAMES, removing_commit, rev_parse
 from src.indexer.incremental import (
     ManifestChange,
     _git_z,
@@ -37,6 +40,8 @@ from src.indexer.models import (
     EXCLUSION_UNPARSEABLE,
     RegistryScan,
 )
+
+logger = logging.getLogger(__name__)
 
 STATE_PRESENT = "present"
 STATE_EXCLUDED = "excluded"
@@ -94,6 +99,32 @@ def reconcile_may_retry(blocked_by: str | None) -> bool:
 
 SUCCESSOR_GIT_RENAME = "git_rename"
 SUCCESSOR_OLD_TECHNICAL_NAME = "old_technical_name"
+# N:1 merge (#380 item 3): the removing commit moved at least half of the
+# module's files into ONE module directory that existed before the commit and
+# still exists after it (viin_ai_rag, viin_ai_agent, ... -> viin_ai at 17.0).
+SUCCESSOR_GIT_MERGE = "git_merge"
+
+# Directory-share thresholds, one convention for both git oracles (see
+# ``_share_reached``):
+# - merge (``merged_into``): INCLUSIVE half (owner decision 2026-10-20): a merge
+#   needs 2 * moved >= files of the old directory, so viin_ai_memory (exactly 17
+#   of its 34 files git-renamed into viin_ai/) qualifies; AND at least
+#   MERGE_MIN_MOVED_FILES moved files, so a tiny module (a
+#   manifest plus one file) whose single file -M-pairs with a file added to some
+#   module in a large commit is not taken for a merge;
+# - rename fallback (``_directory_moved_into``): STRICT majority (2 * moved >
+#   files), which keeps a rename to ONE destination; an exact half split names
+#   no rename destination and is left to the merge rule.
+MERGE_MIN_SHARE_NUMERATOR = 1
+MERGE_MIN_SHARE_DENOMINATOR = 2
+MERGE_MIN_MOVED_FILES = 3
+
+# "[MERGE] viin_ai_rag: merge into viin_ai" / "merged inside of sale_loyalty":
+# prose, so only a cross-check of the git evidence, never evidence itself.
+_MERGE_SUBJECT_RE = re.compile(
+    r"\bmerged?\s+(?:in|into|inside(?:\s+of)?|to)\s+[`'\"]?([A-Za-z0-9_]+)",
+    re.IGNORECASE,
+)
 
 
 def _field(row: object, key: str) -> object:
@@ -519,7 +550,7 @@ def apply_gates(
 @dataclass(frozen=True)
 class Successor:
     """Who replaced a retired module: ``names`` (sorted) and the evidence
-    ``source`` (``git_rename`` or ``old_technical_name``)."""
+    ``source`` (``git_rename``, ``git_merge`` or ``old_technical_name``)."""
     names: tuple[str, ...]
     source: str
 
@@ -579,31 +610,136 @@ class RemovalEvidence:
     parent_sha: str | None = None
 
 
+@functools.lru_cache(maxsize=16)
+def _commit_rename_pairs(
+    repo: str, parent: str, sha: str,
+) -> tuple[tuple[str, str], ...] | None:
+    """``(old_path, new_path)`` of every file the whole-tree ``-M`` pairing of
+    ``parent..sha`` renamed (one source per destination file); None on git
+    failure. Cached by commit pair (content-addressed, so never stale): a merge
+    wave retires several modules removed by the same commit."""
+    fields = _git_z(Path(repo), "diff", "--name-status", "-z", "-M", f"{parent}..{sha}")
+    if fields is None:
+        return None
+    return tuple(
+        (old, path) for kind, _sim, path, old in _parse_name_status(fields)
+        if kind == "R" and old
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _manifest_dirs_at(repo: str, rev: str) -> frozenset[str] | None:
+    """Repo-relative directories holding a manifest in the tree of *rev* (no
+    submodules: a rename pairing never crosses a gitlink); None on git failure."""
+    files = _git_z(Path(repo), "ls-tree", "-r", "-z", "--name-only", rev)
+    if files is None:
+        return None
+    return frozenset(
+        str(Path(f).parent) for f in files
+        if Path(f).name in MANIFEST_FILENAMES and str(Path(f).parent) != "."
+    )
+
+
+def _share_reached(moved: int, total: int, *, inclusive: bool) -> bool:
+    """``moved`` of ``total`` files reach the half share (MERGE_MIN_SHARE_*).
+
+    ``inclusive`` (merge): ``moved / total >= 1/2``; otherwise (rename) the
+    strict majority ``moved / total > 1/2``. Integer arithmetic, no float.
+    """
+    lhs = moved * MERGE_MIN_SHARE_DENOMINATOR
+    rhs = total * MERGE_MIN_SHARE_NUMERATOR
+    return lhs >= rhs if inclusive else lhs > rhs
+
+
 def _directory_moved_into(
     repo: Path, parent: str, sha: str, old_dir: str,
     candidates: list[tuple[str, str]],
 ) -> list[str]:
     """Names of the candidate ``(module_dir, name)`` whose directory received
     more than half of ``old_dir``'s files in the ``parent..sha`` rename pairing
-    of the whole commit (sorted)."""
+    of the whole commit (strict majority, ``_share_reached(inclusive=False)``;
+    sorted)."""
     if not candidates:
         return []
     old_files = _git_z(repo, "ls-tree", "-r", "-z", "--name-only", parent, "--", old_dir)
-    fields = _git_z(repo, "diff", "--name-status", "-z", "-M", f"{parent}..{sha}")
-    if not old_files or fields is None:
+    pairs = _commit_rename_pairs(str(repo), parent, sha)
+    if not old_files or pairs is None:
         return []
-    pairs = _parse_name_status(fields)
     old_prefix = old_dir.rstrip("/") + "/"
     out = set()
     for module_dir, name in candidates:
         prefix = module_dir.rstrip("/") + "/"
         moved = sum(
-            1 for kind, _sim, path, old in pairs
-            if kind == "R" and old and old.startswith(old_prefix) and path.startswith(prefix)
+            1 for old, path in pairs
+            if old.startswith(old_prefix) and path.startswith(prefix)
         )
-        if 2 * moved > len(old_files):
+        if _share_reached(moved, len(old_files), inclusive=False):
             out.add(name)
     return sorted(out)
+
+
+def merge_subject_target(subject: str | None) -> str | None:
+    """The module a commit subject says the removed one was merged into, or None.
+
+    Prose (ETHOS #12): used only to cross-check :func:`merged_into`, which
+    decides from the rename pairing alone. ``"[MERGE] viin_ai_rag: merge into
+    viin_ai"`` -> ``viin_ai``.
+    """
+    if not subject:
+        return None
+    m = _MERGE_SUBJECT_RE.search(subject)
+    return m.group(1) if m else None
+
+
+def merged_into(
+    repo: Path | str, parent: str, sha: str, old_dir: str,
+    observed_names: Iterable[str],
+) -> list[str]:
+    """Module names that absorbed ``old_dir`` in the commit ``parent..sha`` (N:1 merge).
+
+    The oracle (git only, no curated list, owner rule #380 item 3): the
+    commit's whole-tree rename pairing (``git diff -M``) moved at least half of
+    the files ``old_dir`` had at *parent* (:data:`MERGE_MIN_SHARE_NUMERATOR` /
+    :data:`MERGE_MIN_SHARE_DENOMINATOR`, inclusive, and at least
+    :data:`MERGE_MIN_MOVED_FILES` files) into ONE module directory
+    that has a manifest both at *parent* (it existed before: a merge, not a
+    rename to a new module) and at *sha* (it survived the commit), whose name
+    differs from the old one and is in *observed_names*. A destination file
+    belongs to the nearest enclosing directory with a manifest at *sha*.
+
+    Neither the manifest status (the target's manifest is usually only
+    Modified, or not touched at all, so ``compute_manifest_changes`` never lists
+    it) nor the commit subject play a part. Two directories can both qualify
+    only on an exact half split; both are returned. Sorted; [] on git failure.
+    """
+    repo_s = str(repo)
+    old_dir = old_dir.rstrip("/")
+    old_name = Path(old_dir).name
+    old_files = _git_z(Path(repo_s), "ls-tree", "-r", "-z", "--name-only", parent, "--", old_dir)
+    pairs = _commit_rename_pairs(repo_s, parent, sha)
+    before = _manifest_dirs_at(repo_s, parent)
+    after = _manifest_dirs_at(repo_s, sha)
+    if not old_files or pairs is None or before is None or after is None:
+        return []
+    old_prefix = old_dir + "/"
+    moved: dict[str, int] = {}
+    for old, path in pairs:
+        if not old.startswith(old_prefix) or path.startswith(old_prefix):
+            continue
+        target = Path(path).parent
+        while str(target) != "." and str(target) not in after:
+            target = target.parent
+        if str(target) == ".":
+            continue
+        moved[str(target)] = moved.get(str(target), 0) + 1
+    observed = set(observed_names)
+    out = sorted({
+        Path(d).name for d, n in moved.items()
+        if d in before and Path(d).name != old_name and Path(d).name in observed
+        and n >= MERGE_MIN_MOVED_FILES
+        and _share_reached(n, len(old_files), inclusive=True)
+    })
+    return out
 
 
 def removal_evidence(
@@ -621,7 +757,11 @@ def removal_evidence(
     checked; when the manifest paired with another manifest, the commit's
     whole-tree rename pairing decides which added module received the old
     directory),
-    kept only when the destination name is in ``observed_names``.
+    kept only when the destination name is in ``observed_names``. With no
+    rename destination, an N:1 merge (:func:`merged_into`: at least half of the
+    old directory moved into one pre-existing module) gives a ``git_merge``
+    successor; the commit subject is only compared with it (a disagreement is
+    logged, never decides).
     Returns ``(None, None)`` when git never deleted the manifest there (or the
     path is not a git repo); successor alone may be None.
     """
@@ -665,5 +805,15 @@ def removal_evidence(
                 and change.name in observed
             ],
         )
-    successor = Successor(tuple(targets), SUCCESSOR_GIT_RENAME) if targets else None
+    if targets:
+        return evidence, Successor(tuple(targets), SUCCESSOR_GIT_RENAME)
+    merged = merged_into(local_path, parent, sha, old_dir, observed)
+    said = merge_subject_target(subject)
+    if said and said != old_name and said not in merged:
+        logger.info(
+            "removal_evidence %s: commit %s says %r was merged into %r, the rename "
+            "pairing shows %s - the pairing decides",
+            local_path, sha[:10], old_name, said, merged or "no merge target",
+        )
+    successor = Successor(tuple(merged), SUCCESSOR_GIT_MERGE) if merged else None
     return evidence, successor

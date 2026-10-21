@@ -14,6 +14,17 @@ All notable changes to Odoo Semantic MCP are documented here.
 ### Added
 
 - **Install sets include auto_install (#380 item 1):** the registry threw away the manifest `auto_install` trigger list (coerced to a bool), so no answer saw the modules Odoo installs on its own (19% of core modules at v8, about 60% at v19). `Module.auto_install_triggers` now stores the triggers as Odoo resolves them per version (`registry.auto_install_triggers`, checked against `odoo/modules/module.py`, `ir_module.py` `button_install` and `modules/db.py` `initialize` of v8-v19): v8-v12 any truthy value (a list included) waits for every `depends`, and a legacy `active` key replaces `auto_install`; v13+ a list is the trigger set (a trigger that is not a dependency is dropped with a warning), `True` = every `depends`, `[]` = installed at database creation only; v13-v14 still read `active` as a fallback; v19 turns an empty `depends` into `['base']`. `Module.auto_install` follows Odoo's flag (`is not False`, so `[]` counts), and the legacy regex manifest fallback keeps the flag. New `src/mcp/install_set.py` runs Odoo's install rule (depends closure, then the auto_install fixpoint: all triggers installed, at least one installed by this request, the module's whole depends closure available in the caller's scope; a fresh database's own auto-installs are the baseline and are not reported), bound in `src/mcp/describe.py` to per-hop Neo4j reads (no variable-length path, ADR-0048) behind `owned_pred` (ADR-0034 choke-point). `module_inspect(method='dependencies')` adds an "Auto-installed with this module" branch (each row says which triggers fired, or which auto-installed module it is a dependency of) and names candidates left out because a dependency is not indexed in scope; `impact_analysis` adds "Auto-installed with the defining module ..." (listed apart, not counted in the risk score). Nodes indexed before this change (`auto_install = true`, no triggers) fall back to their `DEPENDS_ON` targets, exact for the boolean form. No new tool or parameter (31 tools, 9 resources).
+- **"Merged into" for N:1 merges (#380 item 3):** when the commit that removed a module moved
+  at least half of its files (git `diff -M` pairing, inclusive) into ONE module directory that
+  existed before the commit and still exists after it, the ledger records the successor with
+  the new source `git_merge` and `check_module_exists` / `describe_module` answer
+  `Merged into: viin_ai (git merge)` with a Next hint to it. Git alone decides
+  (`lifecycle.merged_into`); the commit subject is only cross-checked and logged. Root cause of
+  the gap: the target's manifest is only modified, so the A/D/R manifest list never offered it.
+  A merge target is shown only to a key that can see a module of that name (viin_ai later moved
+  to a private repo); otherwise it is omitted. Migration 0006 widens
+  `ck_module_presence_successor_source`; `ops/backfill_successors.py` fills rows retired
+  before (dry run by default).
 ### Fixed
 
 - **A mixin parent declared later in the same module lost its INHERITS edge:** `_write_parse_result` resolved each model's parents right after writing that model, but `result.models` follows source-file order, so a child in `models/provider.py` was written before its same-module parent in `models/request_log_mixin.py`, got an `__unresolved__` placeholder, and the version GC then deleted the edge (prod: viin.ai.provider -> viin.ai.request.log.mixin 17.0, viin.iot.device -> viin.iot.device.consumer 18.0, l10n_sa / l10n_ph_invoice / microsoft_outlook at 20.0). The writer now writes every Model node of the module first, then INHERITS / DELEGATES_TO, then Fields, then Methods; this also binds a method's USES_FIELD / DEPENDS_ON_FIELD to a field another class of the same module declares in a later file.
@@ -120,6 +131,9 @@ All notable changes to Odoo Semantic MCP are documented here.
   `lifecycle_attention` line; the same repo failing two runs in a row (`stale_repos`), every
   fetch of a run failing (`outages: fetch_outage`) or the embedder returning no vector all
   run (`outages: embedder_down`) exits 3 so the admins are mailed.
+- `ops/backfill_successors.py --limit` pages by ledger id with `--after-id` (rows without
+  git evidence starved the rows after them); `ops/backfill_auto_install.py` docstring no
+  longer claims an incremental run rewrites a shared module's value.
 - A module moved from a repo that nested it at another path (`addons/<m>` there, `<m>`
   here) no longer keeps its old copy's file-keyed children (Stylesheet, JsTestSuite,
   JSPatch, LintViolation, test-class twins) for ever as a parser gap beside the new copy,
@@ -140,6 +154,7 @@ All notable changes to Odoo Semantic MCP are documented here.
   a target not synced yet, a target that ships the module `installable: False`, a move
   inside a repo, N:1 merges in one repo and across repos, a dropped fork, a re-pointed repo.
 - **`apply-preset` names the real cause of a refusal:** a missing tenant, `--tenant` with a preset `shared: true`, or a visibility violation now point at the tenant / shared choice instead of "Use a different name".
+- **Migrations 0004 / 0006 (and their rollbacks) fail fast behind a lock holder:** `SET LOCAL lock_timeout = '5s'` and `statement_timeout = '60s'` before the ALTER, so an idle-in-transaction connection cannot make the migration wait forever while queueing every `indexer_jobs` / `module_presence` query behind it; re-run `python -m src.db.migrate`.
 - **Alerts:** the osm-alert repeat window defaults to 20h, so a failure that persists every night mails every night (a 24h window equal to the timer period skipped nights). With no lifecycle attention block, the dedupe key includes the normalized last error line, so a new cause with the same exit status mails at once. An `ExecStartPre=` failure (no `$MONITOR_EXIT_STATUS`) is reported from `systemctl show -p ExecStartPre`, e.g. "exit 124 (ExecStartPre) - pre-flight timed out: PostgreSQL not ready within 60s", not "exit unknown". Alerts held by the hourly cap are recorded and listed in the next mail instead of being dropped. The state lock is held only to decide and reserve, with a bounded wait; the SMTP send has a 45s hard deadline; `osm-alert@.service` `TimeoutStartSec` 120 -> 180. Log excerpts are redacted before truncation, with new rules for `NEO4J_AUTH`, GitHub tokens, bare Fernet keys, base64 key material and key blocks cut by the window. The last known admin list is ignored after `OSM_ALERT_ADMIN_CACHE_MAX_DAYS` (7); the nightly reindex refreshes it (`alert_notify --refresh-admins`). Known limit, documented: docker.service failing to start does not trigger `OnFailure=` of the reindex / audit units (optional docker drop-in).
 - **Install sets follow Odoo more closely:** on Odoo 18+ the `countries` gate of `button_install` applies - a country-gated module is no longer reported as auto-installed on a fresh database but listed on a separate "Country-conditional" line (installing `account` on 18.0: 173 reported modules -> 21). v13/v14 no longer treat `active` as `auto_install`; a trigger list that is not a subset of depends makes the module not auto-installable. Nothing is installed or listed through a module outside the caller's scope (auto-install closure and the module_inspect dependency walk). The auto-install part of `module_inspect(dependencies)` / `impact_analysis` shows one degraded line on a query timeout and keeps the rest; one BFS per round; the fresh-database baseline is cached 120s per version and scope. A caveat with a `profile_name=` hint appears when the install set spans several profiles; the module_inspect auto-installed list is capped at 20 with "... and N more".
 ### Changed
@@ -210,6 +225,13 @@ All notable changes to Odoo Semantic MCP are documented here.
   `orphan_modules`, `embedding_orphans`, `shared_prunes`) and what it keeps
   (`unproven_drops`, `kept_because`, `parser_gaps`). A repo whose clone never succeeded is
   cloned by that run (needs FERNET_KEY for an SSH repo, as the pre-scan fetch already does).
+- Merge successors (#380 item 3): apply migration 0006 with the others (until it is applied
+  the indexer skips a merge successor with a WARNING, it never fails a retirement), then
+  backfill the rows retired before this release: `ops/backfill_successors.py` (dry run;
+  `--apply` to write; idempotent, `--limit` bounded). Read-only measurement on the prod
+  clone `standard_viindoo_17/tvtmaaddons` (2026-10-20): all five of viin_ai_rag,
+  viin_ai_agent, viin_ai_skill, viin_ai_search, viin_ai_memory resolve to "Merged into:
+  viin_ai". Cross-version renames need nothing on deploy (data ships in the package).
 - auto_install triggers (#380, no migration): after the MCP restart run `ops/backfill_auto_install.py --dry-run`, then without `--dry-run` (owner DSN; manifests only, minutes instead of a ~20 h `--full`; idempotent, `--version` / `--repo-id` to narrow). deploy.md section 3.6d.
 
 ## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)
