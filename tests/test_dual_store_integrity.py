@@ -423,3 +423,162 @@ def test_run_with_no_embedder_leaves_pgvector_sentinel_unset(
 
     _wipe_seed_meta(clean_neo4j)
     _wipe_pattern_examples(clean_neo4j)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: an incomplete pattern embed keeps the rows and is retried (2026-10-21)
+# ---------------------------------------------------------------------------
+
+_REFUSED = "refused_by_the_embedder"
+
+
+class _HealthyPatternEmbedder:
+    """1024-dim zero vectors (no ``.dim``: the dim guard is skipped, as for the
+    _MockEmbedder above)."""
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] * 1024 for _ in texts]
+
+
+class _FlakyPatternEmbedder(_HealthyPatternEmbedder):
+    """Refuses (a 504) every request holding a _REFUSED text, or every request
+    with *fail_all*."""
+
+    def __init__(self, *, fail_all: bool = False) -> None:
+        self.fail_all = fail_all
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if self.fail_all or any(_REFUSED in t for t in texts):
+            raise RuntimeError("504 Gateway Time-out")
+        return super().embed(texts)
+
+
+def _pattern_dict(pid: str, snippet: str) -> dict:
+    return {**_MINIMAL_PATTERN, "pattern_id": pid, "file_ref": f"{pid}.py:1",
+            "snippet_text": snippet}
+
+
+def _write_catalogue(tmp_path: Path, *patterns: dict) -> Path:
+    p = tmp_path / "patterns.json"
+    p.write_text(json.dumps(list(patterns)))
+    return p
+
+
+def _pattern_rows(pg_conn) -> dict[str, str]:
+    """entity_name -> content of the pattern rows."""
+    with pg_conn.cursor() as cur:
+        cur.execute(
+            "SELECT entity_name, content FROM embeddings "
+            "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'"
+        )
+        return dict(cur.fetchall())
+
+
+def _seed(creds, patterns_file: Path, embedder, *, force: bool = False) -> dict:
+    from src.indexer.seed_patterns import run
+
+    writer = _get_neo4j_writer_for_test(*creds)
+    try:
+        return run(writer=writer, embedder=embedder, force=force, patterns_file=patterns_file)
+    finally:
+        writer.close()
+
+
+@pytest.fixture
+def pattern_store(clean_neo4j, clean_pg_embeddings, monkeypatch):
+    """Neo4j credentials + the pgvector connection; the catalogue is read from
+    the test's patterns.json (never the DB ``patterns`` table); pattern rows,
+    PatternExample nodes and sentinels wiped before and after."""
+    import src.indexer.seed_patterns as sp
+
+    monkeypatch.setattr(sp, "_load_patterns_from_db", lambda version_filter=None: None)
+    creds = (
+        os.getenv("NEO4J_TEST_URI", NEO4J_URI),
+        os.getenv("NEO4J_TEST_USER", NEO4J_USER),
+        os.getenv("NEO4J_TEST_PASSWORD", NEO4J_PASSWORD),
+    )
+
+    def wipe():
+        with clean_pg_embeddings.cursor() as cur:
+            cur.execute(
+                "DELETE FROM embeddings "
+                "WHERE chunk_type = 'pattern_example' AND module = '__patterns__'"
+            )
+        _wipe_seed_meta(clean_neo4j)
+        _wipe_pattern_examples(clean_neo4j)
+
+    wipe()
+    yield creds, clean_pg_embeddings
+    wipe()
+
+
+@pytest.mark.postgres
+def test_a_refused_pattern_chunk_keeps_its_row_and_the_next_reseed_retries(
+    pattern_store, clean_neo4j, tmp_path,
+):
+    """A changed pattern the embedder refuses keeps its previous row, the other
+    one is updated, and patterns_pgvector is not stamped; the next auto-reseed
+    (no --force, same catalogue) re-runs only the pgvector write, embeds it and
+    only then stamps the sentinel."""
+    from src.indexer.seed_patterns import compute_patterns_canonical_sha
+
+    creds, pg = pattern_store
+    first = _write_catalogue(
+        tmp_path, _pattern_dict("pat-a", "a v1"), _pattern_dict("pat-b", "b v1"),
+    )
+    _seed(creds, first, _HealthyPatternEmbedder(), force=True)
+    assert set(_pattern_rows(pg)) == {"python__pat-a", "python__pat-b"}, "precondition"
+
+    changed = _write_catalogue(
+        tmp_path, _pattern_dict("pat-a", f"a v2 {_REFUSED}"), _pattern_dict("pat-b", "b v2"),
+    )
+    sha = compute_patterns_canonical_sha(patterns_file=changed)
+    result = _seed(creds, changed, _FlakyPatternEmbedder())
+
+    rows = _pattern_rows(pg)
+    assert "a v1" in rows["python__pat-a"], "the refused chunk must keep its existing row"
+    assert "b v2" in rows["python__pat-b"]
+    assert result["embed_failed"] == 1
+    assert _get_sentinel_sha(clean_neo4j, "patterns_neo4j") == sha
+    assert _get_sentinel_sha(clean_neo4j, "patterns_pgvector") != sha, (
+        "an incomplete embed must not stamp the pgvector sentinel"
+    )
+
+    retry = _seed(creds, changed, _HealthyPatternEmbedder())
+
+    assert retry["skipped"] is False, "the unstamped sentinel must trigger a retry"
+    assert retry["patterns"] == 0, "Neo4j is already current: only pgvector re-runs"
+    assert retry["embed_failed"] == 0
+    assert "a v2" in _pattern_rows(pg)["python__pat-a"]
+    assert _get_sentinel_sha(clean_neo4j, "patterns_pgvector") == sha
+
+
+@pytest.mark.postgres
+def test_a_pattern_embed_with_no_vector_writes_nothing_and_is_retried(
+    pattern_store, clean_neo4j, tmp_path,
+):
+    creds, pg = pattern_store
+    catalogue = _write_catalogue(tmp_path, _pattern_dict("pat-a", "a"))
+
+    down = _seed(creds, catalogue, _FlakyPatternEmbedder(fail_all=True))
+
+    assert down["embed_failed"] == 1 and _pattern_rows(pg) == {}
+    assert _get_sentinel_sha(clean_neo4j, "patterns_pgvector") is None
+
+    _seed(creds, catalogue, _HealthyPatternEmbedder())
+
+    assert set(_pattern_rows(pg)) == {"python__pat-a"}
+    assert _get_sentinel_sha(clean_neo4j, "patterns_pgvector") is not None
+
+
+@pytest.mark.postgres
+def test_a_pattern_removed_from_the_catalogue_loses_its_rows(pattern_store, tmp_path):
+    creds, pg = pattern_store
+    both = _write_catalogue(tmp_path, _pattern_dict("pat-a", "a"), _pattern_dict("pat-b", "b"))
+    _seed(creds, both, _HealthyPatternEmbedder(), force=True)
+    assert set(_pattern_rows(pg)) == {"python__pat-a", "python__pat-b"}, "precondition"
+
+    only_a = _write_catalogue(tmp_path, _pattern_dict("pat-a", "a"))
+    _seed(creds, only_a, _HealthyPatternEmbedder())
+
+    assert set(_pattern_rows(pg)) == {"python__pat-a"}
