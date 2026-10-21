@@ -155,6 +155,8 @@ class ModuleLifecycle:
     # Admin caller: pending-retirement reasons are rendered in full (they may
     # name other tenants' repos and carry exception text).
     blocker_detail: bool = False
+    # #385: what the active profile_name filter left out (profile_filter_lines).
+    profile_filter: tuple[str, ...] = ()
 
     @property
     def successors(self) -> tuple[str, ...]:
@@ -312,7 +314,61 @@ def read_module_lifecycle(
         stub_dependent_count=stub_count,
         stub_dependent_names=stub_names,
         blocker_detail=srv._get_allowed_profiles() is None,
+        profile_filter=profile_filter_lines(srv, session, name, version, profile_name),
     )
+
+
+def profile_filter_lines(
+    srv, session, name: str, version: str, profile_name: str | None,
+) -> tuple[str, ...]:
+    """Why a module may be missing UNDER a profile filter (#385), safe for this caller.
+
+    Only emitted when a ``profile_name`` filter (explicit or session pin) is
+    active and the profile is in the caller's scope:
+
+    - the module IS visible in the caller's whole boundary, just not under the
+      filter: name the profiles that carry it. Every profile on a node that
+      passed the boundary choke is in the caller's own scope, so naming them
+      discloses nothing new;
+    - some ancestors of the profile are outside the caller's boundary: a COUNT
+      only. Never their names, never whether the module exists there (no
+      cross-tenant existence oracle, ADR-0034).
+    """
+    if profile_name is None:
+        profile_name = srv._resolve_profile(None)  # the session pin, if any
+    if not profile_name:
+        return ()
+    own, shared = srv._session.resolve_tenant_scope(srv._get_tenant_id())
+    report = srv._session.profile_filter_report(profile_name, own, shared)
+    if report["denied"]:
+        return ()
+    profile = report["profile"]
+    lines: list[str] = []
+    rec = srv._single_bounded(
+        session,
+        f"""
+        MATCH (m:Module {{name: $n, odoo_version: $v}})
+        WHERE {owned_pred(srv, 'm')}
+        RETURN m.profile AS profiles
+        """,
+        f"module '{name}' outside the profile filter (Odoo {version})",
+        n=name, v=version, **srv._scope(None, pin=False),
+    )
+    if rec is not None:
+        outside = sorted(set(rec.get("profiles") or []) - set(report["chain"]))
+        if outside:
+            lines.append(
+                f"├─ Profile filter:  indexed in {', '.join(outside)} (in your scope),"
+                f" outside profile {profile} and its ancestor profiles"
+            )
+    withheld = report["withheld"]
+    if withheld:
+        noun = "profile" if withheld == 1 else "profiles"
+        lines.append(
+            f"├─ Profile filter:  {withheld} ancestor {noun} of {profile} not visible"
+            " to this key; results exclude them"
+        )
+    return tuple(lines)
 
 
 def blocked_by_text(value: str | None, *, detail: bool) -> str | None:
@@ -466,6 +522,7 @@ def lifecycle_lines(lc: ModuleLifecycle) -> list[str]:
             for v, repos in lc.other_versions
         ]
         lines.append(f"├─ Present at other versions: {', '.join(entries)}")
+    lines.extend(lc.profile_filter)
     return lines
 
 

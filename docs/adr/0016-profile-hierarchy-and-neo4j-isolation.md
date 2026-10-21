@@ -279,6 +279,13 @@ framework only exists from Odoo v14 onwards.
 
 ## Amendment 2026-10-20 (issue #385) - D6 "inheritance-resolved" restored, access-checked
 
+- D6 promised that a `profile_name` filter is inheritance-resolved. Since
+  ADR-0034 single-owner provenance moved inheritance to read time, only SHARED
+  ancestors were resolved (through `$shared`); a tenant-private parent was
+  dropped. The filter now resolves the declared ancestor chain again, at read
+  time and per ancestor: an ancestor counts only when the caller can already
+  see it (ADR-0034 amendment 2026-10-20). Nodes still carry their owning profile
+  only; no reindex or backfill.
 - The hierarchy now also carries a visibility rule: a profile is never more
   visible than its parent (`RepoStore.check_child_visibility`), checked with the
   cycle and version rules on create and re-parent.

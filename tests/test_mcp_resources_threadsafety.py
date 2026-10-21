@@ -35,10 +35,24 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+import re
 import threading
 from unittest.mock import patch
 
 import pytest
+
+
+def _admin_slot(cache, uri: str) -> str:
+    """The admin (``::t_admin``) cache key of *uri* actually present in *cache*.
+
+    The key may end with the profile-scope epoch segment (``::e<12 hex>``)
+    when the profile registry is reachable; returns the bare tenant key when
+    no entry exists so the caller's assertion names it.
+    """
+    pat = re.compile(re.escape(uri + "::t_admin") + r"(::e[0-9a-f]{12})?")
+    hits = [k for k in list(cache._data.keys()) if pat.fullmatch(k)]
+    assert len(hits) <= 1, hits
+    return hits[0] if hits else uri + "::t_admin"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -192,7 +206,7 @@ def test_50_concurrent_reads_same_uri_all_equal(
         warm_body = _read_sync(mcp, uri)
         assert warm_body, "Warm read must return a non-empty body"
         # R1 fix: cache key includes tenant suffix (::t_admin for no-tenant context).
-        expected_key = uri + "::t_admin"
+        expected_key = _admin_slot(cache, uri)
         assert expected_key in cache, (
             f"Expected tenant-scoped cache key {expected_key!r} not found after warm read"
         )

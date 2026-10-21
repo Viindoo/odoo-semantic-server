@@ -880,7 +880,8 @@ class TestNotIndexedWording:
     def test_with_profile_it_names_that_profile(self, hub, ledger, std):
         out = _check("no_such_module_xyz", profile_name=STD)
         assert _lines(out)[-1] == (
-            f"└─ Not indexed at {V} in profile {STD}. Verify the module name, "
+            f"└─ Not indexed at {V} in profile {STD} and its ancestor profiles."
+            " Verify the module name, "
             "or call list_available_profiles to see indexed scope."), out
 
     def test_ee_confusion_answer_does_not_send_the_agent_to_describe_a_missing_module(

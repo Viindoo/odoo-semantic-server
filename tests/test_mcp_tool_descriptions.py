@@ -450,7 +450,7 @@ def test_model_inspect_limit_hint_no_limit_raising():
 # ---------------------------------------------------------------------------
 # WI-3 (#258, #259-B) — odoo_version='auto' + profile_name semantics alignment
 # ADR-0029 WI-4 amendment: 'auto' resolves to session pin on version-bearing
-# tools. profile_name is a narrowing-only filter (no ancestor-chain expansion).
+# tools. profile_name is a narrowing-only filter over the accessible ancestor chain (#385).
 # ---------------------------------------------------------------------------
 
 
@@ -510,22 +510,24 @@ def test_set_active_version_docstring_distinguishes_pin_vs_reuse():
     "model_inspect",
     "find_deprecated_usage",
 ])
-def test_profile_name_doc_does_not_promise_parent_profile_content(tool_name):
-    """The profile_name filter only narrows; it never pulls in parent profiles.
+def test_profile_name_doc_states_the_accessible_ancestor_chain(tool_name):
+    """The profile_name filter covers the profile's ancestor chain, but only the
+    ancestors the caller can access (#385).
 
-    Rewritten (#378 L9): the old test required the doc to call the filter
-    "inheritance-resolved (includes parent profiles via ancestor chain)". The
-    source says otherwise: nodes carry only their owning profile
-    (``pipeline_repo._owning_profiles``) and ``server._scope(profile_name)``
-    narrows ``own`` to exactly ``[profile_name]`` - a private parent profile's
-    modules are not included. An agent that believes the old wording concludes
-    a module exists in a child profile when it is only in the parent.
-
-    model_inspect and find_deprecated_usage were xfail(strict) until lane-mcpfix
-    defect 5 corrected their docs; the mark is gone so all four stay guarded.
+    ``server._scope(profile_name)`` narrows ``own`` to the profile plus those of
+    its declared ancestors the caller's tenant already owns, and keeps the
+    shared base profiles; an ancestor outside the caller's boundary is never
+    added. An agent reading the doc must learn both halves: parent-profile
+    modules ARE included (so a "not indexed" under the filter is meaningful),
+    and only where the key may already see them (no "inheritance grants access"
+    misreading). The pre-#385 wording "no ancestor-chain expansion" described
+    the bug and must not come back.
     """
     tool = _resolve_tool(tool_name)
-    doc = tool.parameters["properties"]["profile_name"]["description"].lower()
+    doc = " ".join(
+        tool.parameters["properties"]["profile_name"]["description"].lower().split()
+    )
+    assert "no ancestor-chain expansion" not in doc, doc
     assert "inheritance-resolved" not in doc, doc
-    assert "via the ancestor chain" not in doc, doc
-    assert "no ancestor-chain expansion" in doc, doc
+    assert "ancestor profiles you can access" in doc, doc
+    assert "shared base profiles" in doc, doc

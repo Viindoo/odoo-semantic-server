@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/db/repo_registry.py
 """CRUD for profiles + repos in PostgreSQL."""
+import logging
 import re
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from src.db.exceptions import (
     RepoNotFoundError,
 )
 from src.db.pg import PgPool
+
+_logger = logging.getLogger(__name__)
 
 # Profile name: alphanumeric + underscore, 1-50 chars (shell-safe, readable;
 # also a Neo4j ``profile[]`` value and a comma-free RLS GUC list element).
@@ -113,6 +116,12 @@ def resolve_new_profile_tenant(
         " to publish the profile to every key (Odoo CE/EE base profiles only)"
     )
 
+
+# Bounds of the profile ancestor walk (RepoStore.get_ancestor_profile_names, on
+# the MCP hot path): hops followed at most, and the statement's own timeout. Real
+# hierarchies are 2-3 deep (odoo_N -> standard_* -> internal_*).
+MAX_PROFILE_DEPTH = 16
+ANCESTOR_QUERY_TIMEOUT_MS = 2000
 
 # Sentinel: "derive the repo's tenant from its profile" (RepoStore.add_repo).
 _INHERIT_TENANT = object()
@@ -796,24 +805,61 @@ class RepoStore:
         Uses a recursive CTE walking ``parent_profile_id`` upward. Returns
         ``[profile_name]`` (self only) when the profile has no parent.
         Returns ``[]`` when *profile_name* does not exist.
+
+        On the MCP hot path (``narrow_scope`` on every pinned / profile-filtered
+        call), so it is bounded whatever the data: the walk stops at a profile
+        already on the path (a cycle written around :meth:`_validate_parent`)
+        and after :data:`MAX_PROFILE_DEPTH` hops, and the statement runs under
+        a ``statement_timeout`` of :data:`ANCESTOR_QUERY_TIMEOUT_MS`. A cut
+        chain is logged; the result is then shorter (fewer ancestors in scope
+        = fail-closed, never wider).
         """
         with self._pool.checkout() as conn:
-            rows = self._pool.fetch_all(
-                conn,
-                """
-                WITH RECURSIVE chain AS (
-                    SELECT id, name, parent_profile_id, 0 AS depth
-                    FROM profiles WHERE name = %s
-                    UNION ALL
-                    SELECT p.id, p.name, p.parent_profile_id, chain.depth + 1
-                    FROM profiles p
-                    JOIN chain ON p.id = chain.parent_profile_id
-                )
-                SELECT name FROM chain ORDER BY depth ASC
-                """,
-                (profile_name,),
+            prev_autocommit = conn.autocommit
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SET LOCAL statement_timeout = %s", (ANCESTOR_QUERY_TIMEOUT_MS,),
+                    )
+                    cur.execute(
+                        """
+                        WITH RECURSIVE chain AS (
+                            SELECT id, name, parent_profile_id, 0 AS depth,
+                                   ARRAY[id] AS path, FALSE AS cut
+                            FROM profiles WHERE name = %s
+                            UNION ALL
+                            SELECT p.id, p.name, p.parent_profile_id, chain.depth + 1,
+                                   chain.path || p.id,
+                                   (p.id = ANY(chain.path)
+                                    OR (chain.depth + 1 >= %s
+                                        AND p.parent_profile_id IS NOT NULL))
+                            FROM profiles p
+                            JOIN chain ON p.id = chain.parent_profile_id
+                            WHERE NOT chain.cut
+                        )
+                        SELECT name, cut FROM chain ORDER BY depth ASC
+                        """,
+                        (profile_name, MAX_PROFILE_DEPTH),
+                    )
+                    rows = cur.fetchall()
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = prev_autocommit
+        names: list[str] = []
+        for name, _cut in rows:
+            if name not in names:  # a cycle repeats the profile it closes on
+                names.append(name)
+        if any(cut for _name, cut in rows):
+            _logger.warning(
+                "profile %r: ancestor chain cut (cycle, or deeper than %d); run"
+                " python -m src.manager profile-visibility-audit",
+                profile_name, MAX_PROFILE_DEPTH,
             )
-        return [r["name"] for r in rows]
+        return names
 
     def get_children_profiles(self, profile_name: str) -> list[str]:
         """Return direct child profile names of *profile_name* (one level down).
@@ -867,6 +913,27 @@ class RepoStore:
             )
             shared = self._shared_profile_names(conn)
         return sorted(r["name"] for r in own_rows), shared
+
+    def scope_fingerprint(self) -> str:
+        """Digest of everything the read-side profile scope is derived from.
+
+        ``md5`` over every profile's (id, name, tenant, parent), ordered by id:
+        it changes whenever a profile is added, removed, renamed, re-parented or
+        moved to another tenant - by the Web UI, the CLI, a migration or raw
+        SQL alike. The MCP process polls it (``session.scope_epoch``) to drop
+        its scope / chain / resource caches, which the Web UI's in-process
+        :func:`src.mcp.session.invalidate_allowed_profiles` cannot reach.
+        One indexed scan of a small table; osm_reader has SELECT on profiles.
+        """
+        with self._pool.checkout() as conn:
+            row = self._pool.fetch_one(
+                conn,
+                "SELECT md5(coalesce(string_agg("
+                " id::text || ':' || name || ':' || coalesce(tenant_id::text, '-')"
+                " || ':' || coalesce(parent_profile_id::text, '-'), ',' ORDER BY id),"
+                " '')) AS fp FROM profiles",
+            )
+        return row["fp"] if row else ""
 
     def shared_profile_names(self) -> list[str]:
         """Names of the globally shared profiles (``tenant_id IS NULL``), sorted.

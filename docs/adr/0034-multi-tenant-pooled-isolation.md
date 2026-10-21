@@ -561,6 +561,32 @@ pass. Rows tenant-private bị chặn; chỉ shared/global (D3) hiển thị. KH
 
 ## Amendment 2026-10-20 (issue #385) - profile_name resolves the accessible ancestor chain; profile visibility invariant
 
+- **Read side.** `profile_name=P` (explicit or session pin) narrows to P plus the
+  ancestors of P (declared `parent_profile_id` chain) that the caller ALREADY has
+  in its boundary, plus the whole shared set. Before, `own` was narrowed to
+  `[P]` only: under single-owner provenance (D2) a module of a tenant-private
+  parent carries only the parent's profile, so `profile_name=viindoo_internal_17`
+  hid every `standard_viindoo_17` module from the tenant that owns both. An
+  ancestor outside `own ∪ shared` (another tenant's private parent) is never
+  added - a parent link alone grants nothing, the predicate stays `all()`, and
+  an out-of-scope P still denies everything without its chain being looked up.
+  Chain = `session.resolve_profile_chain` (cached 60 s; registry down -> `[P]`
+  + degraded, never wider). Admin narrowing uses the whole chain.
+  The chain cache is dropped by `invalidate_allowed_profiles` only in the
+  process that calls it - the Web UI - never in the MCP server; see the T3
+  amendment below for the cross-process mechanism.
+- **Lockstep (T2 correction).** T2 claimed Neo4j and pgvector used the same
+  narrowed scope; in code pgvector got `[P]` while Neo4j kept `shared`.
+  `_effective_allowed(P)` is now built from `_scope(P)` (`own ∪ shared`), so the
+  pgvector `ANY()` list and the RLS GUC equal the Neo4j set by construction.
+- **Disclosure.** A "not indexed" answer under a filter names a profile only
+  when it is in the caller's scope ("indexed in Z (in your scope), outside
+  profile P and its ancestor profiles"); inaccessible ancestors are a count
+  ("N ancestor profile(s) of P not visible to this key"), never a name.
+  `profile_inspect` summary/coverage "with ancestors" counts use the filter's own
+  scope, so they equal what a filtered call returns from the chain.
+- **Resource cache key** gains `::p<pin>` when a session pin is set: a pinned
+  render is never served to an unpinned or differently pinned session.
 - **Write side: one visibility invariant** (`RepoStore.check_child_visibility`):
   a child of a private profile belongs to the same tenant; a child of a shared
   profile may be shared or private. Enforced by `add_profile` (tenant inherited
@@ -570,6 +596,20 @@ pass. Rows tenant-private bị chặn; chỉ shared/global (D3) hiển thị. KH
   and `add_repo` / `set_repo_tenant` (`repos.tenant_id` = the profile's tenant).
   Migration 0005 repaired the existing rows (logged in `admin_audit_log`);
   `python -m src.manager profile-visibility-audit` is the read-only check.
+- **T3 amendment: cross-process scope epoch.** T3's 60 s
+  window was really 300 s for `odoo://` bodies (resource cache TTL), and
+  `invalidate_allowed_profiles` never reached the MCP process. The MCP side
+  now polls `RepoStore.scope_fingerprint()` (md5 over every profile's id,
+  name, tenant and parent) at most every 5 s (`session.scope_epoch`, lazily on
+  a scoped read); a changed fingerprint drops the tenant scope, shared list and
+  chain caches, and the resource cache key carries the epoch (`::e<12 hex>`),
+  so an old-scope body is never served again. A change made by ANY writer (Web
+  UI, CLI, migration, raw SQL) is seen within ~5 s. Registry unreachable for
+  the poll -> the TTLs above still bound staleness. Chosen over PG
+  LISTEN/NOTIFY (needs a dedicated connection per MCP process and a notifier
+  in every writer) and over shorter TTLs (more registry reads for every
+  tenant, still blind to raw SQL).
+
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).

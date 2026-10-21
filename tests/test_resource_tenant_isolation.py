@@ -22,6 +22,7 @@ Markers: ``neo4j`` (graph data) + ``postgres`` (tenant/profile resolution).
 Both Docker services must be available; testcontainers spins them automatically.
 """
 
+import re
 from contextlib import contextmanager
 
 import pytest
@@ -559,10 +560,12 @@ def test_stylesheet_cache_key_is_tenant_scoped(world):
         "Stylesheet cache key is NOT tenant-scoped — admin and tenant share a "
         f"cache slot (latent cross-tenant leak). admin={admin_key!r} acme={acme_key!r}"
     )
-    assert admin_key.endswith("::t_admin"), (
+    # the tenant segment is followed only by the optional pin / scope-epoch
+    # segments (``::p<pin>``, ``::e<epoch>``)
+    assert re.search(r"::t_admin(::[pe]|$)", admin_key), (
         f"admin stylesheet key missing ::t_admin dimension: {admin_key!r}"
     )
-    assert "::t" in acme_key and not acme_key.endswith("::t_admin"), (
+    assert re.search(rf"::t{world['acme']}(::[pe]|$)", acme_key), (
         f"tenant stylesheet key missing per-tenant dimension: {acme_key!r}"
     )
 

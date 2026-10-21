@@ -680,21 +680,31 @@ def test_admin_narrowed_to_the_shared_base_sees_only_the_base(world):
     }, admin
 
 
-def test_admin_narrowing_with_the_registry_down_is_narrower_never_wider(world):
-    """INVARIANT: the shared-profile list unreachable -> the admin's narrowed
-    view keeps only nodes stamped with the narrowed profile alone. It never
-    shows anything a tenant owning that profile would not see (globex stays out).
-    Not revert-provable: pre-fix admin narrowing was always this narrow."""
+def _registry_down(self, *_args):
+    raise RuntimeError("could not connect to server: Connection refused")
+
+
+@contextmanager
+def _profile_registry_down():
+    """The profile registry unreachable for BOTH reads the narrowing makes: the
+    shared list and the ancestor chain (#385). A real outage takes both down."""
     from unittest.mock import patch
 
     from src.db.repo_registry import RepoStore
 
+    with patch.object(RepoStore, "shared_profile_names", _registry_down, create=True), \
+            patch.object(RepoStore, "get_ancestor_profile_names", _registry_down):
+        yield
+
+
+def test_admin_narrowing_with_the_registry_down_is_narrower_never_wider(world):
+    """INVARIANT: the profile registry unreachable -> the admin's narrowed
+    view keeps only nodes stamped with the narrowed profile alone. It never
+    shows anything a tenant owning that profile would not see (globex stays out).
+    Not revert-provable: pre-fix admin narrowing was always this narrow."""
     tenant = _view(world, world["acme"], world["acme_p"])
 
-    def _registry_down(self):
-        raise RuntimeError("could not connect to server: Connection refused")
-
-    with patch.object(RepoStore, "shared_profile_names", _registry_down, create=True):
+    with _profile_registry_down():
         admin = _view(world, None, world["acme_p"])
     assert admin == {
         "acme [acme_p, base_p]": False,
@@ -709,15 +719,9 @@ def test_admin_pinned_resource_read_with_the_registry_down_heals_on_the_next_rea
     odoo://V/model/shared.model while the shared list is unreachable. The
     narrowed answer (not found) is served but not cached, so the read after the
     registry recovers finds the shared base model."""
-    from unittest.mock import patch
-
-    from src.db.repo_registry import RepoStore
     from src.mcp import server as srv
     from src.mcp import session as sess
     from src.mcp.resources import ResourceCache, _render_model, _serve_resource_blocking
-
-    def _registry_down(self):
-        raise RuntimeError("could not connect to server: Connection refused")
 
     def _read(cache):
         return _serve_resource_blocking(
@@ -731,8 +735,7 @@ def test_admin_pinned_resource_read_with_the_registry_down_heals_on_the_next_rea
     cache = ResourceCache(ttl=300)
     try:
         with as_tenant(None):
-            with patch.object(RepoStore, "shared_profile_names", _registry_down,
-                              create=True):
+            with _profile_registry_down():
                 degraded = _read(cache)
             healed = _read(cache)
     finally:
@@ -741,3 +744,130 @@ def test_admin_pinned_resource_read_with_the_registry_down_heals_on_the_next_rea
         sess._cache_invalidate(api_key_id, mcp_session_id)
     assert "not found" in degraded.lower(), degraded
     assert "not found" not in healed.lower() and f"{_PFX}base_mod" in healed, healed
+
+
+# ---------------------------------------------------------------------------
+# #385 - a profile_name filter resolves the ACCESSIBLE ancestor chain.
+# acme owns lt_acme_parent (private, parent = shared base) and its child
+# lt_acme_child; lt_acme_on_globex is an acme profile whose parent is globex's
+# private profile (a cross-tenant chain the write side now refuses, created
+# here by SQL to prove the read side never widens through it).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def chain_world(world):
+    from src.indexer.embedder import FakeEmbedder
+    from src.indexer.writer_pgvector import EmbeddingChunk, write_module_embeddings
+
+    pg, drv = world["pg"], world["drv"]
+    with pg.cursor() as cur:
+        cur.execute("SELECT id FROM profiles WHERE name = %s", (world["base_p"],))
+        base = cur.fetchone()[0]
+        cur.execute("SELECT id FROM profiles WHERE name = %s", (world["globex_p"],))
+        globex_pid = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version, tenant_id, parent_profile_id) "
+            f"VALUES ('{_PFX}acme_parent', %s, %s, %s) RETURNING id",
+            (V, world["acme"], base),
+        )
+        parent = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version, tenant_id, parent_profile_id) "
+            f"VALUES ('{_PFX}acme_child', %s, %s, %s)",
+            (V, world["acme"], parent),
+        )
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version, tenant_id, parent_profile_id) "
+            f"VALUES ('{_PFX}acme_on_globex', %s, %s, %s)",
+            (V, world["acme"], globex_pid),
+        )
+    pg.commit()
+    parent_p = f"{_PFX}acme_parent"
+    with drv.session() as s:
+        s.run("MERGE (m:Module {name:$mod, odoo_version:$v}) "
+              "SET m.profile=[$p], m.repo='acme_parent_repo', m.edition='custom'",
+              mod=f"{_PFX}acme_parent_mod", v=V, p=parent_p)
+        s.run("""MATCH (m:Module {name:$mod, odoo_version:$v})
+                 MERGE (md:Model {name:'acme.parent.model', module:$mod, odoo_version:$v})
+                 SET md.profile=[$p], md.is_definition=true
+                 MERGE (md)-[:DEFINED_IN]->(m)
+                 MERGE (f:Field {name:'parent_field', model:'acme.parent.model',
+                                 module:$mod, odoo_version:$v})
+                 SET f.profile=[$p], f.ttype='char'
+                 MERGE (f)-[:BELONGS_TO]->(md)""",
+              mod=f"{_PFX}acme_parent_mod", v=V, p=parent_p)
+    chunk = EmbeddingChunk("method", f"{_PFX}acme_parent_mod", V,
+                           f"{_PFX}acme_parent_mod.do", None,
+                           f"/{_PFX}acme_parent_mod.py", 0, "acme parent secret method body")
+    write_module_embeddings(f"{_PFX}acme_parent_mod", V, [chunk], FakeEmbedder(dim=1024),
+                            profile_name=parent_p)
+    yield {**world, "parent_p": parent_p, "child_p": f"{_PFX}acme_child",
+           "on_globex_p": f"{_PFX}acme_on_globex"}
+
+
+def _check(name, profile_name, drv):
+    from src.mcp.tools.guidance import _check_module_exists
+
+    return _check_module_exists(name, V, profile_name=profile_name, _driver=drv)
+
+
+def test_child_filter_finds_a_module_owned_by_the_private_parent(chain_world):
+    """THE #385 BUG: under profile_name=child the parent's module is indexed."""
+    from src.mcp.server import _resolve_field
+
+    w = chain_world
+    with as_tenant(w["acme"]):
+        out = _check(f"{_PFX}acme_parent_mod", w["child_p"], w["drv"])
+        field = _resolve_field("acme.parent.model", "parent_field", V,
+                               profile_name=w["child_p"])
+    assert "Indexed:         Yes" in out, out
+    assert "char" in field.lower(), field
+
+
+def test_child_filter_does_not_widen_to_siblings_or_other_tenants(chain_world):
+    from src.mcp.server import _resolve_field
+
+    w = chain_world
+    with as_tenant(w["acme"]):
+        sibling = _resolve_field("acme.secret", "acme_field", V, profile_name=w["child_p"])
+        foreign = _resolve_field("globex.secret", "globex_field", V,
+                                 profile_name=w["child_p"])
+    # acme_mod carries [acme_p, base_p]; acme_p is a sibling, not an ancestor.
+    assert "not found" in sibling.lower(), sibling
+    assert "not found" in foreign.lower(), foreign
+
+
+def test_foreign_private_ancestor_is_a_count_never_a_name(chain_world):
+    """acme_on_globex's parent is globex's private profile: its modules stay
+    out and the answer says only how many ancestors are withheld."""
+    w = chain_world
+    with as_tenant(w["acme"]):
+        out = _check(f"{_PFX}globex_mod", w["on_globex_p"], w["drv"])
+    assert "Indexed:         No" in out, out
+    assert "1 ancestor profile of lt_acme_on_globex not visible to this key" in out, out
+    assert "globex_p" not in out, f"foreign ancestor named: {out!r}"
+
+
+def test_in_scope_miss_names_the_profile_that_holds_the_module(chain_world):
+    w = chain_world
+    with as_tenant(w["acme"]):
+        out = _check(f"{_PFX}acme_mod", w["child_p"], w["drv"])
+    assert "Indexed:         No" in out, out
+    assert f"indexed in {w['acme_p']}" in out, out
+
+
+def test_semantic_search_under_child_filter_reaches_the_parent(chain_world):
+    """pgvector uses the same chain as Neo4j (lockstep): the parent's chunk is
+    returned under profile_name=child, globex's never."""
+    from src.indexer.embedder import FakeEmbedder
+    from src.mcp.server import _find_examples
+
+    w = chain_world
+    with as_tenant(w["acme"]):
+        out = _find_examples(
+            "acme parent secret method", V, profile_name=w["child_p"],
+            _driver=w["drv"], _pg_conn=w["pg"], _embedder=FakeEmbedder(dim=1024),
+        )
+    assert f"{_PFX}acme_parent_mod" in out, out
+    assert "globex" not in out, f"CROSS-TENANT EMBEDDING LEAK: {out!r}"

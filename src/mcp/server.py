@@ -1645,28 +1645,31 @@ def _get_allowed_profiles() -> list[str] | None:
 
 
 def _effective_allowed(profile_name: str | None) -> list[str] | None:
-    """SINGLE-VALUE filter param (pgvector ``profile_name = ANY(%s)``, profile
-    listing) - the flat union ``own ∪ shared`` with optional explicit narrowing.
+    """SINGLE-VALUE filter param (pgvector ``profile_name = ANY(%s)``, the RLS
+    GUC, profile listing) - the flat union of :func:`_scope`'s ``own ∪ shared``.
+
+    Built FROM :func:`_scope` so the pgvector / RLS list and the Neo4j params are
+    the same set by construction (ADR-0034 T2 lockstep):
 
     - admin (None), no profile_name → ``None``  (no filter applied)
-    - admin (None), explicit profile → ``[profile_name]``
+    - admin (None), explicit profile → the profile, its whole ancestor chain and
+      every shared profile
     - tenant, no profile_name        → the usable union list
-    - tenant, profile in union       → ``[profile_name]``
+    - tenant, profile in union       → the profile, its ancestors the tenant
+      already owns, and every shared profile (#385)
     - tenant, profile NOT in union   → ``[]``  (deny)
     """
     # #251: inject the per-session pinned profile when the caller omits one,
-    # BEFORE the ADR-0034 narrowing below. Narrowing-only + read-time
-    # re-validation: an out-of-scope pin (scoped tenant) returns ``[]`` so the
-    # downstream ``ANY('{}')`` matches nothing (fail-closed); admin (None) with
-    # the pin narrows to ``[pin]`` as a convenience.
+    # BEFORE the ADR-0034 narrowing. Narrowing-only + read-time re-validation:
+    # an out-of-scope pin (scoped tenant) returns ``[]`` so the downstream
+    # ``ANY('{}')`` matches nothing (fail-closed).
     if profile_name is None:
         profile_name = _resolve_profile(None)
-    allowed = _get_allowed_profiles()
-    if allowed is None:
-        return [profile_name] if profile_name else None
-    if profile_name:
-        return [profile_name] if profile_name in allowed else []
-    return allowed
+    if not profile_name:
+        return _get_allowed_profiles()
+    scope = _scope(profile_name)
+    own = scope["own"] or []
+    return list(dict.fromkeys([*own, *sorted(scope["shared"])]))
 
 
 def _allowed_to_guc(allowed: list[str] | None) -> str:
@@ -1791,18 +1794,25 @@ def _scope(profile_name: str | None = None, *, pin: bool = True) -> dict:
     fail-closes (denied to both).
 
     ``profile_name`` is a NON-ESCALATING narrowing filter (WG-3t T3 - fixes the
-    Neo4j/pgvector split-brain). It can only shrink the visible set *within*
-    ``own ∪ shared``; it can never widen it:
+    Neo4j/pgvector split-brain). It resolves the profile's declared ancestor
+    chain (#385) but can only shrink the visible set *within* ``own ∪ shared``;
+    it can never widen it:
 
     - admin (own=None), no profile_name      → ``own=None`` (unrestricted).
-    - admin (own=None), explicit profile      → ``own=[profile]`` + every shared
-      profile: the view a tenant owning that profile gets (see
-      ``session.admin_narrowing_shared`` for the registry-down case).
+    - admin (own=None), explicit profile      → ``own=<profile + its ancestor
+      chain>`` + every shared profile: the view a tenant owning that chain gets
+      (see ``session.admin_narrowing_shared`` for the registry-down case).
     - tenant, no profile_name                 → full ``(own, shared)`` boundary.
-    - tenant, profile_name ∈ own∪shared       → narrow own to ``[profile]``, keep ``shared``
-      (nodes that carry [own, base] both remain visible - shared is never stripped).
+    - tenant, profile_name ∈ own∪shared       → narrow own to the profile plus
+      those of its ancestors the tenant ALREADY owns; keep ``shared`` (shared
+      ancestors stay visible through it, and nodes that carry [own, base] are
+      not stripped). An ancestor outside ``own ∪ shared`` (another tenant's
+      private parent) is never added: a parent link alone grants nothing.
     - tenant, profile_name ∉ own∪shared       → deny-all (``own=[], shared=[]``);
-      a tenant cannot borrow another tenant's profile name to escalate.
+      a tenant cannot borrow another tenant's profile name to escalate, and the
+      chain of such a name is not even looked up.
+    - profile registry down (chain lookup)    → the profile alone, marked
+      degraded (``session.resolve_profile_chain``): shrinks, never widens.
     """
     # #251: when the caller omits an explicit profile, inject the per-session
     # pinned default (set via set_active_profile) BEFORE the ADR-0034 tenant
@@ -1816,17 +1826,7 @@ def _scope(profile_name: str | None = None, *, pin: bool = True) -> dict:
     own, shared = _session.resolve_tenant_scope(_get_tenant_id())
     if not profile_name:
         return {"own": own, "shared": shared}
-    # Non-escalating narrowing. Admin (own=None) is unrestricted, so any profile is
-    # in-scope and we narrow purely as a convenience. A scoped tenant may only narrow
-    # within its own∪shared boundary; an out-of-scope profile_name fail-closes.
-    # In both admin and tenant cases we KEEP shared so that nodes carrying
-    # [profile_name, base_profile] (the normal [own, CE-base] pattern) are not
-    # accidentally denied when the caller narrows to a specific own-profile.
-    if own is None:
-        return {"own": [profile_name], "shared": _session.admin_narrowing_shared()}
-    if profile_name in own or profile_name in shared:
-        return {"own": [profile_name], "shared": shared}
-    return {"own": [], "shared": []}
+    return _session.narrow_scope(profile_name, own, shared)
 
 
 # find_examples rerank coefficients - extracted so calibration harness can

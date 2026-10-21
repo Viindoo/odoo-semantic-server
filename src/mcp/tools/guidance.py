@@ -484,6 +484,7 @@ def _check_module_exists(
     # list when DB is unreachable — transparent to callers (WI-R F-007 fix).
     confusion = _ee_confusion_live(v)
     scope_profile = profile_name or _srv._resolve_profile(None)
+    scope = f"profile {scope_profile} and its ancestor profiles" if scope_profile else None
 
     # Edition-first: check Neo4j for 'enterprise' (from OEEL-1 detection at index time).
     # OPL-1 is NOT mapped to 'enterprise' by _detect_module_edition: an OPL-1 module
@@ -532,7 +533,7 @@ def _check_module_exists(
         version_raw=rec.get("version_raw") if rec else None,
         version_mismatch=bool(rec.get("version_mismatch")) if rec else False,
         lifecycle=lifecycle,
-        scope_label=f"profile {scope_profile}" if scope_profile else "any accessible profile",
+        scope_label=scope or "any accessible profile",
     )
 
 
@@ -1015,9 +1016,9 @@ def check_module_exists(
     Args:
         name: Module technical name (e.g. 'sale', 'helpdesk', 'viin_helpdesk').
         profile_name: Optional profile filter. When set, narrows the check to
-            modules owned by this profile or by a globally shared base profile
-            (no ancestor-chain expansion of private parent profiles). It can
-            only narrow your accessible scope. Default None checks every
+            modules of this profile, of its ancestor profiles you can access
+            (the declared parent chain), and of the shared base profiles. It
+            can only narrow your accessible scope. Default None checks every
             profile you can access.
 
     Returns:

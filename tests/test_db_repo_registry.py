@@ -391,3 +391,77 @@ def test_add_profile_nonexistent_parent_no_orphan(migrated_pg):
     assert count_after == count_before, (
         f"Orphan row inserted: profile count grew from {count_before} to {count_after}"
     )
+
+
+def _call_bounded(fn, seconds=20):
+    """Run *fn* in a daemon thread; fail (not hang) when it does not return."""
+    import threading
+
+    box: dict = {}
+    t = threading.Thread(target=lambda: box.setdefault("v", fn()), daemon=True)
+    t.start()
+    t.join(seconds)
+    assert not t.is_alive(), "ancestor walk did not terminate"
+    return box["v"]
+
+
+def test_ancestor_walk_terminates_on_a_cycle_in_the_data(migrated_pg, caplog):
+    """A cycle written around the guards (raw SQL) must not hang the MCP hot path."""
+    a = repo_store().add_profile("test_cyc_a_99", "99.0", shared=True)
+    b = repo_store().add_profile("test_cyc_b_99", "99.0", shared=True)
+    with migrated_pg.cursor() as cur:
+        cur.execute("UPDATE profiles SET parent_profile_id = %s WHERE id = %s", (b, a))
+        cur.execute("UPDATE profiles SET parent_profile_id = %s WHERE id = %s", (a, b))
+    with caplog.at_level("WARNING", logger="src.db.repo_registry"):
+        names = _call_bounded(lambda: repo_store().get_ancestor_profile_names("test_cyc_a_99"))
+    assert names == ["test_cyc_a_99", "test_cyc_b_99"]
+    assert "ancestor chain cut" in caplog.text
+
+
+def test_ancestor_walk_is_capped_at_the_max_depth(migrated_pg, caplog):
+    from src.db.repo_registry import MAX_PROFILE_DEPTH
+
+    prev = None
+    for i in range(MAX_PROFILE_DEPTH + 4):
+        pid = repo_store().add_profile(f"test_deep_{i}_99", "99.0", shared=True)
+        if prev is not None:
+            repo_store().set_profile_parent(prev, pid)  # previous one is the child
+        prev = pid
+    with caplog.at_level("WARNING", logger="src.db.repo_registry"):
+        names = _call_bounded(lambda: repo_store().get_ancestor_profile_names("test_deep_0_99"))
+    assert names == [f"test_deep_{i}_99" for i in range(MAX_PROFILE_DEPTH + 1)]
+    assert "ancestor chain cut" in caplog.text
+
+
+def test_ancestor_walk_of_exactly_max_depth_is_not_reported_as_cut(migrated_pg, caplog):
+    from src.db.repo_registry import MAX_PROFILE_DEPTH
+
+    prev = None
+    for i in range(MAX_PROFILE_DEPTH + 1):
+        pid = repo_store().add_profile(f"test_full_{i}_99", "99.0", shared=True)
+        if prev is not None:
+            repo_store().set_profile_parent(prev, pid)
+        prev = pid
+    with caplog.at_level("WARNING", logger="src.db.repo_registry"):
+        names = repo_store().get_ancestor_profile_names("test_full_0_99")
+    assert len(names) == MAX_PROFILE_DEPTH + 1
+    assert "ancestor chain cut" not in caplog.text
+
+
+def test_scope_fingerprint_moves_with_every_scope_relevant_change(migrated_pg):
+    """The MCP cross-process cache epoch: tenant move, re-parent, add - all change it."""
+    store = repo_store()
+    with migrated_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('fp_t') RETURNING id")
+        tid = cur.fetchone()[0]
+    root = store.add_profile("test_fp_root_99", "99.0", shared=True)
+    leaf = store.add_profile("test_fp_leaf_99", "99.0", shared=True)
+    seen = [store.scope_fingerprint()]
+    assert store.scope_fingerprint() == seen[0], "stable while nothing changes"
+    store.set_profile_parent(leaf, root)
+    seen.append(store.scope_fingerprint())
+    store.set_profile_tenant(leaf, tid)
+    seen.append(store.scope_fingerprint())
+    store.add_profile("test_fp_new_99", "99.0", shared=True)
+    seen.append(store.scope_fingerprint())
+    assert len(set(seen)) == 4, seen
