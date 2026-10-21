@@ -11,7 +11,11 @@ All notable changes to Odoo Semantic MCP are documented here.
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- The admin-issued password reset mail (`POST /api/admin/users/{id}/reset-password-link`)
+  is sent by `src.mailer` like every other OSM mail: with `SMTP_FROM` unset its sender is the
+  mailer default instead of `SMTP_USER` (an SES access key id, not an address).
 
 ## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)
 

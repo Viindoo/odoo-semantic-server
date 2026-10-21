@@ -576,7 +576,12 @@ class TestEmailHelpers:
         def _fake_smtp(*args, **kwargs):
             class FakeSrv:
                 def starttls(self): pass
-                def send_message(self, msg): captured["msg"] = msg
+                # Same signature as smtplib.SMTP.send_message (src.mailer passes
+                # to_addrs explicitly so a Bcc header never decides delivery).
+                def send_message(self, msg, from_addr=None, to_addrs=None,
+                                 mail_options=(), rcpt_options=()):
+                    captured["msg"] = msg
+                    captured["to_addrs"] = to_addrs
                 def __enter__(self): return self
                 def __exit__(self, *a): pass
             return FakeSrv()
@@ -592,6 +597,7 @@ class TestEmailHelpers:
 
         msg = captured.get("msg")
         assert msg is not None
+        assert captured["to_addrs"] == ["victim@example.com"]
 
         # HTML alternative should contain escaped entities, NOT raw <script>
         payload = msg.get_payload()

@@ -27,12 +27,14 @@ import logging
 import os
 import re
 import secrets
+from email.message import EmailMessage
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.requests import Request
 
+from src import mailer
 from src.db.audit import audit_action
 from src.db.auth_registry import LastAdminProtectedError, UserNotFoundError
 from src.web_ui._json import _json_safe
@@ -41,6 +43,10 @@ from src.web_ui.auth import hash_password, require_admin, require_admin_with_fre
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9_@.\-]{1,64}$")
 
 _logger = logging.getLogger(__name__)
+
+# Socket timeout of the admin reset mail (the value the route used before it
+# was routed through src.mailer).
+_RESET_EMAIL_TIMEOUT_S = 10.0
 
 router = APIRouter()
 
@@ -363,27 +369,20 @@ async def reset_password_link(
 
 
 def _send_reset_email(*, to_email: str, username: str, reset_link: str) -> bool:
-    """Send password reset email via SMTP. Returns True if sent, False if SMTP unset.
+    """Send the admin-issued password reset email through :mod:`src.mailer`.
 
-    Uses env vars: SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASSWORD,
-    SMTP_FROM (default SMTP_USER).
-
-    If SMTP_HOST is not set, logs the reset link at WARNING level and returns False.
+    Returns True when the relay accepted it, False when SMTP is not configured
+    (``SMTP_HOST`` unset: the reset link is logged at WARNING instead, so the
+    admin can hand it over) or the delivery failed (logged at ERROR). SMTP
+    settings, sender and STARTTLS are the mailer's, shared with every other
+    OSM mail; each socket operation is bounded by
+    :data:`_RESET_EMAIL_TIMEOUT_S`.
     """
-    smtp_host = os.environ.get("SMTP_HOST", "")
-    if not smtp_host:
+    if not mailer.smtp_host():
         _logger.warning(
-            "SMTP_HOST not set — password reset link for %s: %s", username, reset_link
+            "SMTP_HOST not set - password reset link for %s: %s", username, reset_link
         )
         return False
-
-    import smtplib
-    from email.mime.text import MIMEText
-
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    smtp_user = os.environ.get("SMTP_USER", "")
-    smtp_pass = os.environ.get("SMTP_PASSWORD", "")
-    smtp_from = os.environ.get("SMTP_FROM", smtp_user)
 
     body = (
         f"Hello {username},\n\n"
@@ -392,19 +391,15 @@ def _send_reset_email(*, to_email: str, username: str, reset_link: str) -> bool:
         f"{reset_link}\n\n"
         f"If you did not request this reset, ignore this email.\n"
     )
-    msg = MIMEText(body)
+    msg = EmailMessage()
     msg["Subject"] = "Reset your odoo-semantic-mcp password"
-    msg["From"] = smtp_from
+    msg["From"] = mailer.from_address()
     msg["To"] = to_email
+    msg.set_content(body)
 
     try:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as server:
-            server.starttls()
-            if smtp_user and smtp_pass:
-                server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-        return True
-    except Exception as exc:
+        return mailer.send(msg, timeout=_RESET_EMAIL_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 - reported as email_sent=False
         _logger.error("SMTP send failed: %s", exc)
         return False
 
