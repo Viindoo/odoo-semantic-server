@@ -139,23 +139,136 @@ Two new touchpoints for ops:
 
 ## Alert wiring (OnFailure=osm-alert@%n)
 
-Every shipped systemd unit (`odoo-semantic-{mcp,webui,astro,backup,reindex}`
-plus `osm-ttl-cleanup`) has `OnFailure=osm-alert@%n`. The pattern unit
-`osm-alert@.service` ships with a journal-only default — to wire real
-notifications (email, Slack webhook, PagerDuty), edit its `ExecStart=`
-to call your notifier and keep the `osm-alert:` log prefix so scrapers
-keep working.
+Every shipped systemd unit (`odoo-semantic-{mcp,webui,astro,backup,reindex,lifecycle-audit}`,
+`osm-ttl-cleanup`, the offsite-sync template) has `OnFailure=osm-alert@%n`
+(always that spelling). When one fails, systemd starts
+`osm-alert@<unit>.service`, which runs `python -m src.ops.alert_notify --unit %i`
+as `odoo-semantic` and **mails every OSM admin** (#383).
 
-Sanity test (no real failure needed):
+**Why it exists.** From 2026-08-25 to 2026-09-25 the nightly reindex failed
+32 nights out of 32 and nobody noticed: the hook only wrote a journal line. On
+2026-10-18/19 a DNS failure made two nightly runs no-ops. Alerts are for
+failures that stop OSM from reflecting the code and that the system cannot heal
+by itself: a unit crash or non-zero exit, PostgreSQL or Neo4j down, a repo that
+cannot be cloned, and exit 3 of the nightly reindex (indexed, but OSM no longer
+reflects some code and an operator must act, deploy.md s3.6). Exit 3 covers the
+network and embedder cases too: the pre-scan fetch failing for **every** repo
+of a run (at least two; a DNS / network outage or a credential they share,
+`outages: fetch_outage`), the same repo's fetch failing in **two consecutive
+runs** (`stale_repos`), and the embedder returning no vector for any chunk the
+run sent (`outages: embedder_down`). One failed fetch that heals by the next
+run, a partial embedding failure, and kept data (`lifecycle-audit`
+`parser_gaps` / `unproven_drops`) are a WARNING or a report line, never a mail.
+
+**What a mail holds.** Subject `[OSM ALERT] <host> <unit> exit <N>`. Body:
+unit, host, result, exit status with its meaning (1 crash or failed repo,
+3 lifecycle attention, 4 audit drift, 243 missing credential, ...), the run's
+start time, the `Lifecycle needs attention` block when this run wrote one, the
+last 60 lines of the unit's output and a runbook pointer. The output is the
+unit's `StandardOutput=append:` log file (read from `systemctl cat`) or else
+its journal for that invocation. A file-logged unit writes
+`osm-run-start <time> invocation=<id>` as its first `ExecStartPre=`, and only
+the lines after this invocation's marker count as this run. Passwords, DSN
+credentials (also in SMTP / any URL), `NEO4J_AUTH=user/password`, bearer
+tokens, `osm_` API keys, GitHub tokens (`ghp_`, `gho_`, `github_pat_`, ...),
+AWS key ids, bare Fernet keys, long base64 runs (key material) and private
+keys - also the body of a key block whose BEGIN line falls outside the 60-line
+window - are redacted before sending, on the full line before it is cut to
+500 characters. When a unit fails before its main process ran (an
+`ExecStartPre=` failed, so systemd sets no exit status), the status comes from
+`systemctl show -p ExecStartPre`: e.g. `exit 124 (ExecStartPre) - pre-flight
+timed out: PostgreSQL not ready within 60s`.
+
+**Who gets it.** Every active Web UI admin with an email
+(`webui_users.is_admin AND is_active`, `email` not empty), read from PostgreSQL
+at send time with the owner `PG_DSN`. Each successful read refreshes
+`/var/lib/osm-alert/admins.json`, and so does the nightly reindex
+(`ExecStartPre=-... alert_notify --refresh-admins`, best effort, sends
+nothing). When the database is down (exactly when alerts matter) or lists no
+admin email, the mail goes to that last known list - unless it is older than
+`OSM_ALERT_ADMIN_CACHE_MAX_DAYS` (7), since it may name an admin demoted
+since - plus `OSM_ALERT_FALLBACK_TO`. With neither, nothing is sent and the journal
+logs `osm-alert: NO RECIPIENT ...`. One mail goes out with every recipient in
+`Bcc` and `To: undisclosed-recipients:;`, so no admin sees another admin's
+address (the `Bcc` header is not transmitted).
+
+**How often.** The same alert is mailed once per `OSM_ALERT_REPEAT_HOURS`
+(default 20, deliberately under the 24h period of the nightly timer: a run
+that ends earlier than the night last mailed is still a new night, so a
+lifecycle hold that persists every night mails every night). "The same alert"
+means the same unit, exit status (and failed `ExecStartPre=`, if any) and
+cause: the `Lifecycle needs attention` block when the run wrote one, else the
+last error-looking line of the output (exception, `ERROR`, `failed`) with
+timestamps, numbers, hex ids and paths masked. A new hold, another exit
+status or a new cause of the same exit status mails at once. At most
+`OSM_ALERT_MAX_PER_HOUR` (default 6) mails per hour over all units (crash
+loops); an alert the cap holds is recorded in `state.json` and listed
+("Also failed since the last mail, held by the hourly cap") in the next mail
+that goes out. A suppressed alert still logs
+`osm-alert: <unit> alert suppressed: ...`. A failed delivery logs
+`osm-alert: DELIVERY_FAILED ...` and is not recorded, so the next failure
+retries. The state lock is held only to decide and record, never while
+mailing, and is waited for at most 20s (then the alert is sent without
+dedupe rather than lost); the whole SMTP send has a 45s deadline; the worst
+case stays under the unit's `TimeoutStartSec=180`. The hook always exits 0
+and has no `OnFailure=`, so it can never alert about itself.
+
+**Known limit: docker down.** The reindex and lifecycle-audit units have
+`Requires=docker.service`. If docker.service fails to start, their start job
+ends with result `dependency`: the unit never enters `failed`, so its
+`OnFailure=` does not fire. A docker that is running with the database
+container down is covered (the 60s `pg_isready` pre-flight fails: exit 124).
+To be alerted when docker itself fails, give docker.service the same hook
+(Human, sudo; it is the distribution's unit, so use a drop-in):
+
+```bash
+sudo mkdir -p /etc/systemd/system/docker.service.d
+printf '[Unit]\nOnFailure=osm-alert@%%n\n' | sudo tee /etc/systemd/system/docker.service.d/osm-alert.conf
+sudo systemctl daemon-reload
+```
+
+A docker that is merely stopped is started by `Requires=`; a box that is off
+sends nothing at all (no freshness watchdog yet).
+
+**Configuration.** No new secret: the unit reads the same env files as the Web
+UI (`.env` for `PG_DSN`, `.env` / `webui.env` for the SES `SMTP_*`). Optional
+knobs go in `/home/odoo-semantic/etc/alert.env` (0600, odoo-semantic):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `OSM_ALERT_FALLBACK_TO` | empty | Comma-separated addresses used when the database cannot give an admin. Set it: it is the only recipient on a fresh box whose database is down. |
+| `OSM_ALERT_REPEAT_HOURS` | 20 | Window in which the same alert is mailed once. Keep it under 24 (the nightly timer period). |
+| `OSM_ALERT_MAX_PER_HOUR` | 6 | Cap on mails per hour, all units together. Held alerts are listed in the next mail. |
+| `OSM_ALERT_ADMIN_CACHE_MAX_DAYS` | 7 | Age past which the last known admin list is ignored when the database is down. |
+
+State (`state.json`, `admins.json`) lives in `/var/lib/osm-alert`
+(`StateDirectory=osm-alert`). The unit body is managed: `make
+check-systemd-overrides` audits it like the other units; tune it through
+`alert.env` or a drop-in, never by editing `ExecStart=`.
+
+Smoke test (Human, sudo): `dummy` is not a unit, so it is a test alert that
+skips the dedupe (not the hourly cap) and **must deliver a real mail**:
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start osm-alert@dummy.service
 journalctl -u osm-alert@dummy.service --no-pager | tail
-# Expect a journal line matching:
-#   osm-alert: unit=dummy state=failed host=<hostname>
-# (`%i` resolves to the instance name `dummy`, not `dummy.service`.)
+# Expect:
+#   osm-alert: unit=dummy state=failed host=<hostname> ...
+#   osm-alert: dummy.service alert mailed to N recipient(s) (active Web UI admins (database))
+# and a mail "[OSM ALERT] <host> dummy.service test alert" in every admin inbox.
 ```
+
+Preview what a real unit's alert would say, without sending or recording
+(AI or Human, as odoo-semantic):
+
+```bash
+sudo -u odoo-semantic -H bash -c 'cd /home/odoo-semantic/odoo-semantic-mcp && set -a && . ./.env && set +a && \
+  /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.ops.alert_notify \
+  --unit odoo-semantic-reindex --dry-run'
+```
+
+`--force` sends even inside the dedupe window or over the cap (a manual resend).
 
 ## Degraded mode
 

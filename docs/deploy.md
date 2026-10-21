@@ -680,26 +680,39 @@ sudo systemctl status odoo-semantic-astro
 # → ExecStart sẽ chạy: node dist/server/entry.mjs
 ```
 
-Cài backup unit + alert template (PR #134 resilience wiring):
+Install the backup unit + the alert hook (PR #134 resilience wiring, mail since #383):
 
 ```bash
 sudo cp /opt/odoo-semantic-mcp/docs/deploy/odoo-semantic-backup.service \
         /etc/systemd/system/
 sudo cp "/opt/odoo-semantic-mcp/docs/deploy/osm-alert@.service" \
         /etc/systemd/system/
+# Optional OSM_ALERT_* knobs (set OSM_ALERT_FALLBACK_TO: the recipient when the DB is down):
+sudo install -o odoo-semantic -g odoo-semantic -m 600 /dev/null /home/odoo-semantic/etc/alert.env
+echo 'OSM_ALERT_FALLBACK_TO=ops@example.com' | sudo tee -a /home/odoo-semantic/etc/alert.env >/dev/null
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now odoo-semantic-backup
-# Template unit không enable trực tiếp — systemd tự instance khi
-# `OnFailure=osm-alert@%n` chain fires từ 4 main unit.
+# The template is never enabled: systemd instances it when a unit's
+# `OnFailure=osm-alert@%n` fires.
 
-# Sanity test alert template (không cần wait main service failure):
+# Smoke test - a REAL mail must reach every active Web UI admin:
 sudo systemctl start 'osm-alert@dummy.service'
 sudo journalctl -u 'osm-alert@dummy.service' --no-pager | tail
-# → Expect a line matching: osm-alert: unit=dummy state=failed host=<hostname>
-#   (printed by ExecStart= in osm-alert@.service; `%i` resolves to `dummy`,
-#   not `dummy.service` — systemd's %i is the instance name without suffix)
+# Expect `osm-alert: unit=dummy state=failed ...` then
+# `osm-alert: dummy.service alert mailed to N recipient(s) ...`.
 ```
+
+The hook runs `python -m src.ops.alert_notify` as `odoo-semantic` and mails every
+active Web UI admin (`webui_users.is_admin AND is_active` with an email) through the
+same SES `SMTP_*` settings as the Web UI: unit, host, exit status, this run's
+`Lifecycle needs attention` block, the last 60 log lines and a runbook pointer. It
+dedupes (same alert once per `OSM_ALERT_REPEAT_HOURS`, default 20h so a failure that persists
+every night mails every night; at most 6 mails an hour) and falls back to the last
+known admin list plus `OSM_ALERT_FALLBACK_TO` when PostgreSQL is down. Precedent:
+2026-08-25..09-25 the nightly reindex failed 32 nights out of 32 unnoticed, because the
+hook only wrote a journal line. Full description, knobs and the `--dry-run` preview:
+[`docs/deploy/db-tier-operations.md` section Alert wiring](deploy/db-tier-operations.md#alert-wiring-onfailureosm-alertn).
 
 > `install.sh --systemd` glob `*.service` tự động pick up cả 5 unit (4
 > main + 1 template) và **idempotent** — nếu unit body đã cài có divergence
@@ -707,9 +720,8 @@ sudo journalctl -u 'osm-alert@dummy.service' --no-pager | tail
 > Operator có customization local phải dùng **drop-in overrides** thay vì sửa
 > body trực tiếp — xem [`docs/deploy/install-runbook.md`](deploy/install-runbook.md)
 > và [`docs/deploy/overrides/`](deploy/overrides/). Bước manual ở trên chỉ cần
-> khi không dùng `install.sh`. Xem
-> [`docs/deploy/db-tier-operations.md §Alert wiring`](deploy/db-tier-operations.md#alert-wiring-onfailureosm-alertn)
-> để cấu hình notifier (email, Slack, PagerDuty).
+> khi không dùng `install.sh`. `osm-alert@.service` is a managed unit like the others
+> (drift-audited): tune it through `alert.env` or a drop-in, not by editing `ExecStart=`.
 >
 > **Drift audit trước deploy:** `make check-systemd-overrides` so sánh installed
 > unit body với template shipped và báo divergence. Chạy trước mọi deploy đụng

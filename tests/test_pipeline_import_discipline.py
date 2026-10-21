@@ -108,6 +108,25 @@ def test_indexer_layer_does_not_import_web_ui_layer():
     )
 
 
+def test_ops_and_mailer_stay_below_the_server_layers():
+    """src/ops (the alert hook, #383) and the shared src/mailer must not import
+    src.web_ui or src.mcp: the hook runs when the Web UI may be the unit that
+    just failed, and the Web UI mails through src.mailer, not the other way."""
+    files = sorted((_REPO_ROOT / "src" / "ops").rglob("*.py"))
+    files.append(_REPO_ROOT / "src" / "mailer.py")
+    offenders: dict[str, set[str]] = {}
+    for path in files:
+        imported = _module_names_imported(path.read_text(encoding="utf-8"))
+        bad = {
+            name for name in imported
+            for prefix in (_FORBIDDEN_PREFIX, _FORBIDDEN_WEB_PREFIX)
+            if name == prefix or name.startswith(prefix + ".")
+        }
+        if bad:
+            offenders[str(path.relative_to(_REPO_ROOT))] = bad
+    assert not offenders, f"ops/mailer import a server layer: {offenders}"
+
+
 def test_shared_metrics_lives_outside_mcp_package():
     """The embedder metric must be importable from the shared src layer.
 
