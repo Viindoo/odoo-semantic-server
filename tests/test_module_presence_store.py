@@ -964,6 +964,50 @@ def test_lifecycle_counts_per_repo_with_zeros_for_unknown_ids(store, mp, repo):
         "sale_a", "sale_b", "sale_r", "sale_x"]
 
 
+def test_recent_retirements_newest_first_per_version_with_the_total_and_evidence(
+        store, mp, repo, db):
+    """Admin lifecycle page (#380): per version the latest retirements, newest
+    first, capped, with the version total; the removing commit and successor
+    come along; deleted repos' history counts; present rows never appear."""
+    pid_other = _profile(db, "mp_old", V_OTHER)
+    other = _repo(db, pid_other, "oldaddons", branch=V_OTHER)
+    _observe(store, mp, repo, "h1", ["test_pylint", "sale_r1", "sale_r2", "sale_live"])
+    _observe(store, mp, other, "h1", ["legacy_mod", "still_here"],
+             profile="mp_old", version=V_OTHER)
+    store.mark_retire_pending(repo, ["test_pylint"], evidence={"test_pylint": mp.RetireEvidence(
+        sha="0240c6b77f", subject="[REN] test_pylint -> test_viin_pylint")})
+    store.commit_retired(repo, "test_pylint", head_sha="h2", successor=mp.Successor(
+        names=("test_viin_pylint",), source="git_rename"))
+    for name in ("sale_r1", "sale_r2"):
+        store.commit_retired(repo, name, head_sha="h2")
+    store.commit_retired(other, "legacy_mod", head_sha="h2")
+    store.mark_repo_removed(other)
+    with db.cursor() as cur:
+        cur.execute("DELETE FROM repos WHERE id = %s", (other,))
+        for name, day in (("sale_r1", "2026-10-01"), ("test_pylint", "2026-10-03"),
+                          ("sale_r2", "2026-10-02")):
+            cur.execute("UPDATE module_presence SET state_changed_at = %s "
+                        "WHERE repo_id = %s AND name = %s", (day, repo, name))
+
+    got = store.recent_retirements(per_version=2)
+
+    assert set(got) == {V, V_OTHER}, "a version with no retirement is not listed"
+    assert got[V]["total"] == 3
+    assert [r["name"] for r in got[V]["rows"]] == ["test_pylint", "sale_r2"]
+    newest = got[V]["rows"][0]
+    assert (newest["removing_commit_sha"], newest["removing_commit_subject"]) == (
+        "0240c6b77f", "[REN] test_pylint -> test_viin_pylint")
+    assert (newest["successor_names"], newest["successor_source"]) == (
+        ["test_viin_pylint"], "git_rename")
+    assert (newest["repo_basename"], newest["profile_name"], newest["state_changed_sha"]) == (
+        "tvtmaaddons", "mp_p", "h2")
+    assert [(r["name"], r["repo_id"]) for r in got[V_OTHER]["rows"]] == [("legacy_mod", None)]
+    assert got[V_OTHER]["total"] == 1, "a pending (not retired) row is not a retirement"
+
+    assert store.recent_retirements(per_version=0) == {
+        V: {"total": 3, "rows": []}, V_OTHER: {"total": 1, "rows": []}}
+
+
 # ---------------------------------------------------------------------------
 # Rule 10 - per-version lock (H2b)
 # ---------------------------------------------------------------------------

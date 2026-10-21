@@ -496,6 +496,8 @@ class TestAuditCoverageRegression:
         ("POST",  "/api/admin/users/{user_id}/reset-password-link",    "user.reset_password_link"),
         # Admin plans (ADR-0039 — Phase 2 stub still audited per ADR-0021)
         ("POST",  "/api/admin/plans",                                  "plan.create_attempt"),
+        # Module lifecycle page: starts a dry-run audit child process (#380)
+        ("POST",  "/api/admin/lifecycle/audit/{version}",              "lifecycle.audit_run"),
     ]
 
     def _has_audit_action(self, endpoint_func) -> bool:
@@ -524,8 +526,9 @@ class TestAuditCoverageRegression:
         from fastapi.routing import APIRoute
 
         from src.web_ui.auth import require_admin, require_admin_with_fresh_mfa
+        from src.web_ui.routes.admin_lifecycle import require_global_admin
 
-        _ADMIN_DEPS = {require_admin, require_admin_with_fresh_mfa}
+        _ADMIN_DEPS = {require_admin, require_admin_with_fresh_mfa, require_global_admin}
         _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 
         app = create_app()

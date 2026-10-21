@@ -940,7 +940,9 @@ Rollback 0006 xóa đúng các successor `git_merge` (row lịch sử giữ nguy
 mục "Module lifecycle ledger"): `RETIRE_LOCK_WAIT_SECONDS` (900s, chờ lock `retire:<v>`),
 `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` (60 module/repo/lượt re-parse bootstrap cho module nhiều
 repo cùng ship; 0 = tắt), `LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS` (120s mỗi query của audit),
-`WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS` (20s, Web UI delete/rename; hết giờ -> HTTP 409, không đổi gì).
+`WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS` (20s, Web UI delete/rename; hết giờ -> HTTP 409, không đổi gì),
+`WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS` (600s, trang `/admin/lifecycle` dùng lại báo cáo audit của
+một version) và `WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS` (1800s, giết tiến trình audit con quá hạn).
 Đặt qua `.env` (unit nạp bằng `EnvironmentFile=`).
 
 > **Alternative — cron.d** (CHỈ khi `odoo-semantic.conf` đã chứa `pg_dsn` + neo4j creds, vì cron

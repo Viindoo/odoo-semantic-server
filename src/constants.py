@@ -549,6 +549,26 @@ WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS: float = float(
     os.getenv("WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS", "20")
 )
 
+# WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS: how long the admin lifecycle page
+# (/admin/lifecycle) reuses the dry-run audit of one Odoo version before a page
+# load runs it again. The audit reads every checkout of the version, git and the
+# graph (seconds to minutes); the state it reports changes only when an index
+# run lands, so a short reuse window keeps page loads cheap without hiding a
+# run's outcome for long. "Run again" on the page ignores it. Override via
+# WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS.
+WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS: float = float(
+    os.getenv("WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS", "600")
+)
+
+# WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS: hard bound of one page-triggered audit
+# (a ``lifecycle-audit --all --version <v> --json`` child process). Past it the
+# child is killed and the page shows the timeout; each graph read inside is
+# also bounded by LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS. Override via
+# WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS.
+WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS: float = float(
+    os.getenv("WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS", "1800")
+)
+
 # INDEXER_JOB_QUEUED_TTL_SECONDS: age after which the Web UI start-up sweep
 # (JobStore.mark_dead_jobs) marks a 'queued' indexer job that never started
 # (started_at NULL) as 'error', whatever its pid: a live child reports

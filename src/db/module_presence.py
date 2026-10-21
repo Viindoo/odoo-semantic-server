@@ -1607,3 +1607,58 @@ class ModulePresenceStore:
         for r in rows:
             out[r["repo_id"]] = {k: int(r[k]) for k in out[r["repo_id"]]}
         return out
+
+    def recent_retirements(
+        self, *, per_version: int, conn: PgConn | None = None,
+    ) -> dict[str, dict]:
+        """The latest retirements of each Odoo version (admin lifecycle page).
+
+        Returns ``{odoo_version: {"total": n, "rows": [...]}}``: ``total`` is
+        the number of retired rows at the version, ``rows`` at most
+        *per_version* of them, newest first (``state_changed_at`` DESC, then
+        ``id`` DESC). Rows of deleted repos (``repo_id`` NULL) are included:
+        retired rows are history. Each row carries the repo identity,
+        ``retire_reason``, ``state_changed_sha`` / ``state_changed_at``, the
+        removing commit and the successor columns.
+
+        Unscoped (every profile), so only a global admin may see the result.
+        ``app.allowed_profiles`` is ``'*'`` for the read, so the answer does
+        not depend on whether the session's role bypasses row-level security.
+        """
+        limit = max(int(per_version), 0)
+        with self._conn(conn) as c, self._tx(c):
+            with c.cursor() as cur:
+                cur.execute("SET LOCAL app.allowed_profiles = '*'")
+            rows = self._fetch_all(
+                c,
+                """
+                SELECT * FROM (
+                    SELECT mp.id, mp.repo_id, mp.repo_basename, mp.repo_url,
+                           mp.repo_branch, mp.profile_name, mp.odoo_version, mp.name,
+                           mp.path, mp.retire_reason, mp.state_changed_sha,
+                           mp.state_changed_at, mp.removing_commit_sha,
+                           mp.removing_commit_date, mp.removing_commit_subject,
+                           mp.successor_names, mp.successor_source,
+                           count(*) OVER (PARTITION BY mp.odoo_version) AS version_total,
+                           row_number() OVER (
+                               PARTITION BY mp.odoo_version
+                               ORDER BY mp.state_changed_at DESC NULLS LAST, mp.id DESC
+                           ) AS rn
+                    FROM module_presence mp
+                    WHERE mp.state = 'retired'
+                ) ranked
+                WHERE rn <= greatest(%s, 1)
+                ORDER BY odoo_version, rn
+                """,
+                (limit,),
+            )
+        out: dict[str, dict] = {}
+        for r in rows:
+            rank = r.pop("rn")
+            block = out.setdefault(
+                r["odoo_version"], {"total": int(r["version_total"]), "rows": []},
+            )
+            r.pop("version_total")
+            if rank <= limit:
+                block["rows"].append(r)
+        return out

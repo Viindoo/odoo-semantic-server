@@ -1,0 +1,48 @@
+---
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Module lifecycle page - SSR (#380, ADR-0056 / ADR-0057). Read-only visibility
+// of what the index run decided from git evidence; no approval controls.
+// Middleware redirects non-admins away from /admin/*; the API answers 403 too.
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import LifecycleIsland from './_lifecycle-island';
+import { FASTAPI_BASE } from '../../lib/fastapi';
+import type { LifecycleOverview } from '../../lib/lifecycle';
+
+const cookieHeader = Astro.request.headers.get('cookie') ?? '';
+
+let overview: LifecycleOverview | null = null;
+let fetchError: string | null = null;
+
+try {
+  const res = await fetch(`${FASTAPI_BASE}/api/admin/lifecycle`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (res.ok) {
+    overview = (await res.json()) as LifecycleOverview;
+  } else if (res.status === 403) {
+    return Astro.redirect('/admin?error=admin_required');
+  } else {
+    fetchError = `API error ${res.status}`;
+  }
+} catch {
+  fetchError = 'Could not connect to API server.';
+}
+---
+
+<AdminLayout title="Module Lifecycle - Admin">
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Module Lifecycle</h1>
+    <p class="text-sm text-gray-500 mt-1">
+      Per repository and per Odoo version: what the index run retired, kept and will remove,
+      straight from git.
+    </p>
+  </div>
+
+  {fetchError && (
+    <div data-testid="lifecycle-error" class="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+      {fetchError}
+    </div>
+  )}
+
+  {overview && <LifecycleIsland client:load initial={overview} />}
+</AdminLayout>

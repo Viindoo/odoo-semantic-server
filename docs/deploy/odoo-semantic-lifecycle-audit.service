@@ -24,10 +24,11 @@
 # Exit codes: 0 = no finding; 4 = at least one finding (the unit fails, so
 # OnFailure=osm-alert@%n fires); 1 = crash (Neo4j / Postgres unreachable,
 # migration 0003 missing). Read the JSON report appended to the log below
-# (schema osm.lifecycle-audit/3; "findings" holds the counts per category) or
+# (schema osm.lifecycle-audit/5; "findings" holds the counts per category) or
 # re-run by hand in text form:
 #   sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
 #     -m src.indexer lifecycle-audit --all
+# The same report per version, read-only: Web UI /admin/lifecycle.
 # How to act on each finding: deploy.md s3.6 and the lifecycle runbook.
 #
 # No FERNET_KEY: the audit neither fetches nor decrypts anything. It runs as

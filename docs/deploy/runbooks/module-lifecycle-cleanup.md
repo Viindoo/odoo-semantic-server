@@ -393,6 +393,22 @@ Exit 4 from the unit = the audit found drift (alert via `osm-alert@`); without
 `--fail-on-findings` the audit always exits 0 on findings. The JSON report is in
 `/var/log/odoo-semantic/odoo-semantic-lifecycle-audit.log`.
 
+## Where to look afterwards: the admin Module Lifecycle page
+
+Web UI `/admin/lifecycle` (global admins, sidebar "Module Lifecycle") shows the same data
+without a shell, read-only - there is nothing to approve on it (ADR-0057):
+
+- per repository: ledger counts, indexed HEAD vs ledger HEAD (`head_sha` vs
+  `presence_head_sha`, the step 6 `synced` check), `lifecycle_attention`, clone state and a
+  missing checkout (the `unavailable_repos` case);
+- per Odoo version: the latest retirements with the removing commit and the successor, and,
+  when the version is opened, its `lifecycle-audit --all --version <v> --json` report (parser
+  gaps, unproven drops, kept orphans, `shared_parse_backlog`, what the next run removes). The
+  Web UI runs that audit as a child process, one at a time, reuses a report for
+  `WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS` (600) and kills a run past
+  `WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS` (1800); "Run again" forces a fresh one. The weekly
+  timer and the CLI above stay the alerting path; the page is for looking.
+
 ## Development databases only: migration 0003 was edited before release
 
 `0003_module_presence` was changed several times on the development branch before 0.19.0 was
