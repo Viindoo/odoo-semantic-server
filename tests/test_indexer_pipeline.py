@@ -110,21 +110,38 @@ def test_pipeline_index_all_iterates_every_profile(
     assert summary["profiles_failed"] == []
 
 
-def test_index_all_continues_after_profile_failure(pg_conn, clean_pg, neo4j_driver):
+def test_index_all_continues_after_profile_failure(
+    pg_conn, clean_pg, neo4j_driver, tmp_path, monkeypatch,
+):
     """index_all continues with remaining profiles if one fails, reports failures.
 
     Updated for F39: the old ``profiles_ok >= 1`` held only because a profile
     with no repo (empty_prof, the seeded roots) counted as indexed ok. Such a
     profile is now reported apart in ``profiles_empty``, neither ok nor failed,
-    so no profile here is ok."""
+    so no profile here is ok.
+
+    Updated for #383 item 2: a repo with no checkout is no longer a failure
+    (it is cloned, or reported in ``unavailable_repos``), so the failure is a
+    repo whose indexing raises."""
+    from src.indexer import pipeline as pipeline_mod
     from src.indexer.pipeline import index_all
 
     run_migrations(clean_pg)
 
-    # Profile 1: bad path — triggers FileNotFoundError from _index_repo()
     pid1 = repo_store().add_profile(name="bad_prof", odoo_version=TEST_VERSION, description="")
-    repo_store().add_repo(profile_id=pid1, url="x", branch="b",
-             local_path="/nonexistent/__bad__/path")
+    # Profile 1: a repo whose indexing crashes.
+    bad_dir = tmp_path / "bad"
+    bad_dir.mkdir()
+    bad_id = repo_store().add_repo(profile_id=pid1, url="x", branch="b",
+                                   local_path=str(bad_dir))
+    real_index_repo = pipeline_mod._index_repo
+
+    def crash_bad_repo(repo, *args, **kwargs):
+        if repo["id"] == bad_id:
+            raise RuntimeError("parser crashed")
+        return real_index_repo(repo, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline_mod, "_index_repo", crash_bad_repo)
 
     # Profile 2: no repos — returns {modules:0} without error
     repo_store().add_profile(name="empty_prof", odoo_version=TEST_VERSION, description="")

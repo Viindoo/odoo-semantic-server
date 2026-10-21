@@ -223,6 +223,12 @@ silent. Each rule below is protected by a behaviour test.
   identity (labels, name, model, xmlid, qualified name; DELEGATES_TO also `via_field`):
   `module_stale_children` returns `twin`. A USES_CORE_SYMBOL edge whose CoreSymbol is no
   longer `deprecated` (the only status it is written to) is `superseded` too.
+- **R7 - Clones never replace an operator's checkout.** The nightly retry clones a `manual`
+  row only when its `local_path` is the clone directory OSM manages (a Web UI registration);
+  a `manual` row registered by path whose directory is missing is reported unavailable. A
+  second lock keyed by the resolved clone directory serializes repos whose URLs share a slug,
+  and a clone directory holding another origin is never refreshed or indexed for a repo.
+
 - **R8 - A moved module's old-copy files are judged, not kept for ever.** Every parser
   reads a module's files from under its own directory, so a file-keyed child (Stylesheet,
   JsTestSuite, JSPatch, LintViolation, the own-file check of a TestClass / TestMethod twin)

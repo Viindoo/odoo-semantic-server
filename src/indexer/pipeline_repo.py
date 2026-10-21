@@ -274,6 +274,118 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
         "Repo %s: pre-scan refresh (fetch + reset --hard origin/%s) OK",
         url, branch,
     )
+class RepoCheckoutUnavailable(FileNotFoundError):
+    """A registered repo has no checkout on disk and this run could not create it.
+
+    ``cause`` is one line for the operator (the clone error, or why no clone
+    was attempted). ``busy``: another worker holds the repo's git lock (a
+    clone is running right now) - nothing is wrong, the repo is simply not
+    indexed this run. ``index_profile`` reports it without a traceback: a
+    WARNING line, ``repos.lifecycle_attention`` and the run summary's
+    ``unavailable_repos`` (CLI exit 3); a busy repo only gets an INFO line.
+    """
+
+    def __init__(self, repo: dict, cause: str, *, busy: bool = False) -> None:
+        self.repo_id = repo.get("id")
+        self.url = repo.get("url", repo.get("local_path"))
+        self.local_path = repo.get("local_path")
+        self.cause = cause
+        self.busy = busy
+        super().__init__(f"local_path does not exist: {self.local_path!r}; {cause}")
+
+
+def _ensure_repo_checkout(
+    repo: dict, pg_conn, *, refresh: bool, profile_name: str | None,
+) -> None:
+    """Give *repo* a checkout before it is indexed (issue #383 item 2).
+
+    A repo whose ``local_path`` is a directory is left alone (the pre-scan
+    refresh fetches it). Otherwise, when its ``clone_status`` is one a clone
+    is retried for (``clone_ops.CLONE_RETRY_STATUSES``: never cloned, a job
+    that died mid-clone, a failed clone), the clone is tried ONCE per run
+    through the cloner's own core (``clone_ops.ensure_checkout``: same
+    per-repo advisory lock on the run's connection plus the clone-directory
+    lock, same SSH key handling and pinned host keys, same ``clone_status``
+    lifecycle). On success ``repo['local_path']`` is the new checkout and the
+    run indexes it.
+
+    Raises :class:`RepoCheckoutUnavailable` when the checkout still does not
+    exist: the clone failed, another worker holds a lock (``busy``), no
+    clone was attempted (``--no-fetch`` keeps the run offline; no database
+    connection to lock and record on). A checkout the operator chose is
+    never replaced behind their back - a missing mount must not be silently
+    replaced by fresh clones: a ``cloned`` row whose directory vanished, and
+    a ``manual`` row whose ``local_path`` is not the clone directory OSM
+    manages (registered by path, e.g. ``apply-preset --base-dir`` /
+    ``--repo-map``), are reported unavailable, not cloned. A ``manual`` row
+    at the managed clone directory (a Web UI registration that was never
+    cloned) is cloned there.
+    """
+    from src import clone_ops
+    from src.indexer import pipeline as _pipeline
+
+    local_path = repo.get("local_path") or ""
+    if local_path and Path(local_path).is_dir():
+        foreign = clone_ops.foreign_clone_origin(
+            local_path, repo.get("url") or "", profile_name,
+        )
+        if foreign:
+            # Two repos whose URLs end in the same slug share the managed
+            # clone directory: this one would index the other's code.
+            raise RepoCheckoutUnavailable(
+                repo,
+                f"the clone directory {local_path} holds a clone of {foreign}, not "
+                f"{repo.get('url')}; register one of the two repos under another "
+                "profile or remove the stale directory",
+            )
+        return
+    status = repo.get("clone_status") or "manual"
+    where = local_path or "(no local_path)"
+    if status not in clone_ops.CLONE_RETRY_STATUSES:
+        raise RepoCheckoutUnavailable(
+            repo,
+            f"no checkout at {where} although clone_status is {status!r}; not re-cloned "
+            "automatically (check the disk, then clone the repo again from the Web UI)",
+        )
+    if not refresh:
+        raise RepoCheckoutUnavailable(
+            repo, f"no checkout at {where}; clone not attempted (--no-fetch)",
+        )
+    if pg_conn is None or not profile_name:
+        raise RepoCheckoutUnavailable(
+            repo, f"no checkout at {where}; clone not attempted (no database connection)",
+        )
+    if status == "manual" and not clone_ops.is_managed_clone_dir(
+        local_path, profile_name, repo.get("url") or "",
+    ):
+        raise RepoCheckoutUnavailable(
+            repo,
+            f"no checkout at {where}, a path registered by hand (clone_status 'manual'); "
+            "not cloned automatically - check the disk or mount, or clone the repo "
+            "from the Web UI",
+        )
+    _logger.info(
+        "Repo %s: no checkout at %s (clone_status %s) - cloning it now",
+        repo.get("url"), where, status,
+    )
+    outcome = clone_ops.ensure_checkout(
+        repo, profile_name=profile_name,
+        lock=lambda repo_id: _pipeline._repo_git_lock(pg_conn, repo_id),
+        dir_lock=lambda target: _pipeline._checkout_dir_lock(pg_conn, target),
+    )
+    if outcome.outcome == clone_ops.OUTCOME_BUSY:
+        raise RepoCheckoutUnavailable(
+            repo, "another git operation holds the repo lock (a clone is running)",
+            busy=True,
+        )
+    if not outcome.ok:
+        raise RepoCheckoutUnavailable(repo, f"clone failed: {outcome.error}")
+    repo["local_path"] = str(outcome.target_dir)
+    repo["clone_status"] = "cloned"
+    _logger.info(
+        "Repo %s: checkout ready at %s (%s; clone_status %s -> cloned)",
+        repo.get("url"), outcome.target_dir, outcome.outcome, status,
+    )
 
 
 
@@ -1906,8 +2018,11 @@ def _index_repo(
     odoo_version: str = repo["odoo_version"]
     url = repo.get("url", local_path)
 
-    if not Path(local_path).is_dir():
-        raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
+    # A repo whose first clone failed (or never ran) is cloned here, once per
+    # run; one that still has no checkout raises RepoCheckoutUnavailable,
+    # which index_profile reports without a traceback (issue #383 item 2).
+    _ensure_repo_checkout(repo, pg_conn, refresh=refresh, profile_name=profile_name)
+    local_path = repo["local_path"]
 
     # Resolve the RNG directory for version-exact RelaxNG validation (WI-E rework).
     # Prefer the RNG dir within THIS repo's local_path (covers the main Odoo core

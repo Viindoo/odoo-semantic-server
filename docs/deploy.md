@@ -871,10 +871,12 @@ psql "$PG_DSN" -c "SELECT id, url, branch, lifecycle_attention_at, lifecycle_att
 
 **Exit 1 (một repo hoặc profile index lỗi)** vượt exit 3: các repo còn lại vẫn được index và
 reconcile, các dòng `Lifecycle needs attention (exit 1):` (nếu có) là kết quả vòng đời của chúng,
-xử lý như exit 3. Repo đăng ký mà không có checkout (`local_path does not exist`) làm mọi lượt
-chạy exit 1 và giữ orphan của profile nó cùng children module-less của cả version cho tới khi
-clone lại (`python -m src.cloner --repo-id <id>` qua `osm-fernet-run`) hoặc gỡ đăng ký repo -
-xem bước 0c của runbook rollout.
+xử lý như exit 3. Repo đăng ký mà không có checkout KHÔNG còn là exit 1 (issue #383 item 2): nếu
+clone chưa từng thành công (`clone_status` pending / error, hoặc manual tại thư mục clone OSM quản
+lý) lượt chạy clone nó một lần
+(cùng advisory lock, SSH key, `known_hosts` như cloner) rồi index; nếu vẫn lỗi thì một dòng
+WARNING, `unavailable_repos` + `lifecycle_attention`, exit 3, không traceback. Cho tới khi có
+checkout, repo đó vẫn giữ orphan của profile nó cùng children module-less của cả version (an toàn).
 
 Không có gì bị xóa trong mọi trường hợp trên: dữ liệu được giữ lại cho tới khi lượt chạy sạch
 kế tiếp (hoặc lượt `--allow-mass-retire` có người quyết) xử lý.

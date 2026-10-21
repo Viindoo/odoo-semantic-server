@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Background clone job invoked by web UI.
 
-Lifecycle (per ADR-0008 D6):
-    set_clone_status('pending') → clone_repo/refresh_repo → set_clone_status('cloned')
-                                  └→ on failure → set_clone_status('error', msg)
+Lifecycle (per ADR-0008 D6), implemented once in ``src.clone_ops.ensure_checkout``
+(the nightly indexer retries a failed first clone through the same function,
+issue #383 item 2):
+    lock -> set_clone_status('pending') -> clone_repo/refresh_repo -> set_clone_status('cloned')
+                                          (on failure -> set_clone_status('error', msg))
 
 Mutating git ops run under a per-repo Postgres advisory lock (ADR-0035 D2) so
 concurrent jobs for the same repo serialize. If the target is already a clone,
@@ -21,7 +23,8 @@ hosts are rejected — add their key to PINNED_KNOWN_HOSTS in git_utils.py.
 
 Exit code:
     0 = success (cloned)
-    1 = failure (clone_status='error', error_msg captured)
+    1 = failure (clone_status='error', error_msg captured), or another worker
+        holds the repo lock (nothing written; the holder records its outcome)
     2 = misconfiguration (repo not found, ssh key missing, etc.)
 """
 import argparse
@@ -29,9 +32,7 @@ import logging
 import sys
 from contextlib import contextmanager
 
-from src import config
-from src.git_utils import clone_repo, default_clone_dir, is_ssh_url, refresh_repo
-from src.ssh_key_resolve import SshKeyUnavailable, resolve_ssh_key_pem
+from src import clone_ops, config
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +42,25 @@ def _repo_clone_lock(repo_id: int):
     """Hold the per-repo Postgres advisory lock for a clone/refresh (ADR-0035 D2).
 
     Checks out a dedicated pooled connection (session-scoped advisory lock) and
-    acquires the repo lock; raises RuntimeError if another worker is already
-    mutating the same repo. Pipeline imports are deferred so the cloner stays
-    importable without pulling in the neo4j-heavy indexer at module load.
+    acquires the repo lock; raises ``clone_ops.RepoGitLockBusy`` (a
+    RuntimeError) if another worker is already mutating the same repo.
     """
+    from src.clone_ops import repo_git_lock
     from src.db.pg import get_pool
-    from src.indexer.pipeline import _repo_git_lock
     with get_pool().checkout() as conn:
-        with _repo_git_lock(conn, repo_id):
+        with repo_git_lock(conn, repo_id):
+            yield
+
+
+@contextmanager
+def _clone_dir_lock(target_dir):
+    """Hold the clone-directory advisory lock (two repos whose URLs end in the
+    same slug share a clone directory); raises ``clone_ops.RepoGitLockBusy``
+    when another worker holds it."""
+    from src.clone_ops import checkout_dir_lock
+    from src.db.pg import get_pool
+    with get_pool().checkout() as conn:
+        with checkout_dir_lock(conn, target_dir):
             yield
 
 
@@ -92,58 +104,20 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("repo id=%s not found", args.repo_id)
         return 2
 
-    url: str = repo["url"]
-    branch: str = repo["branch"]
-    profile_name: str = repo["profile_name"]
-    ssh_key_id: int | None = repo.get("ssh_key_id")
-
-    # Validate SSH URL requirements BEFORE setting pending (misconfiguration = exit 2,
-    # not a transient error that should leave the row in 'pending').
-    if is_ssh_url(url) and ssh_key_id is None:
-        logger.error(
-            "SSH URL %s but no ssh_key_id set on repo id=%s", url, args.repo_id
-        )
-        repo_store().set_clone_status(args.repo_id, "error", error_msg="SSH URL but no ssh_key_id")
+    result = clone_ops.ensure_checkout(
+        repo, profile_name=repo["profile_name"], lock=_repo_clone_lock,
+        dir_lock=_clone_dir_lock,
+    )
+    if result.outcome == clone_ops.OUTCOME_MISCONFIGURED:
+        logger.error("repo id=%s misconfigured: %s", args.repo_id, result.error)
         return 2
-
-    # Mark pending as the FIRST DB write — ensures that any subsequent failure
-    # (FERNET decrypt, key lookup, network) is caught by the outer except block
-    # and transitions the row to 'error' rather than leaving it stuck in 'manual'.
-    repo_store().set_clone_status(args.repo_id, "pending")
-
-    target_dir = default_clone_dir(profile_name, url)
-
-    # Lifecycle: pending → clone → cloned / error
-    try:
-        # Resolve the SSH private key via the shared SSOT (src.ssh_key_resolve):
-        # HTTPS -> None; SSH + usable key -> decrypted PEM; SSH + missing key row ->
-        # SshKeyUnavailable (the ssh_key_id-None case is already handled by the
-        # pre-try gate above that returns exit 2). FERNET/decrypt errors propagate.
-        try:
-            private_key_pem: bytes | None = resolve_ssh_key_pem(repo)
-        except SshKeyUnavailable as e:
-            # Key row vanished between registration and clone -> treat as an error
-            # (same outcome as the old ValueError("ssh_key_id=... not found")).
-            raise ValueError(str(e)) from e
-
-        # ADR-0035 D2: serialize mutating git ops on this repo behind a
-        # per-repo Postgres advisory lock so two concurrent clone jobs for the
-        # same repo never race on .git/index.lock. ADR-0035 D4: if the repo is
-        # already cloned, refresh in place (fetch + reset --hard) instead of
-        # failing on a non-empty target dir — makes re-clone idempotent.
-        with _repo_clone_lock(args.repo_id):
-            if (target_dir / ".git").exists():
-                refresh_repo(target_dir, branch, private_key_pem=private_key_pem)
-            else:
-                clone_repo(url, branch, target_dir, private_key_pem=private_key_pem)
-    except Exception as e:
-        logger.exception("clone failed for repo id=%s", args.repo_id)
-        repo_store().set_clone_status(args.repo_id, "error", error_msg=str(e)[:500])
+    if not result.ok:
+        logger.error("clone failed for repo id=%s: %s", args.repo_id, result.error)
         return 1
-
-    repo_store().update_repo_local_path(args.repo_id, str(target_dir))
-    repo_store().set_clone_status(args.repo_id, "cloned")
-    logger.info("clone succeeded: repo id=%s → %s", args.repo_id, target_dir)
+    logger.info(
+        "clone succeeded (%s): repo id=%s -> %s",
+        result.outcome, args.repo_id, result.target_dir,
+    )
     return 0
 
 

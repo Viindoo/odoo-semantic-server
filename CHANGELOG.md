@@ -47,6 +47,17 @@ All notable changes to Odoo Semantic MCP are documented here.
   (`viin_freight_mixed_container_patch1@17.0` `package_type_id`, `viin_ai@17.0`
   `_get_sensitive_header_keys` moved to the request-log mixin), and a declaration left only in
   a comment of a parseable file no longer keeps it.
+- **A repo whose first clone failed is cloned by the next index run (#383 item 2).** Repo 388
+  (themes.git 19.0) was registered before its branch existed; from 2026-08-07 to 09-25 every
+  nightly run raised `FileNotFoundError` for it before the pre-scan fetch, logged a traceback
+  and exited 1, and nothing retried the clone. `_index_repo` now clones a repo without a
+  checkout whose `clone_status` is `manual` / `pending` / `error` once per run through the
+  cloner's own core (new leaf `src/clone_ops.py`: same per-repo advisory lock, SSH key /
+  FERNET handling, pinned `known_hosts`, `StrictHostKeyChecking=yes`, `clone_status`
+  lifecycle), then indexes it. A repo that still has none is one WARNING line,
+  `lifecycle_attention`, `unavailable_repos` in the run summary and exit 3 (no traceback);
+  the other repos are indexed. `--no-fetch` never clones; a `cloned` row whose directory
+  vanished is reported, not re-cloned.
 - **A QWeb edge to a record-form view is judged by the record id the extender names:**
   `module_stale_children` reads back the end node's `record_xmlid`, so a stale EXTENDS_TMPL /
   USES_TEMPLATE edge whose source still says `inherit_id ref="<record id>"` is kept.
@@ -69,6 +80,10 @@ All notable changes to Odoo Semantic MCP are documented here.
   edge to a CoreSymbol no longer `deprecated` too.
 - The parser no longer indexes a class without `_name` under its SECOND parent when
   `_inherit[0]` is an unresolvable constant.
+- The nightly clone retry never replaces an operator's checkout: a `manual` row is cloned
+  only at the clone directory OSM manages (else `unavailable_repos`); a clone-directory lock
+  serializes repos whose URLs share a slug, and a directory holding another origin is never
+  refreshed or indexed for a repo.
 - A module moved from a repo that nested it at another path (`addons/<m>` there, `<m>`
   here) no longer keeps its old copy's file-keyed children (Stylesheet, JsTestSuite,
   JSPatch, LintViolation, test-class twins) for ever as a parser gap beside the new copy,
@@ -84,6 +99,16 @@ All notable changes to Odoo Semantic MCP are documented here.
 - `lifecycle-audit` JSON schema `osm.lifecycle-audit/4`: finding and repo key `held_prunes`
   renamed `parser_gaps` (rows: `kept`, `total`, `rels_kept`, `rels_total`, `sample`, `reason`,
   `reevaluated_next_run`).
+- Exit 3 now also covers a repo with no checkout the run could clone (`unavailable_repos`),
+  a graph that lost Module nodes of present modules (`embedding_sweep:graph_unhealthy`), the
+  same repo's pre-scan fetch failing two runs in a row (`stale_repos`), the fetch failing for
+  every repo of the run (`outages: fetch_outage`) and the embedder down all run (`outages:
+  embedder_down`); it no longer covers a mass drop, a mass orphan sweep, a shared-module mass
+  prune, a parser gap or an unproven drop.
+- The per-repo git lock (`_repo_lock_id` / `_repo_git_lock`) moved to `src/clone_ops.py`
+  (re-exported by `src.indexer.pipeline`); contention raises `RepoGitLockBusy`, a
+  `RuntimeError`. A cloner that finds the lock held exits 1 without overwriting the holder's
+  `clone_status`.
 - Writer API: `module_stale_children`, `prune_module_children(only_ids=, only_rel_ids=)`,
   `record_module_parser_gap` / `clear_module_parser_gap` / `parser_gap_modules` replace the
   soft-gate hold records (a legacy `prune_held_*` record is cleared by the next prune).

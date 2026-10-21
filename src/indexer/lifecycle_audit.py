@@ -324,7 +324,8 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     if not local_path or not repo_path.is_dir():
         entry["next_run"] = "not_cloned"
         entry["attention"].append(
-            "no checkout on disk: the index run fails this repo, nothing of it is "
+            "succeeded (clone_status pending / error, or manual at the clone directory "
+            "OSM manages), otherwise reports it unavailable (exit 3); nothing of it is "
             "observed"
         )
         return entry, None

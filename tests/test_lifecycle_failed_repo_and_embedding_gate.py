@@ -5,17 +5,21 @@ embedding delete is held by the mass-retire gate (PR #379 review, ADR-0056).
 
 Business rules protected here:
 
-- A repo that fails to index (the real case: registered repo 388 whose clone
-  directory does not exist) never stops the other repos of its profile from
-  being reconciled: a healthy repo of that profile whose removed module was
-  retired ends the run synced (``presence_head_sha == head_sha``), in
-  ``index_all`` sequential AND parallel (``profile_workers=2``).
+- A repo that fails to index (its indexing raises) never stops the other
+  repos of its profile from being reconciled: a healthy repo of that profile
+  whose removed module was retired ends the run synced (``presence_head_sha
+  == head_sha``), in ``index_all`` sequential AND parallel
+  (``profile_workers=2``).
 - The gates tripped by a healthy repo of a failed profile stay in the run's
   lifecycle outcome and reach stderr of ``index-repo``.
 - ``index-repo --all`` exits 1 whenever a repo or profile failed, whatever
   ``--profile-workers`` is (a failed run outranks exit 3, never reads as 0/3),
   still prints the "Lifecycle needs attention" lines and marks the job error
   (``test_index_repo_marks_the_job_of_a_failed_run_as_error``).
+- A registered repo whose clone directory does not exist (repo 388) is cloned
+  by the run; when that fails it is reported (``unavailable_repos``, status
+  error, attention, exit 3, no traceback) and is no failure of its profile;
+  once the branch exists the next run clones, indexes and syncs it.
 - A registered repo with no checkout holds its profile's orphans and the
   module-less children of the version (fail-safe), but never silently: the
   unsynced repo carries attention, ``lifecycle-audit`` lists the held names in
@@ -57,6 +61,7 @@ from tests._lifecycle_repo import (
     register,
     repo_row,
     run,
+    run_git,
     write_module,
 )
 
@@ -66,8 +71,11 @@ pytestmark = [pytest.mark.postgres, pytest.mark.neo4j]
 
 
 @pytest.fixture
-def pg(clean_pg, clean_neo4j):
-    """Migrated PG (with pgvector) + clean Neo4j; the pool comes from pg_conn."""
+def pg(clean_pg, clean_neo4j, tmp_path, monkeypatch):
+    """Migrated PG (with pgvector) + clean Neo4j; the pool comes from pg_conn.
+    HOME is a temp dir: the run's clone retry (#383 item 2) clones into
+    ``~/.local/share/odoo-semantic-mcp/clones``."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     run_migrations(clean_pg)
     if not _vector_extension_available(clean_pg):
         pytest.skip("pgvector extension not installed - embeddings cannot be checked")
@@ -84,13 +92,16 @@ def _profile_id(name: str) -> int:
 
 
 def _register_missing_checkout(profile: str, parent: Path, name: str) -> int:
-    """A registered repo whose clone directory does not exist (repo 388)."""
+    """A registered repo whose clone directory does not exist (repo 388: its
+    Web UI clone failed, ``clone_status='error'``, so the run retries it)."""
     store = repo_store()
     existing = {p["name"] for p in store.list_profiles()}
     pid = _profile_id(profile) if profile in existing else store.add_profile(profile, V)
     path = parent / name
     assert not path.exists()
-    return store.add_repo(pid, f"file://{parent / f'{name}.origin.git'}", V, str(path))
+    return store.add_repo(
+        pid, f"file://{parent / f'{name}.origin.git'}", V, str(path), clone_status="error",
+    )
 
 
 def _index_all(pg_conn, workers: int) -> tuple[dict | None, BaseException | None]:
@@ -177,11 +188,16 @@ def _rows(pg_conn, modules: list[str], profile: str) -> int:
 # 7cf09e66 - a failed repo/profile keeps the healthy repos' lifecycle outcome
 # ---------------------------------------------------------------------------
 
-def _failed_profile_night(tmp_path: Path, pg_conn) -> dict:
+def _failed_profile_night(tmp_path: Path, pg_conn, monkeypatch, failure: str) -> dict:
     """Profile ``fail_99``: a healthy repo drops one module, a second healthy repo
-    drops every module (total-wipe gate), and a registered repo has no checkout.
+    drops every module (total-wipe gate), and a third repo fails. *failure*: ``crash``
+    (its indexing raises: the profile fails, exit 1) or ``no_checkout``
+    (registered without a clone directory and its clone fails - repo 388,
+    issue #383 item 2: reported, the profile does not fail, exit 3).
     Profile ``ok_99``: a healthy repo drops one module. First night indexed
-    before the missing repo was registered."""
+    before the failing repo was registered."""
+    from src.indexer import pipeline as pipeline_mod
+
     healthy = GitRepo(tmp_path, "healthy_addons")
     write_module(healthy, "healthy_keep")
     write_module(healthy, "healthy_drop")
@@ -199,7 +215,21 @@ def _failed_profile_night(tmp_path: Path, pg_conn) -> dict:
     first, exc = _index_all(pg_conn, 1)
     assert exc is None and first["profiles_failed"] == [], (exc, first)
 
-    rid_missing = _register_missing_checkout("fail_99", tmp_path, "never_cloned")
+    if failure == "crash":
+        crash = GitRepo(tmp_path, "crash_addons")
+        write_module(crash, "crash_mod")
+        crash.commit("add")
+        (rid_failing,) = register("fail_99", crash)
+        real = pipeline_mod._index_repo
+
+        def crashing(repo, *args, **kwargs):
+            if repo["id"] == rid_failing:
+                raise RuntimeError("parser crashed")
+            return real(repo, *args, **kwargs)
+
+        monkeypatch.setattr(pipeline_mod, "_index_repo", crashing)
+    else:
+        rid_failing = _register_missing_checkout("fail_99", tmp_path, "never_cloned")
     healthy.rm("healthy_drop")
     healthy.commit("[REM] healthy_drop")
     wiped.rm("wiped_one")
@@ -210,39 +240,20 @@ def _failed_profile_night(tmp_path: Path, pg_conn) -> dict:
     return {
         "healthy": healthy, "wiped": wiped, "other": other,
         "rid_healthy": rid_healthy, "rid_wiped": rid_wiped, "rid_other": rid_other,
-        "rid_missing": rid_missing,
+        "rid_failing": rid_failing,
     }
 
 
-@pytest.mark.parametrize("workers", [1, 2], ids=["sequential", "parallel"])
-def test_failed_profile_still_syncs_its_healthy_repo_and_keeps_its_gate_in_the_outcome(
-    pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db, workers,
-):
-    """Repo 388 case under ``--all``: the profile with the missing checkout fails,
-    yet its healthy repo's removed module retires AND the repo ends synced; the
-    total-wipe gate its other healthy repo tripped is in the run outcome; the
-    healthy profile is reconciled as usual."""
-    monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
-    s = _failed_profile_night(tmp_path, pg)
-
-    summary, exc = _index_all(pg, workers)
-
-    assert summary is not None, f"the failed run lost its summary: {exc!r}"
-    assert summary["profiles_failed"] == ["fail_99"], summary
-    if workers > 1:
-        assert isinstance(exc, RuntimeError), "a parallel run with a failed profile raises"
-    assert repo_row(pg, s["rid_missing"])["status"] == "error"
-
-    # The healthy repo of the failed profile: retired AND synced.
+def _assert_healthy_repos_reconciled(pg, neo4j_driver, s: dict, summary: dict) -> None:
+    # The healthy repo of the failing profile: retired AND synced.
     assert_gone(neo4j_driver, pg, "healthy_drop")
     assert ledger(pg, s["rid_healthy"], "healthy_drop")["state"] == "retired"
     assert_live(neo4j_driver, pg, "healthy_keep")
     assert _synced(pg, s["rid_healthy"], s["healthy"]), (
-        "the healthy repo of a failed profile stays unsynced: "
+        "the healthy repo of a failing profile stays unsynced: "
         f"{repo_row(pg, s['rid_healthy'])['presence_head_sha']!r} != {s['healthy'].head()!r}"
     )
-
-    # The gate tripped by the other healthy repo of the failed profile.
+    # The gate tripped by the other healthy repo of the failing profile.
     lifecycle = lc(summary)
     wiped_gates = [
         g for g in lifecycle.get("gates_tripped", [])
@@ -251,10 +262,52 @@ def test_failed_profile_still_syncs_its_healthy_repo_and_keeps_its_gate_in_the_o
     assert wiped_gates and "total_wipe" in wiped_gates[0], lifecycle.get("gates_tripped")
     assert lifecycle.get("needs_attention") is True
     assert_live(neo4j_driver, pg, "wiped_one")
-
     # The healthy profile.
     assert_gone(neo4j_driver, pg, "other_drop")
     assert _synced(pg, s["rid_other"], s["other"])
+
+
+@pytest.mark.parametrize("workers", [1, 2], ids=["sequential", "parallel"])
+def test_failed_profile_still_syncs_its_healthy_repo_and_keeps_its_gate_in_the_outcome(
+    pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db, workers,
+):
+    """A repo whose indexing crashes fails its profile under ``--all``, yet the
+    profile's healthy repo retires its removed module AND ends synced; the
+    total-wipe gate its other healthy repo tripped is in the run outcome; the
+    healthy profile is reconciled as usual."""
+    monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
+    s = _failed_profile_night(tmp_path, pg, monkeypatch, "crash")
+
+    summary, exc = _index_all(pg, workers)
+
+    assert summary is not None, f"the failed run lost its summary: {exc!r}"
+    assert summary["profiles_failed"] == ["fail_99"], summary
+    if workers > 1:
+        assert isinstance(exc, RuntimeError), "a parallel run with a failed profile raises"
+    assert repo_row(pg, s["rid_failing"])["status"] == "error"
+    _assert_healthy_repos_reconciled(pg, neo4j_driver, s, summary)
+
+
+@pytest.mark.parametrize("workers", [1, 2], ids=["sequential", "parallel"])
+def test_a_repo_without_a_checkout_is_reported_and_its_profile_still_reconciles(
+    pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db, workers,
+):
+    """Repo 388 (#383 item 2): its clone directory does not exist and the
+    run's clone retry fails. It is no failure of its profile any more: it is
+    listed in ``unavailable_repos`` (status error, attention), the run needs
+    attention (exit 3), and every other repo is indexed and reconciled."""
+    monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
+    s = _failed_profile_night(tmp_path, pg, monkeypatch, "no_checkout")
+
+    summary, exc = _index_all(pg, workers)
+
+    assert exc is None and summary["profiles_failed"] == [], (exc, summary)
+    unavailable = lc(summary).get("unavailable_repos") or []
+    assert [u for u in unavailable if u.startswith(f"repo id={s['rid_failing']} ")], unavailable
+    row = repo_row(pg, s["rid_failing"])
+    assert row["status"] == "error" and row["clone_status"] == "error", row
+    assert "checkout unavailable" in (row["lifecycle_attention"] or ""), row
+    _assert_healthy_repos_reconciled(pg, neo4j_driver, s, summary)
 
 
 @pytest.mark.parametrize("workers", ["1", "2"], ids=["sequential", "parallel"])
@@ -264,7 +317,7 @@ def test_index_repo_all_exits_1_on_a_failed_profile_and_still_prints_the_attenti
     """A failed profile is never reported as exit 0 or 3: ``index-repo --all``
     exits 1 (outranking the tripped gate's 3), prints the lifecycle attention
     lines with the gate - in both worker modes."""
-    s = _failed_profile_night(tmp_path, pg)
+    s = _failed_profile_night(tmp_path, pg, monkeypatch, "crash")
 
     code, _, err = _cli(
         monkeypatch, capsys, _ephemeral_pg_db,
@@ -281,12 +334,33 @@ def test_index_repo_all_exits_1_on_a_failed_profile_and_still_prints_the_attenti
     assert _synced(pg, s["rid_healthy"], s["healthy"])
 
 
+def test_index_repo_exits_3_without_a_traceback_for_a_repo_it_cannot_clone(
+    pg, neo4j_driver, tmp_path, monkeypatch, capsys, caplog, _ephemeral_pg_db,
+):
+    """The 2026-08-07..09-25 nights: exit 1 with a traceback every night. Now
+    exit 3 (OnFailure= still mails the admins) and one line naming the repo."""
+    s = _failed_profile_night(tmp_path, pg, monkeypatch, "no_checkout")
+    caplog.set_level("INFO")
+
+    code, _, err = _cli(monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--all")
+
+    assert code == 3, err
+    assert any(
+        x.strip().startswith(f"unavailable_repos: repo id={s['rid_failing']} ")
+        for x in err.splitlines()
+    ), err
+    assert "Traceback" not in err
+    mine = [r for r in caplog.records if f"id={s['rid_failing']} " in r.getMessage()]
+    assert mine and all(r.exc_info is None for r in mine), "no traceback for the repo"
+    assert _synced(pg, s["rid_healthy"], s["healthy"])
+
+
 def test_index_repo_marks_the_job_of_a_failed_run_as_error(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
 ):
     """The Web UI polls indexer_jobs: a run with a failed profile must leave its
     job in ``error``, never ``queued``/``running``/``done``."""
-    _failed_profile_night(tmp_path, pg)
+    _failed_profile_night(tmp_path, pg, monkeypatch, "crash")
     job_id = job_store().create_job("all")
 
     code, _, err = _cli(
@@ -300,9 +374,9 @@ def test_index_repo_marks_the_job_of_a_failed_run_as_error(
 def test_index_repo_profile_exits_1_on_a_failed_repo_and_prints_its_healthy_repos_gate(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
 ):
-    """``index-repo --profile``: the missing checkout fails the run (exit 1), the
+    """``index-repo --profile``: the crashing repo fails the run (exit 1), the
     healthy repo's tripped gate is still printed, the healthy repo is synced."""
-    s = _failed_profile_night(tmp_path, pg)
+    s = _failed_profile_night(tmp_path, pg, monkeypatch, "crash")
 
     code, _, err = _cli(
         monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--profile", "fail_99",
@@ -317,6 +391,36 @@ def test_index_repo_profile_exits_1_on_a_failed_repo_and_prints_its_healthy_repo
     assert_gone(neo4j_driver, pg, "healthy_drop")
 
 
+def test_a_failed_first_clone_is_healed_by_the_next_run(
+    pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db,
+):
+    """#383 item 2 end to end: the repo is registered before its branch exists
+    upstream (the clone fails, the run reports it); once the branch is pushed
+    the next plain run clones it under its registered clone directory, indexes
+    it and syncs it - nobody re-clones by hand."""
+    monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
+    upstream = GitRepo(tmp_path / "upstream", "themes", branch="main")
+    write_module(upstream, "theme_x")
+    upstream.commit("add theme_x")
+    store = repo_store()
+    pid = store.add_profile("themes_99", V)
+    rid = store.add_repo(pid, upstream.url, V, str(tmp_path / "not_cloned_yet"))
+    store.set_clone_status(rid, "error", error_msg="Remote branch 99.0 not found")
+
+    first = run(pg, "themes_99")
+    assert [u for u in lc(first).get("unavailable_repos") or [] if f"repo id={rid} " in u]
+    assert repo_row(pg, rid)["clone_status"] == "error"
+
+    run_git(upstream.path, "push", "-q", "origin", f"HEAD:refs/heads/{V}")
+    second = run(pg, "themes_99")
+
+    assert not lc(second).get("unavailable_repos"), lc(second)
+    row = repo_row(pg, rid)
+    assert row["clone_status"] == "cloned" and Path(row["local_path"], ".git").exists(), row
+    assert_live(neo4j_driver, pg, "theme_x")
+    assert row["presence_head_sha"] == row["head_sha"], "the cloned repo is synced"
+
+
 # ---------------------------------------------------------------------------
 # e89ae75b - a missing checkout holds the version's module-less children, loudly
 # ---------------------------------------------------------------------------
@@ -324,11 +428,12 @@ def test_index_repo_profile_exits_1_on_a_failed_repo_and_prints_its_healthy_repo
 def test_missing_checkout_holds_module_less_children_with_attention_and_an_audit_finding(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
 ):
-    """A registered repo without a clone dir: the other repo's removed module
-    still retires, the version's module-less children are kept (fail-safe), the
-    unsynced repo names the hold, and lifecycle-audit reports the held name
-    (``child_orphans_deferred``, a ``child_orphans`` finding, exit 4). After the
-    repo is cloned the next run syncs it and sweeps the children."""
+    """A registered repo without a clone dir (its clone retry fails): the other
+    repo's removed module still retires, the version's module-less children are
+    kept (fail-safe), the unsynced repo names the hold, and lifecycle-audit
+    reports the held name (``child_orphans_deferred``, a ``child_orphans``
+    finding, exit 4). After the repo is cloned the next run syncs it and sweeps
+    the children."""
     monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
     healthy = GitRepo(tmp_path, "healthy_addons")
     write_module(healthy, "healthy_keep")
@@ -343,7 +448,8 @@ def test_missing_checkout_holds_module_less_children_with_attention_and_an_audit
 
     summary, _exc = _index_all(pg, 1)
 
-    assert summary["profiles_failed"] == ["late_99"], summary
+    assert summary["profiles_failed"] == [], summary
+    assert lc(summary).get("unavailable_repos"), lc(summary)
     assert_gone(neo4j_driver, pg, "healthy_drop")
     assert children(neo4j_driver, "gone_mod") == 1, "the hold keeps the module-less child"
     attention = _attention(pg, rid_missing)

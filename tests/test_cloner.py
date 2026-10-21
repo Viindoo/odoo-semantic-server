@@ -110,9 +110,10 @@ def test_main_https_clone_success(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
-        patch("src.cloner.__main__.clone_repo") as fake_clone,
-        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+        patch("src.clone_ops.clone_repo") as fake_clone,
+        patch("src.clone_ops.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
 
@@ -141,9 +142,10 @@ def test_main_clone_failure_sets_error_status(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
-        patch("src.cloner.__main__.clone_repo", side_effect=Exception("git: timeout")),
-        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+        patch("src.clone_ops.clone_repo", side_effect=Exception("git: timeout")),
+        patch("src.clone_ops.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
 
@@ -195,14 +197,15 @@ def test_main_ssh_url_with_key_decrypts_and_clones(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.db.pg.auth_store", return_value=auth_s),
-        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+        patch("src.clone_ops.default_clone_dir", return_value=tmp_path / "cloned"),
         patch(
             "src.ssh_key_resolve.decrypt_private_key",
             return_value=b"fake-pem",
         ) as fake_decrypt,
-        patch("src.cloner.__main__.clone_repo") as fake_clone,
+        patch("src.clone_ops.clone_repo") as fake_clone,
     ):
         rc = main(["--repo-id", "2"])
 
@@ -234,6 +237,7 @@ def test_main_ssh_url_missing_key_row_returns_1():
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch("src.db.pg.auth_store", return_value=auth_s),
     ):
@@ -264,9 +268,10 @@ def test_main_lifecycle_status_transitions(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
-        patch("src.cloner.__main__.clone_repo"),
-        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+        patch("src.clone_ops.clone_repo"),
+        patch("src.clone_ops.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
 
@@ -310,12 +315,13 @@ def test_file_url_does_not_require_ssh_key(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
         patch(
-            "src.cloner.__main__.clone_repo",
+            "src.clone_ops.clone_repo",
             side_effect=Exception("not a git repo"),
         ),
-        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+        patch("src.clone_ops.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "10"])
 
@@ -335,9 +341,10 @@ def test_main_clone_runs_under_repo_lock(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock") as fake_lock,
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
-        patch("src.cloner.__main__.clone_repo"),
-        patch("src.cloner.__main__.default_clone_dir", return_value=tmp_path / "cloned"),
+        patch("src.clone_ops.clone_repo"),
+        patch("src.clone_ops.default_clone_dir", return_value=tmp_path / "cloned"),
     ):
         rc = main(["--repo-id", "1"])
 
@@ -360,10 +367,11 @@ def test_main_refreshes_when_target_already_cloned(tmp_path):
     with (
         patch("src.cloner.__main__._init_pg"),
         patch("src.cloner.__main__._repo_clone_lock"),
+        patch("src.cloner.__main__._clone_dir_lock"),
         patch("src.db.pg.repo_store", return_value=repo_s),
-        patch("src.cloner.__main__.clone_repo") as fake_clone,
-        patch("src.cloner.__main__.refresh_repo") as fake_refresh,
-        patch("src.cloner.__main__.default_clone_dir", return_value=cloned),
+        patch("src.clone_ops.clone_repo") as fake_clone,
+        patch("src.clone_ops.refresh_repo") as fake_refresh,
+        patch("src.clone_ops.default_clone_dir", return_value=cloned),
     ):
         rc = main(["--repo-id", "1"])
 

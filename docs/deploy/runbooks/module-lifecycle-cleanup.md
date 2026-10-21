@@ -87,9 +87,13 @@ if they are more than half of the version's modules (and at least 20), the sweep
 them in step 4 (exit 3) until a one-shot `--allow-mass-retire` (step 5).
 
 **0c. Registered repos without a checkout (blocks steps 4, 6 and 7).** A registered repo whose
-`local_path` is not a directory fails its index run every night (`FileNotFoundError: local_path
-does not exist`), so `index-repo` exits **1**, not 0 or 3. The run still indexes and reconciles
-every other repo, but that repo never syncs, so at its version the sweep keeps every orphan
+`local_path` is not a directory is cloned by the index run itself when its clone never succeeded
+(`clone_status` `manual` / `pending` / `error`, issue #383 item 2: same lock, SSH key and pinned
+host keys as the cloner). If that clone fails (branch missing on the remote, wrong key) - or the
+row says `cloned` but the directory is gone (never re-cloned automatically) - the run logs one
+WARNING line, lists it under `unavailable_repos`, writes `lifecycle_attention` and exits **3**
+(no traceback). The run still indexes and reconciles every other repo, but that repo never
+syncs, so at its version the sweep keeps every orphan
 Module of its profile and the children of every module-less name (attention on that repo, audit
 findings `orphan_modules` / `child_orphans`). Step 6 "findings 0" and step 7 "exit=0" cannot pass
 until it is fixed. List them:
