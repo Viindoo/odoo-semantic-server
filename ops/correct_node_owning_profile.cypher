@@ -150,7 +150,7 @@ LIMIT 50;
 // PHASE 1 — Module nodes: rewrite profile[] to the single owning profile name.
 // Batched for the prod-scale graph; the WHERE guard makes it idempotent.
 // ---------------------------------------------------------------------------
-CALL {
+CALL () {
   UNWIND $map AS row
   MATCH (m:Module {repo_id: row.repo_id})
   WHERE coalesce(m.profile, []) <> [row.profile_name]
@@ -169,7 +169,7 @@ CALL {
 // BELONGS_TO. They are handled by Phase 2b below, AFTER Models are corrected
 // here, so they propagate from the already-fixed Model profile.
 // ---------------------------------------------------------------------------
-CALL {
+CALL () {
   MATCH (child)-[:DEFINED_IN|BELONGS_TO]->(m:Module)
   WHERE coalesce(child.profile, []) <> coalesce(m.profile, [])
   SET child.profile = m.profile
@@ -185,7 +185,7 @@ CALL {
 // Idempotent: the `<>` guard makes a re-run a no-op. Restricted to Field|Method
 // labels so a future :Model→:Model BELONGS_TO (none today) can't be mis-touched.
 // ---------------------------------------------------------------------------
-CALL {
+CALL () {
   MATCH (child)-[:BELONGS_TO]->(m:Model)
   WHERE (child:Field OR child:Method)
     AND coalesce(child.profile, []) <> coalesce(m.profile, [])
