@@ -192,6 +192,27 @@ CoreSymbol node would destroy that history. A stale WRONG CoreSymbol from a same
 by a standing prune. A regression test (`test_no_prune_core_symbols_method_exists`) guards that no
 `prune_core_symbols` method is ever added to `Neo4jWriter`.
 
+## Follow-up: periodic re-sync of the curated CLI flags (issue #380 item 6)
+
+The `cli_flags` oracle existed only as a dev-box test, so upstream drift was found whenever someone
+next ran it on a machine with the checkouts. `scripts/sync_cli_flags.py --check|--write` (library:
+`src/indexer/cli_flags_sync.py`) now regenerates the GLOBAL flags of each `cli_flags_<version>.json`
+from the real `tools/config.py` with the same parser the indexer uses, and the weekly workflow
+`.github/workflows/cli-flags-resync.yml` runs it against shallow, sparse checkouts of the stable
+`odoo/odoo` branches and opens ONE pull request (never auto-merged) when anything drifted.
+
+- **Provenance (third leg of the bar).** Each file carries `_global_flags_provenance`: source repo,
+  branch, commit, file and the oracle that read it. It is rewritten only when the global data changed
+  (or was missing), so it records the source state the data was last brought in line with.
+- **Recorded reason for what has no oracle.** Per-command flags (`db`, `i18n`, `module`, `scaffold`,
+  `deploy`, `cloc`, `upgrade_code`, ...) live in `cli/*.py` argparse code the oracle never opens.
+  They stay hand-curated and are never modified by the sync; the report states their count per
+  version. Fields the oracle cannot populate (`replacement_flag_name`, `env_name`, `posix_only`) and
+  curated global flags the oracle does not find (removed upstream vs. an oracle blind spot such as
+  `PosixOnlyOption(...)`) are reported for a human, never auto-resolved.
+- **One definition of drift.** The field-by-field diff moved from the parity test into
+  `cli_flags_sync.diff_global_flags`; the test and the generator import the same function.
+
 ---
 
 ## Alternatives Considered

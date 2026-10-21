@@ -2,6 +2,14 @@
   "_curate_status": "complete",
   "_generated_at": "2026-06-20",
   "_note": "v19 source confirmed from ~/git/odoo19. Includes all subparser sub-actions (db/i18n/module) as compound command_name with space, non-subparser command flags, 10 flags[] entries below curated posix_only=true (not 7 - recounted directly against this file's own flags[] array), and tsconfig removed from commands[]. Note: real v19 odoo/tools/config.py literally wraps only 6 of those 10 in an explicit PosixOnlyOption(...) call (--workers, --limit-memory-hard, --limit-memory-hard-gevent, --limit-memory-soft-gevent, --limit-time-cpu, --limit-request); the other 4 (--limit-time-worker-cron, --limit-memory-soft, --limit-time-real, --limit-time-real-cron) are a curator judgment call, not a literal source wrapper - flagged here rather than silently asserting a false-precise count. WI-A issue #336.",
+  "_global_flags_provenance": {
+    "source_repo": "https://github.com/odoo/odoo",
+    "source_branch": "19.0",
+    "source_commit": "2d49178c1ac0cebd2dec687d9e2f5f414c587e9a",
+    "source_file": "odoo/tools/config.py",
+    "oracle": "src.indexer.parser_cli._parse_options_calls",
+    "synced_at": "2026-10-20"
+  },
   "commands": [
     {
       "name": "server",

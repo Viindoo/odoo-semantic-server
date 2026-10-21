@@ -1,0 +1,162 @@
+# .github/workflows/cli-flags-resync.yml
+# Weekly re-sync of the curated GLOBAL CLI flags (issue #380 item 6, ADR-0055).
+#
+# src/indexer/spec_data/cli_flags_<version>.json is hand-curated data whose oracle is the
+# production parser run over the real odoo/tools/config.py of that version. The dev-box
+# test tests/test_cli_flags_content_parity.py goes red when upstream changes a flag on a
+# stable branch, but only on a machine holding the checkouts - so drift used to wait for
+# whoever next ran it. This job closes the loop:
+#   1. shallow + sparse clone ONLY odoo/tools/config.py of every curated branch (8.0-19.0),
+#   2. scripts/sync_cli_flags.py --check  (exit 0 in sync / 1 drift / 2 broken input),
+#   3. on drift: --write, push ONE bot branch and open - or refresh - ONE pull request.
+#
+# Why a PR and not an issue: the fix is mechanical, so hand the reviewer the finished diff
+# (an issue would only ask a human to run the script). It is never auto-merged: flags the
+# oracle adds need hand-curation of replacement_flag_name / env_name / posix_only, and
+# per-command flags have no oracle at all (see src/indexer/cli_flags_sync.py).
+# The PR is made with the `gh` CLI over the REST API (no third-party action to pin, and
+# no GraphQL, which is broken for pull-request edits in this org). If the repository
+# forbids Actions from opening PRs, the job falls back to ONE issue per week of drift.
+#
+# Needs: Settings > Actions > General > "Allow GitHub Actions to create and approve pull
+# requests" for the PR path. PRs opened with GITHUB_TOKEN do not trigger other workflows:
+# close and reopen the PR once to run CI on it.
+# Manual trigger: gh workflow run cli-flags-resync.yml
+
+name: CLI flags re-sync
+
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"   # Mondays 03:17 UTC, off the top of the hour (GitHub's busy slot)
+  workflow_dispatch: {}
+
+concurrency:
+  group: cli-flags-resync
+  cancel-in-progress: false
+
+jobs:
+  resync:
+    # Forks cannot open PRs against the upstream data and would only burn minutes.
+    # A manual run from another branch would build the bot branch from that ref and
+    # carry its unrelated commits into the PR against the default branch: refuse it.
+    if: >-
+      github.repository == 'Viindoo/odoo-semantic-server' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      SYNC_BRANCH: automation/cli-flags-resync
+      BASE_BRANCH: ${{ github.event.repository.default_branch }}
+      CHECKOUTS: ${{ github.workspace }}/.odoo-sources
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Always the default branch, whatever ref dispatched the run.
+          ref: ${{ github.event.repository.default_branch }}
+          # The write token is handed only to the PR step below, never left in .git/config.
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.11.8"
+          enable-cache: true
+      - run: uv sync --locked
+
+      # Only the one file the oracle reads, per branch: a few MB in total instead of
+      # twelve full odoo/odoo clones. The versions come from the curated files themselves,
+      # so adding cli_flags_20.0.json needs no workflow edit.
+      - name: Fetch config.py of every curated Odoo branch
+        run: |
+          set -euo pipefail
+          echo "REPORT=${RUNNER_TEMP}/cli-flags-report.md" >> "$GITHUB_ENV"
+          mkdir -p "$CHECKOUTS"
+          for major in $(uv run python scripts/sync_cli_flags.py --print-majors); do
+            git clone --quiet --depth 1 --filter=blob:none --sparse --no-tags \
+              --branch "${major}.0" https://github.com/odoo/odoo "$CHECKOUTS/odoo${major}"
+            git -C "$CHECKOUTS/odoo${major}" sparse-checkout set --no-cone \
+              /odoo/tools/config.py /openerp/tools/config.py
+          done
+
+      - name: Check curated data against upstream
+        id: check
+        run: |
+          set +e
+          uv run python scripts/sync_cli_flags.py --check \
+            --checkouts "$CHECKOUTS" --report-file "$REPORT"
+          code=$?
+          set -e
+          echo "code=${code}" >> "$GITHUB_OUTPUT"
+          # 0 = in sync, 1 = drift (handled below); anything else is a broken input
+          # (missing branch, wrong checkout, oracle parsed nothing) and must fail loudly.
+          if [ "$code" -gt 1 ]; then exit "$code"; fi
+          if [ -f "$REPORT" ]; then cat "$REPORT" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Open or refresh the re-sync pull request
+        if: steps.check.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uv run python scripts/sync_cli_flags.py --write \
+            --checkouts "$CHECKOUTS" --report-file "$REPORT"
+          if [ -z "$(git status --porcelain -- src/indexer/spec_data)" ]; then
+            echo "check reported drift but --write changed nothing; stopping"
+            exit 1
+          fi
+          {
+            echo
+            echo "Generated by the weekly workflow \`CLI flags re-sync\` ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            echo "Not auto-merged: review the diff, hand-curate any flag the oracle added, merge."
+            echo "PRs opened by GITHUB_TOKEN do not trigger CI - close and reopen once to run it."
+          } >> "$REPORT"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          gh auth setup-git
+          git switch -C "$SYNC_BRANCH"
+          git add src/indexer/spec_data
+          git commit --quiet \
+            -m "chore(spec-data): re-sync curated global CLI flags from upstream config.py" \
+            -m "Regenerated by scripts/sync_cli_flags.py --write; provenance (repo, branch, commit) is recorded in each file. Per-command flags are untouched (no oracle, ADR-0055)."
+          # The branch is bot-owned and rebuilt from the default branch every run, so
+          # the open PR always shows the current drift and nothing else.
+          git push --force origin "$SYNC_BRANCH"
+
+          title="chore(spec-data): re-sync curated global CLI flags from upstream"
+          open_pr=$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:${SYNC_BRANCH}" --jq '.[0].number // empty')
+          if [ -n "$open_pr" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${open_pr}" \
+              -f title="$title" -F body=@"$REPORT" --silent
+            echo "refreshed PR #${open_pr}"
+          elif gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f title="$title" -f head="$SYNC_BRANCH" -f base="$BASE_BRANCH" \
+              -F body=@"$REPORT" --silent; then
+            echo "opened a new PR from ${SYNC_BRANCH}"
+          else
+            # Actions may not be allowed to open PRs here: still surface the drift, once.
+            echo "::warning::could not open a PR; filing an issue instead"
+            issue_title="Curated CLI flags drifted from upstream config.py"
+            {
+              cat "$REPORT"
+              echo
+              echo "The fix is on branch \`${SYNC_BRANCH}\`: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/${BASE_BRANCH}...${SYNC_BRANCH}"
+            } > "$RUNNER_TEMP/issue-body.md"
+            open_issue=$(gh api "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" \
+              --jq "[.[] | select(.pull_request | not) | select(.title == \"${issue_title}\")][0].number // empty")
+            if [ -n "$open_issue" ]; then
+              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/${open_issue}" \
+                -F body=@"$RUNNER_TEMP/issue-body.md" --silent
+            else
+              gh api -X POST "repos/${GITHUB_REPOSITORY}/issues" \
+                -f title="$issue_title" -F body=@"$RUNNER_TEMP/issue-body.md" --silent
+            fi
+          fi
