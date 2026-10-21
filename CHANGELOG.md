@@ -187,15 +187,16 @@ Source-truth wave: parser / writer fixes for lost INHERITS and EXTENDS_TMPL edge
   `--fail-on-findings` exit 4 (the weekly timer mailed every week about data kept correctly).
   Schema id unchanged (`/5`, not yet released).
 
-- `lifecycle-audit` JSON schema `osm.lifecycle-audit/4`: finding and repo key `held_prunes`
-  renamed `parser_gaps` (rows: `kept`, `total`, `rels_kept`, `rels_total`, `sample`, `reason`,
-  `reevaluated_next_run`).
-- `lifecycle-audit` JSON schema `osm.lifecycle-audit/5` (ADR-0057 phase 2): new finding and
-  repo key `unproven_drops`; version keys `orphan_modules[].kept_because`,
-  `child_orphans_kept`, `embedding_orphans_kept` (counted in `orphan_modules` /
-  `child_orphans` / `embedding_orphans`); `embedding_orphans_held` now means a graph missing
-  Module nodes; `shared_prunes[].outcome` is `would_prune` or `partial` (`held` is gone).
-  Every /4 key is kept.
+- `lifecycle-audit` JSON schema `osm.lifecycle-audit/3` -> `osm.lifecycle-audit/5` (the
+  intermediate `/4` of ADR-0057 phase 1 was never released):
+  - finding and repo key `held_prunes` renamed `parser_gaps` (rows: `kept`, `total`,
+    `rels_kept`, `rels_total`, `sample`, `reason`, `reevaluated_next_run`);
+  - ADR-0057 phase 2: new finding and repo key `unproven_drops`; version keys
+    `orphan_modules[].kept_because`, `child_orphans_kept`, `embedding_orphans_kept` (counted in
+    `orphan_modules` / `child_orphans` / `embedding_orphans`); `embedding_orphans_held` now
+    means a graph missing Module nodes; `shared_prunes[].outcome` is `would_prune` or
+    `partial` (`held` is gone).
+  Every other /3 key is kept.
 - `--allow-mass-retire` is an emergency bypass only: no deletion needs it any more. It also
   deletes what git cannot prove gone and lifts a held total wipe / embedding sweep; it never
   affects G-A nor the entity prune of a module one repo ships. CLI help, deploy.md s3.6, the
