@@ -33,6 +33,8 @@ from src.db.pg import repo_store
 # "src.indexer.pipeline" keep seeing them.
 _logger = logging.getLogger("src.indexer.pipeline")
 
+_UNSET = object()
+
 
 def reembed_stubs_for_profile(
     pg_conn,
@@ -47,6 +49,13 @@ def reembed_stubs_for_profile(
     write_module_embeddings for each. Idempotent: a second run is a no-op because
     write_module_embeddings uses DELETE+INSERT with ON CONFLICT DO UPDATE.
 
+    A module the embedder could not embed completely (some chunks failed even
+    after the batch retry and the per-chunk fallback) has rows again, so a
+    second run of this command no longer selects it. It is named in a
+    WARNING and in ``modules_incomplete``, and flagged ``needs_rewrite`` in
+    the lifecycle ledger (best effort) so the next index run re-parses and
+    re-embeds it, like a module of an index run with incomplete embeddings.
+
     Args:
         pg_conn:      psycopg2 connection (autocommit OK). Used to query the
                       embeddings table and call make_chunks/write_module_embeddings.
@@ -55,7 +64,10 @@ def reembed_stubs_for_profile(
                       the whole point of this command).
 
     Returns:
-        Summary dict: {modules_checked, modules_reembedded, total_embed_calls}.
+        Summary dict: {modules_checked, modules_reembedded, total_embed_calls,
+        modules_incomplete}. ``modules_reembedded`` counts the modules that got
+        at least one row; ``modules_incomplete`` lists ``<version>/<module>``
+        of those with a chunk the embedder failed.
     """
     from src.db.migrate import _vector_extension_available  # noqa: PLC0415
     from src.indexer import pipeline as _pipeline  # noqa: PLC0415
@@ -65,7 +77,8 @@ def reembed_stubs_for_profile(
         _logger.warning(
             "reembed_stubs_for_profile: pgvector extension not available — skipping"
         )
-        return {"modules_checked": 0, "modules_reembedded": 0, "total_embed_calls": 0}
+        return {"modules_checked": 0, "modules_reembedded": 0, "total_embed_calls": 0,
+                "modules_incomplete": []}
 
     # Resolve profile repos to get (odoo_version, local_path) pairs.
     repos = repo_store().get_repos_for_profile(profile_name)
@@ -73,7 +86,8 @@ def reembed_stubs_for_profile(
         _logger.warning(
             "reembed_stubs_for_profile: no repos found for profile %r", profile_name
         )
-        return {"modules_checked": 0, "modules_reembedded": 0, "total_embed_calls": 0}
+        return {"modules_checked": 0, "modules_reembedded": 0, "total_embed_calls": 0,
+                "modules_incomplete": []}
 
     uri, user, password = _pipeline._neo4j_creds()
     # Indexer write/re-embed path: filter expected INFORMATION notifications
@@ -86,6 +100,8 @@ def reembed_stubs_for_profile(
     total_embed_calls = 0
     modules_checked = 0
     modules_reembedded = 0
+    modules_incomplete: list[str] = []
+    presence = _UNSET  # the ledger store, resolved on the first incomplete module
 
     try:
         for repo in repos:
@@ -205,11 +221,29 @@ def reembed_stubs_for_profile(
                         )
                         continue
 
+                    stats: dict[str, int] = {}
                     embed_calls = write_module_embeddings(
                         mod_name, odoo_version, chunks, embedder,
-                        profile_name=profile_name,
+                        profile_name=profile_name, stats=stats,
                     )
                     total_embed_calls += embed_calls
+                    if stats.get("embedded", 0) < stats.get("attempted", 0):
+                        modules_incomplete.append(f"{odoo_version}/{mod_name}")
+                        if presence is _UNSET:
+                            presence = _pipeline._presence_store()
+                        flagged = _flag_for_reembed(presence, repo, mod_name)
+                        _logger.warning(
+                            "reembed_stubs_for_profile: %s/%s embedded %d of %d chunk(s) "
+                            "(the embedder failed for the rest); %s",
+                            odoo_version, mod_name, stats.get("embedded", 0),
+                            stats.get("attempted", 0),
+                            "flagged needs_rewrite, the next index run re-embeds it"
+                            if flagged else
+                            "not flagged in the lifecycle ledger: re-run index-repo --full "
+                            "for it",
+                        )
+                    if not stats.get("embedded", 0):
+                        continue
                     modules_reembedded += 1
                     _logger.info(
                         "reembed_stubs_for_profile: re-embedded %s/%s "
@@ -225,14 +259,32 @@ def reembed_stubs_for_profile(
         driver.close()
 
     _logger.info(
-        "reembed_stubs_for_profile: checked %d modules, re-embedded %d, %d embed calls total",
-        modules_checked, modules_reembedded, total_embed_calls,
+        "reembed_stubs_for_profile: checked %d modules, re-embedded %d, %d incomplete, "
+        "%d embed calls total",
+        modules_checked, modules_reembedded, len(modules_incomplete), total_embed_calls,
     )
     return {
         "modules_checked": modules_checked,
         "modules_reembedded": modules_reembedded,
         "total_embed_calls": total_embed_calls,
+        "modules_incomplete": modules_incomplete,
     }
+
+
+def _flag_for_reembed(presence, repo: dict, mod_name: str) -> bool:
+    """Flag *mod_name* of *repo* ``needs_rewrite`` (only a ``present`` row is
+    flagged); True when a row was flagged. Never raises: the re-embed already
+    wrote what it could, and the WARNING names the module either way."""
+    if presence is None or repo.get("id") is None:
+        return False
+    try:
+        return bool(presence.mark_needs_rewrite(repo["id"], mod_name))
+    except Exception:  # noqa: BLE001 - reporting never fails the re-embed
+        _logger.warning(
+            "reembed_stubs_for_profile: could not flag %s needs_rewrite", mod_name,
+            exc_info=True,
+        )
+        return False
 
 
 def audit_repo_for_profile(

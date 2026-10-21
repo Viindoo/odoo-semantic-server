@@ -50,9 +50,13 @@ class ModuleParseHealth:
     embedded_keys: set[tuple] | None = None
     # True when the chunks were (re-)embedded and upserted this run.
     embeddings_written: bool = False
-    # True when a chunk of the module could not be embedded this run: its row
-    # keeps an older ``indexed_at``, so the rows cannot tell what this parse
-    # produced (the shared-module prune then leaves the embeddings alone).
+    # True when a chunk of the module could not be embedded this run (some or
+    # all chunks): its row is missing or keeps an older ``indexed_at`` and
+    # vector, so the rows cannot tell what this parse produced (the
+    # shared-module prune then leaves the embeddings alone) and the module is
+    # flagged ``needs_rewrite`` so the next run re-embeds it
+    # (``pipeline_repo._embedding_retry_names``). Not part of ``degraded``:
+    # the graph write and the entity prune are unaffected.
     embeddings_incomplete: bool = False
 
     @property
@@ -117,7 +121,8 @@ def note_unobserved(label: str) -> None:
 
 
 def note_embeddings_incomplete() -> None:
-    """Record that some chunk of the tracked module was not (re-)embedded."""
+    """Record that some chunk of the tracked module was not (re-)embedded
+    (the pipeline then re-embeds the module on the next run)."""
     health = _CURRENT.get()
     if health is not None:
         health.embeddings_incomplete = True

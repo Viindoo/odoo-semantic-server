@@ -1825,6 +1825,57 @@ def _track_degraded_parses(
     return retry, attention
 
 
+# How many module names the incomplete-embedding WARNING / attention line lists.
+EMBED_RETRY_SAMPLE = 10
+
+
+def _embedding_retry_names(module_health: dict, present_names: set[str]) -> set[str]:
+    """Present modules this run could not embed completely (re-embed next run).
+
+    A chunk the embedder still refuses after the batch retry and the
+    per-chunk fallback (``writer_pgvector._embed_chunks_resilient``: a 504, a
+    timeout) is dropped, so its row is missing (a new entity) or keeps the
+    vector of older content; when no chunk got a vector the module's rows
+    are kept as they were. Nothing else brings the module back: the next
+    incremental run skips it at an unchanged HEAD. These names are flagged
+    ``needs_rewrite`` on EVERY run they stay incomplete - an embed failure is
+    transient by nature, unlike the once-per-source-state rule of a degraded
+    parse (``_track_degraded_parses``) - so the next run re-parses and
+    re-embeds them, and the flag clears only after a complete embed. A module
+    that was not embedded at all (no embedder, ``--no-embed``) is not listed.
+    """
+    return {
+        name for (_version, name), health in module_health.items()
+        if health is not None and health.embeddings_incomplete and name in present_names
+    }
+
+
+def _embedding_retry_message(names: set[str], *, flagged: bool) -> str:
+    """The operator line (WARNING log, ``lifecycle_attention``) for *names*.
+
+    Informational: a self-healing condition, never an exit 3 nor an alert
+    mail (``pipeline.run_outages`` reports an embedder down for the whole run
+    as ``outages: embedder_down``)."""
+    ordered = sorted(names)
+    shown = ", ".join(ordered[:EMBED_RETRY_SAMPLE]) + (
+        f", ... {len(ordered) - EMBED_RETRY_SAMPLE} more"
+        if len(ordered) > EMBED_RETRY_SAMPLE else ""
+    )
+    head = (
+        f"embeddings incomplete for {len(ordered)} module(s) (the embedder failed "
+        f"for some chunks this run): {shown}; "
+    )
+    if flagged:
+        return head + (
+            "flagged needs_rewrite, the next run re-embeds them (no action needed "
+            "unless this line comes back every run)"
+        )
+    return head + (
+        "not flagged (the lifecycle ledger was not updated this run): they are "
+        "re-embedded when they change or by index-repo --full"
+    )
+
+
 def _record_full_parses(
     presence,
     writer: IndexWriterProtocol,
@@ -1846,7 +1897,9 @@ def _record_full_parses(
     token, untrusted scan) forgets the record, since its children may not
     all carry the stamp. A parse that also (re-)embedded every chunk of the
     module records *embedded_at* (PostgreSQL time taken before the parse, see
-    ``_pg_clock``). The version post-pass prunes a module several repos
+    ``_pg_clock``); one with ``embeddings_incomplete`` gets a NULL
+    ``last_full_parse_embedded_at`` (the caller also flags it ``needs_rewrite``, see
+    ``_embedding_retry_names``). The version post-pass prunes a module several repos
     ship only while every present owner has a record
     (``reconcile._Reconciler.prune_shared``).
     """
@@ -2093,6 +2146,11 @@ def _index_repo(
       when a commit changes it or its failing files change on disk (checked
       before the unchanged skip), and its files stay named in
       ``lifecycle_attention`` while it remains degraded.
+    - A module whose chunks the embedder did not all embed this run (some or
+      all chunks failed, e.g. a 504) is flagged ``needs_rewrite`` on every
+      such run and re-parsed + re-embedded by the next one; the flag clears
+      after a complete embed (``_embedding_retry_names``). One WARNING line
+      per repo and a ``lifecycle_attention`` line name them; never an exit 3.
     - Signals the operator must see (version rule, gate trips, git refusing
       the repo, missing ``origin/<branch>`` ref, stamp shortfall, a
       degraded or deferred entity prune) replace ``repos.lifecycle_attention``;
@@ -2380,6 +2438,20 @@ def _index_repo(
     prune_retry |= degraded_retry
     if prune_report is not None:
         prune_report["retry"] = sorted(prune_retry)
+    # Modules whose embeddings are incomplete this run: flagged needs_rewrite
+    # below on every such run (never cleared in the same run: they are left
+    # out of ``written``), so the next run re-embeds them.
+    embed_retry = _embedding_retry_names(
+        module_health if modules_by_version else {}, present_names,
+    )
+    if embed_retry:
+        embed_line = _embedding_retry_message(embed_retry, flagged=lifecycle_on)
+        _logger.warning("Repo %s: %s", url, embed_line)
+        if presence is not None:
+            # Without a ledger the attention lines are only logged (below),
+            # and this one already was.
+            attention.append(embed_line)
+    ledger_retry = prune_retry | embed_retry
 
     # NOTE: reconcile_same_name_inherits runs once per version in the post-pass
     # (index_profile / reconcile_version), not per repo.
@@ -2395,10 +2467,10 @@ def _index_repo(
             scan=scan, rows=rows, transitions=transitions, gates=gates,
             current_head=current_head, diff_base=diff_base,
             owning_profile=owning_profile, retire=retire,
-            written=write_names - prune_retry, rewrite_names=rewrite_names,
+            written=write_names - ledger_retry, rewrite_names=rewrite_names,
             attention=attention,
         )
-        for name in sorted(prune_retry & present_names):
+        for name in sorted(ledger_retry & present_names):
             presence.mark_needs_rewrite(repo["id"], name)
         _record_full_parses(
             presence, writer, repo,

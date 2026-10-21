@@ -172,6 +172,12 @@ def _embed_chunks_resilient(
     individually is logged as a warning and skipped.  The returned lists are
     aligned: chunks_ok[i] produced vecs[i].
 
+    A skipped chunk is not retried here: the caller sees it as
+    ``len(chunks_ok) < len(chunks)``. ``write_module_embeddings`` then records
+    ``parse_health.note_embeddings_incomplete`` and the index pipeline flags
+    the module ``needs_rewrite`` so its next run re-embeds it
+    (``pipeline_repo._embedding_retry_names``).
+
     Returns:
         (chunks_ok, vecs, embed_calls)
         - chunks_ok: surviving chunks (may be shorter than input on failures)
@@ -625,6 +631,14 @@ def write_module_embeddings(
     increased by the chunks sent to the embedder and the ones it returned a
     vector for, so the run can tell an embedder that was down for the whole
     run (zero embedded while chunks were attempted) from a partial failure.
+
+    Chunks the embedder refused (``_embed_chunks_resilient``) are not written:
+    a new entity has no row, an existing one keeps its older vector (upsert)
+    or loses its row (``replace=True``). When fewer chunks survived than were
+    sent, the tracked module is marked ``embeddings_incomplete``
+    (``parse_health``); the index pipeline flags it ``needs_rewrite`` so the
+    next run re-embeds it. A caller outside ``parse_health.track`` (e.g.
+    ``reembed-stubs``) reads *stats* instead.
 
     ``replace=False`` upserts without the delete: rows of chunks the parse did
     not produce are kept. The pipeline uses it for a module whose parse was
