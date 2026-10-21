@@ -6,20 +6,25 @@ import RepoTable from '../../components/RepoTable.astro';
 import JobStatus from '../../components/JobStatus.astro';
 import ProfileTree from '../../components/ProfileTree.astro';
 import { FASTAPI_BASE } from '../../lib/fastapi';
+import { privateAncestorOfShared, visibilityLabel, type TenantNames } from '../../lib/profileVisibility';
 
 const cookieHeader = Astro.request.headers.get('cookie') ?? '';
 
 // Repos come nested in /api/repos/profiles (there is no flat GET /api/repos/repos).
-const [profilesRes, sshKeysRes, versionsRes] = await Promise.allSettled([
+// /api/tenants is admin-only: a non-admin viewer gets no tenant names (badges
+// then show the tenant id) and cannot create profiles anyway (admin route).
+const [profilesRes, sshKeysRes, versionsRes, tenantsRes] = await Promise.allSettled([
   fetch(`${FASTAPI_BASE}/api/repos/profiles`, { headers: { cookie: cookieHeader } }),
   fetch(`${FASTAPI_BASE}/api/repos/ssh-keys-list`, { headers: { cookie: cookieHeader } }),
   fetch(`${FASTAPI_BASE}/api/versions`, { headers: { cookie: cookieHeader } }),
+  fetch(`${FASTAPI_BASE}/api/tenants`, { headers: { cookie: cookieHeader } }),
 ]);
 
 let profilesData: { profiles: unknown[]; all_job_id?: number | null; all_job_status?: string | null; error?: string | null } = { profiles: [] };
 let repos: unknown[] = [];
 let sshKeys: { id: number; name: string }[] = [];
 let odooVersions: string[] = [];
+let tenants: { id: number; name: string }[] = [];
 
 if (profilesRes.status === 'fulfilled' && profilesRes.value.ok) {
   profilesData = await profilesRes.value.json();
@@ -31,6 +36,21 @@ if (versionsRes.status === 'fulfilled' && versionsRes.value.ok) {
   const vd = await versionsRes.value.json();
   odooVersions = Array.isArray(vd.versions) ? (vd.versions as string[]) : [];
 }
+
+if (tenantsRes.status === 'fulfilled' && tenantsRes.value.ok) {
+  const td = await tenantsRes.value.json();
+  tenants = Array.isArray(td.tenants) ? (td.tenants as { id: number; name: string }[]) : [];
+}
+const tenantNames: TenantNames = Object.fromEntries(tenants.map((t) => [t.id, t.name]));
+// Default series for a new root profile: the newest registered one (data-driven,
+// /api/versions reads the profiles registry - 20.0 appears once odoo_20 exists).
+const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length - 1] : '';
+
+type ProfileRow = {
+  id: number; name: string; odoo_version: string; description?: string;
+  repos?: unknown[]; parent_profile_id?: number | null; tenant_id?: number | null;
+};
+const profileRows = profilesData.profiles as ProfileRow[];
 
 for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
   if (p.repos) repos = [...repos, ...p.repos];
@@ -51,27 +71,90 @@ for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
   <!-- Add Profile Form -->
   <div class="bg-white rounded-xl border border-gray-200 p-5 mb-6 shadow-sm">
     <h2 class="text-base font-semibold text-gray-800 mb-4">Add Profile</h2>
-    <form data-testid="add-profile-form" class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <p class="text-xs text-gray-500 mb-3">
+      Pick the parent first: a child inherits its parent's Odoo version, and a child of a
+      private profile inherits its tenant. A profile is never more visible than its parent.
+    </p>
+    <form data-testid="add-profile-form" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
       <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1">Name</label>
+        <label class="block text-xs font-medium text-gray-600 mb-1" for="new-profile-parent">Parent profile</label>
+        <select
+          id="new-profile-parent"
+          name="parent_id"
+          data-testid="profile-parent-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+        >
+          <option value="">- none (root profile) -</option>
+          {profileRows.map((p) => (
+            <option
+              value={String(p.id)}
+              data-version={p.odoo_version}
+              data-tenant-id={p.tenant_id == null ? '' : String(p.tenant_id)}
+            >{p.name} ({p.odoo_version}, {visibilityLabel(p, tenantNames)})</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1" for="new-profile-version">Odoo Version</label>
+        <select
+          id="new-profile-version"
+          name="version"
+          data-testid="profile-version-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+        >
+          {odooVersions.map((v) => (
+            <option value={v} selected={v === latestVersion}>{v}</option>
+          ))}
+          <option value="__other__" selected={odooVersions.length === 0}>Other (new series)...</option>
+        </select>
         <input
+          name="version_other"
+          type="text"
+          placeholder="e.g. 21.0"
+          data-testid="profile-version-other-input"
+          aria-label="New Odoo version"
+          class="w-full mt-2 border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+          hidden={odooVersions.length > 0}
+        />
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1" for="new-profile-tenant">Owner (tenant)</label>
+        <select
+          id="new-profile-tenant"
+          name="tenant"
+          data-testid="profile-tenant-input"
+          class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
+        >
+          <option value="">- choose the owner -</option>
+          {tenants.map((t) => (
+            <option value={String(t.id)}>{t.name}</option>
+          ))}
+          <option value="__shared__">Shared - every API key can read it (Odoo CE/EE base only)</option>
+        </select>
+        <p data-testid="profile-tenant-hint" class="text-xs text-gray-500 mt-1" hidden></p>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1" for="new-profile-name">Name</label>
+        <input
+          id="new-profile-name"
           name="name"
           type="text"
-          placeholder="viindoo17"
+          placeholder="viindoo_internal_20"
+          pattern="[a-zA-Z0-9_]{1,50}"
+          title="1-50 letters, digits or underscores"
           data-testid="profile-name-input"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
           required
         />
       </div>
       <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1">Odoo Version</label>
+        <label class="block text-xs font-medium text-gray-600 mb-1" for="new-profile-description">Description</label>
         <input
-          name="version"
+          id="new-profile-description"
+          name="description"
           type="text"
-          placeholder="17.0"
-          data-testid="profile-version-input"
+          data-testid="profile-description-input"
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-viindoo-primary-deep"
-          required
         />
       </div>
       <div class="flex items-end">
@@ -114,12 +197,26 @@ for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
       <>
         <!-- Flat list view (default) -->
         <div id="profile-flat-list" class="divide-y divide-gray-100">
-          {(profilesData.profiles as { id: number; name: string; odoo_version: string; description?: string; repos?: unknown[]; parent_profile_id?: number | null }[]).map((p) => (
+          {profileRows.map((p) => {
+            const leakAncestor = privateAncestorOfShared(p, profileRows);
+            return (
             <div data-testid="profile-row" data-testid-id={`profile-row-${p.id}`} class="px-5 py-4 hover:bg-gray-50">
               <div class="flex items-center justify-between">
                 <div>
-                  <p class="font-medium text-gray-800">{p.name}</p>
+                  <p class="font-medium text-gray-800">
+                    {p.name}
+                    <span
+                      data-testid="profile-visibility-badge"
+                      class={`ml-2 align-middle text-xs font-normal px-2 py-0.5 rounded-full ${p.tenant_id == null ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'}`}
+                    >{visibilityLabel(p, tenantNames)}</span>
+                  </p>
                   <p class="text-xs text-gray-500 mt-0.5">Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}</p>
+                  {leakAncestor && (
+                    <p data-testid="profile-visibility-warning" class="text-xs text-red-700 mt-1">
+                      Shared with every key, but its ancestor {leakAncestor.name} is private: assign
+                      this profile to {visibilityLabel(leakAncestor, tenantNames).replace('Private: ', '')} on the Tenants page.
+                    </p>
+                  )}
                 </div>
                 <div class="flex items-center gap-3 flex-wrap">
                   <span class="text-sm text-gray-500">{p.repos?.length ?? 0} repos</span>
@@ -132,7 +229,7 @@ for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
                     title="Set parent profile"
                   >
                     <option value="">— no parent —</option>
-                    {(profilesData.profiles as { id: number; name: string; odoo_version: string; parent_profile_id?: number | null }[])
+                    {profileRows
                       .filter((other) => other.id !== p.id && other.odoo_version === p.odoo_version)
                       .map((other) => (
                         <option value={String(other.id)} selected={p.parent_profile_id === other.id}>{other.name}</option>
@@ -204,6 +301,10 @@ for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
                       class="w-full border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
                     />
                   </div>
+                  <p class="sm:col-span-3 text-xs text-gray-600">
+                    Owner: {visibilityLabel(p, tenantNames)}. Change it on the
+                    <a href="/admin/tenants" class="underline">Tenants page</a> (its repos follow).
+                  </p>
                   <div class="sm:col-span-3 flex gap-2 justify-end">
                     <button
                       type="button"
@@ -228,12 +329,13 @@ for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
                 <JobStatus jobId={null} autoPoll={false} testid={`clone-all-job-${p.id}`} />
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <!-- Tree view (hidden by default; toggled by JS) -->
         <div id="profile-tree-view" hidden>
-          <ProfileTree profiles={profilesData.profiles as Parameters<typeof ProfileTree>[0]['profiles']} />
+          <ProfileTree profiles={profileRows} tenantNames={tenantNames} />
         </div>
       </>
     )}
@@ -253,20 +355,84 @@ for (const p of profilesData.profiles as { repos?: unknown[] }[]) {
   import { flash } from '../../lib/flash';
   import { extractApiError } from '../../lib/apiError';
 
-  // Add profile
-  document.querySelector('[data-testid="add-profile-form"]')?.addEventListener('submit', async (e) => {
+  // Add profile - parent -> version -> owner. A child inherits the parent's
+  // version (locked) and, under a private parent, its tenant (locked); the
+  // server enforces the same rule (422), this only keeps the form honest.
+  const addForm = document.querySelector('[data-testid="add-profile-form"]') as HTMLFormElement | null;
+  const parentSel = addForm?.querySelector('[data-testid="profile-parent-input"]') as HTMLSelectElement | null;
+  const versionSel = addForm?.querySelector('[data-testid="profile-version-input"]') as HTMLSelectElement | null;
+  const versionOther = addForm?.querySelector('[data-testid="profile-version-other-input"]') as HTMLInputElement | null;
+  const tenantSel = addForm?.querySelector('[data-testid="profile-tenant-input"]') as HTMLSelectElement | null;
+  const tenantHint = addForm?.querySelector('[data-testid="profile-tenant-hint"]') as HTMLElement | null;
+
+  function syncVersionOther() {
+    if (!versionSel || !versionOther) return;
+    versionOther.hidden = versionSel.value !== '__other__';
+  }
+
+  function syncFromParent() {
+    if (!parentSel || !versionSel || !tenantSel || !tenantHint) return;
+    const opt = parentSel.selectedOptions[0];
+    const parentVersion = parentSel.value ? opt?.dataset.version ?? '' : '';
+    const parentTenant = parentSel.value ? opt?.dataset.tenantId ?? '' : '';
+    if (parentVersion) {
+      if (![...versionSel.options].some((o) => o.value === parentVersion)) {
+        versionSel.add(new Option(parentVersion, parentVersion), 0);
+      }
+      versionSel.value = parentVersion;
+    }
+    versionSel.disabled = Boolean(parentVersion);
+    syncVersionOther();
+    if (parentTenant) {
+      tenantSel.value = parentTenant;
+      tenantSel.disabled = true;
+      tenantHint.textContent = 'Inherited from the private parent profile.';
+      tenantHint.hidden = false;
+    } else {
+      tenantSel.disabled = false;
+      tenantHint.hidden = true;
+    }
+  }
+
+  parentSel?.addEventListener('change', syncFromParent);
+  versionSel?.addEventListener('change', syncVersionOther);
+
+  addForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const form = e.currentTarget as HTMLFormElement;
-    const fd = new FormData(form);
-    const r = await submitJson('/api/repos/profiles', {
-      method: 'POST',
-      body: { name: fd.get('name'), version: fd.get('version') },
-    });
+    const fd = new FormData(addForm);
+    const version = versionSel?.value === '__other__'
+      ? (versionOther?.value ?? '').trim()
+      : (versionSel?.value ?? '');
+    const parentId = parentSel?.value ? Number(parentSel.value) : null;
+    const owner = tenantSel?.value ?? '';
+    const inherited = Boolean(tenantSel?.disabled);
+    const body: Record<string, unknown> = {
+      name: String(fd.get('name') ?? '').trim(),
+      version,
+      description: String(fd.get('description') ?? '').trim(),
+      parent_id: parentId,
+    };
+    if (!inherited) {
+      if (owner === '') {
+        flash('Choose the owner tenant, or Shared for an Odoo CE/EE base profile.', { error: true });
+        return;
+      }
+      if (owner === '__shared__') {
+        if (!confirm(
+          'Create a SHARED profile? Every API key, including free-tier keys, will be able '
+          + 'to read its modules and repos. Only Odoo CE/EE base profiles should be shared.',
+        )) return;
+        body.shared = true;
+      } else {
+        body.tenant_id = Number(owner);
+      }
+    }
+    const r = await submitJson('/api/repos/profiles', { method: 'POST', body });
     if (r.ok) {
       flash('Profile created.');
       setTimeout(() => location.reload(), 800);
     } else {
-      flash(r.error!, { error: true });
+      flash(extractApiError(r.data, r.error ?? 'Failed to create profile.'), { error: true });
     }
   });
 

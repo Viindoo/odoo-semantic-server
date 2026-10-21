@@ -69,10 +69,8 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
   const [addMemberUserId, setAddMemberUserId] = useState('');
   const [addMemberRole, setAddMemberRole] = useState('member');
 
-  // Repo assignment state
+  // Repos of this tenant (read-only: a repo's tenant follows its profile)
   const [assignedRepos, setAssignedRepos] = useState<RepoItem[]>([]);
-  const [unassignedRepos, setUnassignedRepos] = useState<RepoItem[]>([]);
-  const [assignRepoId, setAssignRepoId] = useState('');
   const [loadingRepos, setLoadingRepos] = useState(false);
 
   // Profile assignment state
@@ -102,7 +100,6 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
         (p.repos ?? []).map(rr => ({ ...rr, tenant_id: rr.tenant_id ?? null }))
       );
       setAssignedRepos(allRepos.filter(rr => rr.tenant_id === tenantId));
-      setUnassignedRepos(allRepos.filter(rr => rr.tenant_id === null));
     }
     setLoadingRepos(false);
   }
@@ -120,37 +117,6 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
     setLoadingProfiles(false);
   }
 
-  async function handleAssignRepo() {
-    if (!selectedTenant || !assignRepoId) return;
-    const r = await submitJson(`/api/repos/${assignRepoId}/tenant`, {
-      method: 'PATCH',
-      body: { tenant_id: selectedTenant.id },
-    });
-    if (r.ok) {
-      flash('Repo assigned');
-      setAssignRepoId('');
-      await loadRepoAssignments(selectedTenant.id);
-      await refreshTenants();
-    } else {
-      flash(r.error!, { error: true });
-    }
-  }
-
-  async function handleUnassignRepo(repoId: number) {
-    if (!selectedTenant) return;
-    const r = await submitJson(`/api/repos/${repoId}/tenant`, {
-      method: 'PATCH',
-      body: { tenant_id: null },
-    });
-    if (r.ok) {
-      flash('Repo unassigned');
-      await loadRepoAssignments(selectedTenant.id);
-      await refreshTenants();
-    } else {
-      flash(r.error!, { error: true });
-    }
-  }
-
   async function handleAssignProfile() {
     if (!selectedTenant || !assignProfileId) return;
     const r = await submitJson(`/api/profiles/${assignProfileId}/tenant`, {
@@ -158,9 +124,11 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
       body: { tenant_id: selectedTenant.id },
     });
     if (r.ok) {
-      flash('Profile assigned');
+      const moved = (r.data as { repos_updated?: number } | null)?.repos_updated ?? 0;
+      flash(`Profile assigned (${moved} repo(s) moved with it)`);
       setAssignProfileId('');
       await loadProfileAssignments(selectedTenant.id);
+      await loadRepoAssignments(selectedTenant.id);
       await refreshTenants();
     } else {
       flash(r.error!, { error: true });
@@ -169,13 +137,21 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
 
   async function handleUnassignProfile(profileId: number) {
     if (!selectedTenant) return;
+    // Unassigning = making the profile SHARED: every API key (free tier
+    // included) can then read its modules. The server refuses it without
+    // confirm_shared, and refuses it outright under a private parent.
+    if (!confirm(
+      'Make this profile SHARED? Every API key, including free-tier keys, will be able '
+      + 'to read its modules and repos. Only Odoo CE/EE base profiles should be shared.',
+    )) return;
     const r = await submitJson(`/api/profiles/${profileId}/tenant`, {
       method: 'PATCH',
-      body: { tenant_id: null },
+      body: { tenant_id: null, confirm_shared: true },
     });
     if (r.ok) {
-      flash('Profile unassigned');
+      flash('Profile is now shared');
       await loadProfileAssignments(selectedTenant.id);
+      await loadRepoAssignments(selectedTenant.id);
       await refreshTenants();
     } else {
       flash(r.error!, { error: true });
@@ -488,7 +464,6 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
                     <th className="px-3 py-1 text-left">URL</th>
                     <th className="px-3 py-1 text-left">Branch</th>
                     <th className="px-3 py-1 text-left">Profile</th>
-                    <th className="px-3 py-1 text-right">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -497,44 +472,15 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
                       <td className="px-3 py-1 font-mono text-xs text-gray-700 max-w-[220px] truncate" title={r.url}>{r.url}</td>
                       <td className="px-3 py-1 text-gray-500 text-xs">{r.branch}</td>
                       <td className="px-3 py-1 text-gray-500 text-xs">{r.profile_name ?? '-'}</td>
-                      <td className="px-3 py-1 text-right">
-                        <button
-                          onClick={() => handleUnassignRepo(r.id)}
-                          className="text-xs text-red-600 hover:underline"
-                        >Unassign</button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             )}
-            {unassignedRepos.length > 0 && (
-              <div className="flex gap-2 items-end mt-1">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Assign repo</label>
-                  <select
-                    value={assignRepoId}
-                    onChange={(e) => setAssignRepoId((e.target as HTMLSelectElement).value)}
-                    className="border border-gray-300 rounded-lg px-2 py-1 text-sm"
-                  >
-                    <option value="">-- select unassigned repo --</option>
-                    {unassignedRepos.map(r => (
-                      <option key={r.id} value={String(r.id)}>
-                        {r.url} [{r.branch}]{r.profile_name ? ` (${r.profile_name})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <button
-                  onClick={handleAssignRepo}
-                  disabled={!assignRepoId}
-                  className="px-3 py-1.5 bg-blue-600 text-white text-xs rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50"
-                >Assign</button>
-              </div>
-            )}
-            {unassignedRepos.length === 0 && !loadingRepos && (
-              <p className="text-xs text-gray-400 mt-1">No unassigned repos available.</p>
-            )}
+            <p data-testid="tenant-repos-follow-profile-note" className="text-xs text-gray-500 mt-1">
+              A repo&apos;s tenant follows its profile. To move repos, assign their profile
+              below: every repo of the profile moves with it.
+            </p>
           </div>
 
           {/* Profile assignment widget */}
@@ -564,7 +510,7 @@ export default function TenantsIsland({ initialTenants, allUsers }: Props) {
                         <button
                           onClick={() => handleUnassignProfile(p.id)}
                           className="text-xs text-red-600 hover:underline"
-                        >Unassign</button>
+                        >Make shared</button>
                       </td>
                     </tr>
                   ))}

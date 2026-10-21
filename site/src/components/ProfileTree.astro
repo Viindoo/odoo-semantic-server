@@ -6,7 +6,8 @@
  * Props:
  *   profiles — the flat list of profile objects (same shape as API response).
  *              Each item may have: id, name, odoo_version, description, repos,
- *              parent_profile_id.
+ *              parent_profile_id, tenant_id.
+ *   tenantNames - optional tenant id -> name map for the visibility badge.
  *
  * The tree shape is computed in the Astro frontmatter (server-side) and
  * rendered as a flat list of (profile, depth) tuples — no client-side DOM
@@ -15,6 +16,8 @@
  * XSS: All user-supplied strings are rendered with {p.name} / {p.odoo_version}
  * etc. (Astro auto-escapes). No set:html or innerHTML is used for user data.
  */
+import { privateAncestorOfShared, visibilityLabel, type TenantNames } from '../lib/profileVisibility';
+
 export interface Profile {
   id: number;
   name: string;
@@ -22,13 +25,15 @@ export interface Profile {
   description?: string;
   repos?: unknown[];
   parent_profile_id?: number | null;
+  tenant_id?: number | null;
 }
 
 interface Props {
   profiles: Profile[];
+  tenantNames?: TenantNames;
 }
 
-const { profiles } = Astro.props;
+const { profiles, tenantNames = {} } = Astro.props;
 
 // ── Server-side tree builder ────────────────────────────────────────────────
 // Build tree from flat list, then flatten to (profile, depth) tuples for
@@ -94,10 +99,22 @@ const rows = flatten(buildTree(profiles));
                 <span class="text-gray-300 text-xs select-none">└─</span>
               )}
               <div>
-                <p class="font-medium text-gray-800">{p.name}</p>
+                <p class="font-medium text-gray-800">
+                  {p.name}
+                  <span
+                    data-testid="profile-tree-visibility-badge"
+                    class={`ml-2 align-middle text-xs font-normal px-2 py-0.5 rounded-full ${p.tenant_id == null ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700'}`}
+                  >{visibilityLabel(p, tenantNames)}</span>
+                </p>
                 <p class="text-xs text-gray-500 mt-0.5">
                   Odoo {p.odoo_version}{p.description ? ` — ${p.description}` : ''}
                 </p>
+                {privateAncestorOfShared(p, profiles) && (
+                  <p data-testid="profile-tree-visibility-warning" class="text-xs text-red-700 mt-1">
+                    Shared with every key under a private ancestor
+                    ({privateAncestorOfShared(p, profiles)?.name}).
+                  </p>
+                )}
               </div>
             </div>
 

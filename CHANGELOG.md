@@ -178,6 +178,7 @@ All notable changes to Odoo Semantic MCP are documented here.
 - The admin-issued password reset mail (`POST /api/admin/users/{id}/reset-password-link`)
   is sent by `src.mailer` like every other OSM mail: with `SMTP_FROM` unset its sender is the
   mailer default instead of `SMTP_USER` (an SES access key id, not an address).
+- **Admin repos page:** the Add Profile form asks parent -> Odoo version (dropdown, locked to the parent's) -> owner (tenant select, inherited and locked under a private parent; "Shared" needs a confirm) -> name -> description. Profiles show a Shared / Private badge in the list and the tree, and a warning when a shared profile sits under a private ancestor. Picking a profile in the Add Repository form selects its version and branch. The tenants page lists a tenant's repos read-only (they follow their profile) and "Make shared" asks for confirmation.
 - **`GET /api/versions` reads the profile registry** (distinct `profiles.odoo_version`, tenant-scoped like the profile list) instead of the Bootstrap-CSS reference file, so 20.0 is offered as soon as `odoo_20` exists and new repos no longer default to branch 19.0. The /bootstrap page derives its "vX to vY" range from its own table.
 
 ### Security
