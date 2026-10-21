@@ -37,9 +37,12 @@ whose node lost this profile). Every next run but the unchanged skip re-writes
 those (``would_rewrite``, the run's own ``self_heal_rewrites`` set, on sync,
 incremental and full alike; a module the run writes as new is not listed); a
 repo whose next run is the unchanged skip keeps them (``wrong_paths``, a
-finding). Entity prunes the soft gate holds (recorded on the Module node by the
-index run, which exits 3 for them on every re-parse) are the ``held_prunes``
-finding. An indexed module whose tracked manifest was read but does not parse
+finding). Entities an entity prune kept because the module's HEAD source still
+defines them but the parser no longer produces them (ADR-0057: recorded on the
+Module node by the index run, which exits 0 for them and re-evaluates them only
+when the module tree or the indexer code changes) are the ``parser_gaps``
+finding: a parser defect to fix, never an operator approval (schema /4 renamed
+it from ``held_prunes``). An indexed module whose tracked manifest was read but does not parse
 is kept as it is until it parses again (``unparseable_kept``, a finding; the
 index run exits 3 for it); a manifest that cannot be read at all makes the scan
 incomplete (gate G-A). The version reconcile's shared-module prune (a module two or more repos
@@ -51,7 +54,7 @@ sends back to re-parse a module. Each repo entry's ``shared_parse_backlog``
 (``remaining``, ``next_run``) is the bootstrap still to do: copies of shared
 modules without a complete-parse record, re-parsed at most
 ``SHARED_PARSE_BOOTSTRAP_PER_RUN`` per repo per run (not a finding: it drains
-by itself) (schema /3).
+by itself) (schema /4).
 """
 from __future__ import annotations
 
@@ -72,6 +75,7 @@ from src.indexer.pipeline_repo import (
     _ConnBoundStore,
     _degraded_state,
     _owning_profiles,
+    _parser_gap_state,
     modules_needing_rewrite,
     observe_lifecycle,
     plan_repo_run,
@@ -85,7 +89,7 @@ from src.indexer.registry import build_registry_scan, resolve_repo_version
 
 _logger = logging.getLogger(__name__)
 
-AUDIT_SCHEMA = "osm.lifecycle-audit/3"
+AUDIT_SCHEMA = "osm.lifecycle-audit/4"
 
 # Finding categories, in report order. Any non-zero count is a finding
 # (``--fail-on-findings``).
@@ -94,7 +98,7 @@ FINDING_KEYS: tuple[str, ...] = (
     "would_drop_owner",
     "undecidable",
     "blocked",
-    "held_prunes",
+    "parser_gaps",
     "shared_prunes",
     "orphan_modules",
     "child_orphans",
@@ -126,7 +130,7 @@ class ReadOnlyWriter:
         "orphan_child_keys",
         "modules_without_profile",
         "parse_degraded_modules",
-        "prune_held_modules",
+        "parser_gap_modules",
         "prune_deferred_modules",
         "module_children_census",
         "shared_prune_states",
@@ -301,7 +305,7 @@ def _new_repo_entry(repo: dict) -> dict:
         "would_drop_owner": [],
         "undecidable": [],
         "blocked": [],
-        "held_prunes": [],
+        "parser_gaps": [],
         "unparseable_kept": [],
         "shared_parse_backlog": {"remaining": 0, "next_run": []},
         "error": None,
@@ -334,6 +338,9 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     # B14: a degraded module whose failing files changed on disk makes the
     # real run re-parse at an unchanged HEAD; predict the same mode.
     _records, degraded_changed = _degraded_state(writer, repo, repo_path)
+    # ADR-0057: a parser gap recorded against another module tree or indexer
+    # code is re-evaluated by the real run at an unchanged HEAD too.
+    gap_records, gap_changed = _parser_gap_state(writer, repo, repo_path)
     # B14 shared-module bootstrap: the real run re-parses this batch like
     # needs_rewrite names (sync path at an unchanged HEAD).
     remaining, _batch = shared_parse_backlog(bound, repo, _records)
@@ -342,7 +349,8 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     rewrite_names = sorted(set(rewrite_names) | set(bootstrap))
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
-        full_reindex=False, ledger=True, degraded_changed=bool(degraded_changed),
+        full_reindex=False, ledger=True,
+        degraded_changed=bool(degraded_changed or gap_changed),
     )
     entry["next_run"] = plan.mode
 
@@ -375,9 +383,13 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     for t in changed:
         kinds.setdefault(t.kind, []).append(t.name)
     entry["transitions"] = {k: len(v) for k, v in sorted(kinds.items())}
-    # A soft-gated entity prune stays held (the index run exits 3 on every
-    # re-parse) until a run prunes the module, e.g. with --allow-mass-retire.
-    entry["held_prunes"] = list(writer.prune_held_modules(repo["id"]))
+    # Entities an entity prune kept because the HEAD source still defines them
+    # but the parser no longer produces them (ADR-0057): a parser defect to
+    # fix, never an exit 3 of the index run.
+    entry["parser_gaps"] = [
+        {**row, "reevaluated_next_run": row["name"] in gap_changed}
+        for row in gap_records.values()
+    ]
 
     deferred_head: str | None = None
     attention = observation.attention
@@ -413,15 +425,15 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
                 and name in regular
             )
         ]
-    reparse = sorted((set(rewrite_names) | degraded_changed) & present)
+    reparse = sorted((set(rewrite_names) | degraded_changed | gap_changed) & present)
     if reparse and plan.mode != RUN_SKIP:
         # The audit does not parse, so it cannot count what an entity prune
-        # (B14) would remove; it names the modules whose held, deferred or
-        # degraded prune the next run re-evaluates. Nothing is pruned here.
+        # (B14) would remove; it names the modules whose deferred, degraded or
+        # parser-gap prune the next run re-evaluates. Nothing is pruned here.
         attention.append(
             f"{len(reparse)} module(s) are re-parsed by the next run without a source "
-            "change (ledger needs_rewrite, shared-module bootstrap or changed "
-            "degraded-parse files), which "
+            "change (ledger needs_rewrite, shared-module bootstrap, changed "
+            "degraded-parse files or a parser gap recorded against other code), which "
             "re-evaluates their entity prune: " + ", ".join(reparse[:10])
             + (f", ... {len(reparse) - 10} more" if len(reparse) > 10 else "")
         )
@@ -608,7 +620,7 @@ def _findings(repos: list[dict], versions: list[dict]) -> dict[str, int]:
         counts["errors"] += len(v["errors"])
     for r in repos:
         counts["would_rewrite"] += len(r["would_rewrite"])
-        counts["held_prunes"] += len(r["held_prunes"])
+        counts["parser_gaps"] += len(r["parser_gaps"])
         counts["wrong_paths"] += len(r["wrong_paths"])
         counts["unapplied_changes"] += sum(len(n) for n in r["unapplied_changes"].values())
         counts["unparseable_kept"] += len(r.get("unparseable_kept") or [])
@@ -824,12 +836,20 @@ def render_text(report: dict) -> str:
             )
         for item in r["blocked"]:
             lines.append(f"  blocked: {item['name']} ({item['reason']})")
-        for item in r["held_prunes"]:
+        for item in r["parser_gaps"]:
+            why = (
+                f"source oracle unavailable: {item['reason']}" if item.get("reason")
+                else "still defined in the HEAD source, no longer produced by the parser"
+            )
+            when = (
+                "re-evaluated by the next run" if item.get("reevaluated_next_run")
+                else "re-evaluated when the module or the indexer code changes"
+            )
             lines.append(
-                f"  entity prune held: {item['name']}@{item['odoo_version']} "
-                f"({item['stale']} of {item['total']} node(s) and {item['rels_stale']} of "
-                f"{item['rels_total']} relationship(s) no longer produced by its parse; "
-                "check the parse, then index with --allow-mass-retire)"
+                f"  parser gap: {item['name']}@{item['odoo_version']} kept "
+                f"{item['kept']} of {item['total']} node(s) and {item['rels_kept']} of "
+                f"{item['rels_total']} relationship(s) ({why}; {when}): "
+                + "; ".join(item.get("sample") or [])
             )
         if r.get("unparseable_kept"):
             lines.append(

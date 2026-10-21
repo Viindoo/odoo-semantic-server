@@ -238,7 +238,7 @@ Topological sort (Kahn's algorithm) đảm bảo base modules được index tr�
            //   last_seen_sha/at     HEAD + giờ server Neo4j của lần scan/ghi gần nhất
            //   version_mismatch     manifest long-form lệch version theo branch
            //   version_raw          chuỗi `version` nguyên văn của manifest
-           //   parse_degraded_*, prune_held_*, prune_deferred_*,
+           //   parse_degraded_*, parser_gap_* (ADR-0057), prune_deferred_*,
            //   shared_prune_state   dấu vết prune/parse cho reconcile + audit
            // Node con (MODULE_CHILD_LABELS) mang `written_run` + `written_at`
            // (token run + giờ ghi) cho entity prune; relationship trong

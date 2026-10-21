@@ -10,6 +10,16 @@
 **Amends:** ADR-0007, ADR-0016, ADR-0034, ADR-0037, ADR-0048, ADR-0051, ADR-0054,
 ADR-0055 (each carries a dated amendment pointing here).
 
+> **Amendment 2026-10-20 (ADR-0057):** the per-repo entity prune (D9) no longer has a soft
+> gate. Each candidate is judged against the module's git HEAD tree by a source oracle:
+> what git proves gone is deleted with its embeddings whatever the count; what the source
+> still defines is kept as a parser gap (Module record + `lifecycle-audit` `parser_gaps`,
+> schema `/4`, renamed from `held_prunes`), never an exit 3, re-evaluated only when the
+> module tree or the indexer code changes. The D6 row "soft prune gate `entity_prune`" and
+> `soft_gate` in the D9 skip list apply only to the shared-module prune (D10) now;
+> `--allow-mass-retire` does not affect the per-repo entity prune. The test-node GC leaves
+> the modules the prune judged alone, so embeddings always follow.
+>
 ---
 
 ## Context

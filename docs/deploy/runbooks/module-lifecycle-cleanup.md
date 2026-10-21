@@ -236,8 +236,18 @@ jq .findings ~/osm-rollout/lifecycle-preview.json
   profile). Expected on a pre-ledger graph.
 - repo entries `wrong_paths` / `unapplied_changes` - drift a repo's next run does not fix because
   it is the unchanged skip; `index-repo --profile <p> --full` applies them (step 6).
-- repo entries `held_prunes` and version `shared_prunes` - entity prunes the soft gate holds, and
-  the shared-module prune (`would_prune` or `held`). A held prune exits 3 on the run (step 5).
+- repo entries `parser_gaps` (schema `/4`, formerly `held_prunes`) - entities an entity prune
+  KEPT because the module's git HEAD source still defines them but the parser no longer
+  produces them (ADR-0057). The run exits 0 for them; nobody approves anything: fix the parser
+  (the module is re-evaluated automatically after the deploy that changes the indexer code).
+  Each entry carries a `sample`; an entry whose sample names something git really deleted is a
+  ghost the oracle keeps on purpose: a model name still mentioned in a comment, a field /
+  method still in the text of a Python 2 file, or any Model / inheritance edge of a module
+  with a class whose `_name` / `_inherit` it cannot evaluate (a constant of another addon, a
+  call, an f-string).
+- version `shared_prunes` - the shared-module prune (`would_prune`, or `partial` when some
+  owner's HEAD source still defines part of it, which is kept); schema `/5` has no `held`
+  outcome and the prune never exits 3.
 - repo entries `unparseable_kept` - an indexed module whose tracked manifest does not parse is
   kept as it is (exit 3); fix the manifest upstream.
 - `errors` (version and repo entries) - the preview could not decide something; read the text and
@@ -342,7 +352,7 @@ sudo osm-fernet-run $PY -m src.indexer lifecycle-audit --all --json | jq .findin
 | `modules_without_profile` | only the legacy names recorded in step 0a |
 | `wrong_paths`, `unapplied_changes` | 0 (a repo the next run skips at an unchanged HEAD; `index-repo --profile <p> --full` applies them) |
 | `unparseable_kept` | 0 (an indexed module whose tracked manifest does not parse is kept as it is; fix the manifest upstream, the next run re-indexes it) |
-| `would_rewrite`, `shared_prunes`, `held_prunes` | may stay non-zero while the shared-module bootstrap drains (about 11 nightly runs for a CE clone, see step 3); each normal run resolves what the previous audit listed |
+| `would_rewrite`, `shared_prunes` | may stay non-zero while the shared-module bootstrap drains (about 11 nightly runs for a CE clone, see step 3); each normal run resolves what the previous audit listed |
 
 Re-enable the nightly reindex now (if it was stopped in step 1), so the bootstrap drains:
 

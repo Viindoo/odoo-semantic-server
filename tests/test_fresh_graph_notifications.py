@@ -4,7 +4,7 @@ emit no Unknown{PropertyKey,RelationshipType}Warning (F50).
 
 Rules:
 
-* reading the lifecycle records (degraded parse, held prune, deferred prune) on
+* reading the lifecycle records (degraded parse, parser gap, deferred prune) on
   a graph where no module ever had one returns ``[]`` and emits no warning; a
   record written and read back is returned (the read still reads);
 * an index run (and the dry-run ``lifecycle-audit``) over repos without OWL
@@ -132,8 +132,9 @@ def test_lifecycle_record_reads_on_a_graph_that_never_had_a_record_do_not_warn(
         _assert_capture_sees_unknown_keys(writer, caplog)
 
         assert writer.parse_degraded_modules(7) == []
-        assert writer.prune_held_modules(7) == []
+        assert writer.parser_gap_modules(7) == []
         assert writer.prune_deferred_modules(V) == []
+        assert writer.clear_module_parser_gap(V, ["viin_ai_rag"]) == 0
 
         assert _unknown(caplog) == []
 
@@ -141,12 +142,13 @@ def test_lifecycle_record_reads_on_a_graph_that_never_had_a_record_do_not_warn(
             V, "viin_ai_rag", repo_id=7, fingerprint="fp1",
             paths=["viin_ai_rag/models/x.py"], problems=["SyntaxError"],
         )
-        writer.record_module_prune_held(
-            V, "viin_ai_rag", repo_id=7, stale=26, total=32, rels_stale=0, rels_total=6,
+        writer.record_module_parser_gap(
+            V, "viin_ai_rag", repo_id=7, fingerprint="tree|src-x", paths=["viin_ai_rag"],
+            kept=26, total=32, rels_kept=0, rels_total=6, sample=["Field f (m)"],
         )
         writer.record_module_prune_deferred(V, "viin_ai_rag", repo_id=7, waits_for=[9])
         assert [r["fingerprint"] for r in writer.parse_degraded_modules(7)] == ["fp1"]
-        assert [(r["stale"], r["total"]) for r in writer.prune_held_modules(7)] == [(26, 32)]
+        assert [(r["kept"], r["total"]) for r in writer.parser_gap_modules(7)] == [(26, 32)]
         assert [(r["name"], r["waits_for"]) for r in writer.prune_deferred_modules(V)] == [
             ("viin_ai_rag", [9])
         ]

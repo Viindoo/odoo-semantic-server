@@ -159,10 +159,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Bypass the mass-drop safety gates: module retirement / orphan sweep "
             "(more than half of a repo's modules, at least 20, or all of them, "
-            "vanishing in one run) and the entity prune of one module, shared or "
-            "not (more than half of its nodes or relationships, at least 20). A "
-            "tripped gate makes the run exit 3. Never set it in a timer; use it "
-            "once after checking lifecycle_attention."
+            "vanishing in one run) and the entity prune of a module several repos "
+            "ship (more than half of its nodes or relationships, at least 20). A "
+            "tripped gate makes the run exit 3. The entity prune of a module one "
+            "repo ships has no such gate and ignores this flag: it deletes what "
+            "the git HEAD tree proves gone and keeps what the source still "
+            "defines (a parser gap, reported by lifecycle-audit, never exit 3). "
+            "Never set it in a timer; use it once after checking "
+            "lifecycle_attention."
         ),
     )
 

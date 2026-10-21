@@ -154,6 +154,14 @@ MODULE_CHILD_REL_TYPES: dict[str, tuple[str, ...]] = {
     "TestClass": (REL_DEFINED_IN,),
 }
 
+# Relationships whose writer picks ONE end node among several of the same
+# identity by ranking, so a later run may re-point them; a stale one beside a
+# fresh same-identity twin is superseded (``module_stale_children`` ``twin``,
+# ``prune_evidence``).
+REL_TWIN_TYPES: tuple[str, ...] = (
+    REL_INHERITS, "DELEGATES_TO", "PATCHES", REL_REPORTS_ON, REL_USES_CORE_SYMBOL,
+)
+
 def _instant(expr: str) -> str:
     """Cypher: the instant of DateTime *expr* in epoch milliseconds.
 
@@ -257,12 +265,32 @@ def _prune_selector(label: str) -> tuple[str, str, str]:
         # overrides belongs to the file that declares it, not to this module.
         # The file-prefix seek (LintViolation.file_path index) comes first so
         # the predicate is evaluated for this module's files only.
+        #
+        # Second branch (ADR-0057 R8): a violation of one of the module's own
+        # Views raised in a file of ANOTHER copy of the module - the repo it
+        # moved from nested it elsewhere (``addons/<m>/views/x.xml`` there,
+        # ``<m>/`` here) - lies under no prefix, yet it is the module's: its
+        # path has a ``<m>/`` directory segment (a foreign-xmlid override from
+        # module Z keeps Z's directory and is never selected). The oracle
+        # judges it like every other file-keyed node (gone when the repo's HEAD
+        # has nothing at the path). Seeks on the (view_xmlid, odoo_version)
+        # index, bounded by the module's Views.
         return (
             "lv",
             f"""
-            UNWIND $file_prefixes AS prefix
-            MATCH (lv:LintViolation)
-            WHERE lv.file_path STARTS WITH prefix AND lv.odoo_version = $v
+            CALL {{
+                UNWIND $file_prefixes AS prefix
+                MATCH (lv:LintViolation)
+                WHERE lv.file_path STARTS WITH prefix AND lv.odoo_version = $v
+                RETURN lv
+                UNION
+                MATCH (lv:LintViolation)
+                WHERE lv.view_xmlid IN $xmlids AND lv.odoo_version = $v
+                  AND (lv.file_path STARTS WITH ($name + '/')
+                       OR lv.file_path CONTAINS ('/' + $name + '/'))
+                  AND NONE(prefix IN $file_prefixes WHERE lv.file_path STARTS WITH prefix)
+                RETURN lv
+            }}
             WITH DISTINCT lv
             WHERE ({_MODULE_LINT_VIOLATION_PREDICATE})
             """,
@@ -1740,6 +1768,8 @@ class Neo4jWriter:
         written_before=None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
+        only_ids: Iterable[str] | None = None,
+        only_rel_ids: Iterable[str] | None = None,
     ) -> dict:
         """Delete module *name*'s children and relationships run *run_id* did not write.
 
@@ -1747,16 +1777,22 @@ class Neo4jWriter:
         that instant (or never stamped), the shared-module mode of
         :meth:`module_children_census`, same selection.
 
+        *only_ids* / *only_rel_ids* (``elementId`` lists read by
+        :meth:`module_stale_children`): delete only those nodes /
+        relationships - the ones the source oracle proved gone or superseded
+        (ADR-0057). The selection and the stale predicate still apply on top,
+        so an id a concurrent run re-wrote since the read is never deleted.
+        None (the shared-module mode) deletes the whole stale selection; an
+        empty list deletes nothing of that kind.
+
         The destructive half of the intra-module entity prune (B14): after the
         module was fully re-parsed and re-written in run *run_id*, every child
         it still defines and every relationship it still declares carry that
-        token, so one without it is something the source no longer has (a
-        removed field, method, view, report, JS patch, stylesheet, test; a
-        dropped ``_inherit``, manifest dependency, ``inherit_id`` ...). The
-        caller has already checked, from the ledger and
-        :meth:`module_children_census`, that the parse was complete, that no
-        other repo ships the module and that the drop is not a mass event;
-        this method does not re-check.
+        token; one without it is a candidate, and the caller decides which
+        candidates go (per module: ledger ownership and a complete parse,
+        then the source oracle per candidate, ``pipeline_repo``; shared
+        modules: ``reconcile._Reconciler.prune_shared``). This method does not
+        re-check.
 
         Scope is exactly :meth:`module_children_census`'s selection. Nodes:
         never the Module node, other modules, other versions, foreign-namespace
@@ -1784,18 +1820,23 @@ class Neo4jWriter:
         if not name or name in NON_RETIRABLE_MODULE_NAMES:
             return empty
         prefixes = sorted({p for p in file_prefixes if p})
+        ids = None if only_ids is None else sorted(set(only_ids))
+        rel_ids = None if only_rel_ids is None else sorted(set(only_rel_ids))
         params = {"name": name, "v": odoo_version, "names": [name],
-                  "file_prefixes": prefixes, **mode}
+                  "file_prefixes": prefixes, "ids": ids or [], "rel_ids": rel_ids or [],
+                  **mode}
+        rel_filter = "" if rel_ids is None else "AND elementId(r) IN $rel_ids"
         with self.driver.session() as session:
             params["xmlids"] = self._module_view_xmlids(session, odoo_version, [name])
             for label in MODULE_CHILD_LABELS:
-                if label in skip:
+                if label in skip or ids == []:
                     continue
                 alias, selection, stale = _prune_selector(label)
+                node_filter = "" if ids is None else f"AND elementId({alias}) IN $ids"
                 row = _run_single_with_retry(
                     session, f"prune_module_children[{label}]",
                     f"""{selection}
-                    AND {stale}
+                    AND {stale} {node_filter}
                     CALL ({alias}) {{
                         DETACH DELETE {alias}
                     }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
@@ -1807,7 +1848,7 @@ class Neo4jWriter:
                 if deleted:
                     by_label[label] = deleted
             for label in ("Module", *MODULE_CHILD_LABELS):
-                if label in skip:
+                if label in skip or rel_ids == []:
                     continue
                 rel = _rel_selector(label)
                 if rel is None:
@@ -1817,7 +1858,7 @@ class Neo4jWriter:
                     session, f"prune_module_children[rel:{label}]",
                     f"""{start_nodes}
                     MATCH (n)-[r]->()
-                    WHERE type(r) IN [{types}] AND {_STALE_REL}
+                    WHERE type(r) IN [{types}] AND {_STALE_REL} {rel_filter}
                     CALL (r) {{
                         DELETE r
                     }} IN TRANSACTIONS OF {NEO4J_DELETE_BATCH_ROWS} ROWS
@@ -1840,6 +1881,143 @@ class Neo4jWriter:
             self.mark_post_pass_dirty(odoo_version)
         return {"deleted": total, "by_label": by_label,
                 "rels_deleted": rels_total, "rels_by_label": rels_by_label}
+
+    def module_stale_children(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_id: str,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> dict:
+        """The identities of module *name*'s children and relationships run
+        *run_id* did not write - the candidates :meth:`module_children_census`
+        counts, for the source oracle (``prune_evidence``, ADR-0057). Read-only.
+
+        Node rows: ``id`` (elementId), ``label``, ``name``, ``model``,
+        ``xmlid`` (a LintViolation's ``view_xmlid``), ``file_path``,
+        ``test_class``, ``target`` and two flags:
+        ``twin`` - a node of the same label in the same module with the same
+        identity minus ``file_path`` (TestClass: name + repo; TestMethod:
+        name + test_class + repo) was written by this run (the entity moved
+        to another file, or a second same-name class in another file of the
+        module: the oracle checks the node's own file); ``parent_live`` -
+        (LintViolation) its View was written by this run. Relationship rows
+        (stale relationships of the SURVIVING children and the Module node, as
+        the prune selects them): ``id``, ``type``, ``start_label``,
+        ``start_name``, ``start_model``, ``start_file`` and the end node's
+        ``end_labels``, ``end_name``, ``end_xmlid``, ``end_record_xmlid`` (a
+        record-form QWeb view's record id, which an extender may name instead
+        of its key), ``end_file``, ``end_qualified_name``, ``end_status``,
+        ``end_id``, plus ``twin`` - for :data:`REL_TWIN_TYPES`, this run wrote
+        one of the same type from the same start node to another node of the
+        same identity (the relationship was re-pointed).
+
+        Optional properties are read through ``properties()`` so a graph that
+        never had one emits no UnknownPropertyKeyWarning (F50).
+
+        Returns ``{"nodes": [...], "rels": [...]}``.
+        """
+        mode = _prune_mode(run_id, None, self._prune_started_at)
+        skip = set(skip_labels)
+        labels = [lb for lb in MODULE_CHILD_LABELS if lb not in skip]
+        out: dict = {"nodes": [], "rels": []}
+        if not name or name in NON_RETIRABLE_MODULE_NAMES:
+            return out
+        prefixes = sorted({p for p in file_prefixes if p})
+        twin_keys = {
+            "TestClass": ("name", "repo"),
+            "TestMethod": ("name", "test_class", "repo"),
+        }
+        parts = []
+        for label in labels:
+            alias, selection, stale = _prune_selector(label)
+            twin = "false"
+            if label in twin_keys:
+                same = " AND ".join(
+                    f"coalesce(properties(t).{k}, '') = coalesce(p.{k}, '')"
+                    for k in twin_keys[label]
+                )
+                twin = (
+                    f"EXISTS {{ MATCH (t:{label} {{module: $name, odoo_version: $v}}) "
+                    f"WHERE t <> {alias} AND {same} AND NOT {_stale('t')} }}"
+                )
+            parent = "false"
+            if label == "LintViolation":
+                parent = (
+                    "EXISTS { MATCH (pv:View {odoo_version: $v}) "
+                    f"WHERE pv.xmlid = p.view_xmlid AND NOT {_stale('pv')} }}"
+                )
+            parts.append(
+                f"""{selection}
+                AND {stale}
+                WITH {alias}, properties({alias}) AS p
+                RETURN elementId({alias}) AS id, '{label}' AS label, p.name AS name,
+                       p.model AS model, coalesce(p.xmlid, p.view_xmlid) AS xmlid,
+                       p.file_path AS file_path,
+                       p.test_class AS test_class, p.target AS target,
+                       {twin} AS twin, {parent} AS parent_live"""
+            )
+        # A relationship whose writer picks ONE of several same-identity end
+        # nodes by ranking (INHERITS / DELEGATES_TO / REPORTS_ON: one Model
+        # node per module of a name; PATCHES: one OWLComp of a name;
+        # USES_CORE_SYMBOL: a CoreSymbol by qualified name) is re-pointed when
+        # the ranking winner changes. ``twin``: this run wrote one of the same
+        # type from the same start node to ANOTHER node of the same identity
+        # (labels, name, model, xmlid, qualified name; for DELEGATES_TO also
+        # the ``via_field``) - the stale one is the old target.
+        rel_twin = f"""(type(r) IN {list(REL_TWIN_TYPES)!r}
+                AND coalesce(ep.xmlid, ep.qualified_name, ep.name, '') <> ''
+                AND EXISTS {{
+                    MATCH (n)-[r2]->(e2)
+                    WHERE type(r2) = type(r) AND e2 <> e AND NOT {_stale('r2')}
+                      AND size(labels(e2)) = size(labels(e))
+                      AND all(lb IN labels(e) WHERE lb IN labels(e2))
+                      AND coalesce(properties(e2).name, '') = coalesce(ep.name, '')
+                      AND coalesce(properties(e2).model, '') = coalesce(ep.model, '')
+                      AND coalesce(properties(e2).xmlid, '') = coalesce(ep.xmlid, '')
+                      AND coalesce(properties(e2).qualified_name, '')
+                          = coalesce(ep.qualified_name, '')
+                      AND (type(r) <> 'DELEGATES_TO'
+                           OR coalesce(properties(r2).via_field, '')
+                              = coalesce(properties(r).via_field, ''))
+                }})"""
+        rel_parts = []
+        for label in ("Module", *labels):
+            rel = _rel_selector(label)
+            if rel is None:
+                continue
+            start_nodes, types = rel
+            rel_parts.append(
+                f"""{start_nodes}
+                MATCH (n)-[r]->(e)
+                WHERE type(r) IN [{types}] AND {_STALE_REL}
+                WITH n, r, e, properties(n) AS sp, properties(e) AS ep
+                RETURN elementId(r) AS id, type(r) AS type, '{label}' AS start_label,
+                       sp.name AS start_name, sp.model AS start_model,
+                       sp.file_path AS start_file, labels(e) AS end_labels,
+                       ep.name AS end_name, ep.xmlid AS end_xmlid,
+                       ep.record_xmlid AS end_record_xmlid,
+                       ep.file_path AS end_file, ep.qualified_name AS end_qualified_name,
+                       ep.status AS end_status, {rel_twin} AS twin,
+                       elementId(e) AS end_id"""
+            )
+        with self.driver.session() as session:
+            xmlids = self._module_view_xmlids(session, odoo_version, [name])
+            params = dict(
+                name=name, v=odoo_version, names=[name], xmlids=xmlids,
+                file_prefixes=prefixes, **mode,
+            )
+            if parts:
+                out["nodes"] = session.run(
+                    self._read_query("\nUNION ALL\n".join(parts)), **params,
+                ).data()
+            if rel_parts:
+                out["rels"] = session.run(
+                    self._read_query("\nUNION ALL\n".join(rel_parts)), **params,
+                ).data()
+        return out
 
     def shared_prune_states(
         self, odoo_version: str, names: Iterable[str],
@@ -2017,7 +2195,7 @@ class Neo4jWriter:
         a graph where none ever did their keys are unknown to the database and
         a direct ``m.<key>`` read makes the server emit an
         UnknownPropertyKeyWarning per query. This read and the other lifecycle
-        record reads (``prune_held_modules``, ``prune_deferred_modules``) go
+        record reads (``parser_gap_modules``, ``prune_deferred_modules``) go
         through the ``properties(m)`` map, which names no key to the planner.
         """
         with self.driver.session() as session:
@@ -2036,72 +2214,99 @@ class Neo4jWriter:
                 repo_id=repo_id,
             ).data()
 
-    def record_module_prune_held(
+    def record_module_parser_gap(
         self,
         odoo_version: str,
         name: str,
         *,
         repo_id,
-        stale: int,
+        fingerprint: str,
+        paths: Iterable[str],
+        kept: int,
         total: int,
-        rels_stale: int,
+        rels_kept: int,
         rels_total: int,
+        sample: Iterable[str],
+        reason: str | None = None,
     ) -> None:
-        """Remember on the Module node that its entity prune is held by the soft gate (B14).
+        """Remember on the Module node what its entity prune kept (ADR-0057).
 
-        The counts are those of the census that tripped the gate. The record
-        stands until a run prunes the module (``clear_module_prune_held``), so
-        the dry-run ``lifecycle-audit`` can report the hold without parsing.
+        The kept nodes / relationships are still defined by the module's HEAD
+        source but no longer produced by its parse (a parser gap), or could
+        not be judged at all (*reason*: why the source oracle was unavailable).
+        *fingerprint* = module tree id(s) + prune code digest: the pipeline
+        re-parses the module for this record only when it changes
+        (``pipeline_repo._parser_gap_state``), never on an unchanged night.
+        *paths*: the module directories the fingerprint was taken over. The
+        record stands until a prune keeps nothing (``clear_module_parser_gap``)
+        and is read by ``lifecycle-audit`` as the ``parser_gaps`` finding. It
+        also replaces a legacy soft-gate hold record (``prune_held_*``).
         """
         with self.driver.session() as session:
             _run_single_with_retry(
-                session, "record_module_prune_held",
+                session, "record_module_parser_gap",
                 """
                 MATCH (m:Module {name: $name, odoo_version: $v})
-                SET m.prune_held_repo_id = $repo_id,
-                    m.prune_held_counts = [$stale, $total, $rels_stale, $rels_total]
+                SET m.parser_gap_repo_id = $repo_id,
+                    m.parser_gap_fingerprint = $fingerprint,
+                    m.parser_gap_paths = $paths,
+                    m.parser_gap_counts = [$kept, $total, $rels_kept, $rels_total],
+                    m.parser_gap_sample = $sample,
+                    m.parser_gap_reason = $reason
+                REMOVE m.prune_held_repo_id, m.prune_held_counts
                 RETURN count(m) AS n
                 """,
-                name=name, v=odoo_version, repo_id=repo_id, stale=stale, total=total,
-                rels_stale=rels_stale, rels_total=rels_total,
+                name=name, v=odoo_version, repo_id=repo_id, fingerprint=fingerprint,
+                paths=sorted(set(paths)), kept=kept, total=total, rels_kept=rels_kept,
+                rels_total=rels_total, sample=list(sample), reason=reason,
             )
 
-    def clear_module_prune_held(self, odoo_version: str, names: Iterable[str]) -> int:
-        """Forget the held-prune record of *names* (their entity prune ran)."""
+    def clear_module_parser_gap(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the parser-gap record of *names* (their prune kept nothing),
+        and any legacy soft-gate hold record (``prune_held_*``, pre-ADR-0057)."""
         wanted = sorted(set(names))
         if not wanted:
             return 0
         with self.driver.session() as session:
             row = _run_single_with_retry(
-                session, "clear_module_prune_held",
+                session, "clear_module_parser_gap",
                 """
                 UNWIND $names AS name
                 MATCH (m:Module {name: name, odoo_version: $v})
-                WHERE m.prune_held_counts IS NOT NULL
-                REMOVE m.prune_held_repo_id, m.prune_held_counts
+                WITH m, properties(m) AS p
+                WHERE p.parser_gap_fingerprint IS NOT NULL OR p.prune_held_counts IS NOT NULL
+                REMOVE m.parser_gap_repo_id, m.parser_gap_fingerprint, m.parser_gap_paths,
+                       m.parser_gap_counts, m.parser_gap_sample, m.parser_gap_reason,
+                       m.prune_held_repo_id, m.prune_held_counts
                 RETURN count(m) AS n
                 """,
                 names=wanted, v=odoo_version,
             )
         return row["n"] if row is not None else 0
 
-    def prune_held_modules(self, repo_id) -> list[dict]:
-        """Modules whose entity prune by repo *repo_id* is held, every version.
+    def parser_gap_modules(self, repo_id) -> list[dict]:
+        """Modules whose last entity prune by repo *repo_id* kept entities the
+        source still defines (ADR-0057), every version.
 
-        Rows ``{name, odoo_version, stale, total, rels_stale, rels_total}``
-        sorted by version then name. Read through ``properties(m)`` (see
-        :meth:`parse_degraded_modules`).
+        Rows ``{name, odoo_version, fingerprint, paths, kept, total,
+        rels_kept, rels_total, sample, reason}`` sorted by version then name.
+        Read through ``properties(m)`` (see :meth:`parse_degraded_modules`).
         """
         with self.driver.session() as session:
             return session.run(
                 self._read_query("""
                 MATCH (m:Module)
                 WITH m, properties(m) AS p
-                WHERE p.prune_held_repo_id = $repo_id AND p.prune_held_counts IS NOT NULL
+                WHERE p.parser_gap_repo_id = $repo_id
+                  AND p.parser_gap_fingerprint IS NOT NULL
                 RETURN m.name AS name, m.odoo_version AS odoo_version,
-                       p.prune_held_counts[0] AS stale, p.prune_held_counts[1] AS total,
-                       p.prune_held_counts[2] AS rels_stale,
-                       p.prune_held_counts[3] AS rels_total
+                       p.parser_gap_fingerprint AS fingerprint,
+                       coalesce(p.parser_gap_paths, []) AS paths,
+                       p.parser_gap_counts[0] AS kept, p.parser_gap_counts[1] AS total,
+                       p.parser_gap_counts[2] AS rels_kept,
+                       p.parser_gap_counts[3] AS rels_total,
+                       coalesce(p.parser_gap_sample, []) AS sample,
+                       p.parser_gap_reason AS reason
                 ORDER BY m.odoo_version, m.name
                 """),
                 repo_id=repo_id,

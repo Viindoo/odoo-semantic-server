@@ -18,17 +18,87 @@ All notable changes to Odoo Semantic MCP are documented here.
 - **`_inherit` given as a tuple was ignored:** `_inherit = 'x',` and `_inherit = ('a', 'b')` parsed as no parent (to_hr_employee_advance employee.advance.line 17.0). The AST and the text-regex (era1) parsers both accept tuples now.
 - **`_name` / `_inherit` given as a constant dropped the model:** `_name = INTROSPECT_SERVICE` (viin_ai 17.0) lost the model and all its methods; `_inherit = _name` (Odoo `website` ir.module.module, v9-v18) lost the self-extension. New `parser_python_consts` resolves, without executing anything, a name bound earlier in the class body, at module level of the same file before the class, or imported from another file of the same addon (relative imports, `from . import`, `odoo.addons.<addon>`, aliases, re-exports; bounded and cycle-safe). Anything else keeps the old literal-only behaviour with a DEBUG log naming the file.
 - **A QWeb extender naming a record-form QWeb view by its record id was unresolved:** `<record id="default_faq" model="ir.ui.view">` with key `website_forum.faq_accordion` is keyed by its key, while `inherit_id ref="website_forum.default_faq"` names the record xmlid. The record xmlid is now stored as `QWebTmpl.record_xmlid` (new index `(record_xmlid, odoo_version)`), and EXTENDS_TMPL, USES_TEMPLATE and the placeholder relink also match it. The `_parse_qweb_record` docstring no longer claims the key is what extenders inherit by.
+- **Nightly reindex exited 3 every night since 2026-10-17 and served ghosts (ADR-0057).** The
+  per-repo entity prune (ADR-0056 B14) held any module losing more than 50% (and at least 20)
+  of its nodes or relationships until an operator ran `--allow-mass-retire`, and re-parsed and
+  held it again every night. A parse is no evidence of a deletion: `viin_ai@17.0` lost the
+  live model `viin.ai.ui.introspect` (its `_name` became a constant, which the parser could
+  not read before `parser_python_consts` above), which the prescribed bypass would have
+  deleted. The prune now asks a source oracle
+  (`src/indexer/prune_evidence.py`): each stale node / relationship is judged against the
+  module's files at the git HEAD tree (`git ls-tree` + `cat-file`, not the parsers) - what git
+  proves gone is deleted with its embeddings whatever the count (partial prune per module);
+  what the source still defines is kept as a parser gap, recorded on the Module node,
+  reported by `lifecycle-audit` and re-evaluated only when the module tree or the indexer code
+  changes. No threshold, no approval, no exit 3, no `needs_rewrite` loop for it.
+- **The source oracle never proves a model gone behind an identity it cannot evaluate.** A
+  class whose `_name` / `_inherit` is a constant imported from another addon, a call, an
+  f-string or an attribute never spells its model in the module, so the text rule would
+  have called the model, its members and its INHERITS / DELEGATES_TO edges gone. The oracle
+  now evaluates each class identity statically with its own AST pass (literals, tuples,
+  names bound in the class, the file or another file of the same addon); while any class of
+  the module is unevaluable, no Model node and no inheritance edge of it is proven gone. A
+  Python 2 file is scanned for a non-literal meta assignment by text instead.
+- **Fields and methods are judged inside their class.** A field / method is present only
+  when it is declared in the body of a class whose models (evaluated `_name` / `_inherit`,
+  widened through local Python bases and subclasses) include the node's model, or of a class
+  of unknown identity; files Python 3 cannot parse keep the text rule. A field moved to
+  another model of the same module is no longer kept on the first one
+  (`viin_freight_mixed_container_patch1@17.0` `package_type_id`, `viin_ai@17.0`
+  `_get_sensitive_header_keys` moved to the request-log mixin), and a declaration left only in
+  a comment of a parseable file no longer keeps it.
+- **A QWeb edge to a record-form view is judged by the record id the extender names:**
+  `module_stale_children` reads back the end node's `record_xmlid`, so a stale EXTENDS_TMPL /
+  USES_TEMPLATE edge whose source still says `inherit_id ref="<record id>"` is kept.
+- **Test-node GC deleted test nodes without their embeddings, and inflated the prune census.**
+  The file-level GC now leaves the modules the oracle-gated prune judged (and degraded ones)
+  alone; their test nodes leave with their `test_class` / `test_method` rows
+  (`viin_freight_mixed_container_patch1@17.0` had 101 ghost rows served by
+  `find_test_examples`).
 - **`osm-alert@.service` now mails the admins (#383 item 1):** the hook only printed a journal line, so from 2026-08-25 to 2026-09-25 the nightly reindex failed 32 nights out of 32 unnoticed (and a DNS failure made the 2026-10-18/19 runs no-ops). It now runs `python -m src.ops.alert_notify --unit %i` as `odoo-semantic` and mails every active Web UI admin with an email (`webui_users.is_admin AND is_active`, read from PostgreSQL at send time) through the Web UI's SES `SMTP_*` settings: unit, host, exit status and its meaning, the `Lifecycle needs attention` block when this run wrote one, the last 60 lines of this run's output (its `append:` log file, else its journal) and a runbook pointer, with passwords, DSN credentials, tokens, API keys and private keys redacted. Database down: the last known admin list (`/var/lib/osm-alert/admins.json`, refreshed on every successful read) plus `OSM_ALERT_FALLBACK_TO`; no recipient at all is logged loudly. The same alert (unit, exit status, attention block) is mailed once per `OSM_ALERT_REPEAT_HOURS` (20, see the Alerts entry below), at most `OSM_ALERT_MAX_PER_HOUR` (6) mails an hour; a failed delivery logs `DELIVERY_FAILED` and the hook always exits 0. The reindex and lifecycle-audit units write an `osm-run-start ... invocation=<id>` line first so only this run's lines count. `OnFailure=` is spelled `osm-alert@%n` everywhere (the offsite-sync template used `osm-alert@%n.service`), and `make check-systemd-overrides` now audits `osm-alert@.service` (it also no longer aborts on an installed unit without `User=`). SMTP delivery moved to the leaf `src/mailer.py`, shared by the Web UI mails (the admin-issued password reset mail included) and the hook. The alert is one mail with every admin in `Bcc` (`To: undisclosed-recipients:;`): no admin sees the other admins' addresses; `src.mailer.send` builds the SMTP envelope from To / Cc / Bcc and logs the recipient count, not the addresses.
 - **The indexer CLI honours the admin-tuned embedder read timeout (#383 item 3):** `index-repo` and `reembed-stubs` built the embedder before the PostgreSQL pool existed, so `embedding.timeout_read_seconds` (resolved once, when the embedder is built) fell back to the constant on every CLI run and each run logged `overlay-only resolve failed: PostgreSQL pool is not initialized`. The pool is now opened first.
 - **Exact process identity for Web UI index jobs (#383 item 4):** the indexer child (index-repo, index-core, seed-patterns) writes its own `proc_start_ticks` (`/proc/self/stat` field 22) and `boot_id` with its `running` report, and `job_registry.job_staleness` compares them for equality: a wall-clock step no longer expires a live job, and a pid reused seconds after the job started is caught. Legacy rows (either column NULL) keep the 120 s heuristic. Code running before the migration still records `running` (the update retries without the two columns). A non-admin's repo listing no longer carries the attached job's `pid` (nor the new columns), matching `/api/jobs/{id}/status`.
+- A module whose manifest sits at the repo root is judged by the source oracle (git rejected
+  the empty pathspec, so its ghosts were kept for ever as an "unavailable" parser gap), also
+  for a shared module's root-copy owner.
+- A stale TestClass / TestMethod beside a live same-name twin is deleted only when its own
+  file no longer defines it (one module may hold two same-name test classes in two files).
+- A relationship the writer re-pointed to another same-identity node (INHERITS /
+  DELEGATES_TO / REPORTS_ON Model, PATCHES OWLComp, USES_CORE_SYMBOL) is superseded instead
+  of kept beside the new one for ever (`module_stale_children` `twin`); a USES_CORE_SYMBOL
+  edge to a CoreSymbol no longer `deprecated` too.
 - The parser no longer indexes a class without `_name` under its SECOND parent when
   `_inherit[0]` is an unresolvable constant.
+- A module moved from a repo that nested it at another path (`addons/<m>` there, `<m>`
+  here) no longer keeps its old copy's file-keyed children (Stylesheet, JsTestSuite,
+  JSPatch, LintViolation, test-class twins) for ever as a parser gap beside the new copy,
+  with their embedding rows (a regression against ADR-0056 D9): a path that maps into no
+  directory of the module is gone when git proves the repo's HEAD has nothing there and no
+  submodule sits above it (`ModuleSource.foreign_path_absent`, ADR-0057 R8). The old
+  copy's LintViolations, selected by file prefix, were never even candidates; the prune
+  selector now also picks a violation of one of the module's own Views whose path has a
+  `<m>/` directory segment (bounded by the view_xmlid index).
 - **Alerts:** the osm-alert repeat window defaults to 20h, so a failure that persists every night mails every night (a 24h window equal to the timer period skipped nights). With no lifecycle attention block, the dedupe key includes the normalized last error line, so a new cause with the same exit status mails at once. An `ExecStartPre=` failure (no `$MONITOR_EXIT_STATUS`) is reported from `systemctl show -p ExecStartPre`, e.g. "exit 124 (ExecStartPre) - pre-flight timed out: PostgreSQL not ready within 60s", not "exit unknown". Alerts held by the hourly cap are recorded and listed in the next mail instead of being dropped. The state lock is held only to decide and reserve, with a bounded wait; the SMTP send has a 45s hard deadline; `osm-alert@.service` `TimeoutStartSec` 120 -> 180. Log excerpts are redacted before truncation, with new rules for `NEO4J_AUTH`, GitHub tokens, bare Fernet keys, base64 key material and key blocks cut by the window. The last known admin list is ignored after `OSM_ALERT_ADMIN_CACHE_MAX_DAYS` (7); the nightly reindex refreshes it (`alert_notify --refresh-admins`). Known limit, documented: docker.service failing to start does not trigger `OnFailure=` of the reindex / audit units (optional docker drop-in).
 ### Changed
 
+- `lifecycle-audit` JSON schema `osm.lifecycle-audit/4`: finding and repo key `held_prunes`
+  renamed `parser_gaps` (rows: `kept`, `total`, `rels_kept`, `rels_total`, `sample`, `reason`,
+  `reevaluated_next_run`).
+- Writer API: `module_stale_children`, `prune_module_children(only_ids=, only_rel_ids=)`,
+  `record_module_parser_gap` / `clear_module_parser_gap` / `parser_gap_modules` replace the
+  soft-gate hold records (a legacy `prune_held_*` record is cleared by the next prune).
 - The admin-issued password reset mail (`POST /api/admin/users/{id}/reset-password-link`)
   is sent by `src.mailer` like every other OSM mail: with `SMTP_FROM` unset its sender is the
   mailer default instead of `SMTP_USER` (an SES access key id, not an address).
+### Deploy
+
+- Entity prune (no migration of its own): the first nightly after the deploy re-parses the
+  three held modules (`needs_rewrite`), prunes their git-proven ghosts (graph + embeddings)
+  and exits 0. Measured read-only on the 2026-10-20 stale set (2399 nodes) with this
+  release's parser and oracle: the parser re-produces the `viin.ai.ui.introspect` model and
+  its 76 methods, every other stale node of `viin_ai_voice` (120) and
+  `viin_freight_mixed_container_patch1` (65) is git-proven gone, and of `viin_ai` only one
+  test method stays, listed under `parser_gaps`.
 
 ## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)
 

@@ -10,9 +10,10 @@ Business rules protected here:
 - It lists exactly what the next real index run will do, proven by running that
   run afterwards and comparing the graph with the prediction.
 - ``--fail-on-findings`` is the weekly drift detector (Q9): exit 4 on any
-  finding, 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/3`` is a
+  finding, 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/4`` is a
   contract for that timer and for the P3/P4 rollout review (``/2``: a
-  soft-gate-held entity prune is a finding, ``held_prunes``; ``/3``: the
+  soft-gate-held entity prune is a finding, ``held_prunes``, renamed
+  ``parser_gaps`` by ``/4`` - ADR-0057; ``/3``: the
   shared-module entity prune of F49 is a finding, ``shared_prunes``, with
   ``shared_prune_waiting`` / ``shared_prune_rewrites`` per version and the
   post-deploy ``shared_parse_backlog`` per repo; additive under ``/3`` per
@@ -54,8 +55,8 @@ POSBOX_STUB_MANIFEST = "{\n    'license': 'LGPL-3',\n}\n"
 REQUIRED_FINDING_KEYS = {
     "would_retire", "would_drop_owner", "undecidable", "blocked", "orphan_modules",
     "child_orphans", "embedding_orphans", "modules_without_profile", "would_rewrite",
-    "wrong_paths", "unapplied_changes", "errors", "held_prunes", "shared_prunes",
     "unparseable_kept",
+    "wrong_paths", "unapplied_changes", "errors", "parser_gaps", "shared_prunes",
 }
 
 
@@ -378,7 +379,8 @@ def test_audit_lists_exactly_what_the_next_run_will_do(
     re-writes the unchanged F24 module ``noprof_mod`` (node present, profile
     lost), so the audit now lists it in ``would_rewrite`` as well as in
     ``modules_without_profile`` (the old count of 3 under-predicted the run).
-    The findings dict gains ``held_prunes`` (schema /2), zero here.
+    The findings dict gains ``held_prunes`` (schema /2, ``parser_gaps`` since
+    /4), zero here.
 
     Updated for F49 (schema /3): the findings dict also carries
     ``shared_prunes`` - what the shared-module rule would prune or holds. This
@@ -443,7 +445,7 @@ def test_audit_lists_exactly_what_the_next_run_will_do(
         "would_retire": 2, "would_drop_owner": 0, "undecidable": 0, "blocked": 0,
         "orphan_modules": 2, "child_orphans": 1, "embedding_orphans": 1,
         "modules_without_profile": 1, "would_rewrite": 4, "wrong_paths": 0,
-        "unapplied_changes": 0, "errors": 0, "held_prunes": 0, "shared_prunes": 0,
+        "unapplied_changes": 0, "errors": 0, "parser_gaps": 0, "shared_prunes": 0,
         "unparseable_kept": 0,
     }
     assert repo["unparseable_kept"] == []
@@ -531,7 +533,7 @@ def test_fail_on_findings_exits_4_and_names_the_findings(drifted, monkeypatch, c
         assert name in out
 
 
-def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch, capsys):
+def test_json_report_keeps_the_osm_lifecycle_audit_4_schema(drifted, monkeypatch, capsys):
     """Keys and types the weekly timer and the rollout review read.
 
     Updated for the held-prune finding: the shape changed (``held_prunes`` in
@@ -551,11 +553,16 @@ def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch
     ``unparseable_kept`` (list), ``scan.unreadable_manifests`` (int) and
     ``gates.baseline`` (``ledger`` / ``graph``); each version entry gains
     ``orphans_unparseable`` (list) and ``excluded_owner_waiting`` (dict).
-    Every earlier key is still pinned with its type."""
+    Every earlier key is still pinned with its type.
+
+    Updated for ADR-0057 (source-oracle prune): ``held_prunes`` is renamed
+    ``parser_gaps`` in ``findings`` and in each repo entry (entities kept
+    because the source still defines them, not a held prune), so the schema
+    id is ``osm.lifecycle-audit/4``."""
     _, out, _ = _cli(monkeypatch, capsys, "--profile", PROFILE, "--json")
     report = json.loads(out)
 
-    assert report["schema"] == "osm.lifecycle-audit/3"
+    assert report["schema"] == "osm.lifecycle-audit/4"
     assert report["dry_run"] is True
     assert isinstance(report["generated_at"], str) and "T" in report["generated_at"]
     assert isinstance(report["duration_s"], float | int)
@@ -572,7 +579,7 @@ def test_json_report_keeps_the_osm_lifecycle_audit_3_schema(drifted, monkeypatch
         "transitions": dict, "pending": list, "unapplied_changes": dict,
         "would_rewrite": list, "wrong_paths": list, "would_retire": list,
         "would_drop_owner": list, "undecidable": list, "blocked": list,
-        "held_prunes": list, "shared_parse_backlog": dict, "error": (str, type(None)),
+        "parser_gaps": list, "shared_parse_backlog": dict, "error": (str, type(None)),
         "unparseable_kept": list,
     }
     repo = _repo_entry(report, REPO)

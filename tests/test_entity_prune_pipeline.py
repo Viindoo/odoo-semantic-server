@@ -18,9 +18,11 @@ rule "never blur data for the AI". The rule now (08-implementation-plan B14,
 * (c) a module another present repo still ships is skipped; an unsynced repo that
   may ship it defers the prune until it syncs; legacy multi-profile ``Module``
   arrays never block;
-* (d) a mass drop (> 50 % and >= 20 of the module's nodes OR relationships) is
-  held - graph and embeddings unchanged, operator attention, CLI exit 3 - until
-  ``--allow-mass-retire``.
+* (d) every candidate is judged against the module's HEAD source (ADR-0057):
+  what git proves gone leaves however large the drop (no mass gate, no
+  ``--allow-mass-retire``, exit 0); what the source still defines but the
+  parser no longer produces is kept with its embeddings as a recorded parser
+  gap, without attention and without a nightly re-parse.
 
 Every test drives the REAL ``index_profile`` (or the real CLI ``main``) over temp
 git repos with a bare origin, against a real Neo4j and PostgreSQL + pgvector.
@@ -848,7 +850,7 @@ def test_legacy_multi_profile_module_array_does_not_block_the_prune(
 
 
 # ---------------------------------------------------------------------------
-# (d) mass drop is held
+# (d) the source decides (ADR-0057): git-proven drops go, parser gaps stay
 # ---------------------------------------------------------------------------
 
 def _bulk_models(n_fields: int) -> str:
@@ -862,13 +864,13 @@ def _bulk_models(n_fields: int) -> str:
     )
 
 
-def test_mass_drop_is_held_with_exit_3_until_allow_mass_retire(
-    pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db, capsys,
+def test_a_git_proven_mass_drop_is_pruned_on_the_first_plain_run_without_approval(
+    pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db,
 ):
-    """25 of the module's 31 nodes disappear from one parse (> 50 %, >= 20): that
-    looks like a broken parse, so the real CLI keeps the graph AND the embeddings,
-    names the module to the operator and exits 3. Re-running with
-    --allow-mass-retire on the same HEAD prunes both; the run after is clean."""
+    """25 of the module's 31 nodes disappear in one commit (far above the old
+    50 %/20 gate). Git proves the deletion, so the real CLI prunes graph AND
+    embeddings on the first plain run and exits 0: no --allow-mass-retire, no
+    attention, no parser-gap record; the run after is clean too."""
     import src.indexer.__main__ as cli
 
     monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
@@ -878,38 +880,73 @@ def test_mass_drop_is_held_with_exit_3_until_allow_mass_retire(
     repo.commit("add bulk")
     (rid,) = register("bulk_99", repo)
     assert cli.main(["index-repo", "--profile", "bulk_99"]) == 0
-    capsys.readouterr()
-    nodes_before, emb_before = _nodes(neo4j_driver, "viin_ai_bulk"), _emb(pg, "viin_ai_bulk")
-    assert ("field", "ai.bulk.f29") in emb_before
+    assert ("field", "ai.bulk.f29") in _emb(pg, "viin_ai_bulk")
     _rel_module(repo, "viin_ai_bulk", depends=["base"], models_py=_bulk_models(5))
     repo.commit("[REF] bulk: drop 25 fields")
 
-    held = cli.main(["index-repo", "--profile", "bulk_99"])
+    assert cli.main(["index-repo", "--profile", "bulk_99"]) == 0
 
-    assert held == 3
-    err = capsys.readouterr().err
-    assert "viin_ai_bulk" in err, err
-    assert _nodes(neo4j_driver, "viin_ai_bulk") == nodes_before
-    assert _emb(pg, "viin_ai_bulk") == emb_before
-    attention = _attention(pg, rid)
-    assert "viin_ai_bulk" in attention and "--allow-mass-retire" in attention, attention
-
-    confirmed = cli.main(["index-repo", "--profile", "bulk_99", "--allow-mass-retire"])
-
-    assert confirmed == 0
     assert _count(neo4j_driver, "Field", module="viin_ai_bulk") == 5
     assert ("field", "ai.bulk.f29") not in _emb(pg, "viin_ai_bulk")
     assert ("field", "ai.bulk.f04") in _emb(pg, "viin_ai_bulk")
-    assert "--allow-mass-retire" not in _attention(pg, rid)
+    assert "viin_ai_bulk" not in _attention(pg, rid)
+    assert "parser_gap_fingerprint" not in (module_node(neo4j_driver, "viin_ai_bulk") or {})
     assert cli.main(["index-repo", "--profile", "bulk_99"]) == 0
 
 
-def test_mass_drop_of_relationships_alone_is_held_until_allow_mass_retire(
+def test_a_parser_regression_keeps_what_the_source_defines_without_exit_3_or_a_loop(
+    pg, neo4j_driver, tmp_path, monkeypatch,
+):
+    """The source is unchanged but the parser stops producing 25 of 30 fields
+    (a regression): the prune keeps those fields and their embedding rows,
+    records a parser gap on the Module node, raises no gate and no attention.
+    The next plain run does not re-parse the module for it (no nightly loop);
+    a later commit that really deletes one of them prunes exactly that one."""
+    from src.indexer import parser_python
+
+    repo = GitRepo(tmp_path, "bulk_addons")
+    _rel_module(repo, "viin_ai_bulk", depends=["base"], models_py=_bulk_models(30))
+    repo.commit("add bulk")
+    (rid,) = register("bulk_99", repo)
+    run(pg, "bulk_99")
+    real = parser_python.parse_module
+
+    def regressed(info):
+        result = real(info)
+        for m in result.models:
+            m.fields = [f for f in m.fields if f.name < "f05"]
+        return result
+
+    monkeypatch.setattr(parser_python, "parse_module", regressed)
+    summary = run(pg, "bulk_99", full_reindex=True)
+
+    assert not needs_attention(summary), lc(summary)
+    assert _count(neo4j_driver, "Field", module="viin_ai_bulk") == 30
+    assert ("field", "ai.bulk.f29") in _emb(pg, "viin_ai_bulk")
+    assert "viin_ai_bulk" not in _attention(pg, rid)
+    node = module_node(neo4j_driver, "viin_ai_bulk")
+    assert node["parser_gap_counts"][0] == 25, node
+    again = run(pg, "bulk_99")
+    assert again["modules"] == 0, again
+    assert not needs_attention(again), lc(again)
+
+    _rel_module(repo, "viin_ai_bulk", depends=["base"], models_py=_bulk_models(30).replace(
+        "    f29 = fields.Char()\n", ""))
+    repo.commit("[REM] bulk: drop f29")
+    run(pg, "bulk_99")
+
+    assert _count(neo4j_driver, "Field", module="viin_ai_bulk", name="f29") == 0
+    assert ("field", "ai.bulk.f29") not in _emb(pg, "viin_ai_bulk")
+    assert _count(neo4j_driver, "Field", module="viin_ai_bulk", name="f28") == 1
+    assert ("field", "ai.bulk.f28") in _emb(pg, "viin_ai_bulk")
+
+
+def test_a_git_proven_mass_drop_of_relationships_is_pruned_without_approval(
     pg, neo4j_driver, tmp_path,
 ):
     """No node disappears, but 25 of the hub module's ~33 relationships (its
-    manifest dependencies) do: the same mass-drop gate holds them, then
-    allow_mass_retire prunes exactly the dropped DEPENDS_ON edges."""
+    manifest dependencies) are removed by a commit: they leave the graph on
+    the first plain run, exactly the dropped DEPENDS_ON edges, no attention."""
     repo = GitRepo(tmp_path, "hub_addons")
     deps = [f"viin_dep_{i:02d}" for i in range(30)]
     for d in deps:
@@ -931,15 +968,9 @@ def test_mass_drop_of_relationships_alone_is_held_until_allow_mass_retire(
         "installable": True, "license": "LGPL-3",
     }) + "\n")
     repo.commit("[REF] hub: drop 25 dependencies")
-    held = run(pg, "hub_99")
+    summary = run(pg, "hub_99")
 
-    assert needs_attention(held)
-    assert any("viin_hub" in g for g in lc(held)["gates_tripped"]), lc(held)
-    assert _has_rel(neo4j_driver, "viin_hub", "DEPENDS_ON") == 30
-
-    confirmed = run(pg, "hub_99", allow_mass_retire=True)
-
-    assert not needs_attention(confirmed), lc(confirmed)
+    assert not needs_attention(summary), lc(summary)
     assert _has_rel(neo4j_driver, "viin_hub", "DEPENDS_ON") == 5
 
 
