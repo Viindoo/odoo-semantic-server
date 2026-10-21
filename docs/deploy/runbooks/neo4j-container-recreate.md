@@ -45,8 +45,9 @@ where it was last started.
   docker logs odoo-semantic-mcp-neo4j-1 --tail 5
   # Safe to proceed if no "checkpoint" or bulk-write activity in the last 60s
   ```
-- Preferred window: after 04:30 ICT (nightly reindex at 03:30 ICT finishes and
-  Neo4j goes idle).
+- Preferred window: after the nightly reindex has finished (it starts at 00:00
+  ICT; `systemctl is-active odoo-semantic-reindex.service` prints `inactive`)
+  and Neo4j is idle.
 
 ---
 
@@ -75,7 +76,7 @@ used to pick up env-var or image changes.
 
 ## Procedure
 
-Recommended window: any day after 04:30 ICT.
+Recommended window: any day once the nightly reindex (00:00 ICT) has finished.
 
 ```bash
 # 1. Stop and remove Neo4j from the path where it was last up'd

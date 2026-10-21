@@ -264,7 +264,7 @@ jq .findings ~/osm-rollout/lifecycle-preview.json
 
 ## Step 4 - The first normal index run (no `--full`, no `--gc`, no script)
 
-Off-peak, either re-enable the timer and wait for 03:30, or run it once by hand:
+Off-peak, either re-enable the timer and wait for 00:00, or run it once by hand:
 
 ```bash
 sudo osm-fernet-run $PY -m src.indexer index-repo --all --profile-workers 2

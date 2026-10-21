@@ -329,7 +329,7 @@ def test_the_same_alert_is_mailed_once_per_20h_and_again_after(host, state, capl
 
 
 def test_a_hold_that_persists_every_night_mails_every_night(host, state):
-    """The timer fires at 03:30 every 24h but a run lasts a varying time: a run
+    """The timer fires at 00:00 every 24h but a run lasts a varying time: a run
     that ends 1h20 earlier than the night last mailed is still a new night's
     alert (a 24h window held it, mailing only every other night)."""
     env = _env(state)

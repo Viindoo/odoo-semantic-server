@@ -181,6 +181,12 @@ Source-truth wave: parser / writer fixes for lost INHERITS and EXTENDS_TMPL edge
 
 ### Changed
 
+- Nightly schedule: the reindex timer fires at 00:00 instead of 03:30 and the backup timer at
+  23:30 instead of 03:00. A run mostly waits on the GPU embedder (1.5-5.5 h observed in
+  2026-10), which shares its GPU with daytime workloads that take priority, so it now ends
+  before working hours; the backup stays a clean restore point taken just before the run
+  (Neo4j is exported online, so a backup during the run could catch graph and Postgres out
+  of step).
 - `lifecycle-audit`: `parser_gaps` and `unproven_drops` are informational (kept data by owner
   decision): still counted in `findings` and listed, named in the new top-level
   `informational_findings`, but they no longer set `has_findings` and never make
@@ -258,6 +264,9 @@ Source-truth wave: parser / writer fixes for lost INHERITS and EXTENDS_TMPL edge
   viin_ai_agent, viin_ai_skill, viin_ai_search, viin_ai_memory resolve to "Merged into:
   viin_ai". Cross-version renames need nothing on deploy (data ships in the package).
 - auto_install triggers (#380, no migration): after the MCP restart run `ops/backfill_auto_install.py --dry-run`, then without `--dry-run` (owner DSN; manifests only, minutes instead of a ~20 h `--full`; idempotent, `--version` / `--repo-id` to narrow). deploy.md section 3.6d.
+- Nightly schedule: install the new `odoo-semantic-backup.timer` (23:30) and
+  `odoo-semantic-reindex.timer` (00:00) templates, `daemon-reload`, restart both timers;
+  `systemctl list-timers` shows the new NEXT times. Do it while no reindex runs.
 - Resync workflows (#380 items 2 and 6): `cli-flags-resync.yml` and `module-renames-resync.yml` open their drift pull request with the workflow `GITHUB_TOKEN`; enable the repository setting "Allow GitHub Actions to create and approve pull requests" (otherwise each falls back to opening one issue). Nothing to deploy on the server.
 
 ## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)

@@ -1,8 +1,14 @@
-# odoo-semantic-reindex.timer — fires odoo-semantic-reindex.service daily at 03:30
+# odoo-semantic-reindex.timer - fires odoo-semantic-reindex.service daily at 00:00
 # Đặt tại: /etc/systemd/system/odoo-semantic-reindex.timer
 #
-# 03:30 = off-peak; after the 00:10 TTL cleanup window. Incremental reindex
-# skips unchanged repos (head_sha) so most nights this is near-zero-cost.
+# 00:00 = the start of the quiet hours. A run mostly waits on the embedder
+# (1.5-5.5 h observed on prod in 2026-10 when it started at 03:30), and the
+# embedder shares its GPU with daytime workloads that take priority, so the run
+# must be done before working hours. It starts 30 minutes after the 23:30
+# backup (odoo-semantic-backup.timer), so the nightly bundle is a clean restore
+# point taken just before the run. The 00:10 TTL cleanup (osm-ttl-cleanup.timer)
+# only deletes expired web auth rows and may overlap. Incremental reindex skips
+# unchanged repos (head_sha), so a quiet night is short.
 #
 # Persistent=true: if the host was offline at the scheduled time, run once on
 # next boot instead of skipping the window.
@@ -11,7 +17,7 @@
 Description=Daily OSM incremental reindex (index-repo --all)
 
 [Timer]
-OnCalendar=*-*-* 03:30:00
+OnCalendar=*-*-* 00:00:00
 Persistent=true
 Unit=odoo-semantic-reindex.service
 

@@ -8,7 +8,7 @@ Hướng dẫn vận hành backup tự động và thủ công cho OSM.
 
 ## Install Systemd Timer
 
-Cài timer để backup chạy tự động mỗi đêm lúc 03:00.
+Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00).
 
 ```bash
 # Copy unit files
