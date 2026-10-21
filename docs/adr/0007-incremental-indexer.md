@@ -192,6 +192,17 @@ Auto-reseed failure inside the indexer is logged at WARN level but does NOT fail
 - `{key: 'patterns_neo4j'}` — set only after Neo4j PatternExample write succeeds.
 - `{key: 'patterns_pgvector'}` — set only after pgvector embed+write succeeds.
 
+> **Amendment 2026-10-21 (incomplete pattern embeds):** "succeeds" means every chunk got a
+> vector. The pgvector write used to DELETE every pattern row and INSERT only the chunks the
+> embedder returned, and both callers stamped `patterns_pgvector` even after a partial or
+> total embed failure (a 504), so refused patterns lost their rows and the auto-reseed
+> skipped them until the catalogue changed or `--force`. Now `_write_pgvector_with_embedder`
+> upserts the embedded chunks, keeps the row of a refused chunk, and (full-catalogue loads
+> only, like the Neo4j R1 prune) deletes the rows of patterns no longer in the catalogue;
+> `run()` and `main()` stamp `patterns_pgvector` only when the write was complete
+> (`PatternEmbedResult.complete`), so the next reseed retries. A version-filtered seed no
+> longer deletes the other versions' pattern rows.
+
 **Invariants enforced:**
 
 1. `--no-embed` (or `embedder=None`) writes `patterns_neo4j` after Neo4j succeeds, but NEVER writes `patterns_pgvector`.

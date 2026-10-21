@@ -6,7 +6,10 @@ Usage:
     python -m src.indexer.seed_patterns --version 17.0     # filter by version_min
     python -m src.indexer.seed_patterns --no-embed         # skip pgvector step
 
-Idempotent — MERGE on pattern_id; embedding rows replaced via DELETE-WHERE-INSERT.
+Idempotent - MERGE on pattern_id; embedding rows upserted, and a full-catalogue
+seed deletes the rows of patterns no longer in the catalogue. A chunk the embedder
+refuses keeps its existing row and leaves the patterns_pgvector sentinel unstamped
+(the next reseed retries).
 Hash-gated by _SeedMeta sentinel node to skip when patterns.json is unchanged.
 
 Per ADR-0003: PatternExample = Neo4j node (composite key pattern_id) + reuse
@@ -21,6 +24,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -517,11 +521,15 @@ def run(
 
     Re-uses an EXISTING Neo4jWriter (no open/close inside) — caller manages lifecycle.
 
-    Returns: {"patterns": N_written, "embeddings": N_embedded, "skipped": bool}
+    Returns: {"patterns": N_written, "embeddings": N_embedded,
+    "embed_failed": N_chunks_the_embedder_refused, "skipped": bool}
 
     Sentinel policy (ADR-0007 D6-split):
     - ``patterns_neo4j`` sentinel updated only after Neo4j write succeeds.
-    - ``patterns_pgvector`` sentinel updated only after pgvector write succeeds.
+    - ``patterns_pgvector`` sentinel updated only after a COMPLETE pgvector
+      write: when the embedder refused a chunk (``embed_failed`` > 0, existing
+      rows kept, see :func:`_write_pgvector_with_embedder`) it is left as it
+      was, so the next reseed retries the embed.
     - When ``embedder is None`` the pgvector sentinel is NOT updated — a future run
       with an embedder present will still write the embeddings.
     """
@@ -585,13 +593,20 @@ def run(
         patterns = _load_patterns_source(patterns_path, odoo_version_min_filter)
 
     n_embeddings = 0
+    embed_failed = 0
     if embedder is not None and pgvector_needs_update:
         from src.indexer.writer_pgvector import make_pattern_chunks
         chunks = make_pattern_chunks(patterns)
-        _write_pgvector_with_embedder(chunks, embedder)
-        n_embeddings = len(chunks)
-        # pgvector sentinel updated only after successful write.
-        _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_pgvector")
+        # Prune only a full-catalogue load (same gate as the Neo4j prune).
+        written = _write_pgvector_with_embedder(
+            chunks, embedder, prune=odoo_version_min_filter is None,
+        )
+        n_embeddings = written.embedded
+        embed_failed = written.attempted - written.embedded
+        # pgvector sentinel stamped only after a COMPLETE write: a chunk the
+        # embedder refused leaves it as it was, so the next reseed retries.
+        if written.complete:
+            _set_stored_patterns_sha(writer.driver, current_sha, key="patterns_pgvector")
     elif embedder is None:
         _logger.info(
             "embedder=None — skipping pattern embeddings (patterns_pgvector sentinel NOT updated)"
@@ -605,40 +620,118 @@ def run(
     return {
         "patterns": n_patterns,
         "embeddings": n_embeddings,
+        "embed_failed": embed_failed,
         "skipped": not neo4j_needs_update and not pgvector_needs_update,
     }
 
 
-def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
-    """Embed pattern chunks using an already-constructed embedder + write to pgvector.
+@dataclass(frozen=True)
+class PatternEmbedResult:
+    """What one pattern pgvector write did (``_write_pgvector_with_embedder``).
 
-    Replaces existing pattern_example rows for clean re-seed (idempotent).
-    This variant accepts an external embedder object (unlike _write_pgvector which
-    constructs one from config).
+    ``attempted``: distinct chunks sent to the embedder; ``embedded``: chunks
+    it returned a vector for (upserted); ``pruned``: rows of chunks the
+    catalogue no longer produces that were deleted.
+    """
 
-    WI-B: uses _embed_chunks_resilient for partial-failure tolerance; writes
-    embedding_model/embedding_dim into each row; calls assert_dim_matches
-    once as fail-fast guard against incompatible vector spaces.
+    attempted: int
+    embedded: int
+    pruned: int = 0
+
+    @property
+    def complete(self) -> bool:
+        """True when every chunk got a vector: only then may the
+        ``patterns_pgvector`` sentinel be stamped."""
+        return self.embedded == self.attempted
+
+
+# Prune of the catalogue's pattern rows: delete the rows whose chunk key the
+# loaded catalogue does not produce. ``ux_embeddings_chunk`` is (chunk_type,
+# module, odoo_version, entity_name, file_path, chunk_idx); chunk_type and
+# module are fixed for patterns, so the key here is the other four.
+_PRUNE_PATTERN_ROWS_SQL = """
+DELETE FROM embeddings e
+ WHERE e.chunk_type = 'pattern_example' AND e.module = '__patterns__'
+   AND e.profile_name = %s
+   AND NOT EXISTS (
+       SELECT 1
+         FROM unnest(%s::text[], %s::text[], %s::text[], %s::int[])
+              AS k(odoo_version, entity_name, file_path, chunk_idx)
+        WHERE k.odoo_version = e.odoo_version AND k.entity_name = e.entity_name
+          AND k.file_path = e.file_path AND k.chunk_idx = e.chunk_idx
+   )
+"""
+
+
+def _pattern_chunk_key(c: EmbeddingChunk) -> tuple[str, str, str, int]:
+    return (c.odoo_version, c.entity_name, c.file_path, int(c.chunk_idx))
+
+
+def _write_pgvector_with_embedder(
+    chunks: list, embedder, *, prune: bool = True,
+) -> PatternEmbedResult:
+    """Embed pattern chunks with *embedder* and upsert them into pgvector.
+
+    Idempotent upsert on ``ux_embeddings_chunk``. A chunk the embedder refuses
+    (``_embed_chunks_resilient``: after the batch retry and the per-chunk
+    fallback, e.g. a 504) is NOT written and its existing row, if any, is
+    kept with its older vector; when no chunk gets a vector nothing is
+    written at all. Either way the result is not ``complete``: the callers
+    then leave the ``patterns_pgvector`` sentinel unstamped so the next
+    reseed retries (a WARNING says how many chunks failed).
+
+    *prune* (the full catalogue was loaded, no version filter): after the
+    upsert, in the same transaction, the pattern rows whose chunk key the
+    catalogue no longer produces are deleted - a pattern removed from the
+    source loses its rows. The keys of refused chunks are part of the
+    catalogue, so their rows stay. A version-filtered load (*prune* False)
+    only upserts: it holds part of the catalogue, and deleting everything
+    else would wipe the other versions' rows (the Neo4j prune is gated the
+    same way, R1). An empty *chunks* list writes and prunes nothing.
+
+    WI-B: writes embedding_model/embedding_dim into each row; calls
+    assert_dim_matches once as fail-fast guard against incompatible vector
+    spaces.
     """
     from psycopg2.extras import execute_values
 
     from src.db.embedding_guard import assert_dim_matches
     from src.db.pg import get_pool
-    from src.indexer.writer_pgvector import _INSERT_SQL, _embed_chunks_resilient
+    from src.indexer.writer_pgvector import (
+        _INSERT_SQL,
+        _WRITE_SCOPE_SQL,
+        _embed_chunks_resilient,
+    )
+
+    # One row per chunk key (last wins), as write_module_embeddings does: an
+    # INSERT batch cannot ON CONFLICT-update the same row twice.
+    unique: dict[tuple, EmbeddingChunk] = {}
+    for c in chunks:
+        unique[_pattern_chunk_key(c)] = c
+    chunks = list(unique.values())
+    if not chunks:
+        return PatternEmbedResult(attempted=0, embedded=0)
 
     live_chunks, vecs, _embed_calls = _embed_chunks_resilient(embedder, chunks)
-
-    # Guard: if all chunks failed embedding, preserve existing rows.
-    if not live_chunks:
-        _logger.error(
-            "embed produced 0 usable vectors for pattern chunks — "
-            "preserving existing rows, skipping destructive rewrite"
+    result = PatternEmbedResult(attempted=len(chunks), embedded=len(live_chunks))
+    if not result.complete:
+        _logger.warning(
+            "pattern embeddings incomplete: %d of %d chunk(s) were not embedded (the "
+            "embedder failed for them); their existing rows are kept and the "
+            "patterns_pgvector sentinel is not stamped, so the next reseed retries",
+            result.attempted - result.embedded, result.attempted,
         )
-        return
+    if not live_chunks:
+        # 0 usable vectors: preserve every existing row, write nothing.
+        return result
 
-    # Tolerate embedders without .model/.dim (test doubles, pre-ADR-0045) — see
+    # Tolerate embedders without .model/.dim (test doubles, pre-ADR-0045) - see
     # writer_pgvector.write_module_embeddings for rationale.
     emb_model, emb_dim = _embedder_meta(embedder)
+    # Patterns are global (cross-tenant): profile_name = GLOBAL_PROFILE.
+    for c in chunks:
+        c.profile_name = GLOBAL_PROFILE
+    keys = sorted(unique)
 
     with get_pool().checkout_vec() as conn:
         if emb_dim is not None:
@@ -646,27 +739,36 @@ def _write_pgvector_with_embedder(chunks: list, embedder) -> None:
         conn.autocommit = False
         try:
             with conn.cursor() as cur:
-                # Patterns are global (cross-tenant) → profile_name = GLOBAL_PROFILE.
-                # Stamp the sentinel on every chunk before building the insert rows.
-                for _c in live_chunks:
-                    _c.profile_name = GLOBAL_PROFILE
-                cur.execute(
-                    "DELETE FROM embeddings "
-                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__' "
-                    "AND profile_name = %s",
-                    (GLOBAL_PROFILE,),
-                )
+                # Write-side statements run with the unrestricted RLS scope,
+                # transaction-local (writer_pgvector._WRITE_SCOPE_SQL).
+                cur.execute(_WRITE_SCOPE_SQL)
                 rows = [
                     c.as_tuple(vecs[i], emb_model, emb_dim)
                     for i, c in enumerate(live_chunks)
                 ]
                 execute_values(cur, _INSERT_SQL, rows)
+                pruned = 0
+                if prune:
+                    cur.execute(
+                        _PRUNE_PATTERN_ROWS_SQL,
+                        (
+                            GLOBAL_PROFILE,
+                            [k[0] for k in keys], [k[1] for k in keys],
+                            [k[2] for k in keys], [k[3] for k in keys],
+                        ),
+                    )
+                    pruned = cur.rowcount
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.autocommit = True  # restore for pool reuse
+    if pruned:
+        _logger.info("pgvector: pruned %d row(s) of patterns no longer in the catalogue", pruned)
+    return PatternEmbedResult(
+        attempted=result.attempted, embedded=result.embedded, pruned=pruned,
+    )
 
 
 def _write_neo4j(patterns: list[PatternExample], *, prune: bool = False) -> None:
@@ -713,22 +815,14 @@ def _get_neo4j_writer():
     return Neo4jWriter(uri=uri, user=user, password=password)
 
 
-def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
-    """Embed pattern chunks via configured embedder + write to pgvector embeddings table.
+def _write_pgvector(chunks: list[EmbeddingChunk], *, prune: bool = True) -> PatternEmbedResult:
+    """Embed pattern chunks via the configured embedder and upsert them into pgvector.
 
-    Replaces existing pattern_example rows for clean re-seed (idempotent).
-
-    WI-B: constructs embedder via make_embedder() (factory, respects EMBEDDER_BACKEND);
-    uses _embed_chunks_resilient for partial-failure tolerance; writes
-    embedding_model/embedding_dim into each row; calls assert_dim_matches
-    once as fail-fast guard against incompatible vector spaces.
+    Builds the embedder with make_embedder() (factory, respects
+    EMBEDDER_BACKEND) and delegates to :func:`_write_pgvector_with_embedder`,
+    which defines the write, prune and incomplete-embed rules.
     """
-    from psycopg2.extras import execute_values
-
-    from src.db.embedding_guard import assert_dim_matches
-    from src.db.pg import get_pool
     from src.indexer.embedder import make_embedder
-    from src.indexer.writer_pgvector import _INSERT_SQL, _embed_chunks_resilient
 
     embedder_url = config.from_env_or_ini(
         "EMBEDDER_URL", "embedder", "url",
@@ -747,47 +841,7 @@ def _write_pgvector(chunks: list[EmbeddingChunk]) -> None:
     embedder = make_embedder(
         url=embedder_url, model=embedder_model, dim=embedder_dim, auth_token=embedder_auth,
     )
-
-    live_chunks, vecs, _embed_calls = _embed_chunks_resilient(embedder, chunks)
-
-    # Guard: if all chunks failed embedding, preserve existing rows.
-    if not live_chunks:
-        _logger.error(
-            "embed produced 0 usable vectors for pattern chunks — "
-            "preserving existing rows, skipping destructive rewrite"
-        )
-        return
-
-    emb_model, emb_dim = _embedder_meta(embedder)
-
-    with get_pool().checkout_vec() as conn:
-        if emb_dim is not None:
-            assert_dim_matches(conn, emb_dim, emb_model)
-        conn.autocommit = False
-        try:
-            with conn.cursor() as cur:
-                # Patterns are global (cross-tenant) → profile_name = GLOBAL_PROFILE
-                # (explicit '__global__' sentinel, m13_021).
-                # Stamp the sentinel on every chunk before building the insert rows.
-                for _c in live_chunks:
-                    _c.profile_name = GLOBAL_PROFILE
-                cur.execute(
-                    "DELETE FROM embeddings "
-                    "WHERE chunk_type = 'pattern_example' AND module = '__patterns__' "
-                    "AND profile_name = %s",
-                    (GLOBAL_PROFILE,),
-                )
-                rows = [
-                    c.as_tuple(vecs[i], emb_model, emb_dim)
-                    for i, c in enumerate(live_chunks)
-                ]
-                execute_values(cur, _INSERT_SQL, rows)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.autocommit = True  # restore for pool reuse
+    return _write_pgvector_with_embedder(chunks, embedder, prune=prune)
 
 
 def _get_job_store() -> object | None:
@@ -995,10 +1049,22 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         chunks = make_pattern_chunks(patterns)
-        _write_pgvector(chunks)
-        _logger.info("pgvector: wrote %d embedding chunks", len(chunks))
+        # Prune only a full-catalogue seed (no --version), like the Neo4j prune.
+        written = _write_pgvector(chunks, prune=args.version is None)
+        _logger.info(
+            "pgvector: wrote %d of %d embedding chunks", written.embedded, written.attempted,
+        )
+        if not written.complete:
+            # Existing rows kept, sentinel left as it was: the next reseed
+            # (nightly auto-reseed or this command) retries the embed.
+            _mark_done(note=(
+                f"incomplete: {written.attempted - written.embedded} of "
+                f"{written.attempted} pattern chunk(s) not embedded; "
+                "patterns_pgvector sentinel not stamped, the next reseed retries"
+            ))
+            return 0
 
-        # Update the pgvector sentinel only after successful pgvector write.
+        # Update the pgvector sentinel only after a complete pgvector write.
         writer = _get_neo4j_writer()
         if writer:
             try:
