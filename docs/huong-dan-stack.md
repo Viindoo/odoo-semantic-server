@@ -179,6 +179,19 @@ the formal depth-first contract (not an implementation accident) - see ADR-0048 
 for that version complete - hoisted from `index_repo` to cut cost by R×) creates any missed
 extender→definition edges (cross-repo write-order gap). Idempotent, version-scoped.
 
+**Cross-name parents (mixin, `_inherits`) and write order.** `_write_parse_result` writes a
+module in passes: every Model node first, then INHERITS / DELEGATES_TO, then Fields, then
+Methods. `result.models` follows source-file order (alphabetical), so a child in
+`models/provider.py` precedes its same-module mixin in `models/request_log_mixin.py`; resolving
+per model used to miss it, leave an `__unresolved__` placeholder, and the GC deleted the edge.
+A parent in a module written LATER (another repo, outside `depends`) still gets a placeholder:
+`relink_unresolved_placeholders(version)` runs right before `gc_unresolved_placeholders` in the
+lifecycle reconcile and moves each placeholder edge onto the real Model (writer ranking:
+`is_definition` DESC, `field_count` DESC, `module` ASC), keeping `r.order` and COPYING the
+child's run stamp (`written_run`/`written_at`) so the entity prune treats it as the child's
+own parse output. Same pass relinks QWeb `EXTENDS_TMPL` placeholders to a record-form QWeb
+view by its `record_xmlid` alias. A relink failure skips the GC for that run.
+
 ```cypher
 // Writer W1 — correct topology: extender nối tới definition only
 MATCH (ext:Model {name: $name, module: $mod, odoo_version: $v})

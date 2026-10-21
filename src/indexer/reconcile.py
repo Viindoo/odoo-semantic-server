@@ -41,9 +41,9 @@ Then the orphan sweep (review M6, H5b) removes what the ledger never saw
 ``--gc``): Module nodes with no ``present`` row anywhere, attributed through
 their own ``profile[]`` / ``repo_id`` and swept only when every repo of those
 profiles at the version is synced; module-owned children whose Module is gone;
-embedding groups no live owner accounts for. The sweep is under the mass gate
-G-B. Finally the version-wide GCs run (``gc_orphan_asset_bundles``,
-``gc_unresolved_placeholders``, and ``gc_null_repo_dep_stubs`` once every
+``relink_unresolved_placeholders`` then ``gc_unresolved_placeholders`` - the
+relink moves placeholder edges onto targets indexed since, the GC is skipped
+when it fails - and ``gc_null_repo_dep_stubs`` once every
 profile of the version ran) and, whenever anything was deleted or re-owned
 (with or without the sweep), the same-name INHERITS re-link
 (``reconcile_same_name_inherits``: DETACH DELETE drops the extender-to-definer
@@ -1464,11 +1464,31 @@ class _Reconciler:
         gc["asset_bundles"] = _retrying(
             "gc_orphan_asset_bundles", lambda: self.writer.gc_orphan_asset_bundles(self.v),
         )
-        placeholders = _retrying(
-            "gc_unresolved_placeholders",
-            lambda: self.writer.gc_unresolved_placeholders(self.v),
-        )
-        gc["unresolved_placeholders"] = sum((placeholders or {}).values())
+        # The GC DETACH DELETEs every placeholder with its edges: first move the
+        # edges whose real target was indexed since (a parent of another repo,
+        # a record-form QWeb base), or they are lost until their module is
+        # re-parsed. If the relink fails the GC is skipped this run - the
+        # placeholders (invisible to readers) wait for the next one.
+        try:
+            relinked = _retrying(
+                "relink_unresolved_placeholders",
+                lambda: self.writer.relink_unresolved_placeholders(self.v),
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose edges to the GC
+            self.report.errors["relink_unresolved_placeholders"] = (
+                f"{type(exc).__name__}: {exc}"[:300]
+            )
+            _logger.error(
+                "reconcile %s: placeholder relink failed, placeholder GC skipped: %s",
+                self.v, exc,
+            )
+        else:
+            gc["placeholder_edges_relinked"] = sum((relinked or {}).values())
+            placeholders = _retrying(
+                "gc_unresolved_placeholders",
+                lambda: self.writer.gc_unresolved_placeholders(self.v),
+            )
+            gc["unresolved_placeholders"] = sum((placeholders or {}).values())
         if run_dep_stub_gc:
             gc["dep_stubs"] = _retrying(
                 "gc_null_repo_dep_stubs", lambda: self.writer.gc_null_repo_dep_stubs(self.v),
