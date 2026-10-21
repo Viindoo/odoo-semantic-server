@@ -17,10 +17,12 @@ Business rules protected here (lane-idx contract 3.2-3.6):
   a module added in the commit range is never listed.
 - ADR-0057: a git-proven entity drop is pruned by the run and is no finding;
   entities the source still defines but the parser no longer produces are
-  kept and are the ``parser_gaps`` finding under the ``osm.lifecycle-audit/4``
-  schema (``/4`` renamed ``/2``'s ``held_prunes``; F49's ``/3`` added the
-  shared-module ``shared_prunes`` finding), so ``--fail-on-findings`` exits 4
-  until the parser is fixed - no operator approval exists for it.
+  kept and are the ``parser_gaps`` finding of the ``osm.lifecycle-audit/5``
+  schema (it renamed ``held_prunes`` of ``/2`` and ``/3`` through the unreleased
+  ``/4``; F49's ``/3`` added the shared-module ``shared_prunes`` finding).
+  ``parser_gaps`` is informational: it is listed, but it never sets
+  ``has_findings`` nor makes ``--fail-on-findings`` exit 4 - and no operator
+  approval exists for it.
 
 Every test drives the real ``index_profile`` / ``index_all`` / CLI ``main`` over
 temp git repos with a bare origin, against real Neo4j and PostgreSQL + pgvector.

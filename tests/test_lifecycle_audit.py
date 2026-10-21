@@ -14,7 +14,7 @@ Business rules protected here:
   informational), 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/5`` is a
   contract for that timer and for the P3/P4 rollout review (``/2``: a
   soft-gate-held entity prune is a finding, ``held_prunes``, renamed
-  ``parser_gaps`` by ``/4`` - ADR-0057; ``/3``: the
+  ``parser_gaps`` by the unreleased ``/4`` - ADR-0057, first shipped in ``/5``; ``/3``: the
   shared-module entity prune of F49 is a finding, ``shared_prunes``, with
   ``shared_prune_waiting`` / ``shared_prune_rewrites`` per version and the
   post-deploy ``shared_parse_backlog`` per repo; additive under ``/3`` per
@@ -562,7 +562,8 @@ def test_json_report_keeps_the_osm_lifecycle_audit_5_schema(drifted, monkeypatch
     Updated for ADR-0057 (source-oracle prune): ``held_prunes`` is renamed
     ``parser_gaps`` in ``findings`` and in each repo entry (entities kept
     because the source still defines them, not a held prune), so the schema
-    id is ``osm.lifecycle-audit/4``.
+    id is ``osm.lifecycle-audit/4`` (never released: it shipped together with
+    the phase 2 change below as ``/5``).
 
     Updated for ADR-0057 phase 2 (every deletion judged by git): ``findings``
     and each repo entry gain ``unproven_drops`` (``gates.unproven`` too), each

@@ -140,7 +140,8 @@ A kept set is recorded on the Module node (`parser_gap_*`: counts, a sample of u
 identities, the module directories and a fingerprint = module HEAD tree id(s) + a digest of
 the parsers, writers and oracle (`prune_evidence.prune_code_token`)), logged once (WARNING),
 and reported by `lifecycle-audit` as the `parser_gaps` finding (schema `osm.lifecycle-audit/4`,
-renamed from `held_prunes`). It causes **no exit 3 and no `lifecycle_attention`**. The module is
+renamed from `held_prunes`; `/4` was never released - the first released schema with
+`parser_gaps` is `/5`, see P5). It causes **no exit 3 and no `lifecycle_attention`**. The module is
 re-parsed for the record only when the fingerprint changes (`pipeline_repo._parser_gap_state`,
 checked before the unchanged skip): a commit to the module, or a deploy that changes the
 indexer code (a parser fix). A prune that keeps nothing clears the record (and any legacy
@@ -300,7 +301,8 @@ single-owner entity prune, never in a timer.
 New finding `unproven_drops` (per repo); version keys `orphan_modules[].kept_because`,
 `child_orphans_kept`, `embedding_orphans_kept` (counted in `orphan_modules` /
 `child_orphans` / `embedding_orphans`); `embedding_orphans_held` means an unhealthy graph;
-`shared_prunes[].outcome` is `would_prune` or `partial`. Every /4 key stays. New top-level key
+`shared_prunes[].outcome` is `would_prune` or `partial`. Every /4 key stays (`/4` was never
+released: against the last released `/3`, `held_prunes` is the only key renamed). New top-level key
 `informational_findings` (`["parser_gaps", "unproven_drops"]`): those counts stay in
 `findings` but do not set `has_findings`, so `--fail-on-findings` never exits 4 on them
 (rule R6).
