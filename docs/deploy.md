@@ -826,7 +826,7 @@ done
 # rollback: sudo cp -a /etc/systemd/system/<unit>.bak-<old-sha> /etc/systemd/system/<unit> && sudo systemctl daemon-reload
 ```
 
-Incremental `index-repo --all` chạy hằng đêm 03:30. Từ 0.19.0 (ADR-0056) mỗi lượt chạy đó
+Incremental `index-repo --all` chạy hằng đêm 00:00 (sau backup 23:30). Từ 0.19.0 (ADR-0056) mỗi lượt chạy đó
 cũng là lượt dọn vòng đời module: scan = manifest git-tracked, module biến mất được flag
 `retire_pending` trong ledger `module_presence`, rồi reconcile theo version xóa Module + cây con
 + embedding khi không repo nào còn ship. **Không còn lượt monthly `--full --gc`:** `--gc` là

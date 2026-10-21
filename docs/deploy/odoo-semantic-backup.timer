@@ -1,11 +1,16 @@
-# odoo-semantic-backup.timer — chạy backup.service mỗi đêm lúc 03:00
+# odoo-semantic-backup.timer - chạy backup.service mỗi đêm lúc 23:30
 # Đặt tại: /etc/systemd/system/odoo-semantic-backup.timer
+#
+# 23:30 = 30 phút trước reindex 00:00 (odoo-semantic-reindex.timer); backup mất
+# khoảng 12 phút. Neo4j được export online, nên một backup chạy giữa lượt
+# reindex có thể chụp graph và Postgres lệch nhau; chạy ngay trước lượt đó thì
+# bundle là điểm khôi phục sạch.
 
 [Unit]
 Description=Run OSM backup nightly
 
 [Timer]
-OnCalendar=*-*-* 03:00:00
+OnCalendar=*-*-* 23:30:00
 Persistent=true
 
 [Install]

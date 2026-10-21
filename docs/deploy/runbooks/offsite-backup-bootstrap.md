@@ -2,7 +2,7 @@
 
 > First-time setup of rclone + S3-compatible offsite sync with client-side
 > AES-256 encryption via rclone crypt, wired into a systemd timer that fires
-> daily at 04:00 ICT (after the 03:00 nightly bundle and 03:30 reindex).
+> daily at 04:00 ICT (after the 23:30 nightly bundle).
 > Eliminates the single-point-of-failure of local-only backups. ADR-0018, ADR-0020.
 
 ---
@@ -210,8 +210,9 @@ sudo systemctl enable --now odoo-semantic-offsite-sync.timer
 ```
 
 **Timer schedule:** `OnCalendar=*-*-* 21:00:00 UTC` (= 04:00 ICT / UTC+7).
-Runs after the 03:00 ICT nightly bundle (03:00 ICT = 20:00 UTC) and the 03:30
-ICT reindex (03:30 ICT = 20:30 UTC) have finished. `RandomizedDelaySec=5min`
+Runs after the 23:30 ICT nightly bundle (23:30 ICT = 16:30 UTC) has finished.
+The 00:00 ICT reindex (17:00 UTC) may still be running; the sync only reads the
+backup directory, so the overlap is harmless. `RandomizedDelaySec=5min`
 spreads the start up to 5 minutes past the hour. `Persistent=true` catches up
 on next boot if the system was offline at fire time.
 

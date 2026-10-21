@@ -1,7 +1,7 @@
 # odoo-semantic-lifecycle-audit.timer - fires odoo-semantic-lifecycle-audit.service weekly
 # Place at: /etc/systemd/system/odoo-semantic-lifecycle-audit.timer
 #
-# Monday 08:00: well after the nightly 03:30 reindex, so the audit reads the
+# Monday 08:00: well after the nightly 00:00 reindex, so the audit reads the
 # state that run left (an audit that overlaps a still-running reindex can
 # report findings the run is about to resolve - re-run it by hand then), and
 # early in the working week so a finding reaches a person the same day.
