@@ -47,6 +47,15 @@ ADR-0055 (each carries a dated amendment pointing here).
 > when the scoped index has the old name at N-1 and not from N to the asked version and the
 > new name at N; its label covers every hop (`Renamed to` all renames, `Merged into` all
 > merges, `Replaced by` a mix). Tool / resource surface stays 31 / 9.
+>
+> **Amendment 2026-10-21 (incomplete embeddings):** a module whose chunks the embedder did
+> not all embed in a run (some or all refused after the batch retry and the per-chunk
+> fallback, e.g. a 504 while the GPU was shared) is flagged `needs_rewrite` by that run, on
+> every run it stays incomplete (no once-per-state rule: an embed failure is transient), and
+> is left out of the run's cleared rewrites, so the flag clears only after a complete embed.
+> The run logs one WARNING per repo and adds one `lifecycle_attention` line naming the
+> modules (capped sample); it is never an exit 3 (an embedder down for the whole run stays
+> `outages: embedder_down`). `pipeline_repo._embedding_retry_names`. No migration.
 
 ---
 
@@ -103,7 +112,8 @@ per `(repo_id, name)`:
   `point_of_sale` stub beside the real module in odoo12-18); they are never rows.
 - `version_raw` / `version_mismatch` keep the manifest version verdict (D3).
 - `needs_rewrite` asks the owning repo's next run to re-parse that module, even
-  at an unchanged HEAD.
+  at an unchanged HEAD (also set for a module whose embeddings were incomplete,
+  amendment 2026-10-21).
 - Complete-parse record of each copy: `last_full_parse_at`, `_sha`, `_run`,
   `_unobserved`, `_embedded_at` (D10).
 - `repos` gains `presence_head_sha` (the HEAD the ledger reflects),
@@ -200,7 +210,7 @@ the branch (`16.0.1.0.0` on a 17.0 branch was keyed 16.0).
   every repo (`presence_head_sha` is NULL), which is what cleans the pre-ledger
   ghosts without `--full` (owner decision: no manual cleanup script).
 - **Always written, in every mode but the skip:** `needs_rewrite` names (cleared
-  after the write), self-heal names (`modules_needing_rewrite`: `no_node` - no
+  after the write, unless the run flags the module again), self-heal names (`modules_needing_rewrite`: `no_node` - no
   node carries this repo's owning profile; `path_drift` - the node's path is not
   the registry winner, e.g. the posbox stub or an `.odoo-ai` copy; `repo_drift`),
   and the shared-module bootstrap batch (D10).
@@ -265,7 +275,8 @@ the branch (`16.0.1.0.0` on a 17.0 branch was keyed 16.0).
   next plain run prunes them.
 - `repos.lifecycle_attention` is replaced on every scanned run (a clean run
   clears it) and carries: version-rule messages, gate reasons, git-trust
-  problems, stamp shortfall, held / deferred / degraded entity prunes, and the
+  problems, stamp shortfall, held / deferred / degraded entity prunes, modules
+  flagged for a re-embed (amendment 2026-10-21), and the
   reconcile's undecidable and orphan-deferral lines. The unchanged skip rewrites
   it with what still stands (F38).
 - `index-repo` exits **3** (`EXIT_LIFECYCLE_ATTENTION`) when a gate tripped, a

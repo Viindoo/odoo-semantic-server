@@ -680,6 +680,16 @@ def main(argv: list[str] | None = None) -> int:
                 f"re-embedded {summary['modules_reembedded']}, "
                 f"{summary['total_embed_calls']} embed call(s)."
             )
+            incomplete = summary.get("modules_incomplete") or []
+            if incomplete:
+                print(
+                    f"Incomplete: {len(incomplete)} module(s) with chunks the embedder "
+                    "failed (the WARNING lines say whether each was flagged for the "
+                    "next index run): "
+                    + ", ".join(incomplete[:10])
+                    + (f", ... {len(incomplete) - 10} more" if len(incomplete) > 10 else ""),
+                    file=sys.stderr,
+                )
         finally:
             close = getattr(embedder, "close", None)
             if embedder is not None and callable(close):
