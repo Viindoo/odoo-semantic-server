@@ -9,6 +9,18 @@
 **Relates to:** ADR-0002 (spec schema policy), ADR-0009 (pattern catalogue contribution),
 ADR-0033 (tools_symbols curation), ADR-0054 (parse-verified framework test-base facts)
 
+> **Amendment 2026-10-20 (#380 item 2):** new curated artifact
+> `src/indexer/spec_data/module_renames.json` (cross-version module renames / merges). It
+> meets the bar with provenance AND an oracle: provenance - one block per OCA/OpenUpgrade
+> `N.0` branch carrying repo, branch, commit sha and the `apriori.py` path its entries were
+> parsed from (`ast.literal_eval`, never executed), regenerated only by
+> `scripts/sync_module_renames.py --write` (weekly PR job `module-renames-resync.yml`;
+> an unchanged branch keeps its commit); oracle - the read side shows an edge only when the
+> caller's index confirms it (old at N-1 and not from N to the asked version, new at N, hop
+> by hop), so an apriori claim the index contradicts (the `sale_coupon -> coupon` 14.0 name
+> reuse) is never shown. Tests: `tests/test_module_renames.py` (era excerpts in
+> `tests/fixtures/openupgrade_apriori/`, provenance of every committed entry).
+
 ---
 
 ## Context

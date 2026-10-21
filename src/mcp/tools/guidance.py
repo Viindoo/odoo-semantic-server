@@ -1023,10 +1023,10 @@ def check_module_exists(
 
     Returns:
         Tree text. Yes: last seen (branch HEAD + date per owning repo),
-        identity, edition, EE-confusion flag. No: lifecycle history (removing
-        commit, "Renamed to", installable: False, dependency stub), the other
-        versions where the name is indexed, EE-confusion flag, and a Next hint
-        to the successor when one is known.
+        identity, edition, EE-confusion flag. No: lifecycle (removing commit,
+        "Renamed to"/"Merged into", installable: False, stub), renames across
+        versions (OpenUpgrade apriori, index-confirmed per hop), other indexed
+        versions, EE-confusion flag, and a Next hint to the successor if known.
 
     Example:
         check_module_exists('test_pylint', '17.0')

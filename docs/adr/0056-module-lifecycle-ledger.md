@@ -42,6 +42,12 @@ ADR-0055 (each carries a dated amendment pointing here).
 > `Merged into: <module> (git merge)` with the usual Next hint, and gates it by visibility like
 > `old_technical_name` (a merge target can later move to a private repo; hidden names are
 > omitted, never counted). Rows retired before: `ops/backfill_successors.py` (dry run,
+> idempotent, bounded). D13 also shows a cross-version rename / merge chain from OpenUpgrade
+> apriori (`src/indexer/module_renames.py`, curated data under ADR-0055), each hop shown only
+> when the scoped index has the old name at N-1 and not from N to the asked version and the
+> new name at N; its label covers every hop (`Renamed to` all renames, `Merged into` all
+> merges, `Replaced by` a mix). Tool / resource surface stays 31 / 9.
+
 ---
 
 ## Context

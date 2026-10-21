@@ -24,6 +24,7 @@ from __future__ import annotations
 import pytest
 
 from src.db.module_presence import ModulePresenceStore, Successor
+from src.indexer import module_renames as mr
 from src.mcp import lifecycle_read as lr
 
 
@@ -112,6 +113,99 @@ def test_a_git_rename_successor_is_not_scope_gated():
     rows = lr._visible_successors(hub, None, [row], "17.0", {})
     assert rows[0]["successor_names"] == ["test_viin_pylint"]
     assert hub.queries == [], "nothing to gate, no query"
+
+
+# ---------------------------------------------------------------------------
+# Cross-version chain (OpenUpgrade apriori, validated)
+# ---------------------------------------------------------------------------
+
+def _lc(chain, **kw):
+    return lr.ModuleLifecycle(name=chain.name if chain else "x", version=kw.pop("version", "16.0"),
+                              ledger_available=True, cross_version=chain, **kw)
+
+
+def _edge(old, new, version, kind=mr.KIND_RENAME):
+    return mr.Edge(old, new, version, kind)
+
+
+def test_one_validated_hop_renders_renamed_to_with_its_version_and_source():
+    chain = mr.Chain("sale_coupon", "16.0", (_edge("sale_coupon", "sale_loyalty", "16.0"),), True)
+    lines = lr.lifecycle_lines(_lc(chain))
+    assert "├─ Renamed to:      sale_loyalty (at 16.0, via OpenUpgrade apriori)" in lines
+    assert _lc(chain).successors == ("sale_loyalty",)
+
+
+def test_a_mixed_rename_then_merge_chain_is_labelled_replaced_by():
+    """The label covers every hop: a rename then a merge is neither a pure
+    rename nor a pure merge."""
+    chain = mr.Chain("website_sale_coupon_delivery", "17.0", (
+        _edge("website_sale_coupon_delivery", "website_sale_loyalty_delivery", "16.0"),
+        _edge("website_sale_loyalty_delivery", "website_sale_loyalty", "17.0", mr.KIND_MERGE),
+    ), True)
+    lines = lr.lifecycle_lines(_lc(chain, version="17.0"))
+    assert (
+        "├─ Replaced by:     website_sale_coupon_delivery -> website_sale_loyalty_delivery "
+        "(16.0) -> website_sale_loyalty (17.0, merged) (via OpenUpgrade apriori)"
+    ) in lines
+
+
+def test_a_merge_then_rename_chain_is_not_labelled_renamed_to():
+    chain = mr.Chain("a", "17.0", (
+        _edge("a", "b", "16.0", mr.KIND_MERGE), _edge("b", "c", "17.0"),
+    ), True)
+    lines = lr.lifecycle_lines(_lc(chain, version="17.0"))
+    assert ("├─ Replaced by:     a -> b (16.0, merged) -> c (17.0)"
+            " (via OpenUpgrade apriori)") in lines
+
+
+@pytest.mark.parametrize(("kind", "label"), [
+    (mr.KIND_MERGE, "Merged into:     "), (mr.KIND_RENAME, "Renamed to:      "),
+])
+def test_a_chain_of_one_kind_keeps_its_label(kind, label):
+    chain = mr.Chain("a", "17.0", (_edge("a", "b", "16.0", kind), _edge("b", "c", "17.0", kind)),
+                     True)
+    lines = lr.lifecycle_lines(_lc(chain, version="17.0"))
+    assert any(ln.startswith(f"├─ {label}a -> b (16.0") for ln in lines), lines
+
+
+def test_an_unresolved_chain_says_so_and_is_no_next_successor():
+    chain = mr.Chain("coupon", "18.0", (_edge("coupon", "loyalty", "16.0"),), False)
+    lc = _lc(chain, version="18.0")
+    assert ("├─ Renamed to:      loyalty (at 16.0, via OpenUpgrade apriori); loyalty is not "
+            "indexed at 18.0") in lr.lifecycle_lines(lc)
+    assert lc.successors == ()
+
+
+def test_a_chain_the_ledger_already_names_is_not_repeated():
+    chain = mr.Chain("coupon", "16.0", (_edge("coupon", "loyalty", "16.0"),), True)
+    row = _row("coupon", successors=("loyalty",), source="git_rename")
+    lc = _lc(chain, ledger_rows=(row,))
+    lines = lr.lifecycle_lines(lc)
+    assert not any("via OpenUpgrade apriori" in ln for ln in lines)
+    assert lc.successors == ("loyalty",)
+
+
+def test_no_edge_from_the_name_means_no_query(monkeypatch):
+    monkeypatch.setattr(mr, "rename_index", lambda *a, **k: mr.RenameIndex(()))
+    hub = FakeHub()
+    assert lr.read_cross_version_chain(hub, None, "sale", "17.0", {}, known_versions=[]) is None
+    assert hub.queries == []
+
+
+def test_the_chain_query_is_scoped_and_validates_against_it(monkeypatch):
+    index = mr.RenameIndex([_edge("sale_coupon", "sale_loyalty", "16.0")])
+    monkeypatch.setattr(mr, "rename_index", lambda *a, **k: index)
+    scope = {"allowed": ["std_16"]}
+    hub = FakeHub(presence={"sale_loyalty": {"16.0"}})
+    chain = lr.read_cross_version_chain(hub, None, "sale_coupon", "16.0", scope,
+                                        known_versions=["15.0", "14.0"])
+    assert chain is not None and chain.final == "sale_loyalty" and chain.resolved
+    (label, params), = hub.queries
+    assert params["allowed"] == ["std_16"], "the caller's scope reaches the query"
+    assert params["names"] == ["sale_loyalty"], "the asked name's versions were already known"
+    hidden = FakeHub(presence={})
+    assert lr.read_cross_version_chain(hidden, None, "sale_coupon", "16.0", scope,
+                                       known_versions=["15.0"]) is None
 
 
 # ---------------------------------------------------------------------------

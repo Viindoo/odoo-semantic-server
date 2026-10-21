@@ -1300,3 +1300,61 @@ class TestMergedIntoStaysInScope:
         assert "│   └─ Merged into: viin_ai (git merge)" in _lines(out), out
 
 
+# ---------------------------------------------------------------------------
+# #380 item 2 - cross-version renames (OpenUpgrade apriori), validated by the index
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def renames(monkeypatch):
+    """Curated edges at the test versions (98.0 -> 99.0 and a reuse trap)."""
+    from src.indexer import module_renames as mr
+
+    index = mr.RenameIndex([
+        mr.Edge("lr_sale_coupon", "lr_coupon", V_PREV, mr.KIND_RENAME),   # reuse trap
+        mr.Edge("lr_sale_coupon", "lr_sale_loyalty", V, mr.KIND_RENAME),
+        mr.Edge("lr_pos_gift", "lr_pos_loyalty", V, mr.KIND_MERGE),
+        mr.Edge("lr_hidden_old", "lr_globex_new", V, mr.KIND_RENAME),
+    ])
+    monkeypatch.setattr(mr, "rename_index", lambda *a, **k: index)
+    return index
+
+
+class TestCrossVersionRenames:
+    def test_a_rename_the_index_confirms_is_shown_with_next(self, hub, std, renames):
+        _module("lr_sale_coupon", version=V_PREV)   # still shipped at 98.0: trap edge invalid
+        _module("lr_coupon", version=V_PREV)
+        _module("lr_sale_loyalty")
+        out = _check("lr_sale_coupon")
+        _assert_adr0023_tree(out)
+        assert (f"├─ Renamed to:      lr_sale_loyalty (at {V}, via OpenUpgrade apriori)"
+                in _lines(out)), out
+        assert "lr_coupon" not in out, out
+        assert _lines(out)[-1] == (
+            f"└─ Next: check_module_exists(name='lr_sale_loyalty', odoo_version='{V}') "
+            "for the successor"), out
+
+    def test_a_merge_edge_renders_merged_into(self, hub, std, renames):
+        _module("lr_pos_gift", version=V_PREV)
+        _module("lr_pos_loyalty")
+        out = _check("lr_pos_gift")
+        assert (f"├─ Merged into:     lr_pos_loyalty (at {V}, via OpenUpgrade apriori)"
+                in _lines(out)), out
+
+    def test_an_edge_the_index_does_not_confirm_is_not_shown(self, hub, std, renames):
+        _module("lr_sale_loyalty")          # new present, but old never indexed at 98.0
+        out = _check("lr_sale_coupon")
+        assert "OpenUpgrade" not in out, out
+
+    def test_a_successor_in_another_tenants_private_profile_never_validates(
+            self, hub, ledger, pg_conn, renames):
+        acme = _tenant(pg_conn, "lr_acme")
+        globex = _tenant(pg_conn, "lr_globex")
+        _profile(pg_conn, "lr_acme_p", tenant_id=acme)
+        _profile(pg_conn, "lr_globex_p", tenant_id=globex)
+        _module("lr_hidden_old", version=V_PREV, repo="acme_addons", profiles=["lr_acme_p"])
+        _module("lr_globex_new", repo=GLOBEX_REPO, profiles=["lr_globex_p"])
+        with as_tenant(acme):
+            out = _check("lr_hidden_old")
+        assert "lr_globex_new" not in out and "OpenUpgrade" not in out, out
+        with as_tenant(None):  # positive control
+            assert "lr_globex_new (at" in _check("lr_hidden_old")
