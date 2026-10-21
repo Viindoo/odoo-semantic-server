@@ -1163,6 +1163,37 @@ def test_tenant_never_counts_an_ancestor_it_cannot_see(wi4_db, c3_world):
     assert "wi4_c3_root_mod_" not in summary + coverage
 
 
+def _filter_visible_chain_modules(profile_name: str) -> int:
+    """How many seeded chain modules a profile_name filter actually returns."""
+    from src.mcp.tools.guidance import _check_module_exists
+
+    names = [f"{prof}_mod_{i}" for prof, n in _C3_SEED.items() if prof != "wi4_c3_other"
+             for i in range(n)]
+    return sum(
+        "Indexed:         Yes" in _check_module_exists(
+            name, _WI4_VERSION, profile_name=profile_name)
+        for name in names
+    )
+
+
+@pytest.mark.parametrize("as_admin", [False, True])
+def test_summary_with_ancestors_count_equals_what_the_profile_filter_returns(
+        wi4_db, c3_world, as_admin):
+    """#385 PARITY: "Including ancestor profiles: N" is exactly the number of
+    chain modules a profile_name=wi4_c3_leaf filter returns - tenant (5: leaf +
+    shared mid, foreign root withheld) and admin (9: the whole chain)."""
+    import re as _re
+
+    tenant = None if as_admin else c3_world["caller"]
+    with _as_tenant(tenant):
+        summary = _call_profile_inspect(name="wi4_c3_leaf", method="summary",
+                                        odoo_version=_WI4_VERSION)
+        returned = _filter_visible_chain_modules("wi4_c3_leaf")
+    counted = int(_re.search(r"Including ancestor profiles .*: (\d+)$",
+                             _count_block(summary)[2]).group(1))
+    assert counted == returned == (9 if as_admin else 5), (counted, returned, summary)
+
+
 def test_tenant_does_not_count_out_of_chain_modules_it_cannot_see(wi4_db, c3_world):
     """C3 tenant boundary on indexed_elsewhere: the 4 modules of the foreign
     private wi4_c3_root (same category) never inflate the tenant's

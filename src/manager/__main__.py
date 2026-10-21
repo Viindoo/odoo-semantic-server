@@ -3,7 +3,9 @@
 """Admin CLI for profiles + repos + API keys. M2.5 — replaced by Web UI in M5.
 
 Usage:
-    python -m src.manager add-profile NAME --version VERSION [--description TEXT]
+    python -m src.manager add-profile NAME --version VERSION (--tenant ID | --shared |
+        --parent NAME) [--description TEXT]
+    python -m src.manager profile-visibility-audit
     python -m src.manager add-repo --profile NAME --url URL --branch BRANCH
     python -m src.manager list
     python -m src.manager create-api-key NAME
@@ -25,15 +27,19 @@ from urllib.parse import urlparse
 import psycopg2
 
 from src import config
+from src.db.exceptions import (
+    ProfileInputError,
+    ProfileTenantRequiredError,
+    ProfileVisibilityError,
+)
 from src.db.pg import auth_store, repo_store
+from src.db.repo_registry import ODOO_VERSION_RE, PROFILE_NAME_RE
 from src.indexer.version_presets import list_presets, load_preset
 
-# Profile name: alphanumeric + underscore, 1-50 chars (matches database TEXT but
-# enforces shell-safe + readable convention).
-_PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}$")
-# Odoo version: N.N (e.g. 17.0, 8.0, 18.0). Excludes patch suffix — Odoo
-# convention uses major.minor only at registry level.
-_VERSION_RE = re.compile(r"^\d{1,2}\.\d+$")
+# SSOT: the same formats RepoStore.add_profile enforces (validate_profile_identity);
+# checked here too so a bad name fails before a DB connection is needed.
+_PROFILE_NAME_RE = PROFILE_NAME_RE
+_VERSION_RE = ODOO_VERSION_RE
 
 
 def _open_conn():
@@ -73,17 +79,61 @@ def _cmd_add_profile(args, conn) -> int:
             file=sys.stderr,
         )
         return 1
+
+    parent_id = None
+    if args.parent:
+        parents = [p for p in repo_store().list_profiles() if p["name"] == args.parent]
+        if not parents:
+            print(f"✗ Parent profile '{args.parent}' not found.", file=sys.stderr)
+            return 2
+        parent_id = parents[0]["id"]
     try:
         pid = repo_store().add_profile(
             name=args.name,
             odoo_version=args.version,
             description=args.description or "",
+            parent_id=parent_id,
+            tenant_id=args.tenant,
+            shared=args.shared,
         )
+    except (ProfileInputError, ProfileTenantRequiredError, ProfileVisibilityError) as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 1
     except ValueError as e:
         print(f"✗ {e}. Use a different name or remove the existing profile first.", file=sys.stderr)
         return 2
     print(f"✓ Profile '{args.name}' (id={pid}) odoo_version={args.version}")
     return 0
+
+
+def _cmd_profile_visibility_audit(_args, conn) -> int:
+    """Read-only: exit 1 when any profile/repo breaks the visibility invariant."""
+    rows = repo_store().visibility_violations()
+    if not rows:
+        print("✓ Profile visibility invariant holds (0 violations).")
+        return 0
+    print(f"✗ {len(rows)} profile visibility violation(s):", file=sys.stderr)
+    for r in rows:
+        print(
+            f"  - {r['kind']}: profile {r['profile_name']} (id={r['profile_id']},"
+            f" tenant={r['tenant_id']}) ancestor={r['ancestor_name']}"
+            f" ancestor_tenant={r['ancestor_tenant_id']} repo_id={r['repo_id']}",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def _add_tenancy_args(parser: argparse.ArgumentParser) -> None:
+    """--tenant ID | --shared: the profile's owner must always be stated."""
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--tenant", type=int, default=None, metavar="ID",
+        help="tenants.id that owns the profile (private to that tenant)",
+    )
+    group.add_argument(
+        "--shared", action="store_true",
+        help="publish the profile to EVERY key (Odoo CE/EE base profiles only)",
+    )
 
 
 def _cmd_add_repo(args, conn) -> int:
@@ -568,13 +618,24 @@ def _cmd_apply_preset_write(
     odoo_version: str,
     description: str,
     resolved_repos: list[dict],
+    tenant_id: int | None = None,
+    shared: bool = False,
 ) -> int:
     """Write pre-validated preset data to DB. Called after path validation succeeds."""
     try:
         pid = repo_store().add_profile(
-            name=profile_name, odoo_version=odoo_version, description=description
+            name=profile_name, odoo_version=odoo_version, description=description,
+            tenant_id=tenant_id, shared=shared,
         )
-    except ValueError as e:
+    except ProfileTenantRequiredError as e:
+        print(f"✗ {e}. Pass --tenant <id>, or set shared: true in the preset for an"
+              " Odoo CE/EE base profile.", file=sys.stderr)
+        return 2
+    except (ProfileInputError, ProfileVisibilityError) as e:
+        # e.g. --tenant together with a preset `shared: true`, an unknown tenant id
+        print(f"✗ {e}. Fix the preset or the --tenant option.", file=sys.stderr)
+        return 2
+    except ValueError as e:  # the name is taken (RepoStore.add_profile)
         print(f"✗ {e}. Use a different name or remove the existing profile first.", file=sys.stderr)
         return 2
 
@@ -611,18 +672,30 @@ def main(argv: list[str] | None = None) -> int:
         help="Register a new profile (e.g. Odoo 17.0)",
         epilog=textwrap.dedent("""
             Examples:
-              python -m src.manager add-profile odoo17 --version 17.0
-              python -m src.manager add-profile viindoo18 --version 18.0 \\
+              python -m src.manager add-profile odoo_17 --version 17.0 --shared
+              python -m src.manager add-profile viindoo18 --version 18.0 --tenant 3 \\
                   --description "Viindoo addons on Odoo 18"
+              python -m src.manager add-profile viindoo_internal_18 --version 18.0 \\
+                  --parent standard_viindoo_18   # inherits the parent's tenant
 
             Name must be 1-50 chars, alphanumeric + underscore.
             Version must be N.N (e.g. 17.0, 18.0).
+            The owner is required: --tenant ID, or --shared (every key), or a
+            private --parent whose tenant is inherited.
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_add.add_argument("name", help="Profile name (a-z, 0-9, _)")
     p_add.add_argument("--version", required=True, help="Odoo version, e.g. 17.0")
     p_add.add_argument("--description", default="")
+    p_add.add_argument("--parent", default=None, metavar="NAME",
+                       help="parent profile name (same version)")
+    _add_tenancy_args(p_add)
+
+    sub.add_parser(
+        "profile-visibility-audit",
+        help="Read-only: list profiles more visible than their parent (exit 1 if any)",
+    )
 
     p_repo = sub.add_parser(
         "add-repo",
@@ -862,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
         dest="dry_run",
         help="Print planned operations without writing to DB",
     )
+    _add_tenancy_args(p_preset)
 
     args = parser.parse_args(argv)
 
@@ -922,6 +996,8 @@ def main(argv: list[str] | None = None) -> int:
                 odoo_version=preset["odoo_version"],
                 description=preset["description"],
                 resolved_repos=resolved_repos,
+                tenant_id=args.tenant if args.tenant is not None else preset.get("tenant_id"),
+                shared=args.shared or bool(preset.get("shared")),
             )
         finally:
             conn.close()
@@ -931,6 +1007,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return {
             "add-profile": _cmd_add_profile,
+            "profile-visibility-audit": _cmd_profile_visibility_audit,
             "add-repo": _cmd_add_repo,
             "list": _cmd_list,
             "create-api-key": _cmd_create_api_key,

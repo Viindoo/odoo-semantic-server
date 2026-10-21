@@ -21,6 +21,7 @@ from pathlib import Path
 
 from neo4j import GraphDatabase, NotificationMinimumSeverity
 
+from src import clone_ops as _clone_ops
 from src import config
 from src.db.pg import repo_store
 
@@ -66,14 +67,12 @@ def _profile_lock_id(profile_name: str) -> int:
     return int(hashlib.md5(f"odoo-semantic-{profile_name}".encode()).hexdigest(), 16) % (2**31)
 
 
-def _repo_lock_id(repo_id: int) -> int:
-    """Derive a 31-bit Postgres advisory lock id from a repo_id (ADR-0035 D2).
-
-    Uses a different namespace prefix ("osm-repo-") than the profile lock
-    ("odoo-semantic-") to guarantee the two key spaces never collide even if
-    a profile name were a stringified integer equal to a repo_id.
-    """
-    return int(hashlib.md5(f"osm-repo-{repo_id}".encode()).hexdigest(), 16) % (2**31)
+# The per-repo git lock (ADR-0035 D2) lives in the leaf ``src.clone_ops``,
+# shared with the cloner (issue #383 item 2); re-exported under the names
+# callers and tests use. Contention raises ``RepoGitLockBusy``, a RuntimeError.
+_repo_lock_id = _clone_ops.repo_lock_id
+_repo_git_lock = _clone_ops.repo_git_lock
+_checkout_dir_lock = _clone_ops.checkout_dir_lock
 
 
 @contextmanager
@@ -93,32 +92,6 @@ def _indexer_lock(pg_conn, profile_name: str):
                 f"Indexer already running for profile {profile_name!r} "
                 f"(Postgres advisory lock {lock_id} held). "
                 "Wait for it to finish or restart PostgreSQL to release stale lock."
-            )
-        yield
-
-
-@contextmanager
-def _repo_git_lock(pg_conn, repo_id: int):
-    """Per-repo Postgres advisory lock guarding mutating git ops (ADR-0035 D2).
-
-    Wraps clone/fetch/reset for a single repo so two concurrent workers never
-    race on ``.git/index.lock``.  Read-only git ops (rev-parse, diff --name-only)
-    must NOT be wrapped — they run lock-free for performance.
-
-    The lock is keyed by ``repo_id`` (not profile) so cross-repo operations
-    run fully in parallel.
-
-    Raises ``RuntimeError`` if the lock cannot be acquired (another worker is
-    mutating the same repo).
-    """
-    from src.db.pg import advisory_lock
-    lock_id = _repo_lock_id(repo_id)
-    with advisory_lock(pg_conn, lock_id) as acquired:
-        if not acquired:
-            raise RuntimeError(
-                f"Git mutation already in progress for repo id={repo_id} "
-                f"(Postgres advisory lock {lock_id} held). "
-                "Wait for the other worker to finish."
             )
         yield
 
@@ -342,12 +315,73 @@ def _empty_lifecycle() -> dict:
         "errors": [],
         "deferred_presence": {},
         "reports": [],
+        # Registered repos with no checkout this run could create (#383 item 2):
+        # "repo id=<id> (<url>): <cause>". Exit 3, no traceback.
+        "unavailable_repos": [],
+        # Pre-scan fetches (refresh_before_scan): how many repos were fetched,
+        # the ones that failed ("repo id=<id> (<url>): <cause>", a WARNING
+        # each), and the ones whose fetch also failed in the previous run
+        # (``stale_repos``: exit 3 - OSM no longer follows that remote branch).
+        "fetch_attempted": 0,
+        "fetch_failed": [],
+        "stale_repos": [],
+        # Chunks sent to the embedder and the vectors it returned.
+        "embed_attempted": 0,
+        "embed_ok": 0,
+        # Run-wide failures derived by _finish_lifecycle (exit 3): every fetch
+        # of the run failed, or the embedder returned nothing all run.
+        "outages": [],
         "needs_attention": False,
     }
 
 
+def _report_unavailable_repo(lc: dict, repo: dict, exc) -> None:
+    """Report a repo without a checkout (``RepoCheckoutUnavailable``) - never a
+    traceback: one WARNING line, ``repos.status`` = error, the cause in
+    ``repos.lifecycle_attention`` and in the run summary (``unavailable_repos``,
+    which makes the CLI exit 3 so ``OnFailure=`` mails the admins: OSM cannot
+    reflect a repo it cannot read). The other repos are indexed as usual; the
+    next run retries the clone. A busy lock (a clone is running right now) is
+    only logged."""
+    repo_id = repo.get("id")
+    if exc.busy:
+        _logger.info(
+            "Repo id=%s (%s) not indexed this run: %s", repo_id, repo.get("url"), exc.cause,
+        )
+        return
+    _logger.warning(
+        "Repo id=%s (%s) unavailable: %s; the next run retries", repo_id,
+        repo.get("url"), exc.cause,
+    )
+    lc["unavailable_repos"].append(f"repo id={repo_id} ({repo.get('url')}): {exc.cause}")
+    try:
+        repo_store().update_repo_status(repo_id, "error", error_msg=str(exc)[:500])
+    except Exception:  # noqa: BLE001 - reporting never fails the run
+        _logger.warning("could not record the status of repo id=%s", repo_id, exc_info=True)
+    store = _presence_store()
+    if store is not None and repo_id is not None:
+        try:
+            store.set_lifecycle_attention(
+                repo_id, f"checkout unavailable: {exc.cause}; the next index run retries",
+            )
+        except Exception:  # noqa: BLE001
+            _logger.warning(
+                "could not write lifecycle_attention of repo id=%s", repo_id, exc_info=True,
+            )
+
+
 def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
     """Fold one repo's ``_index_repo`` lifecycle counters into the run summary."""
+    fetch = counters.get("fetch") or {}
+    if fetch.get("attempted"):
+        lc["fetch_attempted"] += 1
+    if fetch.get("failed"):
+        item = f"repo id={repo['id']} ({repo.get('url')}): {fetch['failed']}"
+        lc["fetch_failed"].append(item)
+        if fetch.get("persistent"):
+            lc["stale_repos"].append(item)
+    lc["embed_attempted"] += counters.get("embed_attempted", 0) or 0
+    lc["embed_ok"] += counters.get("embed_ok", 0) or 0
     repo_lc = counters.get("lifecycle")
     if not repo_lc:
         return
@@ -370,9 +404,44 @@ def _absorb_report(lc: dict, report) -> None:
     lc["errors"].extend(f"{v}: {k}: {e}" for k, e in sorted(report.errors.items()))
 
 
+# A run-wide fetch outage needs at least this many fetched repos: with one
+# repo, "every fetch failed" is one failure, which the two-consecutive-runs
+# rule (``stale_repos``) covers instead.
+FETCH_OUTAGE_MIN_REPOS = 2
+
+
+def run_outages(lc: dict) -> list[str]:
+    """Run-wide failures that stop OSM reflecting code (exit 3): the pre-scan
+    fetch failed for every repo the run fetched (network / DNS outage, a
+    revoked credential shared by all repos), or the embedder returned no
+    vector for any chunk the run sent (down for the whole run). Derived from
+    the counts, so a merged summary (``index_all``) is judged as a whole."""
+    out: list[str] = []
+    attempted = lc.get("fetch_attempted", 0) or 0
+    failed = len(lc.get("fetch_failed") or [])
+    if attempted >= FETCH_OUTAGE_MIN_REPOS and failed >= attempted:
+        out.append(
+            f"fetch_outage: the pre-scan fetch failed for all {attempted} repos this run "
+            "fetched (network or DNS outage, or a credential they share); OSM indexed "
+            "the on-disk state and does not follow the remote branches"
+        )
+    sent = lc.get("embed_attempted", 0) or 0
+    if sent and not (lc.get("embed_ok", 0) or 0):
+        out.append(
+            f"embedder_down: the embedder returned no vector for any of the {sent} "
+            "chunk(s) this run sent; the graph was written, the embeddings were not "
+            "(existing rows kept)"
+        )
+    return out
+
+
 def _finish_lifecycle(lc: dict) -> dict:
     lc["versions"] = sorted(set(lc["versions"]))
-    lc["needs_attention"] = bool(lc["gates_tripped"] or lc["undecidable"] or lc["errors"])
+    lc["outages"] = run_outages(lc)
+    lc["needs_attention"] = bool(
+        lc["gates_tripped"] or lc["undecidable"] or lc["errors"]
+        or lc.get("unavailable_repos") or lc.get("stale_repos") or lc["outages"]
+    )
     return lc
 
 
@@ -545,7 +614,8 @@ def index_profile(
                        to keep the old local-only behaviour.
         retire:        False (CLI --no-retire) scans and writes but deletes
                        nothing; no longer shipped modules stay pending.
-        allow_mass_retire: bypass the mass-retire gate G-B (never set in a timer).
+        allow_mass_retire: emergency bypass: also delete what the git evidence
+                       cannot prove gone (never set in a timer; ADR-0057 phase 2).
         reconcile:     run the per-version lifecycle reconcile at the end of the
                        profile (default). ``index_all`` passes False and runs it
                        once per version after every profile worker joined.
@@ -558,9 +628,14 @@ def index_profile(
         lifecycle}; a profile with no repo registered returns it with
         ``no_repos`` True and nothing indexed. ``lifecycle`` = {versions,
         gates_tripped, undecidable, errors, deferred_presence, reports,
-        needs_attention}; ``needs_attention``
-        True means a gate tripped, a name was undecidable or the reconcile
-        failed (CLI exit code 3).
+        unavailable_repos, needs_attention}; ``needs_attention``
+        True means a gate tripped, a name was undecidable, the reconcile
+        failed or a repo has no checkout the run could clone (CLI exit code 3).
+
+    A repo without a checkout is cloned first when its clone never succeeded
+    (``pipeline_repo._ensure_repo_checkout``); one that still has none is
+    reported in ``unavailable_repos`` (WARNING line, ``lifecycle_attention``,
+    no traceback) and does not make the profile fail.
 
     Raises :class:`IndexRunError` after the post-passes (and the reconcile)
     when any repo failed to index; its ``summary`` is the dict above for the
@@ -688,6 +763,8 @@ def index_profile(
                             counters.get("js_patches", 0),
                             counters.get("owl_comps", 0),
                         )
+                    except RepoCheckoutUnavailable as e:
+                        _report_unavailable_repo(lifecycle, repo, e)
                     except Exception as e:
                         _elapsed = time.monotonic() - _t0
                         _logger.exception(
@@ -740,6 +817,8 @@ def index_profile(
                             counters.get("owl_comps", 0),
                         )
                         return counters
+                    except RepoCheckoutUnavailable:
+                        raise  # reported by the collecting loop, no traceback
                     except Exception as e:
                         _elapsed = time.monotonic() - _t0
                         _logger.exception(
@@ -773,6 +852,8 @@ def index_profile(
                             total_embeddings += counters.get("embeddings", 0)
                             total_js_patches += counters.get("js_patches", 0)
                             total_owl_comps += counters.get("owl_comps", 0)
+                        except RepoCheckoutUnavailable as e:
+                            _report_unavailable_repo(lifecycle, repo_for_future, e)
                         except Exception as e:
                             failed_repo_ids.append((repo_for_future["id"], str(e)[:200]))
                             if first_exc is None:
@@ -1244,6 +1325,11 @@ def index_all(
         lifecycle["versions"].extend(plc.get("versions") or [])
         lifecycle["gates_tripped"].extend(plc.get("gates_tripped") or [])
         lifecycle["deferred_presence"].update(plc.get("deferred_presence") or {})
+        lifecycle["unavailable_repos"].extend(plc.get("unavailable_repos") or [])
+        for key in ("fetch_failed", "stale_repos"):
+            lifecycle[key].extend(plc.get(key) or [])
+        for key in ("fetch_attempted", "embed_attempted", "embed_ok"):
+            lifecycle[key] += plc.get(key, 0) or 0
         for key in counts:
             counts[key] += summary.get(key, 0)
 
@@ -1406,5 +1492,9 @@ from src.indexer.pipeline_reembed import (  # noqa: E402,F401
     audit_repo_for_profile,
     reembed_stubs_for_profile,
 )
-from src.indexer.pipeline_repo import _index_repo, _owning_profiles  # noqa: E402,F401
+from src.indexer.pipeline_repo import (  # noqa: E402,F401
+    RepoCheckoutUnavailable,
+    _index_repo,
+    _owning_profiles,
+)
 

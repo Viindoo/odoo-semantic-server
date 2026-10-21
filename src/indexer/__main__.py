@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from src import config
 from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
-from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS
+from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS, INFORMATIONAL_FINDING_KEYS
 from src.indexer.pipeline import (
     IndexRunError,
     audit_repo_for_profile,
@@ -157,12 +157,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Bypass the mass-drop safety gates: module retirement / orphan sweep "
-            "(more than half of a repo's modules, at least 20, or all of them, "
-            "vanishing in one run) and the entity prune of one module, shared or "
-            "not (more than half of its nodes or relationships, at least 20). A "
-            "tripped gate makes the run exit 3. Never set it in a timer; use it "
-            "once after checking lifecycle_attention."
+            "Emergency bypass only, never needed on the normal path: every "
+            "lifecycle deletion already deletes what the git HEAD tree proves "
+            "gone, whatever the count, with no approval (retirement, orphan and "
+            "embedding sweeps, the entity prune of a module several repos ship). "
+            "This flag ALSO deletes what git cannot prove gone: modules whose "
+            "manifest is still tracked, orphans a checkout still ships, the kept "
+            "part of a shared-module prune; and it lifts a held total wipe "
+            "(exit 3: every module vanished but the wipe is not in the branch "
+            "history) and a held embedding sweep. The entity prune of a module "
+            "one repo ships ignores this flag: it keeps a parser gap (reported "
+            "by lifecycle-audit, never exit 3). Never set it in a timer."
         ),
     )
 
@@ -244,9 +249,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fail-on-findings", action="store_true",
         help=(
             f"Exit {EXIT_AUDIT_FINDINGS} when any finding count is non-zero: "
-            f"{', '.join(FINDING_KEYS)} (the report's 'findings'). The shared-module "
-            "bootstrap backlog is reported but is not a finding. The weekly drift "
-            "detector."
+            f"{', '.join(FINDING_KEYS)} (the report's 'findings'), except the "
+            f"informational {', '.join(sorted(INFORMATIONAL_FINDING_KEYS))} (kept data, "
+            "listed in the report, never exit 4). The shared-module bootstrap backlog "
+            "is reported but is not a finding. The weekly drift detector."
         ),
     )
 
@@ -368,10 +374,14 @@ EXIT_AUDIT_FINDINGS = 4
 
 def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     """0, or EXIT_LIFECYCLE_ATTENTION when the run's module lifecycle needs an
-    operator: a safety gate tripped, a name was undecidable, or the reconcile
+    operator: a safety gate tripped, a name was undecidable, the reconcile
     failed (review H4 - systemd ``OnFailure=`` must fire, the data was indexed
-    but ghosts may remain). The details go to stderr; the same text is in
-    ``repos.lifecycle_attention``.
+    but ghosts may remain), or a registered repo has no checkout the run could
+    clone (``unavailable_repos``, #383 item 2: the other repos were indexed,
+    this one cannot be), a repo's pre-scan fetch failed in two consecutive
+    runs (``stale_repos``), or a run-wide outage (``outages``: every fetch of
+    the run failed, or the embedder returned no vector all run). The details
+    go to stderr; the per-repo text is in ``repos.lifecycle_attention``.
 
     *run_failed*: a repo or profile failed to index. The run exits 1, which
     outranks 3, but the lifecycle details are printed all the same."""
@@ -384,7 +394,8 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     if not lifecycle.get("needs_attention"):
         return code
     print(f"Lifecycle needs attention (exit {code}):", file=sys.stderr)
-    for key in ("gates_tripped", "undecidable", "errors"):
+    for key in ("gates_tripped", "undecidable", "errors", "unavailable_repos",
+                "stale_repos", "outages"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
     # The embedding gate id names no profile; say which ones it holds (#381 F3).
@@ -440,7 +451,10 @@ def _run_lifecycle_audit(args) -> int:
     else:
         print(render_text(report))
     if args.fail_on_findings and report["has_findings"]:
-        counts = ", ".join(f"{k}={n}" for k, n in report["findings"].items() if n)
+        informational = set(report.get("informational_findings") or ())
+        counts = ", ".join(
+            f"{k}={n}" for k, n in report["findings"].items() if n and k not in informational
+        )
         print(
             f"Lifecycle audit found drift (exit {EXIT_AUDIT_FINDINGS}): {counts}",
             file=sys.stderr,
@@ -502,8 +516,10 @@ def main(argv: list[str] | None = None) -> int:
         retire = not getattr(args, "no_retire", False)
         allow_mass_retire = getattr(args, "allow_mass_retire", False)
         refresh = not getattr(args, "no_fetch", False)
-        embedder = None if args.no_embed else _build_embedder()
+        # The pool first: building the embedder resolves the DB overlay of
+        # embedding.timeout_read_seconds once, at construction (#383 item 3).
         pg = open_production_pg()
+        embedder = None
         max_workers = getattr(args, "max_workers", 1)
         profile_workers = getattr(args, "profile_workers", 1)
 
@@ -516,8 +532,10 @@ def main(argv: list[str] | None = None) -> int:
                     status="running",
                     pid=os.getpid(),
                     started_at=datetime.now(UTC),
+                    **job_registry.own_process_identity(),
                 )
             try:
+                embedder = None if args.no_embed else _build_embedder()
                 # A run with a failed repo or profile still reconciled the
                 # healthy ones: its summary comes with the IndexRunError.
                 failure: IndexRunError | None = None
@@ -616,6 +634,7 @@ def main(argv: list[str] | None = None) -> int:
                     status="running",
                     pid=os.getpid(),
                     started_at=datetime.now(UTC),
+                    **job_registry.own_process_identity(),
                 )
             try:
                 _run_index_core(
@@ -639,16 +658,18 @@ def main(argv: list[str] | None = None) -> int:
                 pg.close()
 
     elif args.subcommand == "reembed-stubs":
-        embedder = _build_embedder()
-        if embedder is None:
-            print(
-                "Error: [embedder] url not configured — cannot reembed. "
-                "Set [embedder] url in odoo-semantic.conf or EMBEDDER_URL env var.",
-                file=sys.stderr,
-            )
-            return 1
+        # The pool before the embedder, as in index-repo (#383 item 3).
         pg = open_production_pg()
+        embedder = None
         try:
+            embedder = _build_embedder()
+            if embedder is None:
+                print(
+                    "Error: [embedder] url not configured - cannot reembed. "
+                    "Set [embedder] url in odoo-semantic.conf or EMBEDDER_URL env var.",
+                    file=sys.stderr,
+                )
+                return 1
             summary = reembed_stubs_for_profile(
                 pg,
                 profile_name=args.profile,
@@ -661,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         finally:
             close = getattr(embedder, "close", None)
-            if callable(close):
+            if embedder is not None and callable(close):
                 close()
             pg.close()
 

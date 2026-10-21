@@ -82,14 +82,20 @@ while read -r p; do
 done
 ```
 
-Expected: 0 everywhere. A large number in one clone means many orphan modules at that version;
-if they are more than half of the version's modules (and at least 20), the sweep gate holds
-them in step 4 (exit 3) until a one-shot `--allow-mass-retire` (step 5).
+Expected: 0 everywhere. A large number in one clone means many orphan modules at that version.
+Since ADR-0057 phase 2 the sweep removes each one git proves gone (no checkout of its profile
+tracks its manifest at HEAD), whatever the count, with no approval; one whose manifest a
+checkout still has in its HEAD tree is kept and listed by `lifecycle-audit` (`orphan_modules`
+with `kept_because`).
 
 **0c. Registered repos without a checkout (blocks steps 4, 6 and 7).** A registered repo whose
-`local_path` is not a directory fails its index run every night (`FileNotFoundError: local_path
-does not exist`), so `index-repo` exits **1**, not 0 or 3. The run still indexes and reconciles
-every other repo, but that repo never syncs, so at its version the sweep keeps every orphan
+`local_path` is not a directory is cloned by the index run itself when its clone never succeeded
+(`clone_status` `manual` / `pending` / `error`, issue #383 item 2: same lock, SSH key and pinned
+host keys as the cloner). If that clone fails (branch missing on the remote, wrong key) - or the
+row says `cloned` but the directory is gone (never re-cloned automatically) - the run logs one
+WARNING line, lists it under `unavailable_repos`, writes `lifecycle_attention` and exits **3**
+(no traceback). The run still indexes and reconciles every other repo, but that repo never
+syncs, so at its version the sweep keeps every orphan
 Module of its profile and the children of every module-less name (attention on that repo, audit
 findings `orphan_modules` / `child_orphans`). Step 6 "findings 0" and step 7 "exit=0" cannot pass
 until it is fixed. List them:
@@ -236,8 +242,18 @@ jq .findings ~/osm-rollout/lifecycle-preview.json
   profile). Expected on a pre-ledger graph.
 - repo entries `wrong_paths` / `unapplied_changes` - drift a repo's next run does not fix because
   it is the unchanged skip; `index-repo --profile <p> --full` applies them (step 6).
-- repo entries `held_prunes` and version `shared_prunes` - entity prunes the soft gate holds, and
-  the shared-module prune (`would_prune` or `held`). A held prune exits 3 on the run (step 5).
+- repo entries `parser_gaps` (schema `/4`, formerly `held_prunes`) - entities an entity prune
+  KEPT because the module's git HEAD source still defines them but the parser no longer
+  produces them (ADR-0057). The run exits 0 for them; nobody approves anything: fix the parser
+  (the module is re-evaluated automatically after the deploy that changes the indexer code).
+  Each entry carries a `sample`; an entry whose sample names something git really deleted is a
+  ghost the oracle keeps on purpose: a model name still mentioned in a comment, a field /
+  method still in the text of a Python 2 file, or any Model / inheritance edge of a module
+  with a class whose `_name` / `_inherit` it cannot evaluate (a constant of another addon, a
+  call, an f-string).
+- version `shared_prunes` - the shared-module prune (`would_prune`, or `partial` when some
+  owner's HEAD source still defines part of it, which is kept); schema `/5` has no `held`
+  outcome and the prune never exits 3.
 - repo entries `unparseable_kept` - an indexed module whose tracked manifest does not parse is
   kept as it is (exit 3); fix the manifest upstream.
 - `errors` (version and repo entries) - the preview could not decide something; read the text and
@@ -261,14 +277,18 @@ Before it, repeat the step 0c check (no line).
 - `exit=1` - a repo or profile failed to index (the traceback ends with `N repo(s) failed: id=...`
   or `N profile(s) failed: ...`); every other repo was still indexed and reconciled. The
   `Lifecycle needs attention (exit 1):` lines, if any, are the lifecycle outcome of the healthy
-  repos, act on them as for exit 3. A missing checkout is fixed per step 0c; any other repo
-  error is in `repos.error_msg`. Fix it and run again: step 6 cannot pass while a repo fails.
-- `exit=3` - the index was written, something was held. Read the stderr tail
-  (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` lines,
-  plus `embedding_orphans_held: <v>: N group(s) of profile(s) ...` when gate G-B held the
-  embedding sweep)
-  and `repos.lifecycle_attention`, then act per the exit-code-3 table in `docs/deploy.md` s3.6.
-  A held sweep or retirement keeps the data; nothing is lost by waiting.
+  repos, act on them as for exit 3. The repo error is in `repos.error_msg`. Fix it and run
+  again: step 6 cannot pass while a repo fails.
+- `exit=3` - the index was written, something OSM cannot fix by itself was held. Read the stderr
+  tail (`Lifecycle needs attention (exit 3):` + `gates_tripped:` / `undecidable:` / `errors:` /
+  `unavailable_repos:` lines, plus `embedding_orphans_held: <v>: ...` when a graph missing Module
+  nodes held the embedding sweep) and `repos.lifecycle_attention`, then act per the
+  exit-code-3 table in `docs/deploy.md` s3.6. A missing checkout is fixed per step 0c. A hold
+  keeps the data; nothing is lost by waiting.
+- Mass deletions are NOT held any more (ADR-0057 phase 2): a commit that deletes 22 of 25
+  modules, an orphan sweep of hundreds of ghosts or a mass orphan embedding delete all run on
+  this first pass when git proves them gone. What git cannot prove is kept and reported by
+  `lifecycle-audit` (`unproven_drops`, kept orphans / embedding groups, `parser_gaps`).
 
 **Shared GPU embedder (M1):** the shared-module bootstrap re-parses up to
 `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` modules (default 60) per repo per run, and each re-parsed
@@ -284,25 +304,28 @@ UI-started run inherits `odoo-semantic-webui.service`'s environment, which loads
 (restart the Web UI to pick up the change). The value is read on every run. Remove the line
 once `shared_parse_backlog` in `lifecycle-audit` is 0. The code default is unchanged.
 
-## Step 5 - Only if the run exited 3 on a gate
+## Step 5 - Only if the run exited 3 on a hold
 
-Confirm the drop is real (git history of the named repo, the preview of step 3). Then one
-manual run, scoped to the profile, with the bypass:
+Nobody approves a deletion (ADR-0057 and its phase 2): the entity prune, the shared-module prune,
+repo-level retirement and the orphan / embedding sweeps all delete what git proves gone, whatever
+its size, and keep what git cannot prove. What still exits 3 is a state OSM cannot repair by
+itself; fix the cause, then let the next normal run decide:
 
-```bash
-sudo osm-fernet-run $PY -m src.indexer index-repo --profile <profile> --allow-mass-retire
-```
+- `total_wipe` - every module of a repo vanished and the wipe is not a commit of the branch
+  (force-push, branch swap, wrong clone) or the HEAD tree still has manifests (broken scan /
+  checkout). Check the checkout (`git -C <path> log --oneline -3`,
+  `git merge-base --is-ancestor <presence_head_sha> HEAD`, the registered url / branch) and fix
+  it.
+- `embedding_sweep:graph_unhealthy` - the graph lost Module nodes of present modules. Re-write
+  them with `sudo osm-fernet-run $PY -m src.indexer index-repo --profile <p> --full`, `<p>` the
+  profile the attention / stderr line names.
+- `undecidable` - index the profile of the repo named in the message (or unregister a repo that
+  is no longer used); the next reconcile decides the name.
+- `unavailable_repos` - step 0c.
 
-`<profile>` must have a repo at the gate's version: a run reconciles only the versions of its
-own profile's repos. For a held embedding sweep use the profile the attention / stderr line names
-(`run once index-repo --profile <p> --allow-mass-retire`); when the held profile has no repo at
-that version any more, that is another profile of the version, and running the held profile
-itself deletes nothing. The flag lifts every mass gate (G-B) of that run, not only the one you
-checked: read all of that profile's `gates_tripped` first.
-
-Never put `--allow-mass-retire` in the timer or a drop-in. For `undecidable`: index the profile
-of the repo named in the message (or unregister a repo that is no longer used); the next
-reconcile decides the name.
+`--allow-mass-retire` is an emergency bypass only (it ALSO deletes what git cannot prove gone and
+lifts the holds above): use it once, scoped (`--profile <p>`), only when the git evidence itself
+is known to be wrong. Never put it in the timer or a drop-in.
 
 ## Step 6 - Verify
 
@@ -342,7 +365,8 @@ sudo osm-fernet-run $PY -m src.indexer lifecycle-audit --all --json | jq .findin
 | `modules_without_profile` | only the legacy names recorded in step 0a |
 | `wrong_paths`, `unapplied_changes` | 0 (a repo the next run skips at an unchanged HEAD; `index-repo --profile <p> --full` applies them) |
 | `unparseable_kept` | 0 (an indexed module whose tracked manifest does not parse is kept as it is; fix the manifest upstream, the next run re-indexes it) |
-| `would_rewrite`, `shared_prunes`, `held_prunes` | may stay non-zero while the shared-module bootstrap drains (about 11 nightly runs for a CE clone, see step 3); each normal run resolves what the previous audit listed |
+| `would_rewrite`, `shared_prunes` | may stay non-zero while the shared-module bootstrap drains (about 11 nightly runs for a CE clone, see step 3); each normal run resolves what the previous audit listed |
+| `parser_gaps`, `unproven_drops` | informational (`informational_findings`): kept data, not an operator task and never an exit 4 - parser defects or scan regressions (or ghosts the oracle keeps on purpose), fixed in code; the next run after such a deploy re-evaluates them (ADR-0057) |
 
 Re-enable the nightly reindex now (if it was stopped in step 1), so the bootstrap drains:
 
@@ -353,7 +377,8 @@ sudo systemctl enable --now odoo-semantic-reindex.timer
 ## Step 7 - Enable the weekly drift detector (only after the drain)
 
 The weekly unit runs `lifecycle-audit --all --json --fail-on-findings` and fails (exit 4,
-`osm-alert@`) on ANY finding, the bootstrap backlog included. Enabling it before the drain would
+`osm-alert@`) on ANY finding except the informational `parser_gaps` / `unproven_drops`, the
+bootstrap backlog included. Enabling it before the drain would
 alert every week on a healthy rollout. Enable it only once the audit of step 6 reports every
 finding at 0 (repeat that audit after the nightly runs; `shared_parse_backlog.remaining` of
 every repo entry reaches 0 at the same time):
@@ -367,6 +392,22 @@ systemctl list-timers 'odoo-semantic-*' --no-pager
 Exit 4 from the unit = the audit found drift (alert via `osm-alert@`); without
 `--fail-on-findings` the audit always exits 0 on findings. The JSON report is in
 `/var/log/odoo-semantic/odoo-semantic-lifecycle-audit.log`.
+
+## Where to look afterwards: the admin Module Lifecycle page
+
+Web UI `/admin/lifecycle` (global admins, sidebar "Module Lifecycle") shows the same data
+without a shell, read-only - there is nothing to approve on it (ADR-0057):
+
+- per repository: ledger counts, indexed HEAD vs ledger HEAD (`head_sha` vs
+  `presence_head_sha`, the step 6 `synced` check), `lifecycle_attention`, clone state and a
+  missing checkout (the `unavailable_repos` case);
+- per Odoo version: the latest retirements with the removing commit and the successor, and,
+  when the version is opened, its `lifecycle-audit --all --version <v> --json` report (parser
+  gaps, unproven drops, kept orphans, `shared_parse_backlog`, what the next run removes). The
+  Web UI runs that audit as a child process, one at a time, reuses a report for
+  `WEBUI_LIFECYCLE_AUDIT_TTL_SECONDS` (600) and kills a run past
+  `WEBUI_LIFECYCLE_AUDIT_TIMEOUT_SECONDS` (1800); "Run again" forces a fresh one. The weekly
+  timer and the CLI above stay the alerting path; the page is for looking.
 
 ## Development databases only: migration 0003 was edited before release
 

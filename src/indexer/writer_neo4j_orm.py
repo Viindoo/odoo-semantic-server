@@ -52,6 +52,7 @@ def _write_parse_result(
         MERGE (m:Module {{name: $name, odoo_version: $v}})
         ON CREATE SET m.profile = $profiles,
                       m.auto_install = $auto_install,
+                      m.auto_install_triggers = $auto_install_triggers,
                       m.application = $application,
                       m.category = $category,
                       m.summary = $summary,
@@ -74,6 +75,7 @@ def _write_parse_result(
         ON MATCH  SET m.profile =
                           {_profile_union_set("m")},
                       m.auto_install = $auto_install,
+                      m.auto_install_triggers = $auto_install_triggers,
                       m.application = $application,
                       m.category = $category,
                       m.summary = coalesce($summary, m.summary),
@@ -114,6 +116,7 @@ def _write_parse_result(
          copyright_owner=module.copyright_owner,
          license_notice=module.license_notice,
          auto_install=module.auto_install,
+         auto_install_triggers=module.auto_install_triggers,
          application=module.application,
          category=module.category,
          summary=module.summary,
@@ -155,6 +158,22 @@ def _write_parse_result(
             SET {_written_run_set("r")}
         """, name=module.name, v=module.odoo_version, dep=dep, run=run_id)
 
+    # Four passes over the module's models, each finishing before the next
+    # starts (all in this one transaction):
+    #   1. every Model node + DEFINED_IN;
+    #   2. INHERITS / DELEGATES_TO;
+    #   3. every Field;
+    #   4. every Method and its USES_CORE_SYMBOL / USES_FIELD / DEPENDS_ON_FIELD.
+    # `result.models` is in source-file order (parser_python.parse_module walks
+    # the files alphabetically), not in dependency order: a child model in
+    # models/provider.py comes before its mixin in models/request_log_mixin.py.
+    # Writing each model's relations right after its own node made the parent
+    # lookup miss a same-module parent defined in a later file, write an
+    # `__unresolved__` placeholder that the version GC later deleted, and so
+    # lose the edge. Likewise a method's USES_FIELD to a field of the same model
+    # declared by another class of the module in a later file was skipped.
+    # Parents in OTHER modules not written yet (cross-repo order) are relinked
+    # by Neo4jWriter.relink_unresolved_placeholders before the placeholder GC.
     for model in result.models:
         tx.run(f"""
             MERGE (mod:Module {{name: $module_name, odoo_version: $v}})
@@ -187,6 +206,7 @@ def _write_parse_result(
              inherit_list=model.inherit,
              profiles=profiles, run=run_id)
 
+    for model in result.models:
         for idx, parent_name in enumerate(model.inherit):
             if parent_name == model.name:
                 # Self-extend: module B's copy of `sale.order` inherits from the
@@ -255,8 +275,10 @@ def _write_parse_result(
                     # placeholder — that would union a foreign profile onto a node
                     # owned elsewhere. The placeholder uses the {name,
                     # module:'__unresolved__'} key (distinct from the real Model's
-                    # real-module key, so it does NOT converge on it; gc_unresolved
-                    # reconciles once the real parent is indexed). Created
+                    # real-module key, so it does NOT converge on it): once the
+                    # real parent is indexed, relink_unresolved_placeholders moves
+                    # this edge (order and run stamp kept) onto it, then
+                    # gc_unresolved_placeholders deletes the placeholder. Created
                     # profile-less, it is correctly DENIED to scoped tenants by the
                     # F-6 `size(profile)>0` guard until reconciled. ON MATCH leaves
                     # profile untouched.
@@ -315,6 +337,7 @@ def _write_parse_result(
                 """, name=model.name, mod=model.module, v=model.odoo_version,
                      delegated=delegated_model, via_field=via_field, run=run_id)
 
+    for model in result.models:
         for fld in model.fields:
             tx.run(f"""
                 MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})
@@ -341,6 +364,7 @@ def _write_parse_result(
                  effective_readonly=fld.effective_readonly,
                  profiles=profiles, run=run_id)
 
+    for model in result.models:
         for mth in model.methods:
             tx.run(f"""
                 MATCH (m:Model {{name: $model_name, module: $mod, odoo_version: $v}})

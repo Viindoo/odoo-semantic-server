@@ -2,6 +2,14 @@
   "_curate_status": "complete",
   "_generated_at": "2026-06-21",
   "_note": "v18 baseline derived from v17 + db_replica additions, verified against ~/git/odoo18 source. Manual curation 2026-06-21: (1) --i18n-export/--i18n-import/--load-language/--i18n-overwrite are NOT deprecated at v18 - odoo/tools/config.py carries no deprecation marker for them and the flags[] entries below correctly carry status='stable'; only --i18n-export and --i18n-import carry a forward-pointing replacement_flag_name to the v19 `odoo-bin i18n export`/`i18n import` subcommands, --load-language has no v18 replacement pointer at all; (2) removed 4 flags that do NOT exist in v18 odoo/tools/config.py - --db_app_name/--reinit/--with-demo (v19-only) and --longpolling-port (removed in v18, was a deprecated alias in v16/v17); (3) added upgrade_code command + its 6 flags (--script/--from/--to/--glob/--dry-run/--addons-path) from odoo/cli/upgrade_code.py.",
+  "_global_flags_provenance": {
+    "source_repo": "https://github.com/odoo/odoo",
+    "source_branch": "18.0",
+    "source_commit": "964808830ab441bbe3f551cd43e73bbd3b82e5d7",
+    "source_file": "odoo/tools/config.py",
+    "oracle": "src.indexer.parser_cli._parse_options_calls",
+    "synced_at": "2026-10-20"
+  },
   "commands": [
     {
       "name": "server",

@@ -378,3 +378,47 @@ def test_profile_defs_version_match_synthetic():
             f"{name!r} version {version!r} != parent {parent_name!r} version "
             f"{version_map[parent_name]!r}"
         )
+
+
+def test_seed_parent_link_obeys_the_visibility_invariant(clean_pg, monkeypatch, capsys):
+    """A seeded (shared) profile is never linked under a private parent."""
+    import src.db.seed_master_data as smd
+
+    run_migrations(clean_pg)  # empty defs
+
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('seed_t') RETURNING id")
+        tid = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO profiles (name, odoo_version, tenant_id) VALUES ('t_root', '17.0', %s)",
+            (tid,),
+        )
+    monkeypatch.setattr(smd, "_PROFILE_DEFS", _SYNTHETIC_PROFILES)
+    smd.seed_profiles(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("SELECT parent_profile_id FROM profiles WHERE name = 't_child'")
+        assert cur.fetchone()[0] is None
+    assert "Skipped parent 't_root' for seeded profile 't_child'" in capsys.readouterr().err
+
+
+def test_seed_parent_link_never_closes_a_cycle(clean_pg, monkeypatch, capsys):
+    import src.db.seed_master_data as smd
+
+    run_migrations(clean_pg)  # empty defs
+
+    with clean_pg.cursor() as cur:
+        cur.execute("INSERT INTO profiles (name, odoo_version) VALUES ('t_root', '17.0')"
+                    " RETURNING id")
+        root = cur.fetchone()[0]
+        cur.execute("INSERT INTO profiles (name, odoo_version, parent_profile_id)"
+                    " VALUES ('t_child', '17.0', %s)", (root,))
+    # a def that would make t_root a child of its own child
+    monkeypatch.setattr(smd, "_PROFILE_DEFS", [
+        ("t_child", "17.0", "Child", None),
+        ("t_root", "17.0", "Root", "t_child"),
+    ])
+    smd.seed_profiles(clean_pg)
+    with clean_pg.cursor() as cur:
+        cur.execute("SELECT parent_profile_id FROM profiles WHERE name = 't_root'")
+        assert cur.fetchone()[0] is None
+    assert "Skipped parent 't_child' for seeded profile 't_root'" in capsys.readouterr().err

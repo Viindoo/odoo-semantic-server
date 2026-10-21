@@ -91,7 +91,7 @@ def test_first_run_full_reindex_sets_head_sha(
     _seed_module(repo, "mod_alpha")
     expected_sha = _get_head(repo)
 
-    pid = repo_store().add_profile("prof1", TEST_VERSION)
+    pid = repo_store().add_profile("prof1", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # Sanity: head_sha is NULL before first run
@@ -130,7 +130,7 @@ def test_second_run_unchanged_skips(
     repo = _make_git_repo_with_commit(tmp_path / "repo2", branch=TEST_VERSION)
     _seed_module(repo, "mod_beta")
 
-    pid = repo_store().add_profile("prof2", TEST_VERSION)
+    pid = repo_store().add_profile("prof2", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run — establishes head_sha
@@ -173,7 +173,7 @@ def test_second_run_one_module_changed(
     _seed_module(repo, "mod_unchanged")
     _seed_module(repo, "mod_changed")
 
-    pid = repo_store().add_profile("prof3", TEST_VERSION)
+    pid = repo_store().add_profile("prof3", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run
@@ -221,7 +221,7 @@ def test_force_push_falls_back_to_full(
     repo = _make_git_repo_with_commit(tmp_path / "repo4", branch=TEST_VERSION)
     _seed_module(repo, "mod_gamma")
 
-    pid = repo_store().add_profile("prof4", TEST_VERSION)
+    pid = repo_store().add_profile("prof4", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run
@@ -269,7 +269,7 @@ def test_full_flag_bypasses_skip(
     repo = _make_git_repo_with_commit(tmp_path / "repo5", branch=TEST_VERSION)
     _seed_module(repo, "mod_delta")
 
-    pid = repo_store().add_profile("prof5", TEST_VERSION)
+    pid = repo_store().add_profile("prof5", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run
@@ -321,11 +321,12 @@ def _setup_rename_repo(tmp_path: Path, profile_suffix: str, pg_conn):
     _seed_module(repo, "mod_foo")
 
     prof_name = f"prof_rename_{profile_suffix}"
-    pid = repo_store().add_profile(prof_name, TEST_VERSION)
+    pid = repo_store().add_profile(prof_name, TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run - establishes mod_foo Module node in Neo4j
-    summary1 = index_profile(pg_conn, profile_name=prof_name)
+    # The repo has no remote (url file://local): offline runs, like --no-fetch.
+    summary1 = index_profile(pg_conn, profile_name=prof_name, refresh=False)
     assert summary1["modules"] >= 1, "First run must index mod_foo"
 
     # git mv mod_foo → mod_bar and commit
@@ -365,7 +366,7 @@ def test_module_rename_retires_old_module_on_incremental_run(
     pid, repo, prof_name = _setup_rename_repo(tmp_path, "a", clean_pg)
 
     # Second run - incremental (no --full, no lifecycle flag)
-    summary2 = index_profile(clean_pg, profile_name=prof_name)
+    summary2 = index_profile(clean_pg, profile_name=prof_name, refresh=False)
     assert summary2["modules"] >= 1, "Second run must index mod_bar"
 
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (
@@ -388,7 +389,9 @@ def test_module_rename_full_flag_retires_old_module(
     that --full "is not a cleanup mechanism" pinned the #378 defect."""
     pid, repo, prof_name = _setup_rename_repo(tmp_path, "b", clean_pg)
 
-    summary2 = index_profile(clean_pg, profile_name=prof_name, full_reindex=True)
+    summary2 = index_profile(
+        clean_pg, profile_name=prof_name, full_reindex=True, refresh=False,
+    )
     assert summary2["modules"] >= 1, "--full run must index mod_bar"
 
     assert _neo4j_module_exists(neo4j_driver, "mod_bar"), (
@@ -413,7 +416,7 @@ def test_partial_failure_preserves_head_sha(
     repo = _make_git_repo_with_commit(tmp_path / "repo6", branch=TEST_VERSION)
     _seed_module(repo, "mod_epsilon")
 
-    pid = repo_store().add_profile("prof6", TEST_VERSION)
+    pid = repo_store().add_profile("prof6", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     # First run succeeds → records head_sha

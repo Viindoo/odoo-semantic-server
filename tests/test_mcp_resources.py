@@ -25,9 +25,23 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+import re
 from unittest.mock import patch
 
 import pytest
+
+
+def _admin_slot(cache, uri: str) -> str:
+    """The admin (``::t_admin``) cache key of *uri* actually present in *cache*.
+
+    The key may end with the profile-scope epoch segment (``::e<12 hex>``)
+    when the profile registry is reachable; returns the bare tenant key when
+    no entry exists so the caller's assertion names it.
+    """
+    pat = re.compile(re.escape(uri + "::t_admin") + r"(::e[0-9a-f]{12})?")
+    hits = [k for k in list(cache._data.keys()) if pat.fullmatch(k)]
+    assert len(hits) <= 1, hits
+    return hits[0] if hits else uri + "::t_admin"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -277,7 +291,7 @@ def test_cache_hit_short_circuits_second_read(
         f"_render_model must run exactly once across 2 reads; got {call_count}"
     )
     # R1 fix: cache key includes tenant suffix (::t_admin for admin/None context).
-    expected_key = uri + "::t_admin"
+    expected_key = _admin_slot(cache, uri)
     assert expected_key in cache, (
         f"Expected tenant-scoped cache key {expected_key!r} not found after reads"
     )
@@ -380,7 +394,7 @@ def test_transient_timeout_is_not_cached(fresh_resources_module) -> None:
         f"_resolve_model must run on BOTH reads (error uncached); got {calls['n']}"
     )
     # Cache holds only the good body now — never the timeout string.
-    expected_key = uri + "::t_admin"
+    expected_key = _admin_slot(cache, uri)
     assert expected_key in cache, "recovered body must be cached after the 2nd read"
     cached_body, _ = cache.get(expected_key)
     assert "timed out" not in cached_body.lower(), (

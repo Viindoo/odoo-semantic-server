@@ -83,7 +83,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
       >
         <option value="">— select profile —</option>
         {profiles.map((p) => (
-          <option value={p.name}>{p.name} ({p.odoo_version})</option>
+          <option value={p.name} data-version={p.odoo_version ?? ''}>{p.name} ({p.odoo_version})</option>
         ))}
       </select>
     </div>
@@ -518,6 +518,19 @@ function truncate(text: string | null | undefined, maxLen: number): string {
     branchInput.addEventListener('input', () => {
       // Mark as user-edited so auto-suggestion stops overwriting
       branchInput.dataset.userEdited = '1';
+    });
+    // A repo is indexed at its PROFILE's version: picking a profile selects
+    // that version (and, unless typed over, the branch) so a 20.0 profile
+    // never gets the newest-version default of another series.
+    const profileSelect = document.querySelector('[data-testid="repos-profile-input"]') as HTMLSelectElement | null;
+    profileSelect?.addEventListener('change', () => {
+      const v = profileSelect.selectedOptions[0]?.dataset.version ?? '';
+      if (!v) return;
+      if (![...versionSelect.options].some((o) => o.value === v)) {
+        versionSelect.add(new Option(v, v));
+      }
+      versionSelect.value = v;
+      versionSelect.dispatchEvent(new Event('change'));
     });
   }
 

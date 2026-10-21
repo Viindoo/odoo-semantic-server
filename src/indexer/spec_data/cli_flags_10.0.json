@@ -2,6 +2,14 @@
   "_curate_status": "complete",
   "_generated_at": "2026-05-17",
   "_note": "Extracted from openerp/tools/config.py (v8-v9) or odoo/tools/config.py (v10+) at corresponding version sources",
+  "_global_flags_provenance": {
+    "source_repo": "https://github.com/odoo/odoo",
+    "source_branch": "10.0",
+    "source_commit": "28c3f51c4878fbcd79b2e819948465fcf2160ebc",
+    "source_file": "odoo/tools/config.py",
+    "oracle": "src.indexer.parser_cli._parse_options_calls",
+    "synced_at": "2026-10-20"
+  },
   "commands": [
     {
       "name": "server",

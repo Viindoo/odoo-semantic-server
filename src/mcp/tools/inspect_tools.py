@@ -155,9 +155,9 @@ def model_inspect(
             'field' needs field=. 'method' needs method_name=.
             'extenders' paginates the full extending-module list (use after
             summary shows "and N more" in Extended by).
-        profile_name: Optional profile filter: this profile plus globally
-            shared base profiles (no ancestor-chain expansion of private
-            parent profiles). Default None = every profile you can access.
+        profile_name: Optional profile filter: this profile, its ancestor
+            profiles you can access (the declared parent chain), and the shared
+            base profiles. Default None = every profile you can access.
         field: Required for method='field'. readonly reflects Python def only.
         method_name: Required for method='method'.
         start_index: Pagination cursor for fields/methods/views/extenders.
@@ -227,11 +227,14 @@ def module_inspect(
         method: One of summary | views | owl | qweb | js | dependencies | tests.
             'fields' and 'methods' return a guidance stub (model required).
             'dependencies' returns transitive DEPENDS_ON closure with repo info
-            and topological load order (B2, ADR-0028 consolidation).
+            and topological load order (B2, ADR-0028 consolidation), plus the
+            modules auto_install brings in when this module is installed
+            (v18+: modules gated by manifest `countries` are listed apart,
+            Odoo installs them only for a company in one of those countries).
             'tests' returns TestClass nodes in the module (ADR-0051).
-        profile_name: Optional profile filter: this profile plus globally
-            shared base profiles (no ancestor-chain expansion of private
-            parent profiles). Default None = every profile you can access.
+        profile_name: Optional profile filter: this profile, its ancestor
+            profiles you can access (the declared parent chain), and the shared
+            base profiles. Default None = every profile you can access.
         start_index: Pagination cursor for views/owl/qweb/js (zero-based).
         limit: Max rows per page for views/owl/qweb/js (default 200).
         view_type: Filter views by type, e.g. 'form'/'tree'/'list' - method='views' only.

@@ -155,26 +155,57 @@ def test_renaming_the_only_module_of_a_repo_is_cleaned_by_a_plain_run(
     assert ledger(pg, rid, "test_pylint")["state"] == "retired"
 
 
-def _wiped_repo(tmp_path: Path, pg_conn) -> tuple[GitRepo, int]:
+def _two_module_repo(tmp_path: Path, pg_conn) -> tuple[GitRepo, int]:
     repo = GitRepo(tmp_path, "wiped_addons")
     write_module(repo, "wipe_a")
     write_module(repo, "wipe_b")
     repo.commit("add two modules")
     (rid,) = register("wipe_99", repo)
     run(pg_conn, "wipe_99")
+    return repo, rid
+
+
+def _wiped_repo(tmp_path: Path, pg_conn) -> tuple[GitRepo, int]:
+    """Every module removed by a commit of the branch's own history."""
+    repo, rid = _two_module_repo(tmp_path, pg_conn)
     repo.rm("wipe_a")
     repo.rm("wipe_b")
     repo.commit("remove every module")
     return repo, rid
 
 
-def test_a_scan_with_no_present_module_left_trips_and_deletes_nothing(
+def _force_wiped_repo(tmp_path: Path, pg_conn) -> tuple[GitRepo, int]:
+    """The branch replaced by an unrelated, empty root (force-push / branch
+    swap): the modules vanish but the wipe is not in the branch history."""
+    repo, rid = _two_module_repo(tmp_path, pg_conn)
+    repo.force_push_unrelated_root()
+    return repo, rid
+
+
+def test_a_total_wipe_committed_on_the_branch_is_retired_without_a_flag(
     pg, neo4j_driver, tmp_path,
 ):
-    """Every module of a repo vanishes (a botched branch, a wrong checkout): the
-    total-wipe gate trips, nothing is deleted, the operator is told, the ledger
-    head is held so the next run re-evaluates."""
-    repo, rid = _wiped_repo(tmp_path, pg)
+    """ADR-0057 phase 2: the old total-wipe gate held this until an operator
+    ran --allow-mass-retire. Git proves it: no manifest left in the HEAD
+    tree, and the HEAD the ledger reflected is an ancestor of HEAD."""
+    _repo, rid = _wiped_repo(tmp_path, pg)
+
+    summary = run(pg, "wipe_99")
+
+    assert not needs_attention(summary), lc(summary)
+    assert_gone(neo4j_driver, pg, "wipe_a")
+    assert_gone(neo4j_driver, pg, "wipe_b")
+    assert ledger(pg, rid, "wipe_a")["state"] == "retired"
+
+
+def test_a_total_wipe_outside_the_branch_history_trips_and_deletes_nothing(
+    pg, neo4j_driver, tmp_path,
+):
+    """Every module of a repo vanishes because the branch was replaced (a
+    force-push of another history, a branch swap, a wrong clone): the
+    total-wipe gate trips, nothing is deleted, the operator is told, the
+    ledger head is held so the next run re-evaluates."""
+    repo, rid = _force_wiped_repo(tmp_path, pg)
 
     summary = run(pg, "wipe_99")
 
@@ -185,7 +216,7 @@ def test_a_scan_with_no_present_module_left_trips_and_deletes_nothing(
     assert_live(neo4j_driver, pg, "wipe_a")
     assert_live(neo4j_driver, pg, "wipe_b")
     row = repo_row(pg, rid)
-    assert row["lifecycle_attention"], "the tripped gate must reach repos.lifecycle_attention"
+    assert "not in the branch history" in (row["lifecycle_attention"] or ""), row
     assert row["presence_head_sha"] != repo.head(), "H1: presence must not advance on a trip"
     assert ledger(pg, rid, "wipe_a")["state"] == "present"
 
@@ -194,8 +225,10 @@ def test_a_scan_with_no_present_module_left_trips_and_deletes_nothing(
     assert module_node(neo4j_driver, "wipe_a") is not None
 
 
-def test_allow_mass_retire_lets_an_operator_confirm_a_total_wipe(pg, neo4j_driver, tmp_path):
-    repo, rid = _wiped_repo(tmp_path, pg)
+def test_allow_mass_retire_is_the_emergency_bypass_of_a_held_total_wipe(
+    pg, neo4j_driver, tmp_path,
+):
+    _repo, rid = _force_wiped_repo(tmp_path, pg)
     run(pg, "wipe_99")  # trips
 
     confirmed = run(pg, "wipe_99", allow_mass_retire=True)
@@ -841,7 +874,7 @@ def test_never_synced_repo_blocks_retirement_only_when_its_checkout_ships_the_na
         if z_checkout == "cloned_ships_it":
             write_module(z, "y_gone")
         z.commit("z")
-    pid = repo_store().add_profile("tenant_z_99", V)
+    pid = repo_store().add_profile("tenant_z_99", V, shared=True)
     repo_store().add_repo(pid, "file:///nowhere/z.git", V, str(z_path))
     y.rm("y_gone")
     y.commit("drop y_gone")
@@ -1119,6 +1152,9 @@ def test_workers_waiting_on_the_ledger_lock_do_not_exhaust_the_shared_pool(
 def test_cli_exits_3_on_a_tripped_gate_and_the_confirmed_rerun_exits_0(
     pg, neo4j_driver, tmp_path, monkeypatch, _ephemeral_pg_db, capsys,
 ):
+    """The trip is a total wipe git does not prove (the branch was replaced by
+    an unrelated root); an in-history wipe exits 0 with no flag (ADR-0057
+    phase 2, ``test_a_total_wipe_committed_on_the_branch_is_retired...``)."""
     import src.indexer.__main__ as cli
 
     monkeypatch.setenv("PG_DSN", _ephemeral_pg_db)
@@ -1128,9 +1164,7 @@ def test_cli_exits_3_on_a_tripped_gate_and_the_confirmed_rerun_exits_0(
     repo.commit("add")
     (rid,) = register("wipe_99", repo)
     assert cli.main(["index-repo", "--profile", "wipe_99", "--no-embed"]) == 0
-    repo.rm("wipe_a")
-    repo.rm("wipe_b")
-    repo.commit("remove every module")
+    repo.force_push_unrelated_root()
 
     tripped = cli.main(["index-repo", "--profile", "wipe_99", "--no-embed"])
 

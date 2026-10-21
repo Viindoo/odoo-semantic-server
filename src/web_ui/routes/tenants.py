@@ -57,6 +57,12 @@ class AssignTenantBody(BaseModel):
     tenant_id: int | None = None
 
 
+class AssignProfileTenantBody(BaseModel):
+    tenant_id: int | None = None
+    # null = publish the profile to every key: must be confirmed explicitly.
+    confirm_shared: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Tenant CRUD
 # ---------------------------------------------------------------------------
@@ -259,17 +265,22 @@ async def remove_tenant_member(
 @audit_action("profile.assign_tenant", target_param="profile_id")
 async def assign_profile_tenant(
     profile_id: int,
-    body: AssignTenantBody,
+    body: AssignProfileTenantBody,
     request: Request,
     _user_id: int = Depends(require_admin),
 ):
-    """Assign or clear the tenant for a profile (admin-only).
+    """Assign or clear the tenant for a profile (admin-only) - fail-closed.
 
     Changing a profile's tenant_id changes which tenant's members can access it
-    via the read-side RLS isolation. This MUST invalidate the allowed_profiles
-    cache (same pattern as create/update/delete profile in repos.py:88/129/218/291).
+    via the read-side isolation, so the allowed_profiles cache is invalidated.
+    ``RepoStore.set_profile_tenant`` enforces, in one transaction:
 
-    tenant_id: null -> shared/global (visible to all tenants).
+    - tenant_id null (shared, visible to every key) needs ``confirm_shared=true``
+      (422 otherwise);
+    - the profile is never more visible than its parent, and no child more
+      visible than the profile (422, the conflicting profile is named - this
+      route is admin-only);
+    - the profile's repos follow: ``repos.tenant_id`` is set to the new tenant.
     """
     # Validate tenant_id exists when not null
     if body.tenant_id is not None:
@@ -285,20 +296,34 @@ async def assign_profile_tenant(
         except Exception as e:
             _logger.warning("assign_profile_tenant tenant lookup failed: %s", e)
             return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    from src.db.exceptions import (
+        ProfileInputError,
+        ProfileNotFoundError,
+        ProfileTenantRequiredError,
+        ProfileVisibilityError,
+    )
     try:
-        from src.db.pg import auth_store
-        found = auth_store().assign_profile_tenant(profile_id, body.tenant_id)
-        if not found:
-            raise HTTPException(status_code=404, detail=f"Profile {profile_id} not found")
+        from src.db.pg import repo_store
+        result = repo_store().set_profile_tenant(
+            profile_id, body.tenant_id, confirm_shared=body.confirm_shared,
+        )
         # Changing tenant_id changes profile->tenant mapping -> drop RLS cache
         from src.mcp.session import invalidate_allowed_profiles
         invalidate_allowed_profiles()
-    except HTTPException:
-        raise
+        try:
+            request.state.audit_detail.update(
+                {"tenant_id": body.tenant_id, "repos_updated": result["repos_updated"]},
+            )
+        except Exception:
+            pass
+    except ProfileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Profile {profile_id} not found")
+    except (ProfileTenantRequiredError, ProfileVisibilityError, ProfileInputError) as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         _logger.warning("assign_profile_tenant profile=%d failed: %s", profile_id, e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
-    return JSONResponse(_json_safe({"ok": True}))
+    return JSONResponse(_json_safe({"ok": True, **result}))
 
 
 @router.patch("/api/repos/{repo_id}/tenant")
@@ -309,9 +334,11 @@ async def assign_repo_tenant(
     request: Request,
     _user_id: int = Depends(require_admin),
 ):
-    """Assign or clear the tenant for a repo (admin-only).
+    """Re-sync a repo's tenant to its profile's (admin-only).
 
-    tenant_id: null -> shared/global (visible to all tenants).
+    ``repos.tenant_id`` follows the profile: any other value is rejected with
+    422 (change the profile's tenant instead - PATCH /api/profiles/{id}/tenant
+    propagates it to every repo of the profile).
     """
     # Validate tenant_id exists when not null
     if body.tenant_id is not None:
@@ -327,13 +354,16 @@ async def assign_repo_tenant(
         except Exception as e:
             _logger.warning("assign_repo_tenant tenant lookup failed: %s", e)
             return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
+    from src.db.exceptions import ProfileVisibilityError
     try:
-        from src.db.pg import auth_store
-        found = auth_store().assign_repo_tenant(repo_id, body.tenant_id)
+        from src.db.pg import repo_store
+        found = repo_store().set_repo_tenant(repo_id, body.tenant_id)
         if not found:
             raise HTTPException(status_code=404, detail=f"Repo {repo_id} not found")
     except HTTPException:
         raise
+    except ProfileVisibilityError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         _logger.warning("assign_repo_tenant repo=%d failed: %s", repo_id, e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)

@@ -20,6 +20,12 @@ const rows = Object.entries(versions)
   .map(([odooVersion, info]) => ({ odooVersion, ...info }))
   .sort((a, b) => parseFloat(a.odooVersion) - parseFloat(b.odooVersion));
 
+// The covered range is derived from the table itself, so the copy below can
+// never claim a series the curated data does not hold (or miss a new one).
+const coverage = rows.length > 0
+  ? `v${parseInt(rows[0].odooVersion, 10)} to v${parseInt(rows[rows.length - 1].odooVersion, 10)}`
+  : 'no Odoo version yet';
+
 const owner = bootstrapData._owner;
 const generatedAt = bootstrapData._generated_at;
 const source = bootstrapData._source;
@@ -27,7 +33,7 @@ const source = bootstrapData._source;
 
 <BaseLayout
   title="Bootstrap & SCSS by Odoo version — Odoo Semantic MCP"
-  description="Reference table mapping each Odoo major version (v8 to v19) to the Bootstrap version it ships, key SCSS variable files, and breaking changes for frontend developers."
+  description={`Reference table mapping each Odoo major version (${coverage}) to the Bootstrap version it ships, key SCSS variable files, and breaking changes for frontend developers.`}
   theme="dark"
 >
   <SiteHeader currentPath="/bootstrap" />
@@ -41,7 +47,7 @@ const source = bootstrapData._source;
         When you customize an Odoo theme — overriding brand colors, restyling the backend, or
         forking a frontend module — you need to know exactly which Bootstrap version Odoo ships
         and which SCSS files are safe customization seams. This table is the cheat-sheet for
-        v8 through v19.
+        {coverage}.
       </p>
       <p class="text-gray-500 text-sm max-w-3xl mt-4">
         SCSS file paths point to the canonical entry points inside Odoo's

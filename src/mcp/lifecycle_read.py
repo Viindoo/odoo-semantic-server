@@ -9,7 +9,10 @@ Two sources are combined:
   the explicit per-version presence list;
 * the Postgres ``module_presence`` ledger, which also keeps history: why a name
   is not indexed (retired / excluded / pending), the removing commit and the
-  recorded successor.
+  recorded successor (git rename, git merge or manifest ``old_technical_name``);
+* the curated cross-version rename / merge data (OpenUpgrade apriori,
+  ``src/indexer/module_renames.py``), every hop validated against the scoped
+  graph before it is shown.
 
 Every read is tenant-scoped. Graph reads go through the ADR-0034 choke
 (``_scope`` / ``_scope_pred``); ledger reads always pass an explicit profile
@@ -31,6 +34,7 @@ from datetime import UTC, date, datetime
 
 from src.constants import REL_DEPENDS_ON
 from src.db.module_presence import ModulePresenceStore
+from src.indexer import module_renames
 from src.indexer.lifecycle import (
     BLOCKED_ERROR_PREFIX,
     BLOCKED_GATE_PREFIX,
@@ -70,8 +74,18 @@ _BLOCKED_CLASS_TEXT = {
 }
 _SUCCESSOR_SOURCE_TEXT = {
     "git_rename": "git rename",
+    "git_merge": "git merge",
     "old_technical_name": "manifest old_technical_name",
 }
+# Successor sources whose names can be another tenant's module: shown only when
+# a module of that name is visible in the caller's scope (_visible_successors).
+_SCOPE_GATED_SOURCES = frozenset({"old_technical_name", "git_merge"})
+
+
+def _label(text: str) -> str:
+    """``"Renamed to"`` -> ``"Renamed to:      "`` (the tree's 17-column label)."""
+    return f"{text + ':':<17}"
+
 
 _VERSION_ORDER = (
     "CASE WHEN {v} =~ '[0-9]+[.][0-9]+' THEN toInteger(split({v}, '.')[0]) END, "
@@ -155,10 +169,16 @@ class ModuleLifecycle:
     # Admin caller: pending-retirement reasons are rendered in full (they may
     # name other tenants' repos and carry exception text).
     blocker_detail: bool = False
+    # #385: what the active profile_name filter left out (profile_filter_lines).
+    profile_filter: tuple[str, ...] = ()
+    # #380 item 2: the validated cross-version rename / merge chain, if any.
+    cross_version: module_renames.Chain | None = None
 
     @property
     def successors(self) -> tuple[str, ...]:
-        """Recorded successors (ledger first, then manifest reverse lookup), de-duplicated."""
+        """Recorded successors (ledger first, then manifest reverse lookup, then
+        the cross-version chain when it ends at a module indexed at this
+        version), de-duplicated."""
         seen: dict[str, None] = {}
         for row in self.ledger_rows:
             for s in row.get("successor_names") or ():
@@ -167,6 +187,9 @@ class ModuleLifecycle:
         for s in self.manifest_successors:
             if s != self.name:
                 seen.setdefault(s, None)
+        chain = self.cross_version
+        if chain is not None and chain.resolved and chain.final != self.name:
+            seen.setdefault(chain.final, None)
         return tuple(seen)
 
 
@@ -206,18 +229,22 @@ def read_ledger_rows(
 
 
 def _visible_successors(srv, session, rows, version: str, scope) -> list[dict] | None:
-    """Ledger rows whose manifest-declared successors are cut to the caller's scope.
+    """Ledger rows whose scope-gated successors are cut to the caller's scope.
 
-    A ``git_rename`` successor comes from the retiring repo's own history; an
-    ``old_technical_name`` successor is a module that declares the old name,
-    which another tenant's private module may do - such a name is never shown
-    unless an owned module of that name is visible in the caller's scope.
+    A ``git_rename`` successor is a module the retiring repo's own commit
+    created. An ``old_technical_name`` successor is a module that declares the
+    old name, which another tenant's private module may do; a ``git_merge``
+    successor is a module that existed before the merge and may since have
+    moved to a private repository (``viin_ai`` 17.0 went to
+    erponline-enterprise). Such a name is never shown unless an owned module
+    of that name is visible in the caller's scope; a hidden one is omitted
+    (fail-closed, ADR-0034), never counted.
     """
     if not rows:
         return rows
     declared = sorted({
         s for r in rows
-        if r.get("successor_source") == "old_technical_name"
+        if r.get("successor_source") in _SCOPE_GATED_SOURCES
         for s in (r.get("successor_names") or []) if s
     })
     if not declared:
@@ -238,7 +265,7 @@ def _visible_successors(srv, session, rows, version: str, scope) -> list[dict] |
     }
     out: list[dict] = []
     for r in rows:
-        if r.get("successor_source") == "old_technical_name":
+        if r.get("successor_source") in _SCOPE_GATED_SOURCES:
             kept = [s for s in (r.get("successor_names") or []) if s in visible]
             r = {**r, "successor_names": kept}
             if not kept:
@@ -294,6 +321,10 @@ def read_module_lifecycle(
         srv, session, read_ledger_rows(srv, name, version, profile_name),
         version, scope,
     )
+    cross_version = read_cross_version_chain(
+        srv, session, name, version, scope,
+        known_versions=[r["version"] for r in others if r.get("version")],
+    )
     stub_count = int(stub["c"]) if stub else 0
     stub_names = tuple(n for n in (stub["names"] if stub else []) if n)
     return ModuleLifecycle(
@@ -312,7 +343,132 @@ def read_module_lifecycle(
         stub_dependent_count=stub_count,
         stub_dependent_names=stub_names,
         blocker_detail=srv._get_allowed_profiles() is None,
+        profile_filter=profile_filter_lines(srv, session, name, version, profile_name),
+        cross_version=cross_version,
     )
+
+
+def read_cross_version_chain(
+    srv, session, name: str, version: str, scope, *, known_versions: Iterable[str],
+) -> module_renames.Chain | None:
+    """The OpenUpgrade rename / merge chain of *name* (not indexed at *version*),
+    each hop validated against the caller's scoped graph (#380 item 2).
+
+    No query at all when the curated data has no edge from *name* (the common
+    case). Otherwise one bounded query per hop, for the names whose indexed
+    versions are not known yet; a successor outside the caller's scope is not
+    indexed for this caller, so its hop never validates (no cross-tenant leak).
+    """
+    index = module_renames.rename_index()
+    if not index.edges_from(name):
+        return None
+
+    def presence(names: list[str]) -> dict[str, list[str]]:
+        rows = srv._data_bounded(
+            session,
+            f"""
+            MATCH (m:Module)
+            WHERE m.name IN $names AND {owned_pred(srv, 'm')}
+            WITH m.name AS name, m.odoo_version AS version
+            ORDER BY name, version
+            RETURN name, collect(DISTINCT version) AS versions
+            """,
+            f"indexed versions of rename candidates of '{name}'",
+            names=names, **scope,
+        )
+        return {r["name"]: list(r.get("versions") or []) for r in rows if r.get("name")}
+
+    return module_renames.resolve_chain(
+        name, version, index, presence, known={name: list(known_versions)},
+    )
+
+
+def cross_version_line(lc: ModuleLifecycle) -> str | None:
+    """``Renamed to`` / ``Merged into`` line of the validated cross-version chain.
+
+    One hop: ``Renamed to:      sale_loyalty (at 16.0, via OpenUpgrade apriori)``.
+    Several: ``Merged into:     a -> b (16.0) -> c (17.0, merged) (via OpenUpgrade
+    apriori)``. The label covers every hop: ``Renamed to`` when all are
+    renames, ``Merged into`` when all are merges, ``Replaced by`` when the
+    chain mixes both. A chain whose last module is not indexed at the asked
+    version says so (and gets no Next hint).
+    """
+    chain = lc.cross_version
+    if chain is None or not chain.hops:
+        return None
+    last = chain.hops[-1]
+    kinds = {h.kind == module_renames.KIND_MERGE for h in chain.hops}
+    if kinds == {True}:
+        label = _label("Merged into")
+    elif kinds == {False}:
+        label = _label("Renamed to")
+    else:
+        label = _label("Replaced by")
+    via = f"via {module_renames.SOURCE_LABEL}"
+    if len(chain.hops) == 1:
+        text = f"{last.new} (at {last.version}, {via})"
+    else:
+        steps = [chain.name] + [
+            f"{h.new} ({h.version}{', merged' if h.kind == module_renames.KIND_MERGE else ''})"
+            for h in chain.hops
+        ]
+        text = f"{' -> '.join(steps)} ({via})"
+    if not chain.resolved:
+        text += f"; {last.new} is not indexed at {chain.version}"
+    return f"├─ {label}{text}"
+
+
+def profile_filter_lines(
+    srv, session, name: str, version: str, profile_name: str | None,
+) -> tuple[str, ...]:
+    """Why a module may be missing UNDER a profile filter (#385), safe for this caller.
+
+    Only emitted when a ``profile_name`` filter (explicit or session pin) is
+    active and the profile is in the caller's scope:
+
+    - the module IS visible in the caller's whole boundary, just not under the
+      filter: name the profiles that carry it. Every profile on a node that
+      passed the boundary choke is in the caller's own scope, so naming them
+      discloses nothing new;
+    - some ancestors of the profile are outside the caller's boundary: a COUNT
+      only. Never their names, never whether the module exists there (no
+      cross-tenant existence oracle, ADR-0034).
+    """
+    if profile_name is None:
+        profile_name = srv._resolve_profile(None)  # the session pin, if any
+    if not profile_name:
+        return ()
+    own, shared = srv._session.resolve_tenant_scope(srv._get_tenant_id())
+    report = srv._session.profile_filter_report(profile_name, own, shared)
+    if report["denied"]:
+        return ()
+    profile = report["profile"]
+    lines: list[str] = []
+    rec = srv._single_bounded(
+        session,
+        f"""
+        MATCH (m:Module {{name: $n, odoo_version: $v}})
+        WHERE {owned_pred(srv, 'm')}
+        RETURN m.profile AS profiles
+        """,
+        f"module '{name}' outside the profile filter (Odoo {version})",
+        n=name, v=version, **srv._scope(None, pin=False),
+    )
+    if rec is not None:
+        outside = sorted(set(rec.get("profiles") or []) - set(report["chain"]))
+        if outside:
+            lines.append(
+                f"├─ Profile filter:  indexed in {', '.join(outside)} (in your scope),"
+                f" outside profile {profile} and its ancestor profiles"
+            )
+    withheld = report["withheld"]
+    if withheld:
+        noun = "profile" if withheld == 1 else "profiles"
+        lines.append(
+            f"├─ Profile filter:  {withheld} ancestor {noun} of {profile} not visible"
+            " to this key; results exclude them"
+        )
+    return tuple(lines)
 
 
 def blocked_by_text(value: str | None, *, detail: bool) -> str | None:
@@ -410,7 +566,8 @@ def _ledger_row_lines(row: Mapping, *, blocker_detail: bool = False) -> list[str
         source = _SUCCESSOR_SOURCE_TEXT.get(
             row.get("successor_source"), row.get("successor_source") or "recorded",
         )
-        children.append(f"Renamed to: {', '.join(successors)} ({source})")
+        verb = "Merged into" if row.get("successor_source") == "git_merge" else "Renamed to"
+        children.append(f"{verb}: {', '.join(successors)} ({source})")
     if row.get("version_mismatch") and row.get("version_raw"):
         children.append(
             f"Manifest version: {row['version_raw']} (does not match the branch version)"
@@ -426,7 +583,8 @@ def lifecycle_lines(lc: ModuleLifecycle) -> list[str]:
     """Tree lines (all ``├─``-level, never the terminal line) for a NOT-indexed name.
 
     Order: dependency stub, ledger block(s) or the unavailable line, renamed
-    from, renamed to (manifest reverse lookup), present at other versions.
+    from, renamed to (manifest reverse lookup), the cross-version rename /
+    merge chain (OpenUpgrade apriori, validated), present at other versions.
     """
     lines: list[str] = []
     if lc.stub_dependent_count:
@@ -460,12 +618,20 @@ def lifecycle_lines(lc: ModuleLifecycle) -> list[str]:
             f"├─ Renamed to:      {', '.join(manifest_only)}"
             f" (declares old_technical_name '{lc.name}' at {lc.version})"
         )
+    chain = lc.cross_version
+    if chain is not None and not (
+        chain.resolved and (chain.final in ledger_named or chain.final in manifest_only)
+    ):
+        line = cross_version_line(lc)
+        if line:
+            lines.append(line)
     if lc.other_versions:
         entries = [
             f"{v} [{', '.join(repos)}]" if repos else v
             for v, repos in lc.other_versions
         ]
         lines.append(f"├─ Present at other versions: {', '.join(entries)}")
+    lines.extend(lc.profile_filter)
     return lines
 
 

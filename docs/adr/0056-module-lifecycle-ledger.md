@@ -10,6 +10,44 @@
 **Amends:** ADR-0007, ADR-0016, ADR-0034, ADR-0037, ADR-0048, ADR-0051, ADR-0054,
 ADR-0055 (each carries a dated amendment pointing here).
 
+> **Amendment 2026-10-20 (ADR-0057):** the per-repo entity prune (D9) no longer has a soft
+> gate. Each candidate is judged against the module's git HEAD tree by a source oracle:
+> what git proves gone is deleted with its embeddings whatever the count; what the source
+> still defines is kept as a parser gap (Module record + `lifecycle-audit` `parser_gaps`,
+> schema `/4`, renamed from `held_prunes`), never an exit 3, re-evaluated only when the
+> module tree or the indexer code changes. The D6 row "soft prune gate `entity_prune`" and
+> `soft_gate` in the D9 skip list apply only to the shared-module prune (D10) now;
+> `--allow-mass-retire` does not affect the per-repo entity prune. The test-node GC leaves
+> the modules the prune judged alone, so embeddings always follow.
+>
+> **Amendment 2026-10-20 (ADR-0057 phase 2):** no G-B row of D6 is a delete gate any more.
+> A dropped module is retired when its manifest is gone from the raw HEAD tree, whatever the
+> count; one git still tracks is kept (`unproven_drops`); a total wipe is held (exit 3) only
+> when git does not prove it (base not an ancestor of HEAD, a manifest still tracked). The
+> orphan / embedding sweeps remove what no checkout of the owning profile ships (the
+> embedding sweep holds only on a graph missing nodes of present modules); the shared-module
+> prune (D10) uses the source oracle per owner, with no nightly re-hold. `--allow-mass-retire`
+> is an emergency bypass only. A registered repo without a checkout is cloned by the run
+> (issue #383 item 2) or reported as `unavailable_repos` (exit 3, no traceback), replacing
+> the exit-1 Known limit. Audit schema `/5`.
+>
+> **Amendment 2026-10-20 (#380 items 2-3):** a third successor source `git_merge`
+> (migration 0006): with no rename destination, the removing commit's whole-tree `diff -M`
+> pairing moving at least half (inclusive) of the old directory's files, and at least 3 files
+> (`MERGE_MIN_MOVED_FILES`: half of a 2-file module is no evidence), into ONE
+> module directory that has a manifest before and after the commit names it
+> (`lifecycle.merged_into`; the manifest status of the target and the commit subject play no
+> part; the rename fallback `_directory_moved_into` keeps a strict majority so a rename names
+> one destination, both through `lifecycle._share_reached`). D13 renders it
+> `Merged into: <module> (git merge)` with the usual Next hint, and gates it by visibility like
+> `old_technical_name` (a merge target can later move to a private repo; hidden names are
+> omitted, never counted). Rows retired before: `ops/backfill_successors.py` (dry run,
+> idempotent, bounded). D13 also shows a cross-version rename / merge chain from OpenUpgrade
+> apriori (`src/indexer/module_renames.py`, curated data under ADR-0055), each hop shown only
+> when the scoped index has the old name at N-1 and not from N to the asked version and the
+> new name at N; its label covers every hop (`Renamed to` all renames, `Merged into` all
+> merges, `Replaced by` a mix). Tool / resource surface stays 31 / 9.
+
 ---
 
 ## Context
@@ -232,7 +270,9 @@ the branch (`16.0.1.0.0` on a 17.0 branch was keyed 16.0).
   it with what still stands (F38).
 - `index-repo` exits **3** (`EXIT_LIFECYCLE_ATTENTION`) when a gate tripped, a
   name was undecidable or the reconcile failed: the index was written, but an
-  operator must look, so systemd `OnFailure=` fires. Details go to stderr and to
+  operator must look, so systemd `OnFailure=` fires. (Amended by ADR-0057 P4 and
+  its rule R6: which gates still trip, plus `unavailable_repos`,
+  `stale_repos` and the `outages` fetch / embedder signals.) Details go to stderr and to
   `repos.lifecycle_attention`.
 
 ### D7 - Who may still ship a module: decided per module (F48)

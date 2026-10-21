@@ -617,8 +617,14 @@ def write_module_embeddings(
     profile_name: str | None = None,
     *,
     replace: bool = True,
+    stats: dict | None = None,
 ) -> int:
     """Delete-then-insert embeddings for (module, version[, profile_name]) atomically.
+
+    *stats* (optional): ``stats["attempted"]`` / ``stats["embedded"]`` are
+    increased by the chunks sent to the embedder and the ones it returned a
+    vector for, so the run can tell an embedder that was down for the whole
+    run (zero embedded while chunks were attempted) from a partial failure.
 
     ``replace=False`` upserts without the delete: rows of chunks the parse did
     not produce are kept. The pipeline uses it for a module whose parse was
@@ -667,6 +673,9 @@ def write_module_embeddings(
     chunks = list(seen.values())
 
     live_chunks, vecs, embed_calls = _embed_chunks_resilient(embedder, chunks)
+    if stats is not None:
+        stats["attempted"] = stats.get("attempted", 0) + len(chunks)
+        stats["embedded"] = stats.get("embedded", 0) + len(live_chunks)
     if len(live_chunks) < len(chunks):
         parse_health.note_embeddings_incomplete()
 
@@ -814,6 +823,54 @@ def _warn_short_delete(
         )
 
 
+# Chunk types a file-keyed graph node's rows carry (make_chunks js_<era>,
+# make_css/scss/less_chunks, make_js_test_chunks).
+_JS_CHUNK_TYPES = ("js_era1", "js_era2", "js_era3")
+_STYLE_CHUNK_TYPES = ("css", "scss", "less")
+
+
+def kept_entity_chunk_filters(nodes: Iterable) -> list[tuple[str, str | None, str | None]]:
+    """``(chunk_type, entity_name, file_path)`` filters of the rows that
+    describe *nodes* - graph children the entity prune keeps although the
+    parse no longer produced them (ADR-0057 parser gaps).
+
+    Single source of truth for "which embedding rows belong to this graph
+    node", next to the chunk builders whose naming it mirrors:
+    ``make_chunks`` (``field`` / ``method``: ``<model>.<name>``; ``view`` /
+    ``qweb``: the xmlid; ``js_<era>``: per file), ``make_test_chunks``
+    (``test_class``: ``<Class>.__class__``; ``test_method``:
+    ``<Class>.<method>``), ``make_js_test_chunks`` (``js_test``: the file),
+    the stylesheet makers (``css`` / ``scss`` / ``less``: per file). *nodes*
+    carry ``label``, ``name``, ``model``, ``xmlid``, ``file_path`` (repo-
+    relative, as the rows store it) and ``test_class``. Labels without rows
+    (Model, Report, LintViolation, TestHelper) yield nothing.
+    """
+    out: list[tuple[str, str | None, str | None]] = []
+    for n in nodes:
+        label = getattr(n, "label", None)
+        name = getattr(n, "name", None)
+        model = getattr(n, "model", None)
+        xmlid = getattr(n, "xmlid", None)
+        fp = getattr(n, "file_path", None)
+        if label in ("Field", "Method") and name and model:
+            out.append((label.lower(), f"{model}.{name}", None))
+        elif label == "View" and xmlid:
+            out.append(("view", xmlid, None))
+        elif label == "QWebTmpl" and xmlid:
+            out.append(("qweb", xmlid, None))
+        elif label == "TestClass" and name:
+            out.append(("test_class", f"{name}.__class__", None))
+        elif label == "TestMethod" and name and getattr(n, "test_class", None):
+            out.append(("test_method", f"{n.test_class}.{name}", None))
+        elif label == "JsTestSuite" and fp:
+            out.append(("js_test", None, fp))
+        elif label == "Stylesheet" and fp:
+            out.extend((ct, None, fp) for ct in _STYLE_CHUNK_TYPES)
+        elif label in ("JSPatch", "OWLComp") and fp:
+            out.extend((ct, None, fp) for ct in _JS_CHUNK_TYPES)
+    return out
+
+
 def delete_module_embeddings_except(
     conn,
     module: str,
@@ -824,13 +881,14 @@ def delete_module_embeddings_except(
     expected: int | None = None,
     by_entity: bool = False,
     delete: bool = True,
+    also_keep: Iterable[tuple] = (),
 ) -> int:
     """Delete *module*'s rows for *profile_name* whose chunk key is not in *keep_keys*.
 
     The embedding half of the intra-module entity prune (ADR-0056 B14): the
-    pipeline upserts a module's chunks, and once the prune decided the
-    module may lose what its parse no longer produced, this removes the
-    remaining rows. A key is ``(chunk_type, entity_name, file_path,
+    pipeline upserts a module's chunks, and once the prune decided which of
+    the entities its parse no longer produced leave, this removes their
+    rows. A key is ``(chunk_type, entity_name, file_path,
     chunk_idx)`` - the ``ux_embeddings_chunk`` identity within one module,
     version and profile. An empty *keep_keys* deletes every row of the
     module for that profile. ``GLOBAL_PROFILE`` is never touched. Runs on
@@ -844,6 +902,12 @@ def delete_module_embeddings_except(
     longer produces go, never a live entity's row that simply was not
     re-embedded. *delete* False only counts.
 
+    *also_keep*: ``(chunk_type, entity_name | None, file_path | None)``
+    filters (:func:`kept_entity_chunk_filters`) of the entities the prune
+    KEPT although the parse did not produce them (ADR-0057 parser gaps): a
+    row matching one stays with its node. None in a filter matches any value;
+    a filter with neither an entity name nor a file path is ignored.
+
     Returns the number of rows deleted (counted).
     """
     if not profile_name or profile_name == GLOBAL_PROFILE:
@@ -851,6 +915,10 @@ def delete_module_embeddings_except(
     keys = sorted(
         {(str(k[0]), k[1], k[2], int(k[3])) for k in keep_keys},
         key=lambda k: (k[0], k[1] or "", k[2] or "", k[3]),
+    )
+    kept = sorted(
+        {(str(f[0]), f[1], f[2]) for f in also_keep if f[1] is not None or f[2] is not None},
+        key=lambda f: (f[0], f[1] or "", f[2] or ""),
     )
     match = (
         "k.chunk_type = e.chunk_type AND k.entity_name IS NOT DISTINCT FROM e.entity_name"
@@ -871,11 +939,20 @@ def delete_module_embeddings_except(
                        AS k(chunk_type, entity_name, file_path, chunk_idx)
                   WHERE {match}
               )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM unnest(%s::text[], %s::text[], %s::text[])
+                       AS a(chunk_type, entity_name, file_path)
+                  WHERE a.chunk_type = e.chunk_type
+                    AND (a.entity_name IS NULL OR a.entity_name = e.entity_name)
+                    AND (a.file_path IS NULL OR a.file_path = e.file_path)
+              )
             """,
             (
                 module, version, profile_name,
                 [k[0] for k in keys], [k[1] for k in keys],
                 [k[2] for k in keys], [k[3] for k in keys],
+                [f[0] for f in kept], [f[1] for f in kept], [f[2] for f in kept],
             ),
         )
         deleted = cur.rowcount if delete else cur.fetchone()[0]
@@ -901,6 +978,18 @@ _SHARED_STALE_EMBEDDINGS_WHERE = """
 """
 
 
+_SHARED_KEEP_WHERE = """
+    AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(%(keep_types)s::text[], %(keep_names)s::text[], %(keep_files)s::text[])
+             AS a(chunk_type, entity_name, file_path)
+        WHERE a.chunk_type = e.chunk_type
+          AND (a.entity_name IS NULL OR a.entity_name = e.entity_name)
+          AND (a.file_path IS NULL OR a.file_path = e.file_path)
+    )
+"""
+
+
 def shared_module_stale_embeddings(
     conn,
     module: str,
@@ -909,6 +998,7 @@ def shared_module_stale_embeddings(
     *,
     delete: bool,
     expected: int | None = None,
+    also_keep: Iterable[tuple] = (),
 ) -> int:
     """Count or delete the rows of a shared module no owner's latest parse produced.
 
@@ -924,18 +1014,29 @@ def shared_module_stale_embeddings(
     (:func:`_write_scope`, a FORCEd policy must not hide rows); *delete*
     False only counts. *expected* (a prior count): fewer rows deleted logs a
     WARNING. Returns the number of rows counted or deleted.
+
+    *also_keep*: ``(chunk_type, entity_name | None, file_path | None)``
+    filters (:func:`kept_entity_chunk_filters`) of the entities the source
+    oracle kept (ADR-0057 phase 2): their rows stay with their nodes, exactly
+    as in :func:`delete_module_embeddings_except`.
     """
     pairs = [(p, since) for p, since in owners if p and p != GLOBAL_PROFILE]
     profiles = sorted({p for p, _ in pairs})
     if not profiles:
         return 0
+    kept = sorted(
+        {(str(f[0]), f[1], f[2]) for f in also_keep if f[1] is not None or f[2] is not None},
+        key=lambda f: (f[0], f[1] or "", f[2] or ""),
+    )
     params = {
         "module": module, "v": version, "profiles": profiles,
         "owner_profiles": [p for p, _ in pairs], "owner_since": [s for _, s in pairs],
+        "keep_types": [f[0] for f in kept], "keep_names": [f[1] for f in kept],
+        "keep_files": [f[2] for f in kept],
     }
     verb = "DELETE FROM embeddings e WHERE" if delete else "SELECT count(*) FROM embeddings e WHERE"
     with _write_scope(conn), conn.cursor() as cur:
-        cur.execute(f"{verb} {_SHARED_STALE_EMBEDDINGS_WHERE}", params)
+        cur.execute(f"{verb} {_SHARED_STALE_EMBEDDINGS_WHERE}{_SHARED_KEEP_WHERE}", params)
         n = cur.rowcount if delete else cur.fetchone()[0]
     if delete:
         _warn_short_delete(module, version, profiles, n, expected)

@@ -300,15 +300,13 @@ def test_two_api_keys_reading_same_uri_get_same_body(
         f"body_a[:100]={body_a[:100]!r}, body_b[:100]={body_b[:100]!r}"
     )
 
-    # The tenant-scoped cache key must be present after the reads.
-    assert expected_key in cache, (
-        f"Expected cache key {expected_key!r} not found after reads"
-    )
-
-    # Only one cache entry for this (URI, tenant) combination.
-    key_count = sum(1 for k in list(cache._data.keys()) if k == expected_key)
-    assert key_count == 1, (
-        f"Cache must hold exactly one entry for key {expected_key!r}; found {key_count}"
+    # Exactly one tenant-scoped cache entry for this (URI, tenant): the key may
+    # carry the profile-scope epoch segment (``::e<epoch>``) after the
+    # tenant segment, which is the same for both reads.
+    keys = [k for k in list(cache._data.keys())
+            if k == expected_key or k.startswith(f"{expected_key}::e")]
+    assert len(keys) == 1, (
+        f"Cache must hold exactly one entry for {expected_key!r}[::e<epoch>]; found {keys}"
     )
 
 

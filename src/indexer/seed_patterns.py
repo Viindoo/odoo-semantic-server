@@ -862,11 +862,14 @@ def main(argv: list[str] | None = None) -> int:
     def _mark_running():
         if job_id is not None and _js is not None:
             try:
+                from src.db.job_registry import own_process_identity
+
                 _js.update_job(
                     job_id,
                     status="running",
                     pid=os.getpid(),
                     started_at=datetime.now(UTC),
+                    **own_process_identity(),
                 )
             except Exception:
                 pass

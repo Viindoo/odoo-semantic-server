@@ -22,9 +22,11 @@ complete-parse records of the module's present owners. Rules protected here
    own extra entity never ping-pong (0-work runs);
 4. a degraded parse of any copy, or an unsynced repo that may ship the module,
    blocks the rule (nothing deleted) until it is resolved;
-5. a mass drop (> 50 % and >= 20 nodes) is held with gate ``entity_prune:M@v``
-   (operator attention) on every run until one runs with --allow-mass-retire;
-6. the dry-run ``lifecycle-audit`` predicts ``would_prune`` / ``held`` as the
+5. no ratio and no approval (ADR-0057 phase 2): a mass drop both copies' HEAD
+   sources prove gone is pruned on the first run; what an owner's source still
+   defines (a parser regression) is kept as a parser gap, with no attention
+   and no nightly re-evaluation;
+6. the dry-run ``lifecycle-audit`` predicts ``would_prune`` / ``partial`` as the
    finding ``shared_prunes``; after the prune it is 0 and the next run reports
    nothing (watermark);
 7. after a deploy (no complete-parse records yet) each repo's normal runs
@@ -451,55 +453,100 @@ def _bulk_fields(n: int) -> str:
 BULK = "viin_ai_bulk"
 
 
-def test_shared_mass_drop_is_held_with_a_gate_until_allow_mass_retire(
-    pg, neo4j_driver, tmp_path, monkeypatch, capsys,
-):
-    """Both copies of viin_ai_bulk drop 26 of their 29 extra fields (> 50 % and
-    >= 20 of the module's nodes). The run that could prune holds instead: gate
-    ``entity_prune:viin_ai_bulk@99.0``, operator attention, nothing deleted; the
-    audit reports it ``held``; a later plain run holds again. A run with
-    --allow-mass-retire prunes exactly the 26 fields and the audit is clean."""
+def _bulk_copies(tmp_path: Path, pg, driver, n: int = 29) -> tuple[GitRepo, GitRepo, int]:
     a = GitRepo(tmp_path / "a", "addons_a")
     b = GitRepo(tmp_path / "b", "addons_b")
     for repo in (a, b):
-        _simple_module(repo, BULK, _bulk_fields(29))
+        _simple_module(repo, BULK, _bulk_fields(n))
         repo.commit("bulk")
     register(PA, a)
     register(PB, b)
     run(pg, PA)
     run(pg, PB)
-    total = children(neo4j_driver, BULK)
-    assert total >= 31, "precondition: model, 30 fields and a method"
+    total = children(driver, BULK)
+    assert total >= n + 2, "precondition: model, fields and a method"
+    return a, b, total
+
+
+def test_a_shared_mass_drop_git_proves_gone_is_pruned_without_a_flag(
+    pg, neo4j_driver, tmp_path, monkeypatch, capsys,
+):
+    """Both copies of viin_ai_bulk drop 26 of their 29 extra fields in a
+    commit (> 50 % and >= 20 of the module's nodes). The old ratio gate held
+    this on every run until --allow-mass-retire; the source oracle proves each
+    field gone from BOTH copies' HEAD trees, so the run in which the last owner
+    re-parsed prunes exactly the 26 fields and their embedding rows in every
+    owner profile, with no attention (ADR-0057 phase 2), and the audit is
+    clean afterwards."""
+    a, b, total = _bulk_copies(tmp_path, pg, neo4j_driver)
     for repo in (a, b):
         _simple_module(repo, BULK, _bulk_fields(3))
         repo.commit("[REF] bulk: drop 26 fields")
     run(pg, PA)
 
-    held = run(pg, PB)
+    pruned = run(pg, PB)
 
-    gate = f"entity_prune:{BULK}@{V}"
-    assert children(neo4j_driver, BULK) == total, "a mass drop must be held"
-    assert any(gate in g for g in lc(held)["gates_tripped"]), lc(held)["gates_tripped"]
-    assert needs_attention(held)
-    assert list(_shared_reports(held, "shared_prune_held")) == [BULK]
-    code, report = _audit(monkeypatch, capsys, "--all", "--fail-on-findings")
-    items = [(i["name"], i["outcome"], i["stale"]) for i in _version(report)["shared_prunes"]]
-    assert items == [(BULK, "held", 26)], items
-    assert report["findings"]["shared_prunes"] == 1 and code == 4
-
-    again = run(pg, PA)
-    assert children(neo4j_driver, BULK) == total, "held again: re-evaluated every run"
-    assert any(gate in g for g in lc(again)["gates_tripped"])
-
-    run(pg, PB, allow_mass_retire=True)
-
+    assert not needs_attention(pruned), lc(pruned)
     assert children(neo4j_driver, BULK) == total - 26
     assert [_field(neo4j_driver, f"f{i:02d}", BULK) for i in (0, 1, 2)] == [1, 1, 1]
     assert _field(neo4j_driver, "f03", BULK) == 0
+    for profile in (PA, PB):
+        assert _field_emb(pg, BULK, profile, "f03") == 0, profile
+        assert _field_emb(pg, BULK, profile, "f00") > 0, profile
     code, report = _audit(monkeypatch, capsys, "--all", "--fail-on-findings")
     assert _version(report)["shared_prunes"] == []
     assert report["findings"]["shared_prunes"] == 0
     assert not needs_attention(run(pg, PA))
+
+
+def test_a_shared_field_some_owner_source_still_defines_is_kept_and_not_rejudged_nightly(
+    pg, neo4j_driver, tmp_path, monkeypatch, capsys,
+):
+    """A parser regression stops producing 26 fields that both copies'
+    sources still define. The shared prune keeps them with their embeddings
+    (a parser gap on the Module, listed by the audit as ``parser_gaps``), never an
+    exit 3 nor an audit exit 4; an unchanged night does not judge the module again."""
+    from src.indexer import parser_python
+
+    _a, _b, total = _bulk_copies(tmp_path, pg, neo4j_driver)
+    real = parser_python.parse_module
+    dropped = {f"f{i:02d}" for i in range(3, 29)}
+
+    def regressed(info):
+        result = real(info)
+        for m in result.models:
+            m.fields = [f for f in m.fields if f.name not in dropped]
+        return result
+
+    monkeypatch.setattr(parser_python, "parse_module", regressed)
+    run(pg, PA, full_reindex=True)
+
+    kept = run(pg, PB, full_reindex=True)
+
+    assert not needs_attention(kept), lc(kept)
+    assert children(neo4j_driver, BULK) == total, "nothing the source defines is deleted"
+    assert _field_emb(pg, BULK, PA, "f03") > 0 and _field_emb(pg, BULK, PB, "f03") > 0
+    assert _shared_reports(kept, "shared_pruned") == {}
+    code, report = _audit(monkeypatch, capsys, "--all", "--fail-on-findings")
+    gaps = [g for r in report["repos"] for g in r["parser_gaps"] if g["name"] == BULK]
+    assert gaps and gaps[0]["kept"] == 26, gaps
+    # Kept data is listed, never an alert: no exit 4 for a parser gap.
+    assert report["findings"]["shared_prunes"] == 0 and code == 0
+    assert report["has_findings"] is False
+
+    with neo4j_driver.session() as s:
+        state = s.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.shared_prune_state AS s",
+            n=BULK, v=V,
+        ).single()["s"]
+    again = run(pg, PA)
+    assert not needs_attention(again), lc(again)
+    assert children(neo4j_driver, BULK) == total
+    with neo4j_driver.session() as s:
+        assert s.run(
+            "MATCH (m:Module {name: $n, odoo_version: $v}) RETURN m.shared_prune_state AS s",
+            n=BULK, v=V,
+        ).single()["s"] == state, "an unchanged night re-judges nothing"
 
 
 # ---------------------------------------------------------------------------

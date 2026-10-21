@@ -38,6 +38,10 @@ expected values come from the rules and the real cases in the #378 survey
 - R18    without profile_name the NO line says "any accessible profile".
 - R19    a multi-line manifest summary / name / author renders on one line, so
          the ADR-0023 tree stays valid.
+- #380   a ``git_merge`` successor reads ``Merged into`` with a Next: to it, and
+         is never named to a key that cannot see the target (viin_ai moved to
+         a private repo); an OpenUpgrade cross-version edge is shown only when
+         the scoped index confirms it (reuse trap and private successor never).
 
 Versions: the asked version is ``TEST_VERSION`` (99.0); other-version presence
 uses the test-only slots in ``_OTHER_VERSIONS`` (never a real Odoo version, so
@@ -880,7 +884,8 @@ class TestNotIndexedWording:
     def test_with_profile_it_names_that_profile(self, hub, ledger, std):
         out = _check("no_such_module_xyz", profile_name=STD)
         assert _lines(out)[-1] == (
-            f"└─ Not indexed at {V} in profile {STD}. Verify the module name, "
+            f"└─ Not indexed at {V} in profile {STD} and its ancestor profiles."
+            " Verify the module name, "
             "or call list_available_profiles to see indexed scope."), out
 
     def test_ee_confusion_answer_does_not_send_the_agent_to_describe_a_missing_module(
@@ -1230,3 +1235,126 @@ class TestRetiredStateNamesWhereItWasRecorded:
         assert line == (f"│   ├─ State: retired - removed from branch {V} "
                         f"(recorded at HEAD 281607a on {day})"), line
         assert _balanced(line)
+
+
+# ---------------------------------------------------------------------------
+# #380 item 3 - "Merged into" for N:1 merges, cut to the caller's scope
+# ---------------------------------------------------------------------------
+
+MERGE_SHA = "a231963d7a5e0c1b2d3f4a5b6c7d8e9f0a1b2c3d"
+MERGE_SUBJECT = "[MERGE] viin_ai_rag: merge into viin_ai"
+
+
+@pytest.fixture
+def merge_world(hub, ledger, pg_conn):
+    """acme's repo merged viin_ai_rag into viin_ai, and viin_ai later moved to
+    globex's PRIVATE repo (the 17.0 shape: tvtmaaddons -> erponline-enterprise).
+    acme_rag2 merged into acme's own acme_core."""
+    acme = _tenant(pg_conn, "lr_acme")
+    globex = _tenant(pg_conn, "lr_globex")
+    acme_pid = _profile(pg_conn, "lr_acme_p", tenant_id=acme)
+    globex_pid = _profile(pg_conn, "lr_globex_p", tenant_id=globex)
+    r_acme = _repo(pg_conn, acme_pid, "acme_addons")
+    _repo(pg_conn, globex_pid, GLOBEX_REPO)
+    _module("viin_ai", repo=GLOBEX_REPO, profiles=["lr_globex_p"])
+    _module("acme_core", repo="acme_addons", profiles=["lr_acme_p"])
+    at = datetime(2026, 8, 28, tzinfo=UTC)
+    _observe(ledger, r_acme, "lr_acme_p", PRE_RENAME_HEAD,
+             ["viin_ai_rag", "acme_rag2", "acme_core"], at=at)
+    _retire(ledger, r_acme, "viin_ai_rag", head=TVTMA_HEAD, sha=MERGE_SHA,
+            when="2026-08-29T10:12:00+07:00", subject=MERGE_SUBJECT,
+            successors=["viin_ai"], source="git_merge")
+    _retire(ledger, r_acme, "acme_rag2", head=TVTMA_HEAD, sha=MERGE_SHA,
+            when="2026-08-29T10:12:00+07:00", subject="[MERGE] acme_rag2: merge into acme_core",
+            successors=["acme_core"], source="git_merge")
+    return {"acme": acme, "globex": globex}
+
+
+class TestMergedIntoStaysInScope:
+    def test_a_merge_into_an_own_module_says_merged_into_and_points_next(self, merge_world):
+        with as_tenant(merge_world["acme"]):
+            out = _check("acme_rag2")
+        _assert_adr0023_tree(out)
+        assert "│   └─ Merged into: acme_core (git merge)" in _lines(out), out
+        assert "Renamed to" not in out, out
+        assert _lines(out)[-1] == (
+            f"└─ Next: check_module_exists(name='acme_core', odoo_version='{V}') "
+            "for the successor"), out
+
+    def test_a_merge_target_now_in_another_tenants_private_repo_is_never_named(
+            self, merge_world):
+        with as_tenant(merge_world["acme"]):
+            check = _check("viin_ai_rag")
+            describe = _describe("viin_ai_rag")
+        for out in (check, describe):
+            _assert_adr0023_tree(out)
+            assert "Lifecycle (acme_addons" in out, out  # positive control: acme's row shows
+            assert "Merged into" not in out, out
+            assert "describe_module(name='viin_ai'" not in out, out
+            assert "check_module_exists(name='viin_ai'" not in out, out
+
+    def test_the_owner_of_the_merge_target_sees_it(self, merge_world):
+        # positive control of the scope cut: admin is unscoped
+        with as_tenant(None):
+            out = _check("viin_ai_rag")
+        assert "│   └─ Merged into: viin_ai (git merge)" in _lines(out), out
+
+
+# ---------------------------------------------------------------------------
+# #380 item 2 - cross-version renames (OpenUpgrade apriori), validated by the index
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def renames(monkeypatch):
+    """Curated edges at the test versions (98.0 -> 99.0 and a reuse trap)."""
+    from src.indexer import module_renames as mr
+
+    index = mr.RenameIndex([
+        mr.Edge("lr_sale_coupon", "lr_coupon", V_PREV, mr.KIND_RENAME),   # reuse trap
+        mr.Edge("lr_sale_coupon", "lr_sale_loyalty", V, mr.KIND_RENAME),
+        mr.Edge("lr_pos_gift", "lr_pos_loyalty", V, mr.KIND_MERGE),
+        mr.Edge("lr_hidden_old", "lr_globex_new", V, mr.KIND_RENAME),
+    ])
+    monkeypatch.setattr(mr, "rename_index", lambda *a, **k: index)
+    return index
+
+
+class TestCrossVersionRenames:
+    def test_a_rename_the_index_confirms_is_shown_with_next(self, hub, std, renames):
+        _module("lr_sale_coupon", version=V_PREV)   # still shipped at 98.0: trap edge invalid
+        _module("lr_coupon", version=V_PREV)
+        _module("lr_sale_loyalty")
+        out = _check("lr_sale_coupon")
+        _assert_adr0023_tree(out)
+        assert (f"├─ Renamed to:      lr_sale_loyalty (at {V}, via OpenUpgrade apriori)"
+                in _lines(out)), out
+        assert "lr_coupon" not in out, out
+        assert _lines(out)[-1] == (
+            f"└─ Next: check_module_exists(name='lr_sale_loyalty', odoo_version='{V}') "
+            "for the successor"), out
+
+    def test_a_merge_edge_renders_merged_into(self, hub, std, renames):
+        _module("lr_pos_gift", version=V_PREV)
+        _module("lr_pos_loyalty")
+        out = _check("lr_pos_gift")
+        assert (f"├─ Merged into:     lr_pos_loyalty (at {V}, via OpenUpgrade apriori)"
+                in _lines(out)), out
+
+    def test_an_edge_the_index_does_not_confirm_is_not_shown(self, hub, std, renames):
+        _module("lr_sale_loyalty")          # new present, but old never indexed at 98.0
+        out = _check("lr_sale_coupon")
+        assert "OpenUpgrade" not in out, out
+
+    def test_a_successor_in_another_tenants_private_profile_never_validates(
+            self, hub, ledger, pg_conn, renames):
+        acme = _tenant(pg_conn, "lr_acme")
+        globex = _tenant(pg_conn, "lr_globex")
+        _profile(pg_conn, "lr_acme_p", tenant_id=acme)
+        _profile(pg_conn, "lr_globex_p", tenant_id=globex)
+        _module("lr_hidden_old", version=V_PREV, repo="acme_addons", profiles=["lr_acme_p"])
+        _module("lr_globex_new", repo=GLOBEX_REPO, profiles=["lr_globex_p"])
+        with as_tenant(acme):
+            out = _check("lr_hidden_old")
+        assert "lr_globex_new" not in out and "OpenUpgrade" not in out, out
+        with as_tenant(None):  # positive control
+            assert "lr_globex_new (at" in _check("lr_hidden_old")

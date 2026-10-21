@@ -60,9 +60,14 @@ def _parse_qweb_record(
 
     This routes such records to the SAME QWebTmpl shape that ``_parse_template``
     emits, so the EXTENDS_TMPL resolver in ``writer_neo4j_ui`` can find them as a
-    base. The QWebTmpl xmlid is keyed on the ``key`` field (the canonical public
-    xmlid extenders inherit by), falling back to the record ``id`` when ``key`` is
-    absent. ``inherit_id`` (if present) becomes ``inherit_xmlid``.
+    base. The QWebTmpl xmlid is the ``key`` field (the name ``t-call`` and
+    website page dispatch use), falling back to the record ``id`` when ``key`` is
+    absent. An extender's ``inherit_id ref=`` names the RECORD xmlid instead
+    (``ir.model.data``), which differs from the key when the record id does
+    (``<record id="default_faq">`` with key ``website_forum.faq_accordion``), so
+    the module-qualified record id is kept as ``record_xmlid`` and the writer
+    resolves a base by either. ``inherit_id`` (if present) becomes
+    ``inherit_xmlid``.
 
     Returns None when the record is not an ``ir.ui.view`` of type ``qweb``, or
     when no usable xmlid (key/id) can be derived.
@@ -91,8 +96,9 @@ def _parse_qweb_record(
     if view_type != "qweb":
         return None
 
-    # Prefer the public `key` (what extenders inherit by); fall back to record id.
-    raw_xmlid = key or record.get("id", "").strip()
+    # Node key: the website `key` (what t-call uses); fall back to the record id.
+    record_id = record.get("id", "").strip()
+    raw_xmlid = key or record_id
     if not raw_xmlid:
         return None
 
@@ -115,6 +121,8 @@ def _parse_qweb_record(
         # GAP-11 - preserve the website `key` field value (already captured above
         # for the xmlid). None when this record had no <field name="key">.
         key=(key or None),
+        # The record xmlid `inherit_id ref=` resolves against (see docstring).
+        record_xmlid=qualify_xmlid(record_id, module.name) if record_id else None,
     )
 
 

@@ -44,6 +44,23 @@ _skip_no_presets = pytest.mark.skipif(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _fill_profile_form(page, profile_name, version):
+    """Version from the dropdown (or 'Other' + typed), owner = Shared (confirmed).
+
+    The owner is mandatory (tenant fail-closed): these fixtures model shared
+    base profiles, so the Shared confirm dialog is accepted.
+    """
+    select = page.get_by_test_id("profile-version-input")
+    if version in select.inner_text():
+        select.select_option(version)
+    else:
+        select.select_option("__other__")
+        page.get_by_test_id("profile-version-other-input").fill(version)
+    page.get_by_test_id("profile-tenant-input").select_option("__shared__")
+    page.once("dialog", lambda d: d.accept())
+    page.get_by_test_id("profile-name-input").fill(profile_name)
+
+
 def _add_profile(page, astro_server, profile_name, version="99.0"):
     """Navigate to /admin/repos and add a profile.
 
@@ -54,8 +71,7 @@ def _add_profile(page, astro_server, profile_name, version="99.0"):
     """
     page.goto(f"{astro_server}{REPOS_URL}")
     page.wait_for_load_state("load")
-    page.get_by_test_id("profile-name-input").fill(profile_name)
-    page.get_by_test_id("profile-version-input").fill(version)
+    _fill_profile_form(page, profile_name, version)
     page.get_by_test_id("add-profile-button").click()
     # Auto-wait for the post-reload DOM. profile-row is rendered SSR from the
     # repo_store.list_profiles() result, so its appearance proves the reload
@@ -643,8 +659,7 @@ class TestSetParent:
         # Add a profile with a different version
         page.goto(f"{astro_server}{REPOS_URL}")
         page.wait_for_load_state("load")
-        page.get_by_test_id("profile-name-input").fill("ver_mismatch_v98")
-        page.get_by_test_id("profile-version-input").fill("98.0")
+        _fill_profile_form(page, "ver_mismatch_v98", "98.0")
         page.get_by_test_id("add-profile-button").click()
         # Wait for the SECOND profile-row (nth(1)) — .first matches the existing
         # ver_match_v99 row immediately and returns before location.reload()

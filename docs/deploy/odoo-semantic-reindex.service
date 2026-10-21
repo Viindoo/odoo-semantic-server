@@ -13,12 +13,22 @@
 # Module lifecycle (ADR-0056): every run of this unit also retires modules no
 # repo ships any more (renamed, deleted, moved) with their subtree and
 # embeddings, through the module_presence ledger and one reconcile per Odoo
-# version, under safety gates. No flag is needed. Exit code 3 means the index
-# was written but the lifecycle needs an operator (a gate tripped, a name was
-# undecidable, the reconcile failed): OnFailure= fires; read the tail of the log
-# and repos.lifecycle_attention (deploy.md s3.6). NEVER add --allow-mass-retire
-# here or in a drop-in: it is a one-shot manual decision. Incident escape hatch:
-# a temporary drop-in with --no-retire (scan + write, delete nothing).
+# version. No flag is needed and nobody approves a deletion (ADR-0057 and its
+# phase 2): retirement, the orphan and embedding sweeps, the entity prune and
+# the shared-module prune delete what the git HEAD tree proves gone, whatever
+# the count; what git cannot prove is kept and reported by lifecycle-audit
+# (unproven_drops, kept orphans, parser_gaps), never an exit 3. A registered
+# repo without a checkout is cloned by the run when its clone never succeeded
+# (issue #383 item 2). Exit code 3 means the index was written but OSM cannot
+# reflect part of the code by itself (an untrusted checkout, a total wipe that
+# is not in the branch history, a graph missing Module nodes, an unparseable
+# manifest, an undecidable name, a repo that still cannot be cloned, a failed
+# reconcile, a repo whose fetch failed two runs in a row, a fetch failure for
+# every repo of the run, the embedder down all run): OnFailure= fires; read the tail of the log and
+# repos.lifecycle_attention (deploy.md s3.6). NEVER add --allow-mass-retire
+# here or in a drop-in: it is an emergency bypass that also deletes what git
+# cannot prove gone. Incident escape hatch: a temporary drop-in with
+# --no-retire (scan + write, delete nothing).
 #
 # WHY a systemd timer (not a bare cron.d entry): the indexer reads PG_DSN +
 # NEO4J_PASSWORD via config; a cron.d line does NOT load .env, so it would fail
@@ -75,8 +85,19 @@ EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
 # PREREQUISITE: /etc/credstore/FERNET_KEY must exist root:root 0600 BEFORE
 # this line is active, or the unit hard-fails at status=243/CREDENTIALS.
 LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY
+# Run-start marker in the log file: osm-alert@ (src.ops.alert_notify) reads only
+# the lines after this invocation's marker, so a lifecycle block or tail from an
+# earlier run is never reported as this run's. `$$` passes a literal `$` to sh.
+ExecStartPre=/bin/sh -c 'echo "osm-run-start $(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ) invocation=$$INVOCATION_ID"'
 # Pre-flight: wait up to 60s for Postgres (indexer needs PG + Neo4j reachable).
 ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
+# Refresh the alert hook's last known admin list (osm-alert@, used when the
+# database is down; ignored once older than OSM_ALERT_ADMIN_CACHE_MAX_DAYS, so
+# it must be refreshed even on nights nothing fails). Best effort: the leading
+# `-` means it can never fail or hold the run; it sends no mail. The directory
+# is osm-alert@'s StateDirectory (owned by odoo-semantic); before that unit
+# first runs it does not exist and the refresh only logs a warning.
+ExecStartPre=-/usr/bin/env OSM_ALERT_STATE_DIR=/var/lib/osm-alert /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.ops.alert_notify --refresh-admins
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --profile-workers 2
 # Incremental is usually fast, but a first/large run can be long — never kill it.
 TimeoutStartSec=0

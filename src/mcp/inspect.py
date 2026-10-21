@@ -654,20 +654,29 @@ def _caller_boundary(srv) -> dict:
     return srv._scope(None, pin=False)
 
 
+def _filter_scope(srv, name: str) -> dict:
+    """The ADR-0034 params a ``profile_name=name`` filter applies (#385).
+
+    ``name`` is explicit, so the session pin is not consulted. The with-ancestors
+    counts use these params (plus ``any(profile IN chain)``), so they equal what
+    a filtered tool call returns from the chain: an ancestor outside the
+    caller's boundary is excluded from both, and a same-name node that also
+    carries a profile outside the chain is excluded from both.
+    """
+    return srv._scope(name)
+
+
 def _ancestor_chain_or_self(name: str) -> list[str]:
     """*name* then its ancestors (root last); ``[name]`` when the registry is down.
 
-    A registry failure is marked degraded (never cached) and logged: the
-    with-ancestors numbers then equal the own numbers.
+    The same cached chain the ``profile_name`` filter resolves
+    (``session.resolve_profile_chain``, #385), so the with-ancestors numbers and
+    the filter cannot disagree on which profiles form the chain. A registry
+    failure is marked degraded (never cached) and logged: the with-ancestors
+    numbers then equal the own numbers.
     """
-    from src.db.pg import repo_store
-    try:
-        return repo_store().get_ancestor_profile_names(name) or [name]
-    except Exception as exc:  # noqa: BLE001 - registry down degrades, never fails the tool
-        logger.warning("ancestor chain of profile %r unavailable: %s", name, exc)
-        from src.mcp.degraded import mark_degraded
-        mark_degraded("profile ancestor chain unavailable")
-        return [name]
+    from src.mcp.session import resolve_profile_chain
+    return resolve_profile_chain(name)
 
 
 def _visible_profile_names(srv) -> set[str] | None:
@@ -769,6 +778,9 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
                 **_caller_boundary(srv),
             )
             module_count = rec["cnt"] if rec else 0
+            # With ancestors: the scope a profile_name=name filter applies
+            # (_filter_scope, #385) restricted to modules of the chain - so this
+            # number is exactly the chain modules the filter returns.
             chain_rec = srv._single_bounded(
                 neo_session,
                 f"""
@@ -781,7 +793,7 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
                 f"module count for profile '{name}' incl. ancestors (Odoo {odoo_version})",
                 v=odoo_version,
                 chain=ancestors,
-                **_caller_boundary(srv),
+                **_filter_scope(srv, name),
             )
             chain_count = chain_rec["cnt"] if chain_rec else 0
     except Exception:
@@ -837,8 +849,9 @@ def _profile_summary(name: str, odoo_version: str, srv) -> str:
     # Two counts so the reader knows where each part comes from. Nodes carry only
     # the profile that owns their repo (ADR-0034 single-owner), so "this profile"
     # is `$profile_name IN m.profile` and "with ancestors" is any profile of the
-    # ancestor chain. Both pass the caller's tenant choke, so ancestor modules a
-    # tenant may not see are not counted in its view.
+    # ancestor chain under the profile_name filter's own scope (#385). Both pass
+    # the caller's tenant choke, so ancestor modules a tenant may not see are not
+    # counted in its view - and "with ancestors" is what the filter returns.
     footer = srv.hints_for("profile_inspect", name=name, ver=odoo_version)
     # ADR-0023 §4.1: the Next footer is the root's last child, so the last data
     # branch stays ├─ whenever a footer follows.
@@ -1078,14 +1091,16 @@ def _profile_coverage(
     ``indexed_elsewhere`` is a "may be incomplete" signal - a real one derived
     purely from Neo4j, never from a hand-maintained brand/domain table.
 
-    Choke-point (M4, ADR-0034): both aggregations use the caller's tenant
-    boundary without the session pin (``_caller_boundary``) + ``profile_name=name``
-    exactly like ``_profile_summary``. Profile membership is
+    Choke-point (M4, ADR-0034), exactly like ``_profile_summary``: ``own`` and
+    the in-scope total use the caller's tenant boundary without the session pin
+    (``_caller_boundary``); ``with_ancestors`` uses the scope a
+    ``profile_name=name`` filter applies (``_filter_scope``, #385), so it equals
+    what a filtered tool call returns from the chain. Profile membership is
     applied separately: ``$profile_name IN m.profile`` for ``own`` (single-owner
     stamping, ADR-0034) and ``any(profile IN chain)`` for ``with_ancestors``; the
     tenant choke still filters every node, so ancestor modules a tenant cannot
     see are not counted. The caller-can-see check is done up front via
-    ``_effective_allowed(name)``. Both queries are flat
+    ``_effective_allowed(name)``. All queries are flat
     aggregations (ADR-0048 no-VLP) bounded by ``_data_bounded`` (ADR-0050).
     """
     if not name:
@@ -1122,7 +1137,8 @@ def _profile_coverage(
             **_caller_boundary(srv),
         )
 
-        # (1b) per-category count over this profile AND its ancestor chain.
+        # (1b) per-category count over this profile AND its ancestor chain,
+        # under the profile_name=name filter scope (same as the summary, #385).
         chain_rows = srv._data_bounded(
             neo_session,
             f"""
@@ -1137,7 +1153,7 @@ def _profile_coverage(
             f"coverage (with ancestors) for '{name}' (Odoo {odoo_version})",
             v=odoo_version,
             chain=ancestors,
-            **_caller_boundary(srv),
+            **_filter_scope(srv, name),
         )
 
         # (2) per-category count across the WHOLE in-scope index (any profile).

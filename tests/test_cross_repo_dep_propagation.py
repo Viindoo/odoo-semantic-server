@@ -167,7 +167,7 @@ class TestResetHeadSha:
 
         run_migrations(pg_conn)
 
-        profile_id = repo_store().add_profile("_reset_test_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_reset_test_profile", TEST_VERSION, shared=True)
         repo_id = repo_store().add_repo(
             profile_id,
             url="file://reset-test",
@@ -202,7 +202,7 @@ class TestResetHeadSha:
 
         run_migrations(pg_conn)
 
-        profile_id = repo_store().add_profile("_bulk_reset_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_bulk_reset_profile", TEST_VERSION, shared=True)
         id_b = repo_store().add_repo(
             profile_id,
             url="file://bulk-b",
@@ -239,7 +239,7 @@ class TestGetRepoIdsByBasename:
 
         run_migrations(pg_conn)
 
-        profile_id = repo_store().add_profile("_basename_test_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_basename_test_profile", TEST_VERSION, shared=True)
         repo_id = repo_store().add_repo(
             profile_id,
             url="file://basename-test",
@@ -278,8 +278,12 @@ class TestGetRepoIdsByBasename:
         run_migrations(pg_conn)
 
         other_version = "98.0"
-        prof_target = repo_store().add_profile("_ver_scope_target_profile", TEST_VERSION)
-        prof_other = repo_store().add_profile("_ver_scope_other_profile", other_version)
+        prof_target = repo_store().add_profile(
+            "_ver_scope_target_profile", TEST_VERSION, shared=True,
+        )
+        prof_other = repo_store().add_profile(
+            "_ver_scope_other_profile", other_version, shared=True,
+        )
         # Same basename "sharedaddons" cloned under two versions.
         id_target = repo_store().add_repo(
             prof_target,
@@ -323,7 +327,7 @@ class TestGetRepoIdsByBasename:
 
         run_migrations(pg_conn)
 
-        profile_id = repo_store().add_profile("_collision_test_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_collision_test_profile", TEST_VERSION, shared=True)
         id_a = repo_store().add_repo(
             profile_id,
             url="file://collision-a",
@@ -413,7 +417,7 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "mymod", repo="repo_b_dir", depends_on="base")
 
         # Seed PG: two repos with head_sha set
-        profile_id = repo_store().add_profile("_e2e_prop_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_prop_profile", TEST_VERSION, shared=True)
         repo_a_path = str(tmp_path / "repo_a_dir")
         repo_b_path = str(tmp_path / "repo_b_dir")
         (tmp_path / "repo_a_dir").mkdir()
@@ -510,7 +514,7 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "base", repo="repo_a_dir2", depends_on=None)
         _create_module_with_dep(driver, "unrelated", repo="repo_c_dir", depends_on=None)
 
-        profile_id = repo_store().add_profile("_e2e_skip_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_skip_profile", TEST_VERSION, shared=True)
         repo_a_path = str(tmp_path / "repo_a_dir2")
         repo_c_path = str(tmp_path / "repo_c_dir")
         (tmp_path / "repo_a_dir2").mkdir()
@@ -602,7 +606,7 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "base", repo="repo_a_dir3", depends_on=None)
         _create_module_with_dep(driver, "sale", repo="repo_a_dir3", depends_on="base")
 
-        profile_id = repo_store().add_profile("_e2e_self_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_self_profile", TEST_VERSION, shared=True)
         repo_a_path = str(tmp_path / "repo_a_dir3")
         (tmp_path / "repo_a_dir3").mkdir()
 
@@ -681,7 +685,7 @@ class TestDepPropagationEndToEnd:
         _create_module_with_dep(driver, "base", repo="repo_a_dir4", depends_on=None)
         _create_module_with_dep(driver, "mymod", repo="repo_b_dir4", depends_on="base")
 
-        profile_id = repo_store().add_profile("_e2e_full_profile", TEST_VERSION)
+        profile_id = repo_store().add_profile("_e2e_full_profile", TEST_VERSION, shared=True)
         repo_a_path = str(tmp_path / "repo_a_dir4")
         repo_b_path = str(tmp_path / "repo_b_dir4")
         (tmp_path / "repo_a_dir4").mkdir()
@@ -779,9 +783,13 @@ class TestDepPropagationEndToEnd:
         )
 
         # PG: three profiles.
-        prof_a = repo_store().add_profile("_e2e_vscope_a_profile", TEST_VERSION)
-        prof_same_ver = repo_store().add_profile("_e2e_vscope_same_profile", TEST_VERSION)
-        prof_other_ver = repo_store().add_profile("_e2e_vscope_other_profile", other_version)
+        prof_a = repo_store().add_profile("_e2e_vscope_a_profile", TEST_VERSION, shared=True)
+        prof_same_ver = repo_store().add_profile(
+            "_e2e_vscope_same_profile", TEST_VERSION, shared=True,
+        )
+        prof_other_ver = repo_store().add_profile(
+            "_e2e_vscope_other_profile", other_version, shared=True,
+        )
 
         repo_a_path = str(tmp_path / "repo_a_dir5")
         (tmp_path / "repo_a_dir5").mkdir()

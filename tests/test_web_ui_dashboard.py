@@ -56,7 +56,9 @@ class TestDashboardStats:
         """
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name="test_dash", odoo_version="17.0", description="test")
+        repo_store().add_profile(
+            name="test_dash", odoo_version="17.0", description="test", shared=True,
+        )
 
         app = create_app()
         async with _async_client(app) as client:

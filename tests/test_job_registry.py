@@ -53,6 +53,9 @@ class TestCreateAndGet:
         expected_keys = {
             "id", "profile_name", "status", "pid",
             "started_at", "finished_at", "error_msg", "created_at",
+            # migration 0004 (#383 item 4): exact process identity, NULL until
+            # the indexer child reports running.
+            "proc_start_ticks", "boot_id",
         }
         assert set(job.keys()) == expected_keys
         assert job["id"] == job_id

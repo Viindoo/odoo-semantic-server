@@ -34,6 +34,7 @@ import contextlib
 import functools
 import hashlib
 import logging
+import re
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -129,7 +130,7 @@ def _owning_profiles(
     return [owner]
 
 
-def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
+def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> str | None:
     """Fetch + reset the repo's local clone to its upstream branch tip.
 
     ROOT CAUSE this fixes (nightly-fetch): the incremental check in ``_index_repo``
@@ -167,7 +168,14 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
     ``TimeoutExpired``, ``FileNotFoundError``, or any other unexpected error) is
     caught, logged as a WARNING, and swallowed - the caller then indexes whatever is
     on disk. Network reachability must NEVER become a hard dependency of the nightly
-    job: a fetch failure must not abort the profile's reindex.
+    job: a fetch failure must not abort the profile's reindex. It is RETURNED
+    though (one line, None on success, on benign lock contention, and when
+    nothing failed): a fetch that keeps failing means OSM no longer reflects
+    the remote branch, so ``_index_repo`` records it in
+    ``repos.lifecycle_attention`` and the run summary, and the run exits 3 when
+    the same repo's fetch failed in two consecutive runs or every fetch of the
+    run failed (``pipeline._finish_lifecycle``). One failure that heals by the
+    next run stays a WARNING.
 
     Benign lock contention: if a concurrent ``clone-all`` already holds the per-repo
     advisory lock, ``_repo_git_lock`` raises ``RuntimeError`` at acquisition. That is
@@ -200,7 +208,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "(cannot reset --hard origin/<branch> without a branch name)",
             url,
         )
-        return
+        return "no branch recorded"
 
     # Resolve the SSH key BEFORE acquiring the lock. This keeps the ONLY RuntimeError
     # that can fire inside the `with` block below the lock-acquisition one (contention).
@@ -213,7 +221,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "Repo %s: %s - skipping pre-scan fetch, indexing on-disk state",
             url, exc,
         )
-        return
+        return str(exc)
     except Exception as exc:  # noqa: BLE001 - decrypt/DB error (e.g. FERNET_KEY absent)
         # A genuine config/crypto failure resolving the key. Non-fatal for the
         # nightly job, but a real error -> WARNING (not the INFO contention line).
@@ -222,7 +230,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "indexing on-disk state instead",
             url, type(exc).__name__, exc,
         )
-        return
+        return f"resolving the SSH key: {type(exc).__name__}: {exc}"
 
     # ADR-0035 D2: serialize the mutating fetch/reset behind the per-repo advisory
     # lock (same lock id the cloner uses) so a scheduled fetch and an on-demand
@@ -247,7 +255,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "fetch; indexing on-disk state",
             url, repo.get("id"),
         )
-        return
+        return None
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
@@ -259,7 +267,7 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "Repo %s: pre-scan fetch failed (%s: %s) - indexing on-disk state instead",
             url, type(exc).__name__, exc,
         )
-        return
+        return _fetch_cause(exc)
     except Exception as exc:  # noqa: BLE001 - defensive: any git error is non-fatal
         # Any other unexpected error (e.g. OSError from the subprocess machinery)
         # must ALSO not abort the profile reindex.
@@ -268,11 +276,168 @@ def refresh_before_scan(repo: dict, pg_conn: object | None = None) -> None:
             "indexing on-disk state instead",
             url, type(exc).__name__, exc,
         )
-        return
+        return f"{type(exc).__name__}: {exc}"
 
     _logger.info(
         "Repo %s: pre-scan refresh (fetch + reset --hard origin/%s) OK",
         url, branch,
+    )
+    return None
+
+
+def _fetch_cause(exc: BaseException) -> str:
+    """One line naming a failed fetch: the error and git's last stderr line
+    (``Could not resolve hostname ...``, ``Permission denied (publickey)``)."""
+    cause = f"{type(exc).__name__}: {exc}"
+    stderr = getattr(exc, "stderr", None)
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    if isinstance(stderr, str):
+        lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+        if lines:
+            cause += f" ({lines[-1]})"
+    # The line lands in lifecycle_attention and the alert mail: never the
+    # credentials of a URL git echoes back (https://user:token@host/...).
+    cause = re.sub(r"(://)[^/@\s]+@", r"\1***@", cause)
+    return " ".join(cause.split())[:300]
+
+
+# Marker of a failed pre-scan fetch in ``repos.lifecycle_attention``: the
+# next run reads it back to tell a transient failure (one run: WARNING plus
+# this line) from a persistent one (two consecutive runs: exit 3).
+FETCH_FAILED_MARK = "pre-scan fetch failed"
+
+
+def _fetch_attention(repo: dict, cause: str) -> tuple[str, bool]:
+    """The attention line of a failed pre-scan fetch and whether the previous
+    run's fetch of this repo failed too (its ``lifecycle_attention``, read at
+    the start of this run, carries :data:`FETCH_FAILED_MARK`)."""
+    previous = repo.get("lifecycle_attention") or ""
+    consecutive = FETCH_FAILED_MARK in previous
+    if consecutive:
+        line = (
+            f"{FETCH_FAILED_MARK} in two consecutive runs ({cause}): OSM indexes the "
+            "last fetched state and no longer follows the remote branch"
+        )
+    else:
+        line = (
+            f"{FETCH_FAILED_MARK} ({cause}): indexed the on-disk state; an alert follows "
+            "if the next run's fetch fails too"
+        )
+    return line, consecutive
+
+
+class RepoCheckoutUnavailable(FileNotFoundError):
+    """A registered repo has no checkout on disk and this run could not create it.
+
+    ``cause`` is one line for the operator (the clone error, or why no clone
+    was attempted). ``busy``: another worker holds the repo's git lock (a
+    clone is running right now) - nothing is wrong, the repo is simply not
+    indexed this run. ``index_profile`` reports it without a traceback: a
+    WARNING line, ``repos.lifecycle_attention`` and the run summary's
+    ``unavailable_repos`` (CLI exit 3); a busy repo only gets an INFO line.
+    """
+
+    def __init__(self, repo: dict, cause: str, *, busy: bool = False) -> None:
+        self.repo_id = repo.get("id")
+        self.url = repo.get("url", repo.get("local_path"))
+        self.local_path = repo.get("local_path")
+        self.cause = cause
+        self.busy = busy
+        super().__init__(f"local_path does not exist: {self.local_path!r}; {cause}")
+
+
+def _ensure_repo_checkout(
+    repo: dict, pg_conn, *, refresh: bool, profile_name: str | None,
+) -> None:
+    """Give *repo* a checkout before it is indexed (issue #383 item 2).
+
+    A repo whose ``local_path`` is a directory is left alone (the pre-scan
+    refresh fetches it). Otherwise, when its ``clone_status`` is one a clone
+    is retried for (``clone_ops.CLONE_RETRY_STATUSES``: never cloned, a job
+    that died mid-clone, a failed clone), the clone is tried ONCE per run
+    through the cloner's own core (``clone_ops.ensure_checkout``: same
+    per-repo advisory lock on the run's connection plus the clone-directory
+    lock, same SSH key handling and pinned host keys, same ``clone_status``
+    lifecycle). On success ``repo['local_path']`` is the new checkout and the
+    run indexes it.
+
+    Raises :class:`RepoCheckoutUnavailable` when the checkout still does not
+    exist: the clone failed, another worker holds a lock (``busy``), no
+    clone was attempted (``--no-fetch`` keeps the run offline; no database
+    connection to lock and record on). A checkout the operator chose is
+    never replaced behind their back - a missing mount must not be silently
+    replaced by fresh clones: a ``cloned`` row whose directory vanished, and
+    a ``manual`` row whose ``local_path`` is not the clone directory OSM
+    manages (registered by path, e.g. ``apply-preset --base-dir`` /
+    ``--repo-map``), are reported unavailable, not cloned. A ``manual`` row
+    at the managed clone directory (a Web UI registration that was never
+    cloned) is cloned there.
+    """
+    from src import clone_ops
+    from src.indexer import pipeline as _pipeline
+
+    local_path = repo.get("local_path") or ""
+    if local_path and Path(local_path).is_dir():
+        foreign = clone_ops.foreign_clone_origin(
+            local_path, repo.get("url") or "", profile_name,
+        )
+        if foreign:
+            # Two repos whose URLs end in the same slug share the managed
+            # clone directory: this one would index the other's code.
+            raise RepoCheckoutUnavailable(
+                repo,
+                f"the clone directory {local_path} holds a clone of {foreign}, not "
+                f"{repo.get('url')}; register one of the two repos under another "
+                "profile or remove the stale directory",
+            )
+        return
+    status = repo.get("clone_status") or "manual"
+    where = local_path or "(no local_path)"
+    if status not in clone_ops.CLONE_RETRY_STATUSES:
+        raise RepoCheckoutUnavailable(
+            repo,
+            f"no checkout at {where} although clone_status is {status!r}; not re-cloned "
+            "automatically (check the disk, then clone the repo again from the Web UI)",
+        )
+    if not refresh:
+        raise RepoCheckoutUnavailable(
+            repo, f"no checkout at {where}; clone not attempted (--no-fetch)",
+        )
+    if pg_conn is None or not profile_name:
+        raise RepoCheckoutUnavailable(
+            repo, f"no checkout at {where}; clone not attempted (no database connection)",
+        )
+    if status == "manual" and not clone_ops.is_managed_clone_dir(
+        local_path, profile_name, repo.get("url") or "",
+    ):
+        raise RepoCheckoutUnavailable(
+            repo,
+            f"no checkout at {where}, a path registered by hand (clone_status 'manual'); "
+            "not cloned automatically - check the disk or mount, or clone the repo "
+            "from the Web UI",
+        )
+    _logger.info(
+        "Repo %s: no checkout at %s (clone_status %s) - cloning it now",
+        repo.get("url"), where, status,
+    )
+    outcome = clone_ops.ensure_checkout(
+        repo, profile_name=profile_name,
+        lock=lambda repo_id: _pipeline._repo_git_lock(pg_conn, repo_id),
+        dir_lock=lambda target: _pipeline._checkout_dir_lock(pg_conn, target),
+    )
+    if outcome.outcome == clone_ops.OUTCOME_BUSY:
+        raise RepoCheckoutUnavailable(
+            repo, "another git operation holds the repo lock (a clone is running)",
+            busy=True,
+        )
+    if not outcome.ok:
+        raise RepoCheckoutUnavailable(repo, f"clone failed: {outcome.error}")
+    repo["local_path"] = str(outcome.target_dir)
+    repo["clone_status"] = "cloned"
+    _logger.info(
+        "Repo %s: checkout ready at %s (%s; clone_status %s -> cloned)",
+        repo.get("url"), outcome.target_dir, outcome.outcome, status,
     )
 
 
@@ -455,23 +620,29 @@ def observe_lifecycle(
     allow_mass_retire: bool = False,
     writer: IndexWriterProtocol | None = None,
     owning_profile: str | None = None,
+    last_head: str | None = None,
 ) -> LifecycleObservation:
-    """Trust, classification and gates of one repo scan (ADR-0056, B5).
+    """Trust, classification, git evidence and gates of one repo scan
+    (ADR-0056 B5, ADR-0057 phase 2).
 
     Read-only: reads the repo's ledger rows through *presence* (None = no
     ledger), git and, through *writer*, the graph; writes nothing. The
     per-repo index path and the dry-run ``lifecycle-audit`` both decide
     through this function.
 
-    While the ledger has never reflected the repo (``presence_head_sha``
-    NULL: the first runs after the ledger was deployed, a new registration)
-    G-B is evaluated against the graph baseline
-    (``writer.repo_module_baseline`` for *owning_profile*) instead of the
-    ledger rows, which cannot tell what the repo shipped before. The scan's
-    unparseable names that have a graph node feed the ``manifest_unparseable``
-    signal (``lifecycle.unparseable_kept``).
+    Every drop is judged by git (``lifecycle.apply_gates``): proven gone when
+    the raw HEAD tree has no manifest of that name
+    (``git_utils.head_tree_module_names``), otherwise unproven and kept. While
+    the ledger has never reflected the repo (``presence_head_sha`` NULL: the
+    first runs after the ledger was deployed, a new registration) the drops
+    are counted against the graph baseline (``writer.repo_module_baseline``
+    for *owning_profile*) instead of the ledger rows, which cannot tell what
+    the repo shipped before. A total wipe needs the reflected HEAD (else
+    *last_head*, ``repos.head_sha``) to be an ancestor of *current_head*. The
+    scan's unparseable names that have a graph node feed the
+    ``manifest_unparseable`` signal (``lifecycle.unparseable_kept``).
     """
-    from src.git_utils import head_matches_remote_branch
+    from src.git_utils import head_matches_remote_branch, head_tree_module_names
     from src.indexer import lifecycle
 
     repo_path = Path(repo["local_path"])
@@ -491,10 +662,8 @@ def observe_lifecycle(
     rows: list[dict] = presence.rows_for_repo(repo["id"]) if lifecycle_on else []
     transitions = lifecycle.classify(rows, scan)
     graph_baseline = None
-    if (
-        lifecycle_on and writer is not None
-        and presence.presence_head_sha(repo["id"]) is None
-    ):
+    presence_head = presence.presence_head_sha(repo["id"]) if lifecycle_on else None
+    if lifecycle_on and writer is not None and presence_head is None:
         graph_baseline = writer.repo_module_baseline(
             repo.get("id"), repo_path.name,
             owning_profile or repo.get("profile_name") or "",
@@ -505,11 +674,36 @@ def observe_lifecycle(
     indexed_names: list[str] = []
     if lifecycle_on and writer is not None and unparseable:
         indexed_names = sorted(writer.module_identity(scan.odoo_version, unparseable))
+    # Git evidence for the drops (ADR-0057 phase 2): the module names the raw
+    # HEAD tree still has a manifest for, read only when something dropped.
+    shipped_at_head = None
+    if transitions.soft_drops or graph_baseline:
+        shipped_at_head = head_tree_module_names(repo_path)
+    # A total wipe is retired only as a commit of the branch's own history:
+    # the HEAD the ledger last reflected (else the last indexed HEAD) must be
+    # an ancestor of the current HEAD.
+    wipe_base = presence_head or last_head
+
+    def wipe_in_history() -> bool | None:
+        if not wipe_base or not current_head:
+            return None
+        return _incremental.is_ancestor(repo_path, wipe_base, current_head)
+
     gates = lifecycle.apply_gates(
         transitions, scan, trusted=trusted, allow_mass_retire=allow_mass_retire,
         graph_baseline=graph_baseline, indexed_names=indexed_names,
+        shipped_at_head=shipped_at_head, wipe_in_history=wipe_in_history,
     )
     attention.extend(gates.reasons)
+    if gates.unproven:
+        _logger.warning(
+            "Repo %s: %d module(s) no longer in the scan but their manifest is still "
+            "in the HEAD tree - kept, not retired (scan gap, reported by "
+            "lifecycle-audit as unproven_drops)%s: %s",
+            repo.get("url", repo_path), len(gates.unproven),
+            "; retired anyway (--allow-mass-retire)" if gates.allow_unproven else "",
+            ", ".join(gates.unproven[:10]),
+        )
     return LifecycleObservation(
         trusted=trusted, lifecycle_on=lifecycle_on, rows=rows,
         transitions=transitions, gates=gates, attention=attention,
@@ -698,6 +892,9 @@ def _parse_and_write(
     total_owl_comps = 0
     total_stylesheets = 0
     total_embed_calls = 0
+    # Chunks sent to the embedder / vectors it returned (an embedder down for
+    # the whole run is a lifecycle attention, ``pipeline._finish_lifecycle``).
+    embed_stats: dict[str, int] = {"attempted": 0, "embedded": 0}
     total_js_test_suites = 0
 
     # Pre-flight (once, not per module): the embeddings table is usable
@@ -854,6 +1051,7 @@ def _parse_and_write(
                         embed_calls = write_module_embeddings(
                             mod_name, version, chunks, embedder,
                             profile_name=owning_profile, replace=False,
+                            stats=embed_stats,
                         )
                         health.embeddings_written = True
                         total_embeddings += len(chunks)
@@ -911,6 +1109,8 @@ def _parse_and_write(
         "asset_bundles": total_asset_bundles,
         "embeddings": total_embeddings,
         "embed_calls": total_embed_calls,
+        "embed_attempted": embed_stats["attempted"],
+        "embed_ok": embed_stats["embedded"],
         "js_patches": total_js_patches,
         "owl_comps": total_owl_comps,
         "stylesheets": total_stylesheets,
@@ -931,7 +1131,6 @@ PRUNE_SKIP_SHARED_UNSYNCED = "shared_unsynced"
 # ledger observation had it, or git cannot read its checkout).
 PRUNE_SKIP_UNDECIDABLE = "undecidable_owner"
 PRUNE_SKIP_NO_MODULE = "no_module"  # no Module node after the write
-PRUNE_SKIP_SOFT_GATE = "soft_gate"  # the prune would remove a mass of the module
 
 # Skips whose cause can clear without the module changing: the module is
 # flagged needs_rewrite so the next run re-parses it and prunes then.
@@ -939,9 +1138,12 @@ PRUNE_SKIP_SOFT_GATE = "soft_gate"  # the prune would remove a mass of the modul
 # survivor itself (M5) once the other owner is gone.
 # "degraded" is decided per source state by _track_degraded_parses (retried
 # once after a transient failure, then only when the failing files change).
+# A parser gap (entities the source still defines but the parse no longer
+# produces, kept by the source oracle - ADR-0057) is not a skip and never
+# retried: _parser_gap_state re-parses the module only when its HEAD tree or
+# the prune code changes, so an unchanged night costs nothing.
 _PRUNE_RETRY_REASONS = frozenset({
-    PRUNE_SKIP_NO_RETIRE, PRUNE_SKIP_SCAN_UNTRUSTED, PRUNE_SKIP_SOFT_GATE,
-    PRUNE_SKIP_UNDECIDABLE,
+    PRUNE_SKIP_NO_RETIRE, PRUNE_SKIP_SCAN_UNTRUSTED, PRUNE_SKIP_UNDECIDABLE,
 })
 
 # Skips that mean the prune machinery is unavailable (not that the prune was
@@ -989,7 +1191,12 @@ def _module_file_prefixes(
 
 
 def _mass_drop(stale: int, total: int) -> bool:
-    """Soft-drop gate G-B applied to one module's children or relationships."""
+    """The G-B ratio (> MASS_RETIRE_FRACTION and >= MASS_RETIRE_FLOOR) applied
+    to one module's children or relationships.
+
+    No longer a gate anywhere: the per-repo entity prune and the
+    shared-module prune decide per entity from the source (ADR-0057 and its
+    phase 2); the per-repo prune uses it for an informational log line only."""
     from src.indexer.lifecycle import MASS_RETIRE_FLOOR, MASS_RETIRE_FRACTION
 
     return stale > MASS_RETIRE_FRACTION * total and stale >= MASS_RETIRE_FLOOR
@@ -1009,18 +1216,18 @@ def _prune_reparsed_modules(
     lifecycle_on: bool,
     retire: bool,
     scan_ok: bool,
-    allow_mass_retire: bool,
     previous_paths: dict[str, str] | None = None,
 ) -> dict:
-    """Intra-module entity prune (ADR-0056 B14, review M13/G4).
+    """Intra-module entity prune (ADR-0056 B14, review M13/G4; ADR-0057).
 
-    For every module re-parsed this run, delete the children (fields,
-    methods, models, views, templates, reports, JS patches, OWL components,
+    For every module re-parsed this run, the children (fields, methods,
+    models, views, templates, reports, JS patches, OWL components,
     stylesheets, JS test suites, test classes and methods, lint violations,
     addon test-helper projections) and the relationships
     (``MODULE_CHILD_REL_TYPES``: dependencies, inheritance, view extension,
     template use, ...) that the parse no longer produced - they carry an
-    older run token, or none. Constraints, per module M at version v:
+    older run token, or none - are candidates. Constraints, per module M at
+    version v:
 
     (a) only modules re-parsed this run (``modules_by_version``);
     (b) skipped when any file of M could not be read or parsed
@@ -1036,18 +1243,23 @@ def _prune_reparsed_modules(
         one whose last ledger observation had M or whose checkout git cannot
         read (``undecidable_owner``). An unsynced repo that does not ship M
         does not hold M's prune;
-    (d) skipped when the prune would remove more than MASS_RETIRE_FRACTION of
-        M's children, or of M's relationships, and at least
-        MASS_RETIRE_FLOOR of them (bypassed by ``allow_mass_retire``):
-        ``lifecycle_attention`` names it, the gate id
-        ``entity_prune:<M>@<v>`` makes the CLI exit 3, and the Module node
-        records the hold (``record_module_prune_held``, read by
-        ``lifecycle-audit`` as the ``held_prunes`` finding) until a run
-        prunes M.
+    (d) each candidate is judged by the SOURCE, not by the parse
+        (``prune_evidence``, ADR-0057): the module's files at the trusted
+        HEAD tree, read from git. A candidate whose identifier no longer
+        occurs there in a defining form is ``gone`` (git proves the
+        deletion) and is deleted; one replaced by a live node of the same
+        label and identity minus file (or derived from a live parent the run
+        re-derived) is ``superseded`` and deleted; one the source still
+        defines with no replacement is KEPT with its embeddings - a parser
+        gap, recorded on the Module node (``record_module_parser_gap``, the
+        ``parser_gaps`` finding of ``lifecycle-audit``) plus one log line,
+        never an exit 3 or ``lifecycle_attention``. The prune is partial per
+        module; no count threshold applies (the G-B ratio is logged only)
+        and ``--allow-mass-retire`` does not change it.
 
     Nothing is pruned under ``--no-retire`` or when gate G-A failed (the
     parse may be of the wrong tree). Skips whose cause can clear without the
-    module changing (``no_retire``, ``scan_untrusted``, ``soft_gate``,
+    module changing (``no_retire``, ``scan_untrusted``,
     ``undecidable_owner``) are returned in ``retry`` so the caller flags the
     module ``needs_rewrite`` and the next run re-parses and prunes it without
     a source change; ``shared`` is not retried (the reconcile flags the
@@ -1064,37 +1276,46 @@ def _prune_reparsed_modules(
     Nodes and relationships written before B14 carry no token. A module's
     first re-parse after deploy re-stamps everything it still defines, so
     one still without this run's token after a complete (b), single-owner
-    (c), non-mass (d) re-parse is one the source no longer defines - the same
-    rule as for an older token. Ownership comes from the ledger only, never
-    from ``Module.profile``, so pre-ledger profile arrays cannot block it.
+    (c) re-parse is a candidate like one with an older token, judged by (d).
+    Ownership comes from the ledger only, never from ``Module.profile``, so
+    pre-ledger profile arrays cannot block it.
 
     *previous_paths* (``{name: repo-relative dir}``): modules re-written by
     the ``path_drift`` self-heal (``modules_needing_rewrite``). Their old
     directory's file prefixes join the selection, so the children only the
-    old path produced (stylesheets, tests, lint violations) are pruned too.
+    old path produced (stylesheets, tests, lint violations) are candidates
+    too; the old directory's HEAD text (if it still exists) joins the source
+    the oracle reads.
 
     Embeddings follow the graph. The write path upserts a module's chunks
-    without deleting (``_parse_and_write``); here, when M was pruned (or the
-    prune machinery is unavailable: ``no_run`` / ``no_ledger``, the pre-B14
-    replace), the owning profile's rows of M whose chunk key this parse did
-    not produce are deleted. For every other skip the old rows stay, exactly
-    like the graph nodes they describe.
+    without deleting (``_parse_and_write``); here, when M was pruned
+    (completely or partially) or the prune machinery is unavailable
+    (``no_run`` / ``no_ledger``, the pre-B14 replace), the owning profile's
+    rows of M whose chunk key this parse did not produce are deleted -
+    except the rows of the entities the prune kept
+    (``writer_pgvector.kept_entity_chunk_filters``). For every other skip the
+    old rows stay, exactly like the graph nodes they describe.
 
     A ``shared_unsynced`` skip is recorded on the Module node with the
     siblings it waits for (``_track_prune_deferrals``); the reconcile sends
     the owner back to prune once those synced without present-owning M.
 
-    Returns ``{"run_id", "pruned": {name: {"deleted", "by_label",
-    "rels_deleted", "rels_by_label"}}, "skipped": {name: reason},
-    "embeddings_deleted": int, "gates_tripped": [ids], "attention":
-    [messages], "retry": [names], "deferred_for": {name: [repo ids]}}``.
+    Returns ``{"run_id", "pruned": {(version, name): {"deleted", "by_label",
+    "rels_deleted", "rels_by_label", "kept", "rels_kept", "verdicts"}},
+    "parser_gaps": {(version, name): record}, "skipped": {(version, name):
+    reason}, "embeddings_deleted": int, "gates_tripped": [ids] (always empty
+    since ADR-0057; kept for the counters' shape), "attention": [messages],
+    "retry": [names], "deferred_for": {(version, name): [repo ids]}}`` -
+    keyed by version too, since a repo may scan a module name at two
+    versions in one run (the ledger's ``needs_rewrite`` in ``retry`` is per
+    name).
     """
-    from src.indexer.lifecycle import MASS_RETIRE_FLOOR, MASS_RETIRE_FRACTION
     from src.indexer.reconcile import PotentialOwners
 
     report: dict = {
         "run_id": run_id,
         "pruned": {},
+        "parser_gaps": {},
         "skipped": {},
         "embeddings_deleted": 0,
         "gates_tripped": [],
@@ -1123,7 +1344,7 @@ def _prune_reparsed_modules(
 
     shared: dict[str, set[str]] = {}
     owners = PotentialOwners(presence) if blanket is None else None
-    released: dict[str, list[str]] = {}
+    settled: dict[str, list[str]] = {}
     if blanket is None:
         for version in sorted(modules_by_version):
             shared[version] = presence.names_owned_elsewhere(
@@ -1136,69 +1357,45 @@ def _prune_reparsed_modules(
             owners, repo, version, name, health, shared[version], report, url,
         )
         pruned = False
+        keep_chunks: list = []
         if reason is None:
-            prefixes = _module_file_prefixes(
-                info, repo_path, (previous_paths or {}).get(name),
-            )
+            previous = (previous_paths or {}).get(name)
+            prefixes = _module_file_prefixes(info, repo_path, previous)
             skip_labels = sorted(health.unobserved_labels)
             census = writer.module_children_census(
                 version, name, run_id=run_id,
                 file_prefixes=prefixes, skip_labels=skip_labels,
             )
-            stale, total = census["stale"], census["total"]
-            rels_stale, rels_total = census["rels_stale"], census["rels_total"]
             if not census["module_exists"]:
                 reason = PRUNE_SKIP_NO_MODULE
-            elif not allow_mass_retire and (
-                _mass_drop(stale, total) or _mass_drop(rels_stale, rels_total)
-            ):
-                reason = PRUNE_SKIP_SOFT_GATE
-                report["gates_tripped"].append(f"{PRUNE_GATE_PREFIX}{name}@{version}")
-                report["attention"].append(
-                    f"entity prune of {name}@{version} held: {stale} of {total} indexed "
-                    f"node(s) and {rels_stale} of {rels_total} relationship(s) are no "
-                    "longer produced by its parse (more than "
-                    f"{int(MASS_RETIRE_FRACTION * 100)}% and at least {MASS_RETIRE_FLOOR}); "
-                    "graph and embeddings kept; check the parse, then re-run with "
-                    "--allow-mass-retire"
-                )
-                _logger.warning(
-                    "Repo %s: entity prune held for %s@%s (%d of %d nodes, %d of %d "
-                    "relationships stale)", url, name, version, stale, total,
-                    rels_stale, rels_total,
-                )
-                record_held = getattr(writer, "record_module_prune_held", None)
-                if callable(record_held):
-                    record_held(
-                        version, name, repo_id=repo.get("id"), stale=stale, total=total,
-                        rels_stale=rels_stale, rels_total=rels_total,
-                    )
             else:
                 pruned = True
-                released.setdefault(version, []).append(name)
-                if stale or rels_stale:
-                    report["pruned"][name] = writer.prune_module_children(
-                        version, name, run_id=run_id,
-                        file_prefixes=prefixes, skip_labels=skip_labels,
-                    )
+                result, gap = _prune_module_by_evidence(
+                    writer, repo, repo_path, version, name, info, census,
+                    run_id=run_id, prefixes=prefixes, skip_labels=skip_labels,
+                    previous_path=previous, url=url,
+                )
+                report["pruned"][(version, name)] = result
+                if gap is None:
+                    settled.setdefault(version, []).append(name)
                 else:
-                    report["pruned"][name] = {
-                        "deleted": 0, "by_label": {}, "rels_deleted": 0, "rels_by_label": {},
-                    }
+                    keep_chunks = gap.pop("chunk_filters")
+                    report["parser_gaps"][(version, name)] = gap
         if reason is not None:
-            report["skipped"][name] = reason
+            report["skipped"][(version, name)] = reason
         if pruned or reason in _PRUNE_UNAVAILABLE_REASONS:
             _reconcile_module_embeddings(
                 report, health, name, version, owning_profile, pg_conn,
+                also_keep=keep_chunks,
             )
 
-    clear_held = getattr(writer, "clear_module_prune_held", None)
-    if callable(clear_held):
-        for version, names in sorted(released.items()):
-            clear_held(version, names)
+    clear_gap = getattr(writer, "clear_module_parser_gap", None)
+    if callable(clear_gap):
+        for version, names in sorted(settled.items()):
+            clear_gap(version, names)
     _track_prune_deferrals(writer, repo, reparsed, report)
     report["retry"] = sorted(
-        n for n, reason in report["skipped"].items() if reason in _PRUNE_RETRY_REASONS
+        {n for (_v, n), reason in report["skipped"].items() if reason in _PRUNE_RETRY_REASONS}
     )
     deleted = sum(r["deleted"] for r in report["pruned"].values())
     rels_deleted = sum(r["rels_deleted"] for r in report["pruned"].values())
@@ -1209,6 +1406,129 @@ def _prune_reparsed_modules(
             url, deleted, rels_deleted, report["embeddings_deleted"],
         )
     return report
+
+
+# Kept identities shown in a parser-gap record / log line.
+_PARSER_GAP_SAMPLE = 10
+
+
+def _module_rel_dir(info, repo_path: Path) -> str | None:
+    """The module's directory relative to the repo root, or None when it is
+    not under it (then nothing can be read from git for it)."""
+    from src.indexer.models import to_repo_relative
+
+    rel = to_repo_relative(str(Path(info.path)), repo_path)
+    if not rel or Path(rel).is_absolute():
+        return None
+    return rel
+
+
+def _prune_module_by_evidence(
+    writer: IndexWriterProtocol,
+    repo: dict,
+    repo_path: Path,
+    version: str,
+    name: str,
+    info,
+    census: dict,
+    *,
+    run_id: str,
+    prefixes: list[str],
+    skip_labels: list[str],
+    previous_path: str | None,
+    url,
+) -> tuple[dict, dict | None]:
+    """Delete what the source oracle proves gone or superseded; keep the rest.
+
+    Returns ``(prune result, parser-gap record or None)``. The record (also
+    written to the Module node) carries the kept counts, a sample of kept
+    identities, the fingerprint the next re-evaluation is keyed on and
+    ``chunk_filters`` (the embedding rows to keep, popped by the caller).
+    """
+    from src.indexer import prune_evidence as pe
+    from src.indexer.lifecycle import MASS_RETIRE_FLOOR, MASS_RETIRE_FRACTION
+    from src.indexer.models import to_repo_relative
+    from src.indexer.writer_pgvector import kept_entity_chunk_filters
+
+    stale, total = census["stale"], census["total"]
+    rels_stale, rels_total = census["rels_stale"], census["rels_total"]
+    result = {
+        "deleted": 0, "by_label": {}, "rels_deleted": 0, "rels_by_label": {},
+        "kept": 0, "rels_kept": 0, "verdicts": {},
+    }
+    if not stale and not rels_stale:
+        return result, None
+    if _mass_drop(stale, total) or _mass_drop(rels_stale, rels_total):
+        # Informational only (ADR-0057): the oracle decides per entity.
+        _logger.info(
+            "Repo %s: %s@%s re-parse no longer produces %d of %d node(s) and %d of %d "
+            "relationship(s) (more than %d%% and at least %d); judging each against "
+            "the HEAD source", url, name, version, stale, total, rels_stale, rels_total,
+            int(MASS_RETIRE_FRACTION * 100), MASS_RETIRE_FLOOR,
+        )
+    rows = writer.module_stale_children(
+        version, name, run_id=run_id, file_prefixes=prefixes, skip_labels=skip_labels,
+    )
+    nodes = [pe.stale_node_from_row(r) for r in rows.get("nodes") or []]
+    rels = [pe.stale_rel_from_row(r) for r in rows.get("rels") or []]
+    module_dir = _module_rel_dir(info, repo_path)
+    if module_dir is None:
+        source = pe.ModuleSource(name, repo_path, (), False, "module outside the repo root")
+    else:
+        source = pe.load_module_source(
+            repo_path, name, module_dir, [previous_path] if previous_path else [],
+        )
+    verdicts = pe.classify(source, nodes, rels)
+    result["verdicts"] = {k: v for k, v in verdicts.counts.items() if v}
+    delete_ids, delete_rel_ids = verdicts.delete_node_ids, verdicts.delete_rel_ids
+    if delete_ids or delete_rel_ids:
+        done = writer.prune_module_children(
+            version, name, run_id=run_id, file_prefixes=prefixes, skip_labels=skip_labels,
+            only_ids=delete_ids, only_rel_ids=delete_rel_ids,
+        )
+        result.update(done)
+    result["kept"] = len(verdicts.kept_nodes)
+    result["rels_kept"] = len(verdicts.kept_rels)
+    if not verdicts.kept_nodes and not verdicts.kept_rels:
+        return result, None
+
+    kept_items = [n.describe() for n in verdicts.kept_nodes]
+    kept_items += [r.describe() for r in verdicts.kept_rels]
+    sample = kept_items[:_PARSER_GAP_SAMPLE]
+    dirs = [d for d in (module_dir, previous_path) if d]
+    fingerprint = f"{source.fingerprint}|{pe.prune_code_token()}"
+    gap = {
+        "kept": len(verdicts.kept_nodes), "total": total,
+        "rels_kept": len(verdicts.kept_rels), "rels_total": rels_total,
+        "sample": sample, "reason": source.reason, "fingerprint": fingerprint,
+        "paths": sorted(set(dirs)),
+    }
+    record = getattr(writer, "record_module_parser_gap", None)
+    if callable(record):
+        record(
+            version, name, repo_id=repo.get("id"), fingerprint=fingerprint,
+            paths=gap["paths"], kept=gap["kept"], total=total,
+            rels_kept=gap["rels_kept"], rels_total=rels_total, sample=sample,
+            reason=source.reason,
+        )
+    why = (
+        f"source oracle unavailable ({source.reason})" if source.reason
+        else "still defined in the HEAD source but no longer produced by the parser"
+    )
+    _logger.warning(
+        "Repo %s: parser gap in %s@%s: kept %d node(s) and %d relationship(s) %s "
+        "(re-evaluated when the module or the indexer code changes): %s",
+        url, name, version, gap["kept"], gap["rels_kept"], why, "; ".join(sample),
+    )
+    kept_nodes = [
+        pe.StaleNode(
+            id=n.id, label=n.label, name=n.name, model=n.model, xmlid=n.xmlid,
+            file_path=to_repo_relative(n.file_path, repo_path), test_class=n.test_class,
+        )
+        for n in verdicts.kept_nodes
+    ]
+    gap["chunk_filters"] = kept_entity_chunk_filters(kept_nodes)
+    return result, gap
 
 
 def _track_prune_deferrals(writer, repo: dict, reparsed: list, report: dict) -> None:
@@ -1225,12 +1545,12 @@ def _track_prune_deferrals(writer, repo: dict, reparsed: list, report: dict) -> 
     clear = getattr(writer, "clear_module_prune_deferred", None)
     settled: dict[str, list[str]] = {}
     for version, name, _info in reparsed:
-        reason = report["skipped"].get(name)
-        waits_for = report["deferred_for"].get(name)
+        reason = report["skipped"].get((version, name))
+        waits_for = report["deferred_for"].get((version, name))
         if waits_for and reason == PRUNE_SKIP_SHARED_UNSYNCED:
             if callable(record):
                 record(version, name, repo_id=repo.get("id"), waits_for=waits_for)
-        elif name in report["pruned"] or reason == PRUNE_SKIP_SHARED:
+        elif (version, name) in report["pruned"] or reason == PRUNE_SKIP_SHARED:
             settled.setdefault(version, []).append(name)
     if callable(clear):
         for version, names in sorted(settled.items()):
@@ -1262,7 +1582,7 @@ def _prune_skip_reason(
             "repo(s) %s", url, name, version,
             ", ".join(sorted(b.get("repo_basename") or "?" for b in blockers)),
         )
-        report["deferred_for"][name] = sorted({b["repo_id"] for b in blockers})
+        report["deferred_for"][(version, name)] = sorted({b["repo_id"] for b in blockers})
         return PRUNE_SKIP_SHARED_UNSYNCED
     labels = ", ".join(
         f"{b.get('repo_basename') or '?'} (repo id={b.get('repo_id')}) [{b['why']}]"
@@ -1277,6 +1597,7 @@ def _prune_skip_reason(
 
 def _reconcile_module_embeddings(
     report: dict, health, name: str, version: str, owning_profile: str, pg_conn,
+    *, also_keep=(),
 ) -> None:
     """Delete the owning profile's rows of *name* this parse did not produce (B14).
 
@@ -1290,25 +1611,29 @@ def _reconcile_module_embeddings(
     entities it no longer produces - deleting needs no embedder - matched by
     ``(chunk_type, entity_name)`` so a live entity's older row is kept; the
     rows are counted first and the count is the delete's ``expected``.
+
+    *also_keep*: chunk filters of the entities the prune kept (ADR-0057
+    parser gaps); their rows stay with their nodes.
     """
     if health is None or health.degraded or health.embedded_keys is None or pg_conn is None:
         return
     from src.indexer.writer_pgvector import delete_module_embeddings_except
 
     by_entity = not health.embeddings_written
+    keep = list(also_keep)
 
     def reconcile(conn) -> int:
         expected = None
         if by_entity:
             expected = delete_module_embeddings_except(
                 conn, name, version, owning_profile, health.embedded_keys,
-                by_entity=True, delete=False,
+                by_entity=True, delete=False, also_keep=keep,
             )
             if not expected:
                 return 0
         return delete_module_embeddings_except(
             conn, name, version, owning_profile, health.embedded_keys,
-            by_entity=by_entity, expected=expected,
+            by_entity=by_entity, expected=expected, also_keep=keep,
         )
 
     if getattr(pg_conn, "autocommit", None) is True:
@@ -1413,6 +1738,29 @@ def _degraded_state(writer: IndexWriterProtocol, repo: dict, repo_path: Path):
     for row in read(repo["id"]) or []:
         records[(row["odoo_version"], row["name"])] = row
         if _failure_fingerprint(repo_path, row["paths"]) != row["fingerprint"]:
+            changed.add(row["name"])
+    return records, changed
+
+
+def _parser_gap_state(writer: IndexWriterProtocol, repo: dict, repo_path: Path):
+    """``(records, changed)``: the repo's parser-gap records (ADR-0057) and the
+    names whose fingerprint no longer matches - the module's HEAD tree moved
+    or the indexer code (parsers, writers, oracle) changed since the prune
+    kept them. Those are re-parsed this run even at an unchanged HEAD, so a
+    parser fix deployed later re-evaluates the kept set; an unchanged record
+    is never re-parsed for itself (no nightly retry loop)."""
+    from src.indexer import prune_evidence
+
+    read = getattr(writer, "parser_gap_modules", None)
+    if not callable(read) or repo.get("id") is None:
+        return {}, set()
+    records: dict = {}
+    changed: set[str] = set()
+    token = prune_evidence.prune_code_token()
+    for row in read(repo["id"]) or []:
+        records[(row["odoo_version"], row["name"])] = row
+        now = f"{prune_evidence.module_tree_fingerprint(repo_path, row['paths'])}|{token}"
+        if now != row["fingerprint"]:
             changed.add(row["name"])
     return records, changed
 
@@ -1571,11 +1919,59 @@ def _pg_clock(pg_conn):
         return None
 
 
+def _test_gc_live_names(live_module_names_by_version: dict, scan, gates) -> dict[str, set[str]]:
+    """The module names whose test nodes the module-level test GC keeps,
+    per version: the scan's modules, plus every module the lifecycle keeps
+    although the scan lost it (``_gc_stale_test_nodes`` deletes the tests of
+    any other module of the repo, graph-only, without their embedding rows).
+
+    - A module whose manifest does not parse is kept as it is (E2E-D1).
+    - An unproven drop (ADR-0057 phase 2: absent from the scan, manifest
+      still in the HEAD tree) keeps its ledger row ``present`` and its Module
+      node, so its test nodes and their embedding rows stay too
+      (``GateResult.kept_names``; against the graph baseline, the
+      ``name@version`` entries of ``unproven``, which the orphan sweep judges
+      again). With ``--allow-mass-retire`` the unproven drops retire, and the
+      retirement cascade deletes their tests with their rows.
+    """
+    test_live = {v: set(names) for v, names in live_module_names_by_version.items()}
+    kept = test_live.setdefault(scan.odoo_version, set())
+    kept.update(n for n, ex in scan.excluded.items() if ex.reason == EXCLUSION_UNPARSEABLE)
+    kept.update(gates.kept_names)
+    if gates.baseline == "graph" and not gates.allow_unproven:
+        for item in gates.unproven:
+            name, sep, version = item.rpartition("@")
+            # Only versions the GC runs at anyway: a version the scan does not
+            # cover gets no GC call at all (a call with this one name as the
+            # live set would delete every other test node of the repo there).
+            if sep and name and version in test_live:
+                test_live[version].add(name)
+    return test_live
+
+
+def _test_gc_judged(
+    modules_by_version: dict, prune_report: dict | None, module_health: dict,
+) -> set[tuple[str, str]]:
+    """``(version, name)`` of the re-parsed modules whose test nodes the GC's
+    file level leaves alone: the entity prune judged them (it owns their test
+    nodes), or their parse was degraded (see :func:`_gc_stale_test_nodes`).
+    Per version: a name the prune judged at one version but skipped at
+    another (shared there) is GC-covered at the other."""
+    pruned_keys = set(prune_report["pruned"]) if prune_report else set()
+    return {
+        (v, n) for v, mods in modules_by_version.items() for n in mods
+        if (v, n) in pruned_keys
+        or getattr(module_health.get((v, n)), "degraded", True)
+    }
+
+
 def _gc_stale_test_nodes(
     writer: IndexWriterProtocol,
     live_names_by_version: dict[str, list[str]],
     test_results: list,
     repo_root_name: str,
+    *,
+    judged: Iterable[tuple[str, str]] = (),
 ) -> None:
     """Test-node GC (M12, explicit and not behind any flag).
 
@@ -1583,12 +1979,27 @@ def _gc_stale_test_nodes(
     in the scan (module level) or whose test FILE was deleted inside a module
     re-parsed this run (file level). Repo-scoped (Defect H) and restricted to
     the re-parsed modules for the file level (Defect I).
+
+    *judged* (``(version, name)`` pairs) leaves the file level of those
+    modules alone: the modules the entity prune ran on (their test nodes were
+    judged by the source oracle - deleted with their embedding rows when git
+    proves them gone, kept when the source still defines them, ADR-0057) and
+    the modules whose parse was degraded (a test file that failed to parse
+    emitted no class: its nodes are kept like everything else of the module).
+    So the prune's census counts exactly what the prune decides, and nothing
+    of a judged module leaves the graph without its embeddings. For the other
+    re-parsed modules (prune skipped: shared, unsynced owner, no Module node,
+    machinery unavailable) the GC still runs; their embedding rows follow
+    through the shared-module prune or the pre-B14 replace.
     """
+    excluded = set(judged)
     live_test_files_by_version: dict[str, set[str]] = {}
     reparsed_by_version: dict[str, set[str]] = {}
     for tr in test_results:
         ver = tr.module.odoo_version
         bucket = live_test_files_by_version.setdefault(ver, set())
+        if (ver, tr.module.name) in excluded:
+            continue
         reparsed_by_version.setdefault(ver, set()).add(tr.module.name)
         for tc in tr.test_classes:
             if tc.file_path:
@@ -1653,46 +2064,60 @@ def _index_repo(
       shipping a module this repo still ships, M5) and self-heal names (present
       in the scan but without a graph node carrying this repo's profile, H2).
     - After the writes: ``commit_observed`` (present/excluded rows), names the
-      scan no longer contains are flagged ``retire_pending`` with the removing
-      commit and successor as evidence, blocked by the repo's gates (G-A scan
-      complete + trusted, G-B mass drop) or by ``retire=False``; the Module
-      nodes are stamped with the HEAD and their ledger owners (L6).
+      scan no longer contains AND whose manifest the raw HEAD tree no longer
+      has (git proves them gone, any count, ADR-0057 phase 2) are flagged
+      ``retire_pending`` with the removing commit and successor as evidence,
+      blocked by the repo's gates (G-A scan complete + trusted, a total wipe
+      git does not prove) or by ``retire=False``; a name whose manifest git
+      still tracks is kept as it is (logged, ``lifecycle-audit``
+      ``unproven_drops``); the Module nodes are stamped with the HEAD and
+      their ledger owners (L6).
     - ``head_sha`` advances after all writes succeed. ``presence_head_sha``
       advances only when no gate tripped, the stamp matched every present
       module, and nothing is pending (H1); when the only reason is pending
       names, ``lifecycle.presence_deferred_head`` hands the HEAD to the
       reconcile, which advances it once those names are retired.
     - Before the ledger commit, the entity prune runs over the re-parsed
-      modules (children, relationships, embeddings); a module it had to skip
-      for a reason that can clear on its own (soft gate, an unsynced repo
-      that may ship it (``undecidable_owner``), ``--no-retire``, untrusted
-      scan) is flagged ``needs_rewrite`` so
-      the next run re-parses and prunes it. A degraded parse is recorded on
+      modules (children, relationships, embeddings), deleting what the HEAD
+      source proves gone and keeping what it still defines (ADR-0057); a
+      module it had to skip for a reason that can clear on its own (an
+      unsynced repo that may ship it (``undecidable_owner``),
+      ``--no-retire``, untrusted scan) is flagged ``needs_rewrite`` so the
+      next run re-parses and prunes it. Entities it kept as a parser gap are
+      recorded on the Module node with a fingerprint (module tree + indexer
+      code); the module is re-parsed for that record only when the
+      fingerprint changes (checked before the unchanged skip). A degraded
+      parse is recorded on
       the Module node with a fingerprint of its failing files and retried
       once after a transient (IO) failure; after that it is re-parsed only
       when a commit changes it or its failing files change on disk (checked
       before the unchanged skip), and its files stay named in
       ``lifecycle_attention`` while it remains degraded.
     - Signals the operator must see (version rule, gate trips, git refusing
-      the repo, missing ``origin/<branch>`` ref, stamp shortfall, a held,
+      the repo, missing ``origin/<branch>`` ref, stamp shortfall, a
       degraded or deferred entity prune) replace ``repos.lifecycle_attention``;
       a clean run clears it. The unchanged skip rewrites it too, with what
       still stands at that HEAD (``_standing_attention``: version rule, git
       trust, still-degraded parses), so a signal that no longer holds (e.g.
       a gate bypassed by ``--allow-mass-retire``) never outlives its run.
+      A parser gap is not such a signal (log line + Module record +
+      ``lifecycle-audit`` finding only).
 
     ``lifecycle`` counters: ``odoo_version`` (ledger key version),
-    ``gates_tripped`` (gate ids, including ``entity_prune:<name>@<version>``),
-    ``pending`` (names flagged this run), ``attention`` (messages),
-    ``presence_synced`` (bool), ``presence_deferred_head`` (sha or None),
-    ``entity_prune`` (present when modules were re-parsed: ``run_id``,
-    ``pruned``, ``skipped``, ``embeddings_deleted``, ``gates_tripped``,
-    ``retry``).
+    ``gates_tripped`` (gate ids), ``pending`` (names flagged this run),
+    ``attention`` (messages), ``presence_synced`` (bool),
+    ``presence_deferred_head`` (sha or None), ``entity_prune`` (present when
+    modules were re-parsed: ``run_id``, ``pruned``, ``parser_gaps``,
+    ``skipped``, ``embeddings_deleted``, ``gates_tripped``, ``retry``).
 
     ``gc`` is accepted for backward compatibility and ignored (retirement and
     test-node GC always run). ``retire=False`` (CLI ``--no-retire``) scans and
     writes but deletes nothing: absent names stay pending (``no_retire``) and
-    the test-node GC is skipped. ``allow_mass_retire`` bypasses gate G-B.
+    the test-node GC is skipped. ``allow_mass_retire`` (emergency bypass)
+    lifts a held total wipe and also retires the drops git cannot prove gone
+    (it does not change the entity prune). A repo without a checkout is
+    cloned first when its clone never succeeded (``_ensure_repo_checkout``),
+    else :class:`RepoCheckoutUnavailable` is raised.
 
     refresh (nightly-fetch): when True (default), do a ``git fetch`` +
         ``reset --hard origin/<branch>`` on the local clone BEFORE the incremental
@@ -1718,8 +2143,11 @@ def _index_repo(
     odoo_version: str = repo["odoo_version"]
     url = repo.get("url", local_path)
 
-    if not Path(local_path).is_dir():
-        raise FileNotFoundError(f"local_path does not exist: {local_path!r}")
+    # A repo whose first clone failed (or never ran) is cloned here, once per
+    # run; one that still has no checkout raises RepoCheckoutUnavailable,
+    # which index_profile reports without a traceback (issue #383 item 2).
+    _ensure_repo_checkout(repo, pg_conn, refresh=refresh, profile_name=profile_name)
+    local_path = repo["local_path"]
 
     # Resolve the RNG directory for version-exact RelaxNG validation (WI-E rework).
     # Prefer the RNG dir within THIS repo's local_path (covers the main Odoo core
@@ -1741,8 +2169,14 @@ def _index_repo(
     # below instead of being invisible (local HEAD == repos.head_sha -> skip).
     # FAIL-SAFE inside refresh_before_scan: a fetch error is logged and we index
     # whatever is on disk. Gated by `refresh` (CLI --no-fetch turns it off).
-    if refresh:
-        refresh_before_scan(repo, pg_conn)
+    fetch_failure = refresh_before_scan(repo, pg_conn) if refresh else None
+    fetch_line: str | None = None
+    fetch_persistent = False
+    if fetch_failure:
+        fetch_line, fetch_persistent = _fetch_attention(repo, fetch_failure)
+    fetch_counters = {
+        "attempted": bool(refresh), "failed": fetch_failure, "persistent": fetch_persistent,
+    }
     # === End pre-scan refresh ===
 
     # === Incremental / sync decision (W2-4 + ADR-0056) ===
@@ -1773,6 +2207,15 @@ def _index_repo(
     # disk since its degraded parse (edited, deleted, permission fixed) is
     # re-parsed now even when HEAD did not move.
     degraded_records, degraded_changed = _degraded_state(writer, repo, repo_path)
+    # Parser-gap records (ADR-0057): a module whose kept set was recorded
+    # against another HEAD tree or another indexer code is re-evaluated now;
+    # an unchanged record costs nothing.
+    _gap_records, gap_changed = _parser_gap_state(writer, repo, repo_path)
+    if gap_changed:
+        _logger.info(
+            "Repo %s: re-evaluating %d recorded parser gap(s) (module tree or indexer "
+            "code changed): %s", url, len(gap_changed), ", ".join(sorted(gap_changed)[:10]),
+        )
     # Shared-module bootstrap (B14): a bounded batch of this repo's copies of
     # shared modules without a complete-parse record is re-parsed like a
     # needs_rewrite name (sync path when HEAD did not move).
@@ -1788,17 +2231,18 @@ def _index_repo(
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=full_reindex, ledger=presence is not None,
-        degraded_changed=bool(degraded_changed),
+        degraded_changed=bool(degraded_changed or gap_changed),
     )
     if plan.mode == RUN_SKIP:
         _logger.info(
             "Repo %s unchanged (HEAD %s) - skipping reindex", url, current_head[:8],
         )
         if presence is not None:
-            _write_attention(
-                presence, repo, _standing_attention(repo, repo_path, degraded_records), url,
-            )
-        return dict(_EMPTY_COUNTERS)
+            standing = _standing_attention(repo, repo_path, degraded_records)
+            if fetch_line:
+                standing.append(fetch_line)
+            _write_attention(presence, repo, standing, url)
+        return {**_EMPTY_COUNTERS, "fetch": fetch_counters}
 
     diff_base: str | None = plan.diff_base
     if plan.force_push:
@@ -1842,9 +2286,11 @@ def _index_repo(
     # === Lifecycle pre-write: trust, gates, self-heal (ADR-0056) ===
     observation = observe_lifecycle(
         repo, scan, presence, current_head, allow_mass_retire=allow_mass_retire,
-        writer=writer, owning_profile=owning_profile,
+        writer=writer, owning_profile=owning_profile, last_head=last_head,
     )
     attention: list[str] = observation.attention
+    if fetch_line:
+        attention.append(fetch_line)
     lifecycle_on = observation.lifecycle_on
     # Before the first graph write: the version-wide post-pass must re-run
     # (E2E-D4), even if this run dies before reaching it.
@@ -1880,7 +2326,9 @@ def _index_repo(
             "Repo %s: incremental - %d/%d modules changed",
             url, len(write_names), total_before,
         )
-    write_names |= (set(rewrite_names) | heal_names | degraded_changed) & present_names
+    write_names |= (
+        set(rewrite_names) | heal_names | degraded_changed | gap_changed
+    ) & present_names
     modules_by_version: dict[str, dict] = {
         ver: {n: info for n, info in mods.items() if n in write_names}
         for ver, mods in scan.modules.items()
@@ -1908,13 +2356,14 @@ def _index_repo(
             module_health=module_health,
         )
         # Intra-module entity prune (B14): children the re-parse no longer
-        # produced. Before the ledger commit, like every other graph write.
+        # produced, judged against the HEAD source (ADR-0057). Before the
+        # ledger commit, like every other graph write.
         prune_report = _prune_reparsed_modules(
             writer, presence, repo,
             modules_by_version=modules_by_version, module_health=module_health,
             run_id=run_id, owning_profile=owning_profile, repo_path=repo_path,
             pg_conn=pg_conn, lifecycle_on=lifecycle_on, retire=retire,
-            scan_ok=gates.scan_ok, allow_mass_retire=allow_mass_retire,
+            scan_ok=gates.scan_ok,
             previous_paths={
                 n: d["indexed_path"] for n, d in heal.items()
                 if d["reason"] == REWRITE_PATH_DRIFT and d.get("indexed_path")
@@ -1974,15 +2423,13 @@ def _index_repo(
     # complete scan (a degraded scan would drop live modules' tests) and is
     # skipped under --no-retire (which deletes nothing).
     if retire and gates.scan_ok and present_names:
-        # A module whose manifest does not parse is kept as it is (E2E-D1):
-        # its test nodes are live too.
-        test_live = {v: set(names) for v, names in live_module_names_by_version.items()}
-        test_live.setdefault(scan.odoo_version, set()).update(
-            n for n, ex in scan.excluded.items()
-            if ex.reason == EXCLUSION_UNPARSEABLE
+        test_live = _test_gc_live_names(live_module_names_by_version, scan, gates)
+        judged = _test_gc_judged(
+            modules_by_version, prune_report, module_health if modules_by_version else {},
         )
         _gc_stale_test_nodes(
             writer, {v: sorted(n) for v, n in test_live.items()}, test_results, repo_root_name,
+            judged=judged,
         )
 
     # Observability summary log (M7 C5) - one line per repo, readable by admins.
@@ -2053,6 +2500,7 @@ def _index_repo(
 
     if lifecycle_counters is not None:
         counters["lifecycle"] = lifecycle_counters
+    counters["fetch"] = fetch_counters
     return counters
 
 
@@ -2100,7 +2548,11 @@ def _commit_lifecycle(
     if done_rewrites:
         presence.clear_needs_rewrite(repo_id, done_rewrites)
 
-    absent = transitions.retired
+    # Absent names git proves gone (ADR-0057 phase 2). An unproven one (its
+    # manifest is still in the HEAD tree) is not flagged: its row stays
+    # present, so neither the reconcile nor the orphan sweep removes it.
+    kept = gates.kept_names
+    absent = tuple(t for t in transitions.retired if t.name not in kept)
     pending: list[str] = []
     if absent:
         changes = (

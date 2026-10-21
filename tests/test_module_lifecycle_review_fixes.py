@@ -355,13 +355,15 @@ def _pre_ledger_repo(tmp_path: Path, pg_conn, driver, profile: str, drop: int):
     return repo, rid, names, gone
 
 
-def test_first_run_trips_mass_retire_when_the_scan_covers_far_less_than_the_graph(
+def test_first_run_sweeps_every_graph_module_git_proves_gone_whatever_their_count(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys,
 ):
-    """21 of the 24 modules the graph attributes to a never-synced repo are not
-    in its scan (> 50% and >= 20): the audit predicts the trip on the graph
-    baseline, the run exits 3 with attention and sweeps nothing; the repo stays
-    unsynced until an operator confirms with --allow-mass-retire."""
+    """21 of the 24 modules the graph attributes to a never-synced repo were
+    deleted upstream. The old graph-baseline G-B held them (exit 3) until an
+    operator ran --allow-mass-retire; git proves each one gone (no manifest in
+    the HEAD tree, no checkout of the profile ships it), so the audit predicts
+    the sweep and the plain CLI run removes exactly them, exit 0
+    (ADR-0057 phase 2)."""
     import src.indexer.__main__ as cli
     from tests import conftest
 
@@ -370,30 +372,51 @@ def test_first_run_trips_mass_retire_when_the_scan_covers_far_less_than_the_grap
     audit = _audit(monkeypatch, capsys, "tvtma_99")
     [entry] = audit["repos"]
     assert entry["gates"].get("baseline") == "graph", entry["gates"]
-    assert "mass_retire" in entry["gates"]["tripped"], entry["gates"]
+    assert entry["gates"]["tripped"] == [], entry["gates"]
     assert entry["gates"]["n_soft_drop"] == 21 and entry["gates"]["n_present_before"] == 24
+    [ver] = [v for v in audit["versions"] if v["odoo_version"] == V]
+    assert sorted(o["name"] for o in ver["orphan_modules"]) == sorted(gone), ver
 
     monkeypatch.setenv("PG_DSN", conftest.get_test_dsn())
     code = cli.main(["index-repo", "--profile", "tvtma_99", "--no-embed"])
 
-    assert code == 3
-    for n in names:
-        assert module_node(neo4j_driver, n) is not None, f"{n} was swept on a mass drop"
-    attention = repo_row(pg, rid)["lifecycle_attention"] or ""
-    assert "mass retire" in attention and "21 of 24" in attention, attention
-    assert repo_row(pg, rid)["presence_head_sha"] is None, "a trip keeps the repo unsynced"
-
-    assert cli.main(["index-repo", "--profile", "tvtma_99", "--no-embed"]) == 3, (
-        "the next unconfirmed run must still refuse")
-    confirmed = cli.main(
-        ["index-repo", "--profile", "tvtma_99", "--no-embed", "--allow-mass-retire"])
-
-    assert confirmed == 0
+    assert code == 0
     for n in gone:
-        assert module_node(neo4j_driver, n) is None, f"{n}: confirmed run must sweep it"
+        assert module_node(neo4j_driver, n) is None, f"{n}: git proves it gone"
     for n in set(names) - set(gone):
         assert module_node(neo4j_driver, n) is not None
     assert repo_row(pg, rid)["presence_head_sha"] == repo.head()
+
+
+def test_first_run_keeps_graph_modules_a_scan_lost_while_git_still_tracks_them(
+    pg, neo4j_driver, tmp_path, monkeypatch,
+):
+    """A scan regression hides 21 modules whose manifests the HEAD tree still
+    has: git cannot prove them gone, so neither the per-repo evidence nor the
+    orphan sweep deletes them, and keeping them is no exit 3."""
+    from dataclasses import replace
+
+    from src.indexer import pipeline as pipeline_mod
+
+    repo, rid, names, _gone = _pre_ledger_repo(tmp_path, pg, neo4j_driver, "tvtma_99", drop=0)
+    hidden = set(names[:21])
+    real = pipeline_mod.build_registry_scan
+
+    def lossy(*args, **kwargs):
+        scan = real(*args, **kwargs)
+        return replace(scan, modules={
+            v: {n: i for n, i in mods.items() if n not in hidden}
+            for v, mods in scan.modules.items()
+        })
+
+    monkeypatch.setattr(pipeline_mod, "build_registry_scan", lossy)
+    summary = run(pg, "tvtma_99")
+
+    assert not needs_attention(summary), lc(summary)
+    for n in names:
+        assert module_node(neo4j_driver, n) is not None, f"{n} deleted without git evidence"
+    report = lc(summary)["reports"][0]
+    assert sorted(report["orphans_kept"]) == sorted(hidden), report["orphans_kept"]
 
 
 def test_first_run_sweeps_a_few_ghosts_and_the_audit_predicts_it(

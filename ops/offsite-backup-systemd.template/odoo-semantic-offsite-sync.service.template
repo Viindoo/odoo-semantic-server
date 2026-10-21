@@ -25,9 +25,9 @@ Documentation=file:///home/odoo-semantic/odoo-semantic-mcp/ops/offsite-backup-sy
 After=network-online.target
 Wants=network-online.target
 
-# Fire an alert unit on any failure (same pattern as backup + reindex units).
-# Operator: replace with the actual alert unit name used in this environment.
-OnFailure=osm-alert@%n.service
+# Fire the alert hook on any failure (same spelling as the backup + reindex
+# units: `osm-alert@%n`, which mails the OSM admins, see osm-alert@.service).
+OnFailure=osm-alert@%n
 
 [Service]
 Type=oneshot

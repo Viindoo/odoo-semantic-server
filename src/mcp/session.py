@@ -158,20 +158,112 @@ _scope_lock = threading.Lock()
 # Globally shared profile names for an admin's profile_name narrowing (60s).
 _shared_cache: tuple[list[str], float] | None = None
 
+# Issue #385: profile name -> declared ancestor chain (self first, root last),
+# cached 60s. Only chains of EXISTING profiles are cached, and only after the
+# caller's tenant boundary already admitted the name (server._scope), so the
+# map is bounded by the number of real profiles; the cap is a backstop.
+_chain_cache: dict[str, tuple[tuple[str, ...], float]] = {}
+_CHAIN_CACHE_MAX: int = 10_000
+
+
+# Cross-process scope epoch. invalidate_allowed_profiles only
+# reaches the process it runs in (the Web UI); the MCP server is another
+# process. Every cached scope read first calls scope_epoch(), which re-reads
+# RepoStore.scope_fingerprint() at most every _SCOPE_EPOCH_CHECK_SEC and drops
+# all scope caches when it changed. Staleness after an admin change is
+# therefore bounded by this interval, not by the 60 s scope TTL or the 300 s
+# resource TTL (the resource cache key carries the epoch). Registry
+# unreachable -> the last epoch is kept and the TTLs still apply.
+_SCOPE_EPOCH_CHECK_SEC: float = 5.0
+_scope_epoch_value: str | None = None
+_scope_epoch_checked_at: float | None = None
+
+
+def scope_epoch(*, now_fn: Callable[[], float] = time.monotonic) -> str:
+    """Current profile-scope epoch ("" until first read); drops caches on change."""
+    global _scope_epoch_value, _scope_epoch_checked_at
+    now = now_fn()
+    with _scope_lock:
+        if (_scope_epoch_checked_at is not None
+                and now - _scope_epoch_checked_at < _SCOPE_EPOCH_CHECK_SEC):
+            return _scope_epoch_value or ""
+        _scope_epoch_checked_at = now  # one poll per interval, even under load
+        previous = _scope_epoch_value
+    from src.db.pg import repo_store  # lazy import - avoids circular dependency
+    try:
+        fingerprint = repo_store().scope_fingerprint()
+    except Exception as exc:  # noqa: BLE001 - keep the TTL-bounded caches
+        logger.debug("profile scope epoch unavailable (%s); caches keep their TTL", exc)
+        return previous or ""
+    if not isinstance(fingerprint, str):
+        return previous or ""
+    with _scope_lock:
+        _scope_epoch_value = fingerprint
+    if previous is not None and fingerprint != previous:
+        logger.info("profile scope changed in the registry; scope caches dropped")
+        invalidate_allowed_profiles()
+    return fingerprint
+
 
 def invalidate_allowed_profiles(tenant_id: int | None = None) -> None:
     """Drop the cached tenant scope for *tenant_id* (or all when None).
 
-    The shared-profile list is dropped too: any profile change can move a
-    profile in or out of the shared set.
+    The shared-profile list and every cached ancestor chain are dropped too:
+    any profile change can move a profile in or out of the shared set or
+    re-parent it.
+
+    In-process only: the Web UI calls it after its own writes. The MCP server
+    (another process) notices the same change through :func:`scope_epoch`.
     """
     global _shared_cache
     with _scope_lock:
         _shared_cache = None
+        _chain_cache.clear()
         if tenant_id is None:
             _scope_cache.clear()
         else:
             _scope_cache.pop(tenant_id, None)
+
+
+def resolve_profile_chain(
+    profile_name: str,
+    *,
+    now_fn: Callable[[], float] = time.monotonic,
+) -> list[str]:
+    """*profile_name* then its declared ancestors (root last), cached 60s (#385).
+
+    The chain is structure only (``profiles.parent_profile_id``); it grants
+    nothing. ``server._scope`` keeps an ancestor only when the caller's tenant
+    boundary already contains it, so a parent link alone never widens a view.
+
+    - unknown profile -> ``[profile_name]`` (not cached);
+    - registry unreachable -> ``[profile_name]``, logged and the body marked
+      degraded (not cached): the narrowed view shrinks, never widens.
+    """
+    scope_epoch(now_fn=now_fn)
+    now = now_fn()
+    with _scope_lock:
+        entry = _chain_cache.get(profile_name)
+        if entry is not None and entry[1] > now:
+            return list(entry[0])
+    from src.db.pg import repo_store  # lazy import - avoids circular dependency
+    try:
+        chain = list(repo_store().get_ancestor_profile_names(profile_name))
+    except Exception as exc:  # noqa: BLE001 - any registry failure degrades the same way
+        logger.warning(
+            "ancestor chain of profile %r unavailable (%s); the profile filter"
+            " covers the profile itself only", profile_name, exc,
+        )
+        from src.mcp.degraded import mark_degraded
+        mark_degraded("profile ancestor chain unavailable")
+        return [profile_name]
+    if not chain or chain[0] != profile_name:
+        return [profile_name]
+    with _scope_lock:
+        if len(_chain_cache) >= _CHAIN_CACHE_MAX:
+            _chain_cache.clear()
+        _chain_cache[profile_name] = (tuple(chain), now + _CACHE_TTL_SEC)
+    return chain
 
 
 def resolve_shared_profiles(
@@ -186,6 +278,7 @@ def resolve_shared_profiles(
     profile registry is unreachable; the caller decides how to degrade.
     """
     global _shared_cache
+    scope_epoch(now_fn=now_fn)
     now = now_fn()
     with _scope_lock:
         if _shared_cache is not None and _shared_cache[1] > now:
@@ -227,10 +320,12 @@ def resolve_tenant_scope(
     - ``own=[...]`` → the tenant's directly-owned profiles (NOT the shared ancestors).
     - ``shared`` → all globally-shared profiles (``tenant_id IS NULL``), visible to all.
 
-    The Neo4j array filter is ``any(node.profile ∩ own) OR all(node.profile ⊆ shared)``.
+    The Neo4j choke (``server._scope_pred``) grants a node iff its ``profile`` is non-empty
+    and EVERY entry is in ``own`` or ``shared`` (``all()``, fail-closed).
     """
     if tenant_id is None:
         return None, []
+    scope_epoch(now_fn=now_fn)
     now = now_fn()
     with _scope_lock:
         entry = _scope_cache.get(tenant_id)
@@ -242,6 +337,67 @@ def resolve_tenant_scope(
     with _scope_lock:
         _scope_cache[tenant_id] = ((own, shared), now + _CACHE_TTL_SEC)
     return list(own), list(shared)
+
+
+def narrow_scope(
+    profile_name: str,
+    own: list[str] | None,
+    shared: list[str],
+) -> dict:
+    """``server._scope``'s ``profile_name`` narrowing of the boundary ``(own, shared)``.
+
+    Non-escalating (ADR-0034 T2) and ancestor-aware (#385):
+
+    - admin (``own=None``): the profile and its whole ancestor chain, plus every
+      shared profile (:func:`admin_narrowing_shared`) - the view a tenant owning
+      that chain gets;
+    - tenant, profile outside ``own ∪ shared``: deny-all, and the chain of that
+      name is never looked up;
+    - tenant, profile inside: the profile plus those of its ancestors the tenant
+      ALREADY owns; ``shared`` is kept whole (shared ancestors stay visible
+      through it, and ``[own, base]`` nodes are not stripped). An ancestor
+      outside the boundary - another tenant's private parent - is never added:
+      a parent link alone grants nothing.
+    """
+    if own is None:
+        return {"own": resolve_profile_chain(profile_name), "shared": admin_narrowing_shared()}
+    if profile_name not in own and profile_name not in shared:
+        return {"own": [], "shared": []}
+    owned = set(own)
+    ancestors = resolve_profile_chain(profile_name)[1:]
+    return {"own": [profile_name, *(a for a in ancestors if a in owned)], "shared": shared}
+
+
+def profile_filter_report(
+    profile_name: str,
+    own: list[str] | None,
+    shared: list[str],
+) -> dict:
+    """What a ``profile_name`` filter covers, for "not indexed" answers (#385).
+
+    ``{"profile", "chain", "withheld", "denied"}``:
+
+    - ``chain``: the profile and those ancestors the caller can see (own or
+      shared; admin: the whole chain) - names safe to show this caller;
+    - ``withheld``: how many ancestors are outside the caller's boundary. A
+      COUNT only - an inaccessible ancestor is never named, and nothing is said
+      about what it holds (no cross-tenant existence oracle, ADR-0034);
+    - ``denied``: the profile itself is outside the boundary (``narrow_scope``
+      denies everything); its chain is not looked up, so nothing about it leaks.
+    """
+    if own is not None and profile_name not in own and profile_name not in shared:
+        return {"profile": profile_name, "chain": [], "withheld": 0, "denied": True}
+    chain = resolve_profile_chain(profile_name)
+    if own is None:
+        return {"profile": profile_name, "chain": chain, "withheld": 0, "denied": False}
+    boundary = set(own) | set(shared)
+    visible = [p for p in chain if p in boundary]
+    return {
+        "profile": profile_name,
+        "chain": visible,
+        "withheld": len(chain) - len(visible),
+        "denied": False,
+    }
 
 
 def resolve_allowed_profiles(

@@ -140,7 +140,10 @@ def test_pinned_profile_applied_on_omit(ctx, rp_pg):
     assert "rp_base_17" in scope["shared"], "shared base must remain visible"
 
     allowed = _srv._effective_allowed(None)
-    assert allowed == ["rp_acme_17"], "single-value filter narrows to the pinned profile"
+    # pgvector/RLS list = the Neo4j own ∪ shared set (ADR-0034 T2 lockstep, #385):
+    # the pinned profile first, then the shared base - never another own profile.
+    assert allowed[0] == "rp_acme_17", "single-value filter narrows to the pinned profile"
+    assert set(allowed) == set(scope["own"]) | set(scope["shared"])
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +166,9 @@ def test_explicit_profile_overrides_pin(ctx, rp_pg):
     assert scope["own"] == ["rp_globex_17"], "explicit profile_name must override the pin"
 
     allowed = _srv._effective_allowed("rp_globex_17")
-    assert allowed == ["rp_globex_17"]
+    assert allowed[0] == "rp_globex_17"
+    assert "rp_acme_17" not in allowed, "explicit profile wins over the pin"
+    assert set(allowed) == set(scope["own"]) | set(scope["shared"])
 
 
 # ---------------------------------------------------------------------------

@@ -293,7 +293,21 @@ def _tenant_cache_key(resolved_version: str, kind: str, entity: str) -> str:
 
     tenant_id = _srv._get_tenant_id()
     t_suffix = "::t_admin" if tenant_id is None else f"::t{tenant_id}"
-    return f"odoo://{resolved_version}/{kind}/{entity}{t_suffix}"
+    # The session profile pin narrows every scoped render (``_scope()`` injects
+    # it, #251) and now also selects the pinned profile's ancestor chain
+    # (#385): a body rendered under a pin must not be served to an unpinned or
+    # differently pinned session of the same tenant, and vice versa.
+    pinned = _srv._resolve_profile(None)
+    p_suffix = f"::p{pinned}" if pinned else ""
+    # The profile-scope epoch: a profile moved to another tenant or
+    # re-parented - in ANY process - changes it, so a body rendered under the
+    # old scope is never served again (it ages out of the LRU). Bounded by
+    # session._SCOPE_EPOCH_CHECK_SEC instead of this cache's 300 s TTL.
+    from src.mcp.session import scope_epoch
+
+    epoch = scope_epoch()
+    e_suffix = f"::e{epoch[:12]}" if epoch else ""
+    return f"odoo://{resolved_version}/{kind}/{entity}{t_suffix}{p_suffix}{e_suffix}"
 
 
 def _resolved_version_for(version: str) -> str:

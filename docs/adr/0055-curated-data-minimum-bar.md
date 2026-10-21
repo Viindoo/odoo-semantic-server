@@ -9,6 +9,18 @@
 **Relates to:** ADR-0002 (spec schema policy), ADR-0009 (pattern catalogue contribution),
 ADR-0033 (tools_symbols curation), ADR-0054 (parse-verified framework test-base facts)
 
+> **Amendment 2026-10-20 (#380 item 2):** new curated artifact
+> `src/indexer/spec_data/module_renames.json` (cross-version module renames / merges). It
+> meets the bar with provenance AND an oracle: provenance - one block per OCA/OpenUpgrade
+> `N.0` branch carrying repo, branch, commit sha and the `apriori.py` path its entries were
+> parsed from (`ast.literal_eval`, never executed), regenerated only by
+> `scripts/sync_module_renames.py --write` (weekly PR job `module-renames-resync.yml`;
+> an unchanged branch keeps its commit); oracle - the read side shows an edge only when the
+> caller's index confirms it (old at N-1 and not from N to the asked version, new at N, hop
+> by hop), so an apriori claim the index contradicts (the `sale_coupon -> coupon` 14.0 name
+> reuse) is never shown. Tests: `tests/test_module_renames.py` (era excerpts in
+> `tests/fixtures/openupgrade_apriori/`, provenance of every committed entry).
+
 ---
 
 ## Context
@@ -179,6 +191,27 @@ CoreSymbol node would destroy that history. A stale WRONG CoreSymbol from a same
 @ v19) is cleaned by a one-time reviewed Cypher (`ops/cleanup_stale_tools_symbols_364.cypher`), not
 by a standing prune. A regression test (`test_no_prune_core_symbols_method_exists`) guards that no
 `prune_core_symbols` method is ever added to `Neo4jWriter`.
+
+## Follow-up: periodic re-sync of the curated CLI flags (issue #380 item 6)
+
+The `cli_flags` oracle existed only as a dev-box test, so upstream drift was found whenever someone
+next ran it on a machine with the checkouts. `scripts/sync_cli_flags.py --check|--write` (library:
+`src/indexer/cli_flags_sync.py`) now regenerates the GLOBAL flags of each `cli_flags_<version>.json`
+from the real `tools/config.py` with the same parser the indexer uses, and the weekly workflow
+`.github/workflows/cli-flags-resync.yml` runs it against shallow, sparse checkouts of the stable
+`odoo/odoo` branches and opens ONE pull request (never auto-merged) when anything drifted.
+
+- **Provenance (third leg of the bar).** Each file carries `_global_flags_provenance`: source repo,
+  branch, commit, file and the oracle that read it. It is rewritten only when the global data changed
+  (or was missing), so it records the source state the data was last brought in line with.
+- **Recorded reason for what has no oracle.** Per-command flags (`db`, `i18n`, `module`, `scaffold`,
+  `deploy`, `cloc`, `upgrade_code`, ...) live in `cli/*.py` argparse code the oracle never opens.
+  They stay hand-curated and are never modified by the sync; the report states their count per
+  version. Fields the oracle cannot populate (`replacement_flag_name`, `env_name`, `posix_only`) and
+  curated global flags the oracle does not find (removed upstream vs. an oracle blind spot such as
+  `PosixOnlyOption(...)`) are reported for a human, never auto-resolved.
+- **One definition of drift.** The field-by-field diff moved from the parity test into
+  `cli_flags_sync.diff_global_flags`; the test and the generator import the same function.
 
 ---
 

@@ -111,7 +111,7 @@ def test_index_profile_seeds_patterns(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_seed", branch=TEST_VERSION)
     _seed_minimal_module(repo, "seed_mod")
-    pid = repo_store().add_profile("seed_prof", TEST_VERSION)
+    pid = repo_store().add_profile("seed_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/seed", TEST_VERSION, str(repo))
 
     # index_profile should complete and auto-reseed.
@@ -148,7 +148,7 @@ def test_index_profile_skips_seed_when_unchanged(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_skip", branch=TEST_VERSION)
     _seed_minimal_module(repo, "skip_mod")
-    pid = repo_store().add_profile("skip_prof", TEST_VERSION)
+    pid = repo_store().add_profile("skip_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/skip", TEST_VERSION, str(repo))
 
     # First run — seeds patterns and sets sentinel.
@@ -209,7 +209,7 @@ def test_index_profile_no_embed_skips_pattern_embeddings(
 
     repo = make_git_repo(tmp_path / "repo_noembed", branch=TEST_VERSION)
     _seed_minimal_module(repo, "noembed_mod")
-    pid = repo_store().add_profile("noembed_prof", TEST_VERSION)
+    pid = repo_store().add_profile("noembed_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/noembed", TEST_VERSION, str(repo))
 
     import logging
@@ -326,7 +326,7 @@ def test_pattern_example_category_written_and_reseed_idempotent(
         run_migrations(clean_pg)
         repo = make_git_repo(tmp_path / "repo_cat", branch=TEST_VERSION)
         _seed_minimal_module(repo, "cat_mod")
-        pid = repo_store().add_profile("cat_prof", TEST_VERSION)
+        pid = repo_store().add_profile("cat_prof", TEST_VERSION, shared=True)
         repo_store().add_repo(pid, "local/cat", TEST_VERSION, str(repo))
 
         # First run - seeds patterns.
@@ -404,7 +404,7 @@ def test_seed_failure_does_not_fail_indexer(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_fail", branch=TEST_VERSION)
     _seed_minimal_module(repo, "fail_mod")
-    pid = repo_store().add_profile("fail_prof", TEST_VERSION)
+    pid = repo_store().add_profile("fail_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/fail", TEST_VERSION, str(repo))
 
     import logging

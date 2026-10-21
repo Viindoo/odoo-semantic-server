@@ -9,60 +9,59 @@ Pure-unit (no Neo4j, no Postgres). Two halves:
    This is the root-cause edit: it stops shared-core nodes (`base`, `sale`) from
    accumulating tenant-private profile names from descendant index runs.
 
-2. The ADR-0034 `all()` tenant choke is UNCHANGED. We replicate its exact Cypher
-   semantics in Python (`_choke` + `_scope`) and prove, on the arrays the fixed
-   writer now produces, the brief's MUST-PASS invariants:
+2. The ADR-0034 `all()` tenant choke over the arrays the fixed writer now
+   produces. The scope params come from the REAL `src.mcp.server._scope` /
+   `session.narrow_scope` (stubbed registry, `tests/_scope_world.py`); the
+   choke itself is Cypher, so a node's visibility is evaluated by the
+   harness's one Python model of it, pinned to the production predicate by
+   `test_choke_matches_server_predicate_string`. MUST-PASS invariants:
      - positive (the reported bug): shared core visible to its base-profile caller
      - discovery preserved: shared core visible to a descendant-private caller
      - isolation: a private node denied to a foreign caller
      - ★ same-name cross-tenant collision stays FAIL-CLOSED (most dangerous mode)
 
-`_choke`/`_scope` here are byte-faithful reimplementations of
-`src/mcp/server.py::_scope_pred` (the `all()` choke + the F-6 `size>0` guard) and
-`_scope` (non-escalating narrowing). They are pinned against the real predicate
-string by `test_choke_matches_server_predicate_string` so this file fails loudly
-if the production predicate ever drifts.
+The ancestor-chain narrowing rules of a `profile_name` filter (#385: siblings,
+descendants, foreign ancestors, out-of-scope names, registry down, session
+pin) are covered by `tests/test_profile_ancestor_scope_unit.py`.
 """
+import pytest
+
 from src.indexer.models import ModelInfo, ModuleInfo, ParseResult
 from src.indexer.pipeline import _owning_profiles
 from src.indexer.writer_neo4j_orm import _write_parse_result
-from src.mcp.server import _scope_pred
+from tests._scope_world import choke, make_world
 
 # --- shared/global profiles (tenant_id IS NULL) and tenant-private profiles ---
-SHARED = {"odoo_17", "odoo_18"}  # resolve_tenant_scope -> $shared for everyone
+SHARED = ["odoo_17", "odoo_18"]  # resolve_tenant_scope -> $shared for everyone
 # tenant_id -> own profiles (resolve_tenant_scope -> $own)
 OWN = {
     "viindoo": ["viindoo_internal_17", "standard_viindoo_17"],
     "acme": ["acme_17"],
     "globex": ["globex_17"],
 }
+PARENTS = {
+    "odoo_17": None,
+    "odoo_18": None,
+    "standard_viindoo_17": "odoo_17",
+    "viindoo_internal_17": "standard_viindoo_17",
+    "acme_17": "odoo_17",
+    "globex_17": "odoo_17",
+}
 
 
-def _choke(node_profile: list[str], own, shared) -> bool:
-    """Faithful Python of `_scope_pred`'s Cypher:
-
-        $own IS NULL  OR  (size(node.profile) > 0
-                           AND all(__p IN node.profile WHERE __p IN $own OR __p IN $shared))
-    """
-    if own is None:  # admin / no tenant -> unrestricted
-        return True
-    if len(node_profile) == 0:  # F-6 vacuous-truth guard -> deny to scoped tenants
-        return False
-    allowed = set(own) | set(shared)
-    return all(p in allowed for p in node_profile)
+@pytest.fixture
+def world(monkeypatch):
+    w = make_world(monkeypatch, parents=PARENTS, own=OWN, shared=SHARED)
+    yield w
+    w.session.invalidate_allowed_profiles()
 
 
-def _scope(tenant_id, profile_name=None):
-    """Faithful Python of `src/mcp/server.py::_scope` narrowing -> (own, shared)."""
-    own = None if tenant_id is None else list(OWN[tenant_id])
-    shared = sorted(SHARED)
-    if not profile_name:
-        return own, shared
-    if own is None:  # admin convenience narrow
-        return [profile_name], shared
-    if profile_name in own or profile_name in shared:
-        return [profile_name], shared
-    return [], []  # out-of-scope pin -> deny-all
+def _scope(world, tenant_id, profile_name=None) -> dict:
+    """The REAL `server._scope` params for caller *tenant_id* (None: admin)."""
+    world.as_(tenant_id)
+    return world.scope(profile_name)
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +108,10 @@ def test_private_repo_stamps_only_its_own_private_profile():
 
 
 # ---------------------------------------------------------------------------
-# 2. The choke (UNCHANGED) over the arrays the fixed writer now produces
+# 2. The choke over the arrays the fixed writer now produces (real _scope)
 # ---------------------------------------------------------------------------
 
-def test_positive_shared_core_visible_to_base_profile_caller():
+def test_positive_shared_core_visible_to_base_profile_caller(world):
     """The reported bug: `base` (now ['odoo_17']) IS visible to an odoo_17 caller.
 
     Pre-fix `base.profile` was ['viindoo_internal_17','standard_viindoo_17',
@@ -121,11 +120,11 @@ def test_positive_shared_core_visible_to_base_profile_caller():
     base_profile = _owning_profiles(
         {"id": 1, "url": "odoo.git"}, profile_name="odoo_17", repo_root_name="odoo",
     )
-    own, shared = _scope("viindoo", profile_name="odoo_17")  # admin/op narrowing to odoo_17
-    assert _choke(base_profile, own, shared) is True
+    scope = _scope(world, "viindoo", profile_name="odoo_17")  # narrowed to odoo_17
+    assert choke(base_profile, scope) is True
 
 
-def test_discovery_descendant_private_caller_still_sees_shared_core():
+def test_discovery_descendant_private_caller_still_sees_shared_core(world):
     """A caller scoped to a descendant PRIVATE profile still resolves shared core.
 
     Works because odoo_17 ∈ $shared for every tenant — the shared owning name on
@@ -134,11 +133,11 @@ def test_discovery_descendant_private_caller_still_sees_shared_core():
     base_profile = _owning_profiles(
         {"id": 1, "url": "odoo.git"}, profile_name="odoo_17", repo_root_name="odoo",
     )
-    own, shared = _scope("viindoo")  # full boundary, no narrowing
-    assert _choke(base_profile, own, shared) is True
+    assert choke(base_profile, _scope(world, "viindoo")) is True  # full boundary
+    assert choke(base_profile, _scope(world, "viindoo", "viindoo_internal_17")) is True
 
 
-def test_isolation_private_node_denied_to_foreign_caller():
+def test_isolation_private_node_denied_to_foreign_caller(world):
     """A node owned by standard_viindoo_17 is DENIED to a caller scoped to odoo_17."""
     priv = _owning_profiles(
         {"id": 9, "url": "viindoo_std.git"},
@@ -146,20 +145,11 @@ def test_isolation_private_node_denied_to_foreign_caller():
     )
     assert priv == ["standard_viindoo_17"]
     # caller is acme tenant narrowed to odoo_17 — does not own standard_viindoo_17
-    own, shared = _scope("acme", profile_name="odoo_17")
-    assert _choke(priv, own, shared) is False
+    assert choke(priv, _scope(world, "acme", profile_name="odoo_17")) is False
+    assert choke(priv, _scope(world, "acme")) is False
 
 
-def test_isolation_private_node_denied_even_with_explicit_foreign_profile():
-    """Non-escalating: borrowing the owner's profile name does not grant access."""
-    priv = ["viindoo_internal_17"]
-    # acme tries to narrow to viindoo_internal_17 (not in its own∪shared) -> deny-all
-    own, shared = _scope("acme", profile_name="viindoo_internal_17")
-    assert (own, shared) == ([], [])
-    assert _choke(priv, own, shared) is False
-
-
-def test_collision_same_name_cross_tenant_stays_fail_closed():
+def test_collision_same_name_cross_tenant_stays_fail_closed(world):
     """★ The single most dangerous mode: two tenants ship the same (name,version).
 
     The MERGE key has no tenant_id (ADR-0034 D2), so the two private repos'
@@ -174,45 +164,44 @@ def test_collision_same_name_cross_tenant_stays_fail_closed():
     converged = sorted(set(a) | set(b))  # ["acme_17", "globex_17"]
     assert converged == ["acme_17", "globex_17"]
 
-    own_a, shared_a = _scope("acme")
-    own_b, shared_b = _scope("globex")
-    assert _choke(converged, own_a, shared_a) is False, "denied to tenant A"
-    assert _choke(converged, own_b, shared_b) is False, "denied to tenant B"
+    assert choke(converged, _scope(world, "acme")) is False, "denied to tenant A"
+    assert choke(converged, _scope(world, "globex")) is False, "denied to tenant B"
+    assert choke(converged, _scope(world, "acme", "acme_17")) is False, "filter never widens"
     # admin still sees it (short-circuit)
-    own_admin, shared_admin = _scope(None)
-    assert _choke(converged, own_admin, shared_admin) is True
+    assert choke(converged, _scope(world, None)) is True
 
 
-def test_admin_unrestricted():
+def test_admin_unrestricted(world):
     """Admin ($own IS NULL) sees every node regardless of its profile array."""
-    own, shared = _scope(None)
-    assert own is None
-    assert _choke(["viindoo_internal_17"], own, shared) is True
-    assert _choke([], own, shared) is True  # even empty-profile nodes
+    scope = _scope(world, None)
+    assert scope["own"] is None
+    assert choke(["viindoo_internal_17"], scope) is True
+    assert choke([], scope) is True  # even empty-profile nodes
 
 
-def test_empty_profile_node_denied_to_scoped_tenant():
+def test_empty_profile_node_denied_to_scoped_tenant(world):
     """F-6 vacuous-truth guard: empty profile[] is denied to a scoped tenant."""
-    own, shared = _scope("acme")
-    assert _choke([], own, shared) is False
+    assert choke([], _scope(world, "acme")) is False
+    assert choke([], _scope(world, "acme", "acme_17")) is False
 
 
-def test_cross_store_consistency_neo4j_matches_pgvector_owner():
+def test_cross_store_consistency_neo4j_matches_pgvector_owner(world):
     """WG-3t: the single owning name the fixed Neo4j writer stamps is the SAME
     leaf the pgvector writer stamps (write_module_embeddings profile_name=...).
 
     The pgvector side stamps the run's `profile_name` scalar per chunk; the fixed
-    Neo4j side stamps [profile_name]. Membership over the scalar and all() over
-    the single-element array are equivalent -> no split-brain by construction.
+    Neo4j side stamps [profile_name]. Membership over the scalar (the real
+    `_effective_allowed` list behind the RLS GUC) and all() over the
+    single-element array are equivalent -> no split-brain by construction.
     """
     run_profile = "odoo_17"
     neo4j_arr = _owning_profiles({"id": 1}, profile_name=run_profile, repo_root_name="odoo")
     pgvector_scalar = run_profile  # what write_module_embeddings stamps
     assert neo4j_arr == [pgvector_scalar]
     # both stores grant to the same caller
-    own, shared = _scope("acme")
-    assert _choke(neo4j_arr, own, shared) is True
-    assert pgvector_scalar in (set(own or []) | set(shared))  # pgvector membership
+    assert choke(neo4j_arr, _scope(world, "acme")) is True
+    world.as_("acme")
+    assert pgvector_scalar in world.srv._effective_allowed(None)  # pgvector membership
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +315,7 @@ def test_owned_module_still_stamps_run_profile():
     assert "m.profile = $profiles" in query
 
 
-def test_profile_less_dep_target_fail_closed_to_scoped_caller():
+def test_profile_less_dep_target_fail_closed_to_scoped_caller(world):
     """F-6 fail-closed end-to-end: a forward-referenced dep target the fix leaves
     profile-less (`[]`) is DENIED to a scoped tenant and STILL visible to admin.
 
@@ -335,19 +324,18 @@ def test_profile_less_dep_target_fail_closed_to_scoped_caller():
     and the `size(profile)>0` guard denies it to scoped callers (no fail-open),
     while admin ($own IS NULL) still sees it."""
     placeholder_profile: list[str] = []  # what the fixed dep MERGE leaves
-    own, shared = _scope("acme")  # scoped tenant
-    assert _choke(placeholder_profile, own, shared) is False, "fail-closed to scoped"
-    own_admin, shared_admin = _scope(None)
-    assert _choke(placeholder_profile, own_admin, shared_admin) is True, "admin sees it"
+    assert choke(placeholder_profile, _scope(world, "acme")) is False, "fail-closed to scoped"
+    assert choke(placeholder_profile, _scope(world, None)) is True, "admin sees it"
 
 
-def test_choke_matches_server_predicate_string():
+def test_choke_matches_server_predicate_string(world):
     """Pin: the production `_scope_pred` still uses size()>0 + all() (no any()).
 
-    If this fails, the choke was relaxed and this file's `_choke` model is stale —
-    re-verify isolation against the new predicate before trusting these tests.
+    If this fails, the choke was relaxed and the `tests/_scope_world.choke`
+    model (used by this file and `test_profile_ancestor_scope_unit.py`) is
+    stale - re-verify isolation against the new predicate before trusting them.
     """
-    pred = _scope_pred("m")
+    pred = world.srv._scope_pred("m")
     assert "$own IS NULL" in pred
     assert "size(m.profile) > 0" in pred
     assert "all(__p IN m.profile WHERE __p IN $own OR __p IN $shared)" in pred
@@ -360,9 +348,6 @@ def test_choke_matches_server_predicate_string():
 #    all() choke would deny that node to EVERY scoped tenant (a silent
 #    fail-closed black hole). The canonical trigger is `Path('/').name == ''`.
 # ---------------------------------------------------------------------------
-
-import pytest  # noqa: E402  (kept local to the F2/F4 additions)
-
 
 def test_owning_profiles_raises_on_empty_owner_root_path():
     """`Path('/').name == ''` + no profile_name -> all candidates falsy -> raise."""
@@ -455,6 +440,9 @@ class _CapturingWriter:
         # not from _index_repo.  Stub kept so _CapturingWriter satisfies the
         # IndexWriterProtocol contract (reconcile_same_name_inherits is declared there).
         return 0
+
+    def relink_unresolved_placeholders(self, *_a, **_kw):
+        return {}
 
     def gc_unresolved_placeholders(self, *_a, **_kw):
         return {}

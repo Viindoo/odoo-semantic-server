@@ -60,9 +60,9 @@ make check-systemd-overrides
 ```
 
 This script (`scripts/check-systemd-overrides.sh`) audits each unit in
-its `UNITS` list (the 4 main services + `osm-ttl-cleanup.service`;
-`osm-alert@.service` and `*.timer` units are intentionally excluded —
-no body-customization surface) by comparing the installed body at
+its `UNITS` list (the main services, `osm-ttl-cleanup.service` and, since
+#383, `osm-alert@.service`, which now ships the real mail notifier; `*.timer`
+units are excluded - no body-customization surface) by comparing the installed body at
 `/etc/systemd/system/<unit>.service` against the shipped template at
 `docs/deploy/<unit>.service`, ignoring comment-only differences.
 

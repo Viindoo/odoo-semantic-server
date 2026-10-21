@@ -15,7 +15,7 @@ def migrated_pg(clean_pg):
 
 
 def test_add_and_list_profile(migrated_pg):
-    pid = repo_store().add_profile(name="viindoo_17", odoo_version="17.0")
+    pid = repo_store().add_profile(name="viindoo_17", odoo_version="17.0", shared=True)
     assert pid > 0
     profiles = repo_store().list_profiles()
     # Migration 0004 seeds 12 root profiles; this test adds one more.
@@ -25,7 +25,7 @@ def test_add_and_list_profile(migrated_pg):
 
 
 def test_add_repo_under_profile(migrated_pg):
-    pid = repo_store().add_profile(name="viindoo_17", odoo_version="17.0")
+    pid = repo_store().add_profile(name="viindoo_17", odoo_version="17.0", shared=True)
     rid = repo_store().add_repo(
         profile_id=pid,
         url="github.com/odoo/odoo", branch="17.0",
@@ -39,7 +39,7 @@ def test_add_repo_under_profile(migrated_pg):
 
 
 def test_list_repos_returns_all(migrated_pg):
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     repo_store().add_repo(pid, "github.com/c/d", "17.0", "/tmp/c")
     repos = repo_store().list_repos()
@@ -47,7 +47,7 @@ def test_list_repos_returns_all(migrated_pg):
 
 
 def test_update_repo_status(migrated_pg):
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     repo_store().update_repo_status(rid, status="indexed")
     repos = repo_store().list_repos()
@@ -56,7 +56,7 @@ def test_update_repo_status(migrated_pg):
 
 
 def test_update_repo_status_with_error(migrated_pg):
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     repo_store().update_repo_status(rid, status="error", error_msg="boom")
     repos = repo_store().list_repos()
@@ -74,14 +74,14 @@ def test_update_repo_status_unknown_id_raises(migrated_pg):
 
 
 def test_get_repo_head_sha_returns_none_when_unset(migrated_pg):
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     sha = repo_store().get_repo_head_sha(rid)
     assert sha is None
 
 
 def test_update_and_get_repo_head_sha(migrated_pg):
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     repo_store().update_repo_head_sha(rid, "abc123def456")
     sha = repo_store().get_repo_head_sha(rid)
@@ -89,7 +89,7 @@ def test_update_and_get_repo_head_sha(migrated_pg):
 
 
 def test_update_repo_head_sha_bumps_last_indexed_at(migrated_pg):
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     # Get initial last_indexed_at (should be NULL)
     repos_before = repo_store().list_repos()
@@ -105,7 +105,7 @@ def test_update_repo_head_sha_bumps_last_indexed_at(migrated_pg):
 
 def test_add_repo_with_ssh_key_id_persists(migrated_pg):
     """Test add_repo with ssh_key_id kwarg persists correctly."""
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     # First create an ssh_key_pairs row to reference
     with migrated_pg.cursor() as cur:
         cur.execute(
@@ -127,7 +127,7 @@ def test_add_repo_with_ssh_key_id_persists(migrated_pg):
 
 def test_add_repo_default_clone_status_is_manual(migrated_pg):
     """Test add_repo without clone_status kwarg defaults to 'manual'."""
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     repos = repo_store().list_repos()
     assert repos[0]["clone_status"] == "manual"
@@ -135,7 +135,7 @@ def test_add_repo_default_clone_status_is_manual(migrated_pg):
 
 def test_set_clone_status_lifecycle(migrated_pg):
     """Test set_clone_status transitions: manual -> pending -> cloned."""
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     # Default is 'manual'
     assert repo_store().list_repos()[0]["clone_status"] == "manual"
@@ -153,7 +153,7 @@ def test_set_clone_status_error_with_msg(migrated_pg):
     Cloner errors go to clone_error_msg (NOT error_msg) to avoid overwriting
     indexer errors. See ADR-0008 D7 and W4 Opus review fix 1.
     """
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     error_msg = "git clone failed: timeout"
     repo_store().set_clone_status(rid, "error", error_msg=error_msg)
@@ -164,7 +164,7 @@ def test_set_clone_status_error_with_msg(migrated_pg):
 
 def test_get_repos_by_clone_status_filters_correctly(migrated_pg):
     """Test get_repos_by_clone_status returns only matching status."""
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid1 = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     rid2 = repo_store().add_repo(
         pid, "github.com/c/d", "17.0", "/tmp/c", clone_status="pending"
@@ -192,7 +192,7 @@ def test_indexer_error_survives_cloner_success(migrated_pg):
     Before the Fix-1 fix, set_clone_status wrote to repos.error_msg, so a successful
     clone (error_msg=None) would silently clear a prior indexer failure message.
     """
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     rid = repo_store().add_repo(pid, "github.com/a/b", "17.0", "/tmp/a")
     # Simulate a prior indexer failure
     repo_store().update_repo_status(rid, status="error", error_msg="OSError: indexer fail")
@@ -211,7 +211,7 @@ def test_indexer_error_survives_cloner_success(migrated_pg):
 
 def test_ssh_key_delete_sets_repo_ssh_key_id_null(migrated_pg):
     """FK ON DELETE SET NULL: deleting an ssh_key_pair NULLs repos.ssh_key_id, not CASCADE."""
-    pid = repo_store().add_profile("p1", "17.0")
+    pid = repo_store().add_profile("p1", "17.0", shared=True)
     with migrated_pg.cursor() as cur:
         cur.execute(
             "INSERT INTO ssh_key_pairs (name, public_key, private_key_encrypted) "
@@ -247,9 +247,9 @@ def test_ssh_key_delete_sets_repo_ssh_key_id_null(migrated_pg):
 def test_get_ancestor_profile_names_three_tier(migrated_pg):
     """get_ancestor_profile_names returns [self, parent, grandparent] in order."""
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    root_id = repo_store().add_profile("test_root_99", "99.0")
-    mid_id = repo_store().add_profile("test_mid_99", "99.0")
-    leaf_id = repo_store().add_profile("test_leaf_99", "99.0")
+    root_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+    mid_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
+    leaf_id = repo_store().add_profile("test_leaf_99", "99.0", shared=True)
 
     repo_store().set_profile_parent(mid_id, root_id)
     repo_store().set_profile_parent(leaf_id, mid_id)
@@ -261,9 +261,9 @@ def test_get_ancestor_profile_names_three_tier(migrated_pg):
 def test_get_ancestor_repos_three_tier(migrated_pg):
     """get_ancestor_repos returns repos from all tiers, depth ASC order."""
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    root_id = repo_store().add_profile("test_root_99", "99.0")
-    mid_id = repo_store().add_profile("test_mid_99", "99.0")
-    leaf_id = repo_store().add_profile("test_leaf_99", "99.0")
+    root_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+    mid_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
+    leaf_id = repo_store().add_profile("test_leaf_99", "99.0", shared=True)
 
     repo_store().set_profile_parent(mid_id, root_id)
     repo_store().set_profile_parent(leaf_id, mid_id)
@@ -286,7 +286,7 @@ def test_get_ancestor_repos_three_tier(migrated_pg):
 def test_cycle_prevention_self_ref(migrated_pg):
     """set_profile_parent(A, A) raises ValueError — self-reference."""
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    pid = repo_store().add_profile("test_root_99", "99.0")
+    pid = repo_store().add_profile("test_root_99", "99.0", shared=True)
     with pytest.raises(ValueError, match="self-reference"):
         repo_store().set_profile_parent(pid, pid)
 
@@ -294,8 +294,8 @@ def test_cycle_prevention_self_ref(migrated_pg):
 def test_cycle_prevention_a_b_a(migrated_pg):
     """A → B exists; B → A raises ValueError (would create cycle)."""
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    a_id = repo_store().add_profile("test_root_99", "99.0")
-    b_id = repo_store().add_profile("test_mid_99", "99.0")
+    a_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+    b_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
 
     repo_store().set_profile_parent(b_id, a_id)  # A → B (B's parent = A)
 
@@ -307,8 +307,8 @@ def test_cycle_prevention_a_b_a(migrated_pg):
 def test_version_mismatch_rejected(migrated_pg):
     """parent.odoo_version != child.odoo_version raises ValueError."""
     # Use non-conflicting names (all odoo_N are seeded by migration 0004).
-    parent_id = repo_store().add_profile("test_mismatch_parent_99", "99.0")
-    child_id = repo_store().add_profile("test_mismatch_child_98", "98.0")
+    parent_id = repo_store().add_profile("test_mismatch_parent_99", "99.0", shared=True)
+    child_id = repo_store().add_profile("test_mismatch_child_98", "98.0", shared=True)
 
     with pytest.raises(ValueError, match="version mismatch"):
         repo_store().set_profile_parent(child_id, parent_id)
@@ -317,8 +317,8 @@ def test_version_mismatch_rejected(migrated_pg):
 def test_set_profile_parent_idempotent(migrated_pg):
     """Calling set_profile_parent twice with same value: first True, second False."""
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    parent_id = repo_store().add_profile("test_root_99", "99.0")
-    child_id = repo_store().add_profile("test_mid_99", "99.0")
+    parent_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+    child_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
 
     changed_first = repo_store().set_profile_parent(child_id, parent_id)
     assert changed_first is True
@@ -330,7 +330,7 @@ def test_set_profile_parent_idempotent(migrated_pg):
 def test_get_ancestor_profile_names_no_parent(migrated_pg):
     """Root profile returns just its own name."""
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    repo_store().add_profile("test_root_99", "99.0")
+    repo_store().add_profile("test_root_99", "99.0", shared=True)
     names = repo_store().get_ancestor_profile_names("test_root_99")
     assert names == ["test_root_99"]
 
@@ -348,9 +348,9 @@ def test_cycle_prevention_three_hop(migrated_pg):
     A→B→A case — confirms that the ancestor walk goes all the way to the root.
     """
     # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-    a_id = repo_store().add_profile("test_root_99", "99.0")
-    b_id = repo_store().add_profile("test_mid_99", "99.0")
-    c_id = repo_store().add_profile("test_leaf_99", "99.0")
+    a_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+    b_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
+    c_id = repo_store().add_profile("test_leaf_99", "99.0", shared=True)
 
     repo_store().set_profile_parent(b_id, a_id)   # B's parent = A  (A→B)
     repo_store().set_profile_parent(c_id, b_id)   # C's parent = B  (B→C)
@@ -368,11 +368,11 @@ def test_add_profile_version_mismatch_no_orphan(migrated_pg):
     Fix: validate-before-insert.
     """
     # Use non-conflicting names (odoo_16 is seeded by migration 0004).
-    parent_id = repo_store().add_profile("test_orphan_parent_16", "16.0")
+    parent_id = repo_store().add_profile("test_orphan_parent_16", "16.0", shared=True)
     count_before = len(repo_store().list_profiles())
 
     with pytest.raises(ValueError, match="version mismatch"):
-        repo_store().add_profile("child_17", "17.0", parent_id=parent_id)
+        repo_store().add_profile("child_17", "17.0", parent_id=parent_id, shared=True)
 
     count_after = len(repo_store().list_profiles())
     assert count_after == count_before, (
@@ -385,9 +385,83 @@ def test_add_profile_nonexistent_parent_no_orphan(migrated_pg):
     count_before = len(repo_store().list_profiles())
 
     with pytest.raises(ValueError, match="not found"):
-        repo_store().add_profile("child_17", "17.0", parent_id=99999)
+        repo_store().add_profile("child_17", "17.0", parent_id=99999, shared=True)
 
     count_after = len(repo_store().list_profiles())
     assert count_after == count_before, (
         f"Orphan row inserted: profile count grew from {count_before} to {count_after}"
     )
+
+
+def _call_bounded(fn, seconds=20):
+    """Run *fn* in a daemon thread; fail (not hang) when it does not return."""
+    import threading
+
+    box: dict = {}
+    t = threading.Thread(target=lambda: box.setdefault("v", fn()), daemon=True)
+    t.start()
+    t.join(seconds)
+    assert not t.is_alive(), "ancestor walk did not terminate"
+    return box["v"]
+
+
+def test_ancestor_walk_terminates_on_a_cycle_in_the_data(migrated_pg, caplog):
+    """A cycle written around the guards (raw SQL) must not hang the MCP hot path."""
+    a = repo_store().add_profile("test_cyc_a_99", "99.0", shared=True)
+    b = repo_store().add_profile("test_cyc_b_99", "99.0", shared=True)
+    with migrated_pg.cursor() as cur:
+        cur.execute("UPDATE profiles SET parent_profile_id = %s WHERE id = %s", (b, a))
+        cur.execute("UPDATE profiles SET parent_profile_id = %s WHERE id = %s", (a, b))
+    with caplog.at_level("WARNING", logger="src.db.repo_registry"):
+        names = _call_bounded(lambda: repo_store().get_ancestor_profile_names("test_cyc_a_99"))
+    assert names == ["test_cyc_a_99", "test_cyc_b_99"]
+    assert "ancestor chain cut" in caplog.text
+
+
+def test_ancestor_walk_is_capped_at_the_max_depth(migrated_pg, caplog):
+    from src.db.repo_registry import MAX_PROFILE_DEPTH
+
+    prev = None
+    for i in range(MAX_PROFILE_DEPTH + 4):
+        pid = repo_store().add_profile(f"test_deep_{i}_99", "99.0", shared=True)
+        if prev is not None:
+            repo_store().set_profile_parent(prev, pid)  # previous one is the child
+        prev = pid
+    with caplog.at_level("WARNING", logger="src.db.repo_registry"):
+        names = _call_bounded(lambda: repo_store().get_ancestor_profile_names("test_deep_0_99"))
+    assert names == [f"test_deep_{i}_99" for i in range(MAX_PROFILE_DEPTH + 1)]
+    assert "ancestor chain cut" in caplog.text
+
+
+def test_ancestor_walk_of_exactly_max_depth_is_not_reported_as_cut(migrated_pg, caplog):
+    from src.db.repo_registry import MAX_PROFILE_DEPTH
+
+    prev = None
+    for i in range(MAX_PROFILE_DEPTH + 1):
+        pid = repo_store().add_profile(f"test_full_{i}_99", "99.0", shared=True)
+        if prev is not None:
+            repo_store().set_profile_parent(prev, pid)
+        prev = pid
+    with caplog.at_level("WARNING", logger="src.db.repo_registry"):
+        names = repo_store().get_ancestor_profile_names("test_full_0_99")
+    assert len(names) == MAX_PROFILE_DEPTH + 1
+    assert "ancestor chain cut" not in caplog.text
+
+
+def test_scope_fingerprint_moves_with_every_scope_relevant_change(migrated_pg):
+    """The MCP cross-process cache epoch: tenant move, re-parent, add - all change it."""
+    store = repo_store()
+    with migrated_pg.cursor() as cur:
+        cur.execute("INSERT INTO tenants (name) VALUES ('fp_t') RETURNING id")
+        tid = cur.fetchone()[0]
+    root = store.add_profile("test_fp_root_99", "99.0", shared=True)
+    leaf = store.add_profile("test_fp_leaf_99", "99.0", shared=True)
+    seen = [store.scope_fingerprint()]
+    assert store.scope_fingerprint() == seen[0], "stable while nothing changes"
+    store.set_profile_parent(leaf, root)
+    seen.append(store.scope_fingerprint())
+    store.set_profile_tenant(leaf, tid)
+    seen.append(store.scope_fingerprint())
+    store.add_profile("test_fp_new_99", "99.0", shared=True)
+    seen.append(store.scope_fingerprint())
+    assert len(set(seen)) == 4, seen

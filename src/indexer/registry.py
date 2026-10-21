@@ -142,6 +142,8 @@ _RE_NAME = re.compile(r"['\"]name['\"]\s*:\s*['\"]([^'\"]+)['\"]")
 _RE_VERSION = re.compile(r"['\"]version['\"]\s*:\s*['\"]([^'\"]+)['\"]")
 _RE_DEPENDS = re.compile(r"['\"]depends['\"]\s*:\s*\[([^\]]*)\]", re.DOTALL)
 _RE_INSTALLABLE = re.compile(r"['\"]installable['\"]\s*:\s*(True|False)")
+# Issue #380: the auto-install flag (and its legacy `active` alias) as literals.
+_RE_AUTO_INSTALL = re.compile(r"['\"](auto_install|active)['\"]\s*:\s*(True|False)")
 
 
 def _regex_extract_manifest(source: str) -> dict:
@@ -158,6 +160,8 @@ def _regex_extract_manifest(source: str) -> dict:
         result['depends'] = items
     if m := _RE_INSTALLABLE.search(source):
         result['installable'] = m.group(1) == 'True'
+    for key, value in _RE_AUTO_INSTALL.findall(source):
+        result.setdefault(key, value == 'True')
     return result
 
 
@@ -376,6 +380,93 @@ def _manifest_depth(rel_manifest: str) -> int:
     return len(Path(rel_manifest).parts)
 
 
+# --- auto_install triggers (issue #380) -------------------------------------
+# Oracle: odoo/modules/module.py (load_information_from_description_file /
+# load_manifest) and odoo/addons/base/models/ir_module.py (update_list,
+# _update_dependencies, button_install) of each major, read 2026-10:
+#   v8-v12  `auto_install` is a plain flag: a truthy value (a non-empty list
+#           included) auto-installs the module once ALL its `depends` are
+#           installed (button_install.must_install / db.initialize test every
+#           dependency); a falsy one (False, []) does not. A legacy `active`
+#           key, when present, REPLACES `auto_install`.
+#   v13+    a list (any Iterable) is the trigger set (`auto_install_required`
+#           dependencies) and must be a subset of `depends` (assert); `[]`
+#           installs the module at database creation and never through a later
+#           install (must_install needs one trigger 'to install'); True means
+#           "all of `depends`"; False means none. v13-v14 read
+#           `info.get('auto_install', info.get('active', False))`, but the
+#           defaults dict already holds `'auto_install': False` before the
+#           manifest is merged (odoo_13 odoo/modules/module.py:336 + :371,
+#           odoo_14 :317 + :352), so `active` is never reached: v13+ read
+#           `auto_install` only. A trigger list that is not a subset of
+#           `depends` fails Odoo's assert (odoo_13 :374-379): the manifest is
+#           refused, so the module is not auto-installable.
+#   v19+    an empty `depends` of any module but `base` becomes ['base'] before
+#           the auto_install rule runs.
+AUTO_INSTALL_LIST_MIN_MAJOR = 13
+_ACTIVE_REPLACES_MAX_MAJOR = 12
+_IMPLICIT_BASE_DEPENDS_MIN_MAJOR = 19
+_ITERABLE_TRIGGER_TYPES = (list, tuple, set, frozenset)
+
+
+def _odoo_major(odoo_version: str) -> int | None:
+    try:
+        return int(str(odoo_version).split(".")[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def auto_install_triggers(
+    manifest: dict,
+    depends,
+    odoo_version: str,
+    module_name: str = "",
+) -> list[str] | None:
+    """The modules whose installation auto-installs this one, per Odoo's rules.
+
+    Returns None when the module is not auto-installable, ``[]`` for the v13+
+    "always install" form, otherwise the sorted trigger names. A list-form
+    trigger that is not a dependency (Odoo asserts and refuses the manifest)
+    makes the module not auto-installable (None, with a warning). An unknown
+    version follows the newest rules.
+    """
+    major = _odoo_major(odoo_version)
+    modern = major is None or major >= AUTO_INSTALL_LIST_MIN_MAJOR
+    deps = [d for d in (depends or []) if isinstance(d, str)]
+    if (major is None or major >= _IMPLICIT_BASE_DEPENDS_MIN_MAJOR) and not deps \
+            and module_name != "base":
+        deps = ["base"]
+
+    if major is not None and major <= _ACTIVE_REPLACES_MAX_MAJOR and "active" in manifest:
+        raw = manifest["active"]
+    else:
+        raw = manifest.get("auto_install", False)
+
+    if not modern:
+        return sorted(set(deps)) if raw else None
+    if isinstance(raw, _ITERABLE_TRIGGER_TYPES):
+        triggers = {t for t in raw if isinstance(t, str)}
+        non_deps = triggers.difference(deps)
+        if non_deps:
+            # Odoo asserts and refuses the whole manifest, so the module is
+            # never auto-installed: no partial trigger set.
+            _logger.warning(
+                "manifest %s (Odoo %s): auto_install triggers %s are not "
+                "dependencies (Odoo refuses this manifest) - not auto-installable",
+                module_name, odoo_version, sorted(non_deps),
+            )
+            return None
+        return sorted(triggers)
+    if isinstance(raw, str):
+        # Odoo would iterate the characters and fail its subset assert.
+        _logger.warning(
+            "manifest %s (Odoo %s): auto_install is a string %r, not a list - ignored",
+            module_name, odoo_version, raw,
+        )
+        return None
+    return sorted(set(deps)) if raw else None
+
+
 def _build_module_info(
     manifest: dict,
     module_name: str,
@@ -395,9 +486,14 @@ def _build_module_info(
         module_relpath = module_dir
     commit_sha = get_module_commit_sha(repo_root, module_relpath)
 
-    # A2b - manifest enrichment fields
-    # auto_install may be bool OR list of trigger module names → coerce to bool
-    _auto_install: bool = bool(manifest.get('auto_install', False))
+    # A2b - manifest enrichment fields. Issue #380: auto_install may be a bool
+    # OR (v13+) a list of trigger module names; the triggers are resolved the
+    # way Odoo does for this version, and the flag follows them (Odoo stores
+    # `auto_install is not False`, so the v13+ `[]` form is auto-installable).
+    _triggers = auto_install_triggers(
+        manifest, manifest.get('depends', []), odoo_version, module_name,
+    )
+    _auto_install: bool = _triggers is not None
     _application: bool = bool(manifest.get('application', False))
     _category: str | None = manifest.get('category') or None
     _summary: str | None = manifest.get('summary') or None
@@ -427,6 +523,7 @@ def _build_module_info(
         license_notice=license_notice,
         # A2b - manifest enrichment
         auto_install=_auto_install,
+        auto_install_triggers=_triggers,
         application=_application,
         category=_category,
         summary=_summary,

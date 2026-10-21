@@ -120,7 +120,7 @@ class TestDeleteProfile:
     def test_delete_profile_with_yes_flag(self, migrated_pg, tmp_path):
         """delete-profile with --yes skips confirmation."""
         env = _setup_db_conf(tmp_path)
-        _run(["add-profile", "profile1", "--version", "17.0"], env_extra=env)
+        _run(["add-profile", "profile1", "--version", "17.0", "--shared"], env_extra=env)
 
         res = _run(["delete-profile", "profile1", "--yes"], env_extra=env)
         assert res.returncode == 0, res.stderr
@@ -142,7 +142,7 @@ class TestDeleteProfile:
         repo_dir = tmp_path / "repo1"
         repo_dir.mkdir()
 
-        _run(["add-profile", "profile1", "--version", "17.0"], env_extra=env)
+        _run(["add-profile", "profile1", "--version", "17.0", "--shared"], env_extra=env)
         _run([
             "add-repo", "--profile", "profile1",
             "--url", "https://example.com/repo1", "--branch", "17.0",
@@ -171,7 +171,7 @@ class TestDeleteRepo:
         repo_dir = tmp_path / "repo1"
         repo_dir.mkdir()
 
-        _run(["add-profile", "profile1", "--version", "17.0"], env_extra=env)
+        _run(["add-profile", "profile1", "--version", "17.0", "--shared"], env_extra=env)
         _run([
             "add-repo", "--profile", "profile1",
             "--url", "https://example.com/repo1", "--branch", "17.0",
@@ -196,7 +196,7 @@ class TestDeleteRepo:
         repo_dir = tmp_path / "repo1"
         repo_dir.mkdir()
 
-        _run(["add-profile", "profile1", "--version", "17.0"], env_extra=env)
+        _run(["add-profile", "profile1", "--version", "17.0", "--shared"], env_extra=env)
         url = "https://example.com/repo1"
         _run([
             "add-repo", "--profile", "profile1",

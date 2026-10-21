@@ -52,23 +52,27 @@ def open_writer():
 
 
 def add_profile(name: str, *, tenant_id: int | None = None, version: str = V) -> int:
-    from src.db.pg import get_pool, repo_store
+    """A root profile private to *tenant_id*, or shared when it is None."""
+    from src.db.pg import repo_store
 
-    pid = repo_store().add_profile(name=name, odoo_version=version)
-    if tenant_id is not None:
-        with get_pool().checkout() as c, c.cursor() as cur:
-            cur.execute("UPDATE profiles SET tenant_id = %s WHERE id = %s", (tenant_id, pid))
-    return pid
+    return repo_store().add_profile(
+        name=name, odoo_version=version, tenant_id=tenant_id, shared=tenant_id is None,
+    )
 
 
 def add_repo(profile_id: int, local_path: Path | str, *, tenant_id: int | None = None) -> int:
+    """A repo under *profile_id*; its tenant follows the profile (RepoStore.add_repo).
+
+    *tenant_id*, when given, must equal the profile's tenant (the store asserts it).
+    """
     from src.db.pg import repo_store
 
     local_path = str(local_path)
+    extra = {} if tenant_id is None else {"tenant_id": tenant_id}
     return repo_store().add_repo(
         profile_id=profile_id,
         url=f"https://git.example.com/{Path(local_path).parent.name}/{Path(local_path).name}.git",
-        branch=V, local_path=local_path, tenant_id=tenant_id,
+        branch=V, local_path=local_path, **extra,
     )
 
 

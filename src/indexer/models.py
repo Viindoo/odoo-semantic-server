@@ -61,6 +61,12 @@ class ModuleInfo:
     license_notice: str | None = None
     # A2b — manifest enrichment
     auto_install: bool = False
+    # Issue #380 - the modules whose installation triggers this module's
+    # auto-install, as Odoo resolves them for this version
+    # (registry.auto_install_triggers). None = not auto-installable; [] = the
+    # v13+ "always install" form (installed at database creation, never
+    # triggered by a later install); otherwise sorted module names.
+    auto_install_triggers: list[str] | None = None
     application: bool = False
     category: str | None = None
     summary: str | None = None
@@ -431,6 +437,13 @@ class QWebInfo:
     # NEW primary view from the inherited one (a fresh copy), "extension" (default)
     # patches in place. None when absent.
     mode: str | None = None
+    # ir.model.data xmlid of a ``<record model="ir.ui.view">`` QWeb view
+    # (module-qualified record ``id``). Such a node is keyed by its website
+    # ``key`` (``xmlid`` above), but ``inherit_id ref=`` names the RECORD xmlid
+    # (website_forum.default_faq has key website_forum.faq_accordion), so the
+    # EXTENDS_TMPL / USES_TEMPLATE resolvers also match this alias. None for
+    # ``<template>`` elements, whose ``xmlid`` already is the record xmlid.
+    record_xmlid: str | None = None
 
 
 @dataclass

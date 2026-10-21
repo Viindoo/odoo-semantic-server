@@ -87,7 +87,7 @@ def test_index_module_increments_embedder(
     repo = _make_git_repo(tmp_path / "repo_obs1")
     _seed_module(repo, "obs_module")
 
-    pid = repo_store().add_profile("obs_profile1", TEST_VERSION)
+    pid = repo_store().add_profile("obs_profile1", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     embedder = FakeEmbedder(dim=1024)
@@ -144,7 +144,7 @@ def test_reindex_skip_does_not_re_embed(
     repo = _make_git_repo(tmp_path / "repo_obs2")
     _seed_module(repo, "obs_skip_module")
 
-    pid = repo_store().add_profile("obs_profile2", TEST_VERSION)
+    pid = repo_store().add_profile("obs_profile2", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local", TEST_VERSION, str(repo))
 
     embedder = FakeEmbedder(dim=1024)

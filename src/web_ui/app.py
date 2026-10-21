@@ -240,6 +240,11 @@ def create_app() -> FastAPI:
 
     app.include_router(admin_migrations.router)
 
+    # #380: module lifecycle page (read-only, global admin; ADR-0056 / ADR-0057)
+    from src.web_ui.routes import admin_lifecycle
+
+    app.include_router(admin_lifecycle.router)
+
     # W1: Tenant CRUD + member/resource assignment (admin-only, ADR-0038)
     from src.web_ui.routes import tenants
 

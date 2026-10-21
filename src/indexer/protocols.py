@@ -305,12 +305,31 @@ class IndexWriterProtocol(Protocol):
         written_before: Any = None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
+        only_ids: Iterable[str] | None = None,
+        only_rel_ids: Iterable[str] | None = None,
     ) -> dict:
         """Delete a re-parsed module's children the run did not write.
 
         With *written_before* instead of *run_id*: what was written before that
-        instant (shared modules, version post-pass).
+        instant (shared modules, version post-pass). *only_ids* /
+        *only_rel_ids*: restrict the delete to those elementIds (the ones the
+        source oracle proved gone or superseded, ADR-0057).
         """
+        ...
+
+    def module_stale_children(
+        self,
+        odoo_version: str,
+        name: str,
+        *,
+        run_id: str | None = None,
+        written_before: Any = None,
+        file_prefixes: Iterable[str] = (),
+        skip_labels: Iterable[str] = (),
+    ) -> dict:
+        """Identities of the children / relationships the run did not write
+        (``{"nodes": [...], "rels": [...]}``, read-only); *written_before*:
+        the shared-module cutoff mode instead of a run token."""
         ...
 
     def record_module_parse_degraded(
@@ -328,19 +347,21 @@ class IndexWriterProtocol(Protocol):
         """Modules whose last parse by the repo was degraded, every version."""
         ...
 
-    def record_module_prune_held(
-        self, odoo_version: str, name: str, *, repo_id: Any, stale: int, total: int,
-        rels_stale: int, rels_total: int,
+    def record_module_parser_gap(
+        self, odoo_version: str, name: str, *, repo_id: Any, fingerprint: str,
+        paths: Iterable[str], kept: int, total: int, rels_kept: int, rels_total: int,
+        sample: Iterable[str], reason: str | None = None,
     ) -> None:
-        """Remember that the module's entity prune is held by the soft gate."""
+        """Remember what the module's entity prune kept because the source
+        still defines it (parser gap, ADR-0057)."""
         ...
 
-    def clear_module_prune_held(self, odoo_version: str, names: Iterable[str]) -> int:
-        """Forget the held-prune record of *names*."""
+    def clear_module_parser_gap(self, odoo_version: str, names: Iterable[str]) -> int:
+        """Forget the parser-gap record (and a legacy hold record) of *names*."""
         ...
 
-    def prune_held_modules(self, repo_id: Any) -> list[dict]:
-        """Modules whose entity prune by the repo is held, every version."""
+    def parser_gap_modules(self, repo_id: Any) -> list[dict]:
+        """Modules whose last entity prune by the repo kept a parser gap."""
         ...
 
     def record_module_prune_deferred(
@@ -395,6 +416,11 @@ class IndexWriterProtocol(Protocol):
         profiles: Iterable[str] | None = None,
     ) -> dict[str, list[str]]: ...
     def modules_without_profile(self, odoo_version: str) -> list[dict]: ...
+
+    def relink_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
+        """Move placeholder INHERITS / DELEGATES_TO / EXTENDS_TMPL edges onto the
+        now-indexed real node (run stamp and order kept); call before the GC."""
+        ...
 
     def gc_unresolved_placeholders(self, odoo_version: str) -> dict[str, int]:
         """DETACH DELETE '__unresolved__' placeholder nodes scoped to odoo_version."""

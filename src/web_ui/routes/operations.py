@@ -242,6 +242,9 @@ class ApplyPresetBody(BaseModel):
     repo_map_urls: list[str] = []
     repo_map_paths: list[str] = []
     dry_run: str = ""
+    # Owner of the preset's profile (fail-closed, RepoStore.add_profile).
+    tenant_id: int | None = None
+    shared: bool = False
 
 
 @router.post("/apply-preset")
@@ -287,6 +290,10 @@ async def post_apply_preset(
 
     if body.dry_run:
         argv.append("--dry-run")
+    if body.tenant_id is not None:
+        argv += ["--tenant", str(body.tenant_id)]
+    elif body.shared:
+        argv.append("--shared")
 
     # --- Run synchronously (apply-preset is fast: ~seconds) ---
     # Timeout raised to 120s (was 60s) — a large profile with many repos needs

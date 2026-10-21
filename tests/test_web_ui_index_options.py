@@ -35,7 +35,7 @@ def _async_client(app):
 def _setup_profile_and_repo(migrated_pg, profile_name="test_profile"):
     from src.db.pg import repo_store
 
-    pid = repo_store().add_profile(name=profile_name, odoo_version="17.0")
+    pid = repo_store().add_profile(name=profile_name, odoo_version="17.0", shared=True)
     rid = repo_store().add_repo(
         profile_id=pid,
         url="file://local",
@@ -258,7 +258,7 @@ class TestDeprecatedGcStillAccepted:
 
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name="all_gc_profile", odoo_version="99.0")
+        repo_store().add_profile(name="all_gc_profile", odoo_version="99.0", shared=True)
         app = create_app()
         caplog.set_level(logging.WARNING, logger="src.web_ui.routes.repos_indexing")
         with mock.patch(

@@ -93,6 +93,10 @@ class CreateProfileBody(BaseModel):
     version: str
     description: str = ""
     parent_id: int | None = None
+    # Tenant fail-closed (#385): inherited from a private parent,
+    # else required - unless shared=true says, explicitly, "every key".
+    tenant_id: int | None = None
+    shared: bool = False
 
 
 @router.post("/profiles")
@@ -100,32 +104,55 @@ class CreateProfileBody(BaseModel):
 async def create_profile(
     body: CreateProfileBody, request: Request, _user_id: int = Depends(require_admin)
 ):
-    """Create a new profile.
+    """Create a new profile - the tenant is never left to a default.
 
-    Optional ``parent_id`` links this profile under another profile (version
-    must match parent; cycle-free + monotonic chain enforced by repo_store).
+    - ``parent_id`` private to tenant T: the profile inherits T (an explicit
+      ``tenant_id`` must be T; ``shared`` is refused).
+    - no parent / a shared parent: ``tenant_id`` is required, or ``shared=true``
+      (admin-only route) to publish the profile to every key. Omitting both
+      -> 422, so a forgotten field can never publish a private profile.
+    - name / version must match the CLI format (``validate_profile_identity``).
+
+    422: tenant missing, visibility invariant, bad name/version, unknown
+    tenant. 400: parent not found, version mismatch, name taken.
     """
+    from src.db.exceptions import (
+        ProfileInputError,
+        ProfileTenantRequiredError,
+        ProfileVisibilityError,
+    )
+    try:
+        request.state.audit_detail.update(
+            {"tenant_id": body.tenant_id, "shared": body.shared, "parent_id": body.parent_id},
+        )
+    except Exception:
+        pass
     try:
         from src.db.pg import repo_store
 
-        repo_store().add_profile(
+        profile_id = repo_store().add_profile(
             name=body.name,
             odoo_version=body.version,
             description=body.description,
             parent_id=body.parent_id,
+            tenant_id=body.tenant_id,
+            shared=body.shared,
         )
         # WG-3t T4: a new profile changes the own/shared scope a tenant resolves
         # to → drop the 60s tenant-scope cache so isolation cannot serve stale.
         from src.mcp.session import invalidate_allowed_profiles
         invalidate_allowed_profiles()
+    except (ProfileInputError, ProfileTenantRequiredError, ProfileVisibilityError) as e:
+        _logger.warning("Create profile rejected: %s", e)
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
-        # Cycle / version-mismatch validation errors → 400.
+        # Parent not found / version mismatch / name taken → 400.
         _logger.warning("Create profile validation failed: %s", e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=400)
     except Exception as e:
         _logger.warning("Create profile failed: %s", e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
-    return JSONResponse(_json_safe({"ok": True}))
+    return JSONResponse(_json_safe({"ok": True, "profile_id": profile_id}))
 
 
 class SetProfileParentBody(BaseModel):
@@ -143,14 +170,16 @@ async def set_profile_parent(
     """Update parent_profile_id for an existing profile.
 
     JSON body ``parent_id``: integer ID of the new parent, or ``null`` to clear
-    the parent (make this profile a root). Validates cycle-free + version match.
-    Returns 400 on validation error, 200 on success.
+    the parent (make this profile a root). Validates cycle-free, version match
+    and the visibility invariant (a profile under a private parent must belong
+    to the same tenant). Returns 422 on validation error, 200 on success.
     """
     try:
         from src.db.exceptions import (
             ProfileCycleError,
             ProfileNotFoundError,
             ProfileVersionMismatchError,
+            ProfileVisibilityError,
         )
         from src.db.pg import repo_store
 
@@ -162,7 +191,7 @@ async def set_profile_parent(
     except ProfileNotFoundError as e:
         _logger.warning("Set profile parent: profile not found: %s", e)
         raise HTTPException(status_code=404, detail="Profile not found")
-    except (ProfileCycleError, ProfileVersionMismatchError) as e:
+    except (ProfileCycleError, ProfileVersionMismatchError, ProfileVisibilityError) as e:
         _logger.warning("Set profile parent validation failed: %s", e)
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:

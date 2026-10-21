@@ -15,11 +15,12 @@ Business rules protected here (lane-idx contract 3.2-3.6):
 - F44: the audit's ``would_rewrite`` is exactly the set of self-heal
   re-writes the next real run performs, on sync, incremental AND full runs;
   a module added in the commit range is never listed.
-- A soft-gate-held entity prune is an audit finding (``held_prunes``) under the
-  ``osm.lifecycle-audit/3`` schema (``/2`` introduced ``held_prunes``; F49's
-  ``/3`` added the shared-module ``shared_prunes`` finding), so
-  ``--fail-on-findings`` exits 4 until an operator confirms with
-  ``--allow-mass-retire``.
+- ADR-0057: a git-proven entity drop is pruned by the run and is no finding;
+  entities the source still defines but the parser no longer produces are
+  kept and are the ``parser_gaps`` finding under the ``osm.lifecycle-audit/4``
+  schema (``/4`` renamed ``/2``'s ``held_prunes``; F49's ``/3`` added the
+  shared-module ``shared_prunes`` finding), so ``--fail-on-findings`` exits 4
+  until the parser is fixed - no operator approval exists for it.
 
 Every test drives the real ``index_profile`` / ``index_all`` / CLI ``main`` over
 temp git repos with a bare origin, against real Neo4j and PostgreSQL + pgvector.
@@ -110,20 +111,20 @@ def _path_prefix(driver, name: str) -> str:
 def test_skipped_repo_attention_drops_the_signal_of_a_confirmed_mass_retire(
     pg, neo4j_driver, tmp_path,
 ):
-    """A commit removes every module: the run trips the total-wipe gate and
-    tells the operator. The operator confirms with --allow-mass-retire, the
-    modules are retired. The next night nothing changed: the run is the
-    zero-cost skip, nothing holds any more, so the repo carries no attention -
-    neither the tripped gate nor the confirmed-retire signal."""
+    """The branch is replaced by an unrelated root (every module vanishes,
+    outside the branch history): the run trips the total-wipe gate and tells
+    the operator. The emergency bypass --allow-mass-retire retires the
+    modules. The next night nothing changed: the run is the zero-cost skip,
+    nothing holds any more, so the repo carries no attention - neither the
+    tripped gate nor the confirmed-retire signal. (A wipe committed on the
+    branch is retired without a trip, ADR-0057 phase 2.)"""
     repo = GitRepo(tmp_path, "wiped_addons")
     write_module(repo, "wipe_a")
     write_module(repo, "wipe_b")
     repo.commit("add")
     (rid,) = register("wipe_99", repo)
     run(pg, "wipe_99")
-    repo.rm("wipe_a")
-    repo.rm("wipe_b")
-    repo.commit("remove every module")
+    repo.force_push_unrelated_root()
     run(pg, "wipe_99")
     assert _attention(pg, rid), "precondition: the tripped gate is signalled"
     run(pg, "wipe_99", allow_mass_retire=True)
@@ -177,7 +178,7 @@ def test_index_all_reports_a_profile_without_repo_apart_from_ok_and_failed(
     write_module(repo, "real_mod")
     repo.commit("add")
     register("real_99", repo)
-    repo_store().add_profile("empty_99", V)
+    repo_store().add_profile("empty_99", V, shared=True)
     seeded_empty = {
         p["name"] for p in repo_store().list_profiles()
         if p["name"] not in {"real_99", "empty_99"}
@@ -198,7 +199,7 @@ def test_cli_names_profiles_without_repo_and_still_exits_0(
     write_module(repo, "real_mod")
     repo.commit("add")
     register("real_99", repo)
-    repo_store().add_profile("empty_99", V)
+    repo_store().add_profile("empty_99", V, shared=True)
 
     code, _, err = _cli(monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--all", "--no-embed")
 
@@ -359,19 +360,20 @@ def _bulk_fields(n: int) -> str:
     return ("\n" + " " * 12).join(f"f{i:02d} = fields.Char()" for i in range(n))
 
 
-def test_held_entity_prune_is_an_audit_finding_until_allow_mass_retire(
+def test_a_parser_gap_is_reported_but_never_alerts_and_a_git_proven_drop_is_not_reported(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
 ):
-    """26 of the module's nodes disappear from one parse (> 50 %, >= 20): the
-    run holds the prune. The weekly audit reports it as a held prune with its
-    counts and exits 4 under --fail-on-findings, in JSON and text; once the
-    operator confirms with --allow-mass-retire, the finding is gone and the
-    detector is green.
+    """ADR-0057. A commit that drops 26 of the module's fields is pruned by the
+    run itself, so the weekly audit is clean (no approval, nothing to report).
+    When instead the parser stops producing fields the unchanged source still
+    defines, the run keeps them and the audit reports a ``parser_gaps`` entry
+    with the kept counts and a sample (JSON and text, schema
+    ``osm.lifecycle-audit/5``) without double-counting it as a shared-module
+    prune. Kept data is no alert: the entry is informational, so
+    --fail-on-findings still exits 0 (the weekly timer mails nobody about it).
+    The index run itself exited without attention."""
+    from src.indexer import parser_python
 
-    Updated for F49: the report schema is ``osm.lifecycle-audit/3`` (the
-    shared-module prune finding ``shared_prunes`` joined the findings). The
-    module has one owner, so the held prune stays a ``held_prunes`` finding and
-    is NOT double-counted as a shared-module one."""
     repo = GitRepo(tmp_path, "bulk_addons")
     write_module(repo, BULK, extra_field=_bulk_fields(29))
     repo.commit("add bulk")
@@ -382,34 +384,45 @@ def test_held_entity_prune_is_an_audit_finding_until_allow_mass_retire(
     write_module(repo, BULK, extra_field=_bulk_fields(3))
     repo.commit("[REF] bulk: drop 26 fields")
     run(pg, "bulk_99")
-    assert children(neo4j_driver, BULK) == total, "precondition: the soft gate held the prune"
+    assert children(neo4j_driver, BULK) == total - 26
+
+    code, report = _audit(
+        monkeypatch, capsys, _ephemeral_pg_db, "--profile", "bulk_99", "--fail-on-findings",
+    )
+    assert _repo_entry(report, "bulk_addons")["parser_gaps"] == []
+    assert report["findings"]["parser_gaps"] == 0
+    assert code == 0, report["findings"]
+
+    real = parser_python.parse_module
+
+    def regressed(info):
+        result = real(info)
+        for m in result.models:
+            m.fields = [f for f in m.fields if f.name != "f01"]
+        return result
+
+    monkeypatch.setattr(parser_python, "parse_module", regressed)
+    summary = run(pg, "bulk_99", full_reindex=True)
+    assert not (summary.get("lifecycle") or {}).get("needs_attention"), summary
+    assert children(neo4j_driver, BULK) == total - 26, "the still-defined field is kept"
 
     code, report = _audit(
         monkeypatch, capsys, _ephemeral_pg_db, "--profile", "bulk_99", "--fail-on-findings",
     )
 
-    held = _repo_entry(report, "bulk_addons").get("held_prunes")
-    assert [(h["name"], h["odoo_version"], h["stale"], h["total"]) for h in held or []] == [
-        (BULK, V, 26, total)
-    ], held
-    assert {"name", "odoo_version", "stale", "total", "rels_stale", "rels_total"} <= set(held[0])
-    assert report["findings"].get("held_prunes") == 1
+    gaps = _repo_entry(report, "bulk_addons")["parser_gaps"]
+    assert [(g["name"], g["odoo_version"], g["kept"]) for g in gaps] == [(BULK, V, 1)], gaps
+    assert any("f01" in s for s in gaps[0]["sample"]), gaps
+    assert gaps[0]["reevaluated_next_run"] is False
+    assert report["findings"]["parser_gaps"] == 1
     assert report["findings"].get("shared_prunes") == 0
-    assert code == 4
-    assert report["schema"] == "osm.lifecycle-audit/3"
+    assert report["has_findings"] is False, report["findings"]
+    assert code == 0, "a parser gap is kept data: listed, never exit 4"
+    assert report["schema"] == "osm.lifecycle-audit/5"
     code, out, _ = _cli(
         monkeypatch, capsys, _ephemeral_pg_db,
         "lifecycle-audit", "--profile", "bulk_99", "--fail-on-findings",
     )
-    assert code == 4
-    assert f"entity prune held: {BULK}@{V}" in out
-
-    run(pg, "bulk_99", allow_mass_retire=True)
-
-    assert children(neo4j_driver, BULK) == total - 26
-    code, report = _audit(
-        monkeypatch, capsys, _ephemeral_pg_db, "--profile", "bulk_99", "--fail-on-findings",
-    )
-    assert _repo_entry(report, "bulk_addons")["held_prunes"] == []
-    assert report["findings"]["held_prunes"] == 0
-    assert code == 0, report["findings"]
+    assert code == 0
+    assert f"parser gap: {BULK}@{V}" in out
+    assert "kept (informational, not a finding): parser_gaps=1" in out

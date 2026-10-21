@@ -114,6 +114,7 @@ def test_full_admin_flow_register_index_query(
         name=_SMOKE_PROFILE,
         odoo_version=TEST_VERSION,
         description="Smoke test profile",
+        shared=True,
     )
     assert isinstance(profile_id, int) and profile_id > 0
 

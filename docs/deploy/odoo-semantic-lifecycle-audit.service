@@ -24,10 +24,11 @@
 # Exit codes: 0 = no finding; 4 = at least one finding (the unit fails, so
 # OnFailure=osm-alert@%n fires); 1 = crash (Neo4j / Postgres unreachable,
 # migration 0003 missing). Read the JSON report appended to the log below
-# (schema osm.lifecycle-audit/3; "findings" holds the counts per category) or
+# (schema osm.lifecycle-audit/5; "findings" holds the counts per category) or
 # re-run by hand in text form:
 #   sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
 #     -m src.indexer lifecycle-audit --all
+# The same report per version, read-only: Web UI /admin/lifecycle.
 # How to act on each finding: deploy.md s3.6 and the lifecycle runbook.
 #
 # No FERNET_KEY: the audit neither fetches nor decrypts anything. It runs as
@@ -52,6 +53,10 @@ Environment="ODOO_SEMANTIC_CONF=/home/odoo-semantic/etc/odoo-semantic.conf"
 # Loads PG_DSN + NEO4J_PASSWORD (+ optional $POSTGRES_CONTAINER and the
 # LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS override) - same file as the other units.
 EnvironmentFile=-/home/odoo-semantic/odoo-semantic-mcp/.env
+# Run-start marker in the log file: osm-alert@ (src.ops.alert_notify) reads only
+# the lines after this invocation's marker, so a lifecycle block or tail from an
+# earlier run is never reported as this run's. `$$` passes a literal `$` to sh.
+ExecStartPre=/bin/sh -c 'echo "osm-run-start $(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ) invocation=$$INVOCATION_ID"'
 # Pre-flight: wait up to 60s for Postgres (the audit reads PG and Neo4j).
 ExecStartPre=/bin/sh -c 'timeout 60 sh -c "until docker exec ${POSTGRES_CONTAINER:-odoo-semantic-mcp-postgres-1} pg_isready -U odoo_semantic -d odoo_semantic >/dev/null 2>&1; do sleep 2; done"'
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer lifecycle-audit --all --json --fail-on-findings

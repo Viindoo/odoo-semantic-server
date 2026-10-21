@@ -40,7 +40,8 @@ class TestProfilesEndpoint:
         async with _async_client(app) as client:
             resp = await client.post(
                 "/api/repos/profiles",
-                json={"name": "test_profile", "version": "17.0", "description": ""},
+                json={"name": "test_profile", "version": "17.0", "description": "",
+                      "shared": True},
             )
         assert resp.status_code == 200
         body = resp.json()
@@ -54,7 +55,8 @@ class TestProfilesEndpoint:
         async with _async_client(app) as client:
             await client.post(
                 "/api/repos/profiles",
-                json={"name": "viindoo17", "version": "17.0", "description": "test"},
+                json={"name": "viindoo17", "version": "17.0", "description": "test",
+                      "shared": True},
             )
         profiles = repo_store().list_profiles()
         # Migration 0004 seeds 5 root profiles; filter to verify the created one.
@@ -68,7 +70,8 @@ class TestProfilesEndpoint:
         async with _async_client(app) as client:
             await client.post(
                 "/api/repos/profiles",
-                json={"name": "myprofile", "version": "16.0", "description": ""},
+                json={"name": "myprofile", "version": "16.0", "description": "",
+                      "shared": True},
             )
             resp = await client.get("/api/repos/profiles")
         assert resp.status_code == 200
@@ -81,7 +84,7 @@ class TestProfilesEndpoint:
         from src.db.pg import repo_store
 
         # Pre-create profile directly via ORM
-        repo_store().add_profile(name="p1", odoo_version="17.0")
+        repo_store().add_profile(name="p1", odoo_version="17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -104,7 +107,7 @@ class TestProfilesEndpoint:
         from src.db.pg import repo_store
         from src.git_utils import default_clone_dir
 
-        repo_store().add_profile(name="derive_path_profile", odoo_version="17.0")
+        repo_store().add_profile(name="derive_path_profile", odoo_version="17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -133,7 +136,7 @@ class TestProfilesEndpoint:
         from src.db.pg import repo_store
         from src.git_utils import default_clone_dir
 
-        repo_store().add_profile(name="ignore_path_profile", odoo_version="17.0")
+        repo_store().add_profile(name="ignore_path_profile", odoo_version="17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -161,7 +164,7 @@ class TestProfilesEndpoint:
     async def test_index_repo_returns_ok(self, migrated_pg):
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="p1", odoo_version="17.0")
+        pid = repo_store().add_profile(name="p1", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -186,7 +189,7 @@ class TestProfilesEndpoint:
         """I4: index button must dispatch --profile <name>, not --all."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="myprofile", odoo_version="17.0")
+        pid = repo_store().add_profile(name="myprofile", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -211,7 +214,7 @@ class TestProfilesEndpoint:
         """M5.5 Section E: when indexer is running, returns 409, Popen NOT called."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="p_dedup", odoo_version="17.0")
+        pid = repo_store().add_profile(name="p_dedup", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -239,7 +242,7 @@ class TestProfilesEndpoint:
         """M5.5 Section E: when indexer not running, Popen called once."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="p_free", odoo_version="17.0")
+        pid = repo_store().add_profile(name="p_free", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -292,7 +295,7 @@ class TestSshCloneFlow:
         """SSH URL + ssh_key_id → repo inserted, Popen called with src.cloner --repo-id."""
         from src.db.pg import auth_store, repo_store
 
-        repo_store().add_profile(name="ssh_profile", odoo_version="17.0")
+        repo_store().add_profile(name="ssh_profile", odoo_version="17.0", shared=True)
         key_id = auth_store().save_ssh_key(
             "deploy-key", "ssh-ed25519 AAAA…", "enc_privkey"
         )
@@ -335,7 +338,7 @@ class TestSshCloneFlow:
         """SSH URL with no ssh_key_id → 400, no Popen, no repo row."""
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name="ssh_nokey_profile", odoo_version="17.0")
+        repo_store().add_profile(name="ssh_nokey_profile", odoo_version="17.0", shared=True)
 
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
@@ -363,7 +366,7 @@ class TestSshCloneFlow:
         from src.db.pg import repo_store
         from src.git_utils import default_clone_dir
 
-        repo_store().add_profile(name="https_profile", odoo_version="17.0")
+        repo_store().add_profile(name="https_profile", odoo_version="17.0", shared=True)
 
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
@@ -416,7 +419,7 @@ class TestSshCloneFlow:
         """SSH URL with non-numeric ssh_key_id → 400, no Popen (Fix 6)."""
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name="ssh_abc_profile", odoo_version="17.0")
+        repo_store().add_profile(name="ssh_abc_profile", odoo_version="17.0", shared=True)
 
         app = create_app()
         with mock.patch("subprocess.Popen") as mock_popen:
@@ -441,7 +444,7 @@ class TestSshCloneFlow:
         """GET /api/repos/repos/{id}/clone-status → JSON with clone_status + error_msg."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="clone_profile", odoo_version="17.0")
+        pid = repo_store().add_profile(name="clone_profile", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="git@github.com:org/repo.git",
@@ -480,7 +483,7 @@ class TestJobIntegration:
         """POST /api/repos/repos/{id}/index → job created, --job-id in argv."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="p_job", odoo_version="17.0")
+        pid = repo_store().add_profile(name="p_job", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -530,7 +533,7 @@ class TestJobIntegration:
         """Khi indexer_is_running True → KHÔNG tạo job, KHÔNG Popen, 409 response."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="p_dedup2", odoo_version="17.0")
+        pid = repo_store().add_profile(name="p_dedup2", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -566,7 +569,7 @@ class TestJobIntegration:
         # IDOR fix #237: job_status now resolves profile_name → profiles.tenant_id.
         # A job whose profile has no DB row is admin-only (404 for non-admin). Seed
         # the profile as shared (tenant_id NULL) so the in-scope happy path is 200.
-        repo_store().add_profile(name="p_status", odoo_version="17.0")
+        repo_store().add_profile(name="p_status", odoo_version="17.0", shared=True)
         job_id = job_store().create_job("p_status")
 
         app = create_app()
@@ -614,7 +617,7 @@ class TestStatusBadge:
         """GET /api/repos/profiles includes last_job data when job exists."""
         from src.db.pg import job_store, repo_store
 
-        pid = repo_store().add_profile(name="badge_profile", odoo_version="17.0")
+        pid = repo_store().add_profile(name="badge_profile", odoo_version="17.0", shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -649,7 +652,7 @@ class TestStatusBadge:
         """GET /api/repos/profiles has null last_job when no job exists."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="nobadge_profile", odoo_version="17.0")
+        pid = repo_store().add_profile(name="nobadge_profile", odoo_version="17.0", shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -687,7 +690,7 @@ class TestProfileHierarchyWebUI:
         from src.db.pg import repo_store
 
         # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-        parent_id = repo_store().add_profile("test_root_99", "99.0")
+        parent_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -698,6 +701,7 @@ class TestProfileHierarchyWebUI:
                     "version": "99.0",
                     "description": "",
                     "parent_id": parent_id,
+                    "shared": True,
                 },
             )
 
@@ -721,7 +725,7 @@ class TestProfileHierarchyWebUI:
         async with _async_client(app) as client:
             resp = await client.post(
                 "/api/repos/profiles",
-                json={"name": "root_only", "version": "17.0"},
+                json={"name": "root_only", "version": "17.0", "shared": True},
             )
 
         assert resp.status_code == 200
@@ -736,7 +740,7 @@ class TestProfileHierarchyWebUI:
         from src.db.pg import repo_store
 
         # Parent on 17.0
-        parent_id = repo_store().add_profile("odoo_17_parent", "17.0")
+        parent_id = repo_store().add_profile("odoo_17_parent", "17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -758,8 +762,8 @@ class TestProfileHierarchyWebUI:
         from src.db.pg import repo_store
 
         # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-        parent_id = repo_store().add_profile("test_root_99", "99.0")
-        child_id = repo_store().add_profile("test_mid_99", "99.0")
+        parent_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+        child_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -784,8 +788,8 @@ class TestProfileHierarchyWebUI:
         from src.db.pg import repo_store
 
         # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-        parent_id = repo_store().add_profile("test_root_99", "99.0")
-        child_id = repo_store().add_profile("test_mid_99", "99.0")
+        parent_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+        child_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
         repo_store().set_profile_parent(child_id, parent_id)
 
         app = create_app()
@@ -807,8 +811,8 @@ class TestProfileHierarchyWebUI:
 
         # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
         # Build A → B, then try B.parent = A (cycle)
-        a_id = repo_store().add_profile("test_root_99", "99.0")
-        b_id = repo_store().add_profile("test_mid_99", "99.0")
+        a_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+        b_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
         repo_store().set_profile_parent(b_id, a_id)  # B's parent = A
 
         app = create_app()
@@ -829,8 +833,8 @@ class TestProfileHierarchyWebUI:
         """PATCH with parent of different odoo_version returns 422 (was 400 before W-RC)."""
         from src.db.pg import repo_store
 
-        parent_id = repo_store().add_profile("p17", "17.0")
-        child_id = repo_store().add_profile("c18", "18.0")
+        parent_id = repo_store().add_profile("p17", "17.0", shared=True)
+        child_id = repo_store().add_profile("c18", "18.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -860,8 +864,8 @@ class TestProfileHierarchyWebUI:
         """PATCH /parent cycle returns 422 with typed ProfileCycleError."""
         from src.db.pg import repo_store
 
-        a_id = repo_store().add_profile("cycle_a", "17.0")
-        b_id = repo_store().add_profile("cycle_b", "17.0")
+        a_id = repo_store().add_profile("cycle_a", "17.0", shared=True)
+        b_id = repo_store().add_profile("cycle_b", "17.0", shared=True)
         repo_store().set_profile_parent(b_id, a_id)
 
         app = create_app()
@@ -881,8 +885,8 @@ class TestProfileHierarchyWebUI:
         """PATCH /parent version mismatch returns 422 with typed ProfileVersionMismatchError."""
         from src.db.pg import repo_store
 
-        p17 = repo_store().add_profile("vm_p17", "17.0")
-        c18 = repo_store().add_profile("vm_c18", "18.0")
+        p17 = repo_store().add_profile("vm_p17", "17.0", shared=True)
+        c18 = repo_store().add_profile("vm_c18", "18.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -902,8 +906,8 @@ class TestProfileHierarchyWebUI:
         from src.db.pg import repo_store
 
         # Use "99.0" version to avoid conflicts with profiles seeded by migration 0004.
-        parent_id = repo_store().add_profile("test_root_99", "99.0")
-        child_id = repo_store().add_profile("test_mid_99", "99.0")
+        parent_id = repo_store().add_profile("test_root_99", "99.0", shared=True)
+        child_id = repo_store().add_profile("test_mid_99", "99.0", shared=True)
         repo_store().set_profile_parent(child_id, parent_id)
 
         # Mock Neo4j + indexer_is_running so delete_profile doesn't fail on infra
@@ -931,7 +935,7 @@ class TestUpdateProfileEndpoint:
         """PATCH with description change returns 200 + updated_fields."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("upd_profile_happy", "17.0", "original desc")
+        pid = repo_store().add_profile("upd_profile_happy", "17.0", "original desc", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -969,8 +973,8 @@ class TestUpdateProfileEndpoint:
         """PATCH renaming to an existing name returns 409."""
         from src.db.pg import repo_store
 
-        repo_store().add_profile("name_taken", "17.0")
-        pid2 = repo_store().add_profile("name_to_rename", "17.0")
+        repo_store().add_profile("name_taken", "17.0", shared=True)
+        pid2 = repo_store().add_profile("name_to_rename", "17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -988,8 +992,8 @@ class TestUpdateProfileEndpoint:
         """PATCH changing version when descendants have different version returns 422."""
         from src.db.pg import repo_store
 
-        parent_id = repo_store().add_profile("parent_ver17", "17.0")
-        child_id = repo_store().add_profile("child_ver17", "17.0")
+        parent_id = repo_store().add_profile("parent_ver17", "17.0", shared=True)
+        child_id = repo_store().add_profile("child_ver17", "17.0", shared=True)
         repo_store().set_profile_parent(child_id, parent_id)
 
         # Child is on 17.0 — changing parent to 18.0 should conflict
@@ -1010,7 +1014,7 @@ class TestUpdateProfileEndpoint:
         """PATCH with same values returns 200 with empty updated_fields."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("noop_profile", "17.0", "same desc")
+        pid = repo_store().add_profile("noop_profile", "17.0", "same desc", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -1029,7 +1033,7 @@ class TestUpdateProfileEndpoint:
         """PATCH version change when no descendants is allowed."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("lone_profile", "17.0")
+        pid = repo_store().add_profile("lone_profile", "17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -1057,7 +1061,7 @@ class TestCloneAllEndpoint:
         """file:// repos pointing to existing dirs are short-circuited; no subprocess."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("clone_test_profile", "17.0")
+        pid = repo_store().add_profile("clone_test_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url=f"file://{tmp_path}",
@@ -1092,7 +1096,7 @@ class TestCloneAllEndpoint:
         """HTTPS repos get a cloner subprocess spawned, not short-circuited."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("clone_https_profile", "17.0")
+        pid = repo_store().add_profile("clone_https_profile", "17.0", shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1122,7 +1126,7 @@ class TestCloneAllEndpoint:
         """Repos already at clone_status='cloned' are not re-processed."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("clone_skip_profile", "17.0")
+        pid = repo_store().add_profile("clone_skip_profile", "17.0", shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url=f"file://{tmp_path}",
@@ -1162,7 +1166,7 @@ class TestCloneAllEndpoint:
         """POST /clone-all for existing profile with no pending repos returns 200 (F22)."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("no_pending_profile", "17.0")
+        pid = repo_store().add_profile("no_pending_profile", "17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:
@@ -1183,7 +1187,7 @@ class TestUpdateRepoEndpoint:
         """PATCH branch → 200; head_sha is preserved."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("edit_profile", "17.0")
+        pid = repo_store().add_profile("edit_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1229,7 +1233,7 @@ class TestUpdateRepoEndpoint:
         """PATCH url+branch that collides with another repo → 409."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("conflict_profile", "17.0")
+        pid = repo_store().add_profile("conflict_profile", "17.0", shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1259,7 +1263,7 @@ class TestUpdateRepoEndpoint:
         """PATCH to SSH URL without ssh_key_id → 400."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("ssh_profile", "17.0")
+        pid = repo_store().add_profile("ssh_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1284,7 +1288,7 @@ class TestUpdateRepoEndpoint:
         """PATCH with all-None body (no-op) returns 200 with empty updated_fields."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("noop_repo_profile", "17.0")
+        pid = repo_store().add_profile("noop_repo_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1314,7 +1318,7 @@ class TestUpdateRepoEndpoint:
         """PATCH a single field leaves other fields + head_sha intact."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("single_field_profile", "17.0")
+        pid = repo_store().add_profile("single_field_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1349,7 +1353,7 @@ class TestUpdateRepoEndpoint:
 
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("race_profile", "17.0")
+        pid = repo_store().add_profile("race_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1400,7 +1404,7 @@ class TestUpdateRepoEndpoint:
         """WI-G: PATCH with local_path in body must NOT change the stored local_path."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("no_path_change_profile", "17.0")
+        pid = repo_store().add_profile("no_path_change_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1430,8 +1434,8 @@ class TestUpdateRepoEndpoint:
         """WI-G: same (url, branch) under different profiles is allowed (no conflict)."""
         from src.db.pg import repo_store
 
-        pid1 = repo_store().add_profile("dedup_profile_a", "17.0")
-        pid2 = repo_store().add_profile("dedup_profile_b", "17.0")
+        pid1 = repo_store().add_profile("dedup_profile_a", "17.0", shared=True)
+        pid2 = repo_store().add_profile("dedup_profile_b", "17.0", shared=True)
 
         # Register the same upstream URL+branch under two profiles
         repo_store().add_repo(
@@ -1471,7 +1475,7 @@ class TestUpdateProfileEndpointExtra:
         """PATCH version when profile has indexed repos → 409 with reindex message."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("indexed_ver_profile", "17.0")
+        pid = repo_store().add_profile("indexed_ver_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1501,7 +1505,7 @@ class TestUpdateProfileEndpointExtra:
         """PATCH name when profile has indexed repos → 409 (Neo4j Module.profile is name array)."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("indexed_name_profile", "17.0")
+        pid = repo_store().add_profile("indexed_name_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1531,7 +1535,7 @@ class TestUpdateProfileEndpointExtra:
         """PATCH version when NO indexed repos (head_sha=NULL) → allowed (200)."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("unindexed_ver_profile", "17.0")
+        pid = repo_store().add_profile("unindexed_ver_profile", "17.0", shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url="https://github.com/odoo/odoo.git",
@@ -1559,8 +1563,8 @@ class TestUpdateProfileEndpointExtra:
         """PATCH child version to differ from parent → 422 (ancestor check)."""
         from src.db.pg import repo_store
 
-        parent_id = repo_store().add_profile("anc_parent_v17", "17.0")
-        child_id = repo_store().add_profile("anc_child_v17", "17.0")
+        parent_id = repo_store().add_profile("anc_parent_v17", "17.0", shared=True)
+        child_id = repo_store().add_profile("anc_child_v17", "17.0", shared=True)
         repo_store().set_profile_parent(child_id, parent_id)
 
         # Child has no indexed repos — only ancestor check should trigger
@@ -1584,9 +1588,9 @@ class TestUpdateProfileEndpointExtra:
         """root → child → grandchild; PATCH root version → 422 (descendant check)."""
         from src.db.pg import repo_store
 
-        root_id = repo_store().add_profile("root_v17", "17.0")
-        child_id = repo_store().add_profile("child_v17", "17.0")
-        grandchild_id = repo_store().add_profile("grandchild_v17", "17.0")
+        root_id = repo_store().add_profile("root_v17", "17.0", shared=True)
+        child_id = repo_store().add_profile("child_v17", "17.0", shared=True)
+        grandchild_id = repo_store().add_profile("grandchild_v17", "17.0", shared=True)
         repo_store().set_profile_parent(child_id, root_id)
         repo_store().set_profile_parent(grandchild_id, child_id)
 
@@ -1609,7 +1613,7 @@ class TestUpdateProfileEndpointExtra:
         """PATCH with version=123 (integer) → 422 from Pydantic validation."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("type_check_profile", "17.0")
+        pid = repo_store().add_profile("type_check_profile", "17.0", shared=True)
 
         app = create_app()
         async with _async_client(app) as client:

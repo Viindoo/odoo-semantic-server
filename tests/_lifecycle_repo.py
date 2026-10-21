@@ -9,6 +9,7 @@ and a method), so a run writes a Module, its children and its embeddings.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import textwrap
 from collections import defaultdict
@@ -68,6 +69,28 @@ class GitRepo:
 
     def head(self) -> str:
         return run_git(self.path, "rev-parse", "HEAD")
+
+    def force_push_unrelated_root(self, message: str = "unrelated root") -> str:
+        """Replace the branch on origin by a new root commit with no module
+        (a force-push of another history, a branch swap): the old HEAD is no
+        ancestor of the new one. The work clone follows origin."""
+        run_git(self.path, "checkout", "-q", "--orphan", "__rewritten__")
+        run_git(self.path, "rm", "-r", "-q", "--cached", ".")
+        for child in self.path.iterdir():
+            if child.name == ".git":
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        (self.path / "README").write_text(message + "\n")
+        run_git(self.path, "add", "-A")
+        run_git(self.path, "commit", "-q", "-m", message)
+        run_git(self.path, "push", "-q", "--force", "origin", f"HEAD:refs/heads/{self.branch}")
+        run_git(self.path, "fetch", "-q", "origin")
+        run_git(self.path, "branch", "-q", "-D", self.branch)
+        run_git(self.path, "checkout", "-q", "-b", self.branch)
+        return self.head()
 
     def mv(self, old: str, new: str) -> None:
         run_git(self.path, "mv", old, new)
@@ -130,7 +153,9 @@ def register(profile: str, *repos: GitRepo) -> list[int]:
     """Profile + repos (ids in the given order). Profile is created on first use."""
     store = repo_store()
     existing = {p["name"]: p for p in store.list_profiles()}
-    pid = existing[profile]["id"] if profile in existing else store.add_profile(profile, V)
+    pid = existing[profile]["id"] if profile in existing else store.add_profile(
+        profile, V, shared=True,
+    )
     return [store.add_repo(pid, r.url, r.branch, str(r.path)) for r in repos]
 
 

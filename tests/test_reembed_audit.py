@@ -117,7 +117,7 @@ def test_reembed_stubs_idempotent(clean_neo4j, clean_pg, tmp_path):
     # Index a module WITHOUT embedder first (no embeddings in pgvector).
     repo = _make_git_repo(tmp_path / "repo_stub")
     _seed_module(repo, "stub_mod")
-    pid = repo_store().add_profile("stub_prof", TEST_VERSION)
+    pid = repo_store().add_profile("stub_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local/stub", TEST_VERSION, str(repo))
 
     # Index without embedder -> Neo4j nodes created, 0 pgvector rows.
@@ -214,7 +214,7 @@ def test_audit_repo_returns_correct_schema(clean_neo4j, clean_pg, tmp_path):
 
     repo = _make_git_repo(tmp_path / "repo_audit")
     _seed_module(repo, "audit_mod")
-    pid = repo_store().add_profile("audit_prof", TEST_VERSION)
+    pid = repo_store().add_profile("audit_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local/audit", TEST_VERSION, str(repo))
 
     # Index with no embedder (embeddings = 0 is acceptable for schema check).
@@ -259,7 +259,7 @@ def test_audit_repo_empty_profile_returns_empty_list(clean_neo4j, clean_pg):
     from src.indexer.pipeline import audit_repo_for_profile
 
     run_migrations(clean_pg)
-    repo_store().add_profile("empty_audit_prof", TEST_VERSION)
+    repo_store().add_profile("empty_audit_prof", TEST_VERSION, shared=True)
 
     rows = audit_repo_for_profile(clean_pg, profile_name="empty_audit_prof")
     assert rows == [], f"Expected empty list for profile with no repos, got {rows}"
@@ -277,7 +277,7 @@ def test_audit_repo_json_serialisable(clean_neo4j, clean_pg, tmp_path):
 
     repo = _make_git_repo(tmp_path / "repo_audit_json")
     _seed_module(repo, "json_mod")
-    pid = repo_store().add_profile("audit_json_prof", TEST_VERSION)
+    pid = repo_store().add_profile("audit_json_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "file://local/json", TEST_VERSION, str(repo))
 
     index_profile(clean_pg, profile_name="audit_json_prof", embedder=None)

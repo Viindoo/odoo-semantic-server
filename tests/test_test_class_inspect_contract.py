@@ -451,20 +451,52 @@ def test_hierarchy_lists_all_children_under_the_cap_without_disclosure(writer, c
     assert "... and" not in out, out
 
 
-def test_hierarchy_over_list_cap_discloses_remainder_with_followup(writer, clean_neo4j):
-    """R03 (FIX, TransactionCase@17.0 has 1795 live subclasses): past
-    LIST_PREVIEW_MAX_ITEMS the hierarchy shows exactly the cap, then a closing
-    "... and N more (use find_test_examples(...))" row; the count is the total."""
+def test_hierarchy_over_page_size_discloses_remainder_with_next_start_index(
+    writer, clean_neo4j,
+):
+    """R03 (#380 item 5, TransactionCase@17.0 has 1795 live subclasses): past the
+    default page size the hierarchy shows exactly one page, then a closing
+    "... and N more (use test_class_inspect(... start_index=K))" row whose K is the
+    cursor of the next page; the count is the total and the range is disclosed."""
     n = LIST_PREVIEW_MAX_ITEMS + 3
     _seed_common_with_children(writer, clean_neo4j, n)
     out = _inspect(clean_neo4j, "AccountTestInvoicingCommon", method="hierarchy")
 
     header, rows = _subclass_block(out)
-    assert header == f"├─ Subclassed by: {n} test classes", out
+    assert header == (
+        f"├─ Subclassed by: {n} test classes (showing 1-{LIST_PREVIEW_MAX_ITEMS})"
+    ), out
     assert len(rows) == LIST_PREVIEW_MAX_ITEMS + 1, out
     _assert_closed(rows, out)
-    assert rows[-1].startswith("└─ ... and 3 more (use find_test_examples("), out
-    assert "query='AccountTestInvoicingCommon'" in rows[-1], out
+    assert rows[-1].startswith("└─ ... and 3 more (use test_class_inspect("), out
+    assert "name='AccountTestInvoicingCommon'" in rows[-1], out
+    assert f"start_index={LIST_PREVIEW_MAX_ITEMS})" in rows[-1], out
+
+
+def test_hierarchy_pages_through_real_cypher_without_gap_or_overlap(writer, clean_neo4j):
+    """#380 item 5 at the Cypher contract: the real ``children[skip..skip+cap]``
+    slice, walked by the printed ``start_index``, yields every subclass exactly
+    once in (module, name) order, and a cursor past the end is a clean empty page."""
+    n = 2 * LIST_PREVIEW_MAX_ITEMS + 5
+    _seed_common_with_children(writer, clean_neo4j, n)
+    seen: list[str] = []
+    start = 0
+    for _ in range(10):
+        out = _inspect(clean_neo4j, "AccountTestInvoicingCommon", method="hierarchy",
+                       start_index=start)
+        _, rows = _subclass_block(out)
+        seen += [r.removeprefix("└─ ").removeprefix("├─ ") for r in rows
+                 if not r.removeprefix("└─ ").removeprefix("├─ ").startswith("...")]
+        m = re.search(r"start_index=(\d+)", out)
+        if not m:
+            break
+        assert int(m.group(1)) > start, out
+        start = int(m.group(1))
+    assert seen == [f"[account] TestAccountCase{i:02d}" for i in range(n)], seen
+
+    out = _inspect(clean_neo4j, "AccountTestInvoicingCommon", method="hierarchy",
+                   start_index=n + 10)
+    assert f"{n} test classes" in out and f"none at start_index={n + 10}" in out, out
 
 
 def test_builder_total_is_the_true_count_of_distinct_subclasses(writer, clean_neo4j):

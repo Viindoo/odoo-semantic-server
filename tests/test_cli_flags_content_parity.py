@@ -136,11 +136,15 @@ TWO LAYERS (ADR-0054 shape, per the #363 template `test_framework_bases_parity.p
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from src.indexer.cli_flags_sync import (
+    COMPARED_FIELDS,
+    DiffResult,
+    diff_global_flags,
+)
 from src.indexer.models import CLIFlagInfo
 from src.indexer.parser_cli import _parse_options_calls
 from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
@@ -151,7 +155,8 @@ CI_FIXTURE_DIR = Path(__file__).parent / "fixtures" / "cli_flags_config_excerpts
 
 # --- Fields compared vs excluded - see module docstring for the full reasoning. ----------
 
-COMPARED_FIELDS: tuple[str, ...] = ("status", "default", "type", "help")
+# COMPARED_FIELDS is imported from src.indexer.cli_flags_sync (the generator that re-syncs
+# these files, scripts/sync_cli_flags.py, compares and rewrites exactly the same fields).
 
 EXCLUDED_FIELDS: dict[str, str] = {
     "replacement_flag_name": (
@@ -218,40 +223,6 @@ NOT_A_SCHEMA_FIELD: dict[str, str] = {
 }
 
 
-@dataclass(frozen=True)
-class FieldMismatch:
-    flag_name: str
-    field_name: str
-    curated: object
-    oracle: object
-
-
-@dataclass(frozen=True)
-class DiffResult:
-    matched: frozenset[str]
-    field_mismatches: tuple[FieldMismatch, ...]
-    # Present in curated global set, absent from oracle output. NOT asserted on (see
-    # module docstring): can mean a genuinely removed flag (curated correctly says so),
-    # OR a real oracle blind spot (confirmed: the geoip-db multi-alias-per-call case and
-    # the v19 PosixOnlyOption(...) wrapper case both produce this bucket for CORRECT
-    # curated data) - conflating those two would produce exactly the false failures this
-    # work item warned against.
-    curated_only: frozenset[str]
-    # Present in oracle output (i.e. demonstrably real, current source), absent from the
-    # curated global set entirely. Unlike curated_only this has no legitimate "curator was
-    # right" explanation - it means the curated JSON does not even have an entry for a
-    # flag that provably exists. IS asserted on (see test below) - e.g. --log-config is
-    # real at v17/v18/v19 (confirmed: odoo{17,18,19}/odoo/tools/config.py) and absent from
-    # all three curated files.
-    oracle_only: frozenset[str]
-
-    def field_mismatch_counts(self) -> dict[str, int]:
-        counts = {f: 0 for f in COMPARED_FIELDS}
-        for m in self.field_mismatches:
-            counts[m.field_name] += 1
-        return counts
-
-
 # --- Loaders -----------------------------------------------------------------------------
 
 def _load_curated_flags(version: str, spec_dir: Path = SPEC_DATA_DIR) -> list[dict]:
@@ -291,27 +262,10 @@ def _oracle_global_flags(
 
 
 def _diff_global_flags(curated: dict[str, dict], oracle: dict[str, CLIFlagInfo]) -> DiffResult:
-    """The ONE comparison function both layers below call - field-by-field, over
-    COMPARED_FIELDS only, for flags present on both sides."""
-    curated_names = frozenset(curated)
-    oracle_names = frozenset(oracle)
-    matched = curated_names & oracle_names
-    mismatches: list[FieldMismatch] = []
-    for name in sorted(matched):
-        c, o = curated[name], oracle[name]
-        for field_name in COMPARED_FIELDS:
-            curated_value = (
-                c.get("status", "stable") if field_name == "status" else c.get(field_name)
-            )
-            oracle_value = getattr(o, field_name)
-            if curated_value != oracle_value:
-                mismatches.append(FieldMismatch(name, field_name, curated_value, oracle_value))
-    return DiffResult(
-        matched=matched,
-        field_mismatches=tuple(mismatches),
-        curated_only=curated_names - oracle_names,
-        oracle_only=oracle_names - curated_names,
-    )
+    """The ONE comparison both layers below call - it lives in
+    ``src.indexer.cli_flags_sync.diff_global_flags`` so the sync generator and this
+    guard can never disagree about what "drift" means."""
+    return diff_global_flags(curated, oracle)
 
 
 def _format_diff_report(version: str, result: DiffResult, out_of_scope_count: int) -> str:
