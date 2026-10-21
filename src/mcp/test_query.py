@@ -157,6 +157,7 @@ def build_test_class_inspect_query(
     file_path: str | None = None,
     scope_pred: ScopePred | None = None,
     subclass_cap: int | None = None,
+    subclass_skip: int = 0,
 ) -> tuple[str, dict]:
     """Return (cypher, params) for a TestClass or TestHelper node lookup.
 
@@ -175,10 +176,14 @@ def build_test_class_inspect_query(
       - ``all_bases``: distinct direct-base names, in declaration order.
       - ``methods``: ``{name, line, asserts}`` maps ordered by line, name; ``[]``
         when none (never a null-filled map).
-      - ``subclassed_by``: ``{name, module}`` maps, the first ``subclass_cap``
-        entries (all when ``subclass_cap`` is None); ``[]`` when none.
+      - ``subclassed_by``: ``{name, module}`` maps - one page of the ordered
+        subclass list: ``subclass_cap`` entries starting at offset
+        ``subclass_skip`` (everything from the offset when ``subclass_cap`` is
+        None); ``[]`` when none or when the offset is past the end. The order
+        is total (``module, name`` is the distinct row key), so consecutive
+        pages never overlap or skip a subclass.
       - ``subclassed_total``: number of visible subclasses, counted after the
-        tenant scope filter and before the cap.
+        tenant scope filter and before the page slice.
 
     scope_pred: ADR-0034 fail-closed tenant choke (H1) applied to the candidate
     nodes (``tc``/``th``), the twin, every subclass and every TestMethod, so a
@@ -192,7 +197,13 @@ def build_test_class_inspect_query(
     no VLP (ADR-0048).
     """
     _sp = scope_pred or _default_scope_pred
-    params: dict = {"name": name, "version": odoo_version, "subclass_cap": subclass_cap}
+    params: dict = {
+        "name": name,
+        "version": odoo_version,
+        "subclass_cap": subclass_cap,
+        # A negative offset would slice from the END of the list in Cypher.
+        "subclass_skip": max(0, int(subclass_skip)),
+    }
     # module / file_path narrow BOTH candidates: the TestClass and the TestHelper
     # fallback (framework helpers carry module '@framework').
     if module:
@@ -277,8 +288,8 @@ RETURN
     node.setup_summary      AS setup_summary,
     all_bases               AS all_bases,
     methods_list            AS methods,
-    CASE WHEN $subclass_cap IS NULL THEN children
-         ELSE children[..$subclass_cap] END AS subclassed_by,
+    CASE WHEN $subclass_cap IS NULL THEN children[$subclass_skip..]
+         ELSE children[$subclass_skip..$subclass_skip + $subclass_cap] END AS subclassed_by,
     size(children)          AS subclassed_total
 """.strip()
 

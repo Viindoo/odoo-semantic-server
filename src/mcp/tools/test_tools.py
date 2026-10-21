@@ -84,8 +84,12 @@ _TEST_CHUNK_TYPES = [t for t in ("test_method", "test_class", "js_test") if t in
 if not _TEST_CHUNK_TYPES:
     _TEST_CHUNK_TYPES = ["test_method", "test_class", "js_test"]
 
-# test_class_inspect summary-mode preview caps (hierarchy mode uses LIST_PREVIEW_MAX_ITEMS).
+# test_class_inspect summary-mode preview caps (hierarchy mode pages instead).
 _TEST_CLASS_SUMMARY_SUBCLASS_CAP = 6
+# test_class_inspect(method='hierarchy') subclass paging (ADR-0028 start_index/limit
+# convention). Default page = LIST_PREVIEW_MAX_ITEMS; the hard cap matches the
+# 50-row cap profile_inspect enforces ("caps never raised", ADR-0023 section 3).
+_TEST_CLASS_SUBCLASS_PAGE_MAX = 50
 _TEST_CLASS_SUMMARY_METHOD_CAP = 8
 _TEST_CLASS_SUMMARY_SETUP_CAP = 6
 
@@ -412,23 +416,34 @@ def _test_class_inspect(
     file_path: str | None = None,
     method: str = "summary",
     profile_name: str | None = None,
+    start_index: int = 0,
+    limit: int = LIST_PREVIEW_MAX_ITEMS,
     *,
     _driver=None,
     _reraise_timeout: bool = False,
 ) -> str:
-    """Inspect a TestClass or TestHelper: base chain, methods, subclassed-by."""
+    """Inspect a TestClass or TestHelper: base chain, methods, subclassed-by.
+
+    ``start_index`` / ``limit`` page the subclass list and only apply to
+    ``method='hierarchy'`` (summary keeps its fixed preview). ``start_index`` is
+    a zero-based offset (negative is treated as 0); ``limit`` is clamped to
+    1..``_TEST_CLASS_SUBCLASS_PAGE_MAX``.
+    """
     driver = _driver or _srv._get_driver()
     with driver.session() as session:
         v = _srv._resolve_version(odoo_version, session)
 
     # H1 (ADR-0034): the builder scopes the candidates, the twin, every subclass
     # and every method; framework helpers bypass the choke (public Odoo source).
-    subclass_cap = (
-        LIST_PREVIEW_MAX_ITEMS if method == "hierarchy" else _TEST_CLASS_SUMMARY_SUBCLASS_CAP
-    )
+    if method == "hierarchy":
+        subclass_skip = max(0, start_index)
+        subclass_cap = max(1, min(limit, _TEST_CLASS_SUBCLASS_PAGE_MAX))
+    else:
+        subclass_skip = 0
+        subclass_cap = _TEST_CLASS_SUMMARY_SUBCLASS_CAP
     cypher, params = build_test_class_inspect_query(
         name, v, module=module, file_path=file_path, scope_pred=_srv._scope_pred,
-        subclass_cap=subclass_cap,
+        subclass_cap=subclass_cap, subclass_skip=subclass_skip,
     )
     params.update(_srv._scope(profile_name))
 
@@ -529,24 +544,48 @@ def _test_class_inspect(
     # Subclassed-by: summary skips an empty section, hierarchy states it explicitly.
     if subclassed_total or method == "hierarchy":
         noun = "test class" if subclassed_total == 1 else "test classes"
-        lines.append(f"├─ Subclassed by: {subclassed_total} {noun}")
+        page_end = subclass_skip + len(subclassed_by)
+        paged_view = method == "hierarchy" and (
+            subclass_skip > 0 or page_end < subclassed_total
+        )
+        range_note = ""
+        if paged_view and subclassed_by:
+            range_note = f" (showing {subclass_skip + 1}-{page_end})"
+        lines.append(f"├─ Subclassed by: {subclassed_total} {noun}{range_note}")
+        module_arg = f" module='{node_module}'," if node_module else ""
+        page_hint = (
+            f"test_class_inspect(name='{node_name}',{module_arg} odoo_version='{v}',"
+            " method='hierarchy'"
+        )
         if not subclassed_total:
             lines.extend(render_list_block(["(none)"]))
-        else:
-            more_hint = (
-                f"test_class_inspect(name='{node_name}', odoo_version='{v}',"
-                f" method='hierarchy') for the first {LIST_PREVIEW_MAX_ITEMS}"
-                if method != "hierarchy"
-                else f"find_test_examples(query='{node_name}', odoo_version='{v}')"
-                " to search the rest"
-            )
+        elif method != "hierarchy":
             lines.extend(render_list_block(_srv._render_capped(
                 subclassed_by,
                 lambda child: f"[{child['module']}] {child['name']}",
                 cap=len(subclassed_by),
                 total=subclassed_total,
-                more_hint=more_hint,
+                more_hint=f"{page_hint}) for the first {LIST_PREVIEW_MAX_ITEMS}",
             )))
+        elif not subclassed_by:
+            # start_index is past the end: say so and point at the last real page.
+            last_start = ((subclassed_total - 1) // subclass_cap) * subclass_cap
+            lines.extend(render_list_block([
+                f"(none at start_index={subclass_skip}; {subclassed_total} in total -"
+                f" last page: {page_hint}, start_index={last_start}))",
+            ]))
+        else:
+            rows = [f"[{c['module']}] {c['name']}" for c in subclassed_by]
+            if page_end < subclassed_total:
+                limit_arg = (
+                    f", limit={subclass_cap}"
+                    if subclass_cap != LIST_PREVIEW_MAX_ITEMS else ""
+                )
+                rows.append(
+                    f"... and {subclassed_total - page_end} more (use {page_hint},"
+                    f" start_index={page_end}{limit_arg}))"
+                )
+            lines.extend(render_list_block(rows))
 
     next_line = format_next_step([
         f"test_base_classes(odoo_version='{v}') for framework base semantics",
@@ -565,6 +604,8 @@ def test_class_inspect(
     file_path: str | None = None,
     method: str = "summary",
     profile_name: str | None = None,
+    start_index: int = 0,
+    limit: int = LIST_PREVIEW_MAX_ITEMS,
 ) -> str:
     """Inspect a test class or helper: base chain, setUp, methods, subclassed-by.
 
@@ -584,6 +625,13 @@ def test_class_inspect(
         module: Optional module filter (restrict when same name in 2 modules).
         file_path: Optional file_path filter (restrict to one file).
         method: 'summary'|'hierarchy'|'methods'|'setup' (default 'summary').
+            summary previews the first 6 subclasses; hierarchy lists them all,
+            one page at a time (start_index/limit).
+        start_index: Zero-based paging offset into the subclass list
+            (method='hierarchy' only; ignored by other methods). A truncated
+            page ends with the exact start_index of the next page; a value
+            past the end points at the last page.
+        limit: Subclasses per page for method='hierarchy' (default 20, max 50).
 
     Example:
         test_class_inspect('AccountTestInvoicingCommon', odoo_version='17.0')
@@ -601,6 +649,8 @@ def test_class_inspect(
         file_path=file_path,
         method=method,
         profile_name=profile_name,
+        start_index=start_index,
+        limit=limit,
     )
 
 
