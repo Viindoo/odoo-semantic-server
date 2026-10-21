@@ -338,6 +338,9 @@ class TestModuleInspectDependencies:
         assert "dependency closure" in result.lower() or "Transitive dependencies" in result, (
             f"Expected closure header; got:\n{result}"
         )
+        # The header is plain ASCII (owner rule: no en/em dash in any output).
+        assert "├─ Transitive dependencies (2) - load order:" in result, result
+        assert "—" not in result and "–" not in result, result
         assert "mid_b2" in result
         assert "base_b2" in result
 

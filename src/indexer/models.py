@@ -61,6 +61,12 @@ class ModuleInfo:
     license_notice: str | None = None
     # A2b — manifest enrichment
     auto_install: bool = False
+    # Issue #380 - the modules whose installation triggers this module's
+    # auto-install, as Odoo resolves them for this version
+    # (registry.auto_install_triggers). None = not auto-installable; [] = the
+    # v13+ "always install" form (installed at database creation, never
+    # triggered by a later install); otherwise sorted module names.
+    auto_install_triggers: list[str] | None = None
     application: bool = False
     category: str | None = None
     summary: str | None = None

@@ -412,11 +412,19 @@ def test_build_registry_auto_install_bool(tmp_path):
 
 
 def test_build_registry_auto_install_list_coerces_to_bool(tmp_path):
-    """auto_install=['base', 'sale'] (trigger list) → coerced to True (bool(list))."""
+    """auto_install=['base'] (trigger list) → flag True and the triggers kept.
+    auto_install=['base', 'sale'] where 'sale' is not a dependency: Odoo asserts
+    and refuses the whole manifest (odoo_17 odoo/modules/module.py:370,
+    `auto_install triggers must be dependencies`), so the module is not
+    auto-installable - flag False, no partial trigger set."""
     repo = make_git_repo(tmp_path / "r", "17.0")
+    _write_full_manifest(repo / "mod_trig_ok", auto_install=["base"])
     _write_full_manifest(repo / "mod_trig", auto_install=["base", "sale"])
     registry = build_registry([(str(repo), "17.0")])
-    assert registry["17.0"]["mod_trig"].auto_install is True
+    assert registry["17.0"]["mod_trig_ok"].auto_install is True
+    assert registry["17.0"]["mod_trig_ok"].auto_install_triggers == ["base"]
+    assert registry["17.0"]["mod_trig"].auto_install is False
+    assert registry["17.0"]["mod_trig"].auto_install_triggers is None
 
 
 def test_build_registry_auto_install_false_default(tmp_path):

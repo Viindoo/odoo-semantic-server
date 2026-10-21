@@ -52,6 +52,7 @@ def _write_parse_result(
         MERGE (m:Module {{name: $name, odoo_version: $v}})
         ON CREATE SET m.profile = $profiles,
                       m.auto_install = $auto_install,
+                      m.auto_install_triggers = $auto_install_triggers,
                       m.application = $application,
                       m.category = $category,
                       m.summary = $summary,
@@ -74,6 +75,7 @@ def _write_parse_result(
         ON MATCH  SET m.profile =
                           {_profile_union_set("m")},
                       m.auto_install = $auto_install,
+                      m.auto_install_triggers = $auto_install_triggers,
                       m.application = $application,
                       m.category = $category,
                       m.summary = coalesce($summary, m.summary),
@@ -114,6 +116,7 @@ def _write_parse_result(
          copyright_owner=module.copyright_owner,
          license_notice=module.license_notice,
          auto_install=module.auto_install,
+         auto_install_triggers=module.auto_install_triggers,
          application=module.application,
          category=module.category,
          summary=module.summary,

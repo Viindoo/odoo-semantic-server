@@ -1010,6 +1010,38 @@ KHÔNG sai data, nhưng thiếu module cho đến khi reindex):
 >   xem §3.6) để chừa headroom embedder cho live query.
 > - Reindex từng version một (v17 rồi v18/v19) thay vì tất cả cùng lúc — giảm peak embedder load.
 
+### 3.6d Module.auto_install_triggers backfill - sau deploy (#380)
+
+Bản #380 thêm property `Module.auto_install_triggers` (danh sách module kích hoạt
+auto_install, resolve theo đúng luật Odoo của từng version) mà
+`module_inspect(method='dependencies')` và `impact_analysis` đọc để tính install set.
+Lượt index thường chỉ ghi property này cho module của repo có HEAD đổi; `--full`
+mất khoảng 20 giờ. Thay vào đó, sau khi deploy code mới, chạy backfill chỉ đọc
+manifest (không parse model/view/JS, không `git log` từng module), ghi đè trên các
+Module node đã có:
+
+```bash
+# Chạy bằng user odoo-semantic từ app checkout (ADR-0027): owner DSN (PG_DSN +
+# NEO4J_*) của nó, đọc được repos.local_path dưới ~odoo-semantic. KHÔNG chạy bằng
+# venv/.env của operator (repo không đọc được -> "skipped ... is not a directory").
+cd /home/odoo-semantic/odoo-semantic-mcp
+# Xem trước, không ghi:
+sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python ops/backfill_auto_install.py --dry-run
+# Ghi thật, có thể giới hạn theo version (lặp được) hoặc repos.id:
+sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python ops/backfill_auto_install.py --version 17.0
+sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python ops/backfill_auto_install.py
+```
+
+- Checkout lấy từ `repos.local_path`; version key theo luật version của indexer
+  (branch chuẩn X.Y thắng version của profile).
+- Chỉ `MATCH` Module node đã index và có profile; không tạo node, không đụng dependency
+  stub. Module có trên đĩa nhưng chưa index được báo là `not indexed`.
+- Idempotent: node đã đúng giá trị thì không ghi; chạy lại báo 0 thay đổi.
+- Trước khi backfill, read side vẫn đúng với module `auto_install: True` (fallback về
+  các cạnh `DEPENDS_ON`); chỉ module dạng list (v13+) cho kết quả bảo thủ hơn (chờ đủ
+  mọi depends) cho tới khi backfill xong.
+- Không cần restart, không migration Postgres.
+
 ### 3.7 tmux fallback (khi không có systemd)
 
 ```bash

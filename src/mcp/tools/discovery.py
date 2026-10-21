@@ -753,6 +753,14 @@ def _impact_analysis(
             ORDER BY depmod.name
         """, _label, mn=model_name, v=odoo_version, **_srv._scope(profile_name))
 
+        # Query 5b (#380): modules auto-installed with the model's defining
+        # module(s), present in every database that has the model. Listed apart;
+        # they do not change the risk score.
+        from src.mcp.describe import _impact_auto_install_line
+        auto_line = _impact_auto_install_line(
+            session, model_name, odoo_version, profile_name, _label,
+        )
+
         # For model entity_type: also collect defining modules as "extensions"
         if entity_type == "model":
             def_modules = _srv._data_bounded(session, """
@@ -976,6 +984,8 @@ def _impact_analysis(
         lines.append(f"├─ Dependent modules ({dep_total}): {preview_str}")
     else:
         lines.append("├─ Dependent modules: none")
+    if auto_line:
+        lines.append(auto_line)
 
     # Wave 5: Next-step footer per ADR-0023 §4.
     if entity_type == "method":
@@ -1017,7 +1027,8 @@ def impact_analysis(
     field X", "dependencies of method Y", "thay đổi field X ảnh hưởng đến gì",
     "rủi ro khi sửa method Y", "blast radius of removing field Z"
     PREFER over: manual grep — traces transitive dependencies (views, methods,
-    JS patches, dependent modules) across all indexed repos automatically
+    JS patches, dependent modules, modules auto-installed with the defining
+    module) across all indexed repos automatically
     SKIP when: user wants to see who extends a model → use model_inspect(method='summary');
     user wants deprecation warnings → use find_deprecated_usage
 
@@ -1025,12 +1036,14 @@ def impact_analysis(
         entity_type: One of 'field', 'method', 'model'.
         entity_name: For field/method: '<model>.<name>' e.g.
             'sale.order.amount_total'. For model: '<model>' e.g. 'sale.order'.
-        profile_name: Profile filter for all 5 sub-queries
+        profile_name: Profile filter for every sub-query
             (Field/Method/View/JSPatch/Module). Default None = all profiles.
 
     Returns:
         Risk score (LOW/MEDIUM/HIGH) + breakdown of affected views, methods,
-        JS patches across modules. Use BEFORE renaming or removing entities.
+        JS patches across modules, and the modules auto_install brings in with
+        the defining module (listed apart, not scored). Use BEFORE renaming or
+        removing entities.
 
     Example:
         impact_analysis("field", "sale.order.amount_total", "17.0")
@@ -1038,7 +1051,8 @@ def impact_analysis(
           ├─ Risk: MEDIUM (7 affected entities)
           ├─ Views (3): ...
           ├─ Methods (4): ...
-          └─ Dependent modules (2): viin_sale, to_sale_custom
+          ├─ Dependent modules (2): viin_sale, to_sale_custom
+          └─ Auto-installed with the defining module sale (1): ...
     """
     return _srv._impact_analysis(entity_type, entity_name, odoo_version, profile_name)
 

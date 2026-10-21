@@ -531,3 +531,12 @@ def test_profile_name_doc_states_the_accessible_ancestor_chain(tool_name):
     assert "inheritance-resolved" not in doc, doc
     assert "ancestor profiles you can access" in doc, doc
     assert "shared base profiles" in doc, doc
+
+
+@pytest.mark.parametrize("tool_name", ["module_inspect", "impact_analysis"])
+def test_install_set_tools_say_they_include_auto_installed_modules(tool_name):
+    """#380: both tools now report the modules auto_install brings in; an agent
+    picking a tool for "what gets installed with X" must learn that here."""
+    tool = _resolve_tool(tool_name)
+    text = " ".join(f"{tool.description} {tool.parameters}".lower().split())
+    assert "auto_install" in text or "auto-install" in text, text

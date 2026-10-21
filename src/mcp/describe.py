@@ -5,7 +5,9 @@ Two module-level read helpers moved verbatim from the server hub:
     counts), surfaced by the ``describe_module`` / ``module_inspect`` tools and
     the ``odoo://{version}/module/{name}`` resource.
   - ``_module_dep_closure`` — transitive ``DEPENDS_ON`` closure + load order,
-    surfaced by ``module_inspect(method='dependencies')``.
+    surfaced by ``module_inspect(method='dependencies')``, plus the modules an
+    install pulls in through ``auto_install`` (``_install_set``, #380; also
+    rendered by ``impact_analysis`` via ``_impact_auto_install_line``).
 
 This is NOT a tool module: it declares no ``@mcp.tool`` and is not part of the
 import-time tool-registration side effect.  server.py imports these two helpers
@@ -28,15 +30,30 @@ state (``format_next_step``, ``_edition_label`` is hub, the ORM helpers, and the
 preview-cap constants) are imported directly below.
 """
 
+import logging
 import sys
+import threading
 import time
 
 from src.constants import (
+    IMPACT_MODULES_MAX,
     LIST_PREVIEW_MAX_ITEMS,
     REL_DEPENDS_ON,
 )
 from src.mcp.hints import format_next_step
+from src.mcp.install_set import (
+    COUNTRY_GATE_MIN_MAJOR,
+    AutoInstalled,
+    Baseline,
+    InstallSet,
+    compute_baseline,
+    resolve_install_set,
+)
 from src.mcp.lifecycle_read import lifecycle_lines, one_line, owned_pred, read_module_lifecycle
+from src.mcp.orm import OrmQueryTimeout
+from src.mcp.tree_builder import render_list_block
+
+logger = logging.getLogger(__name__)
 
 
 def _describe_module(
@@ -416,11 +433,11 @@ def _module_dep_closure(
     path = loaded earlier) with alphabetical tiebreak for determinism.  Each
     dependency line shows [repo] name (repo_url).
 
-    Tenant scope is applied ONCE, in Cypher, at the final inclusion step
-    (`_scope_pred`, ADR-0034 choke-point); the traversal itself is unscoped so the
-    closure + shortest-path depths stay identical to the prior single-query form
-    (which filtered only the final dep). The whole closure shares one ~30s
-    wall-clock budget so a deep chain fails fast like the old bounded query.
+    Tenant scope (`_scope_pred`, ADR-0034 choke-point) is applied in Cypher to
+    every hop's SOURCE module (the walk never passes through a module the caller
+    cannot see) and again at the final inclusion step. The whole closure shares
+    one ~30s wall-clock budget so a deep chain fails fast like the old bounded
+    query; the auto-install part degrades to one line on a timeout.
 
     B2: This is surfaced as module_inspect(method='dependencies') per ADR-0028
     consolidation — no new top-level tool.
@@ -451,10 +468,12 @@ def _module_dep_closure(
         # loop (not the fixed-3-hop `_ANCESTOR_TAGGED_PROLOGUE` helper) is used
         # because a dependency closure is variable-depth (cap 20), not shallow.
         #
-        # Phase 1 traverses UNSCOPED: the old single-query form filtered only the
-        # FINAL dep, so a path could pass through any intermediate. Keeping the
-        # traversal unscoped makes the closure + shortest-path depths identical to
-        # the old query; tenant scope is applied once, in Cypher, at Phase 2.
+        # Phase 1 walks only FROM modules the caller can see (`_scope_pred` on the
+        # source `m`): a dependency reached only through
+        # another tenant's private module is not followed, so the closure is no
+        # oracle on an invisible module's own depends. Phase 2 still filters the
+        # listed deps (a visible module's dependency on an invisible one is cut
+        # there). For an admin (own=None) both filters are no-ops.
         #
         # All hops share ONE wall-clock deadline equal to the per-query timeout,
         # so a deep chain fails fast (~30s total) instead of up to 20 separate
@@ -473,11 +492,11 @@ def _module_dep_closure(
                 f"""
                 MATCH (m:Module {{odoo_version: $v}})
                       -[:{REL_DEPENDS_ON}]->(dep:Module {{odoo_version: $v}})
-                WHERE m.name IN $frontier
+                WHERE m.name IN $frontier AND {_srv._scope_pred('m')}
                 RETURN DISTINCT dep.name AS dep_name
                 """,
                 closure_label,
-                v=odoo_version, frontier=frontier,
+                v=odoo_version, frontier=frontier, **_srv._scope(profile_name),
             )
             next_frontier: list[str] = []
             for row in hop_rows:
@@ -515,35 +534,356 @@ def _module_dep_closure(
             ]
             dep_rows.sort(key=lambda r: (-r["min_depth"], r["dep_name"]))
 
-    if not dep_rows:
-        lines = [f"{name} dependency closure (Odoo {odoo_version})"]
-        lines.append("├─ No transitive dependencies found.")
-        lines.append(format_next_step([
-            f"describe_module(name='{name}', odoo_version='{odoo_version}')"
-            " for full module overview",
-        ]))
-        return "\n".join(lines)
+        # #380: what installing this module pulls in through auto_install.
+        # Informational: a timeout here degrades to one line and keeps the
+        # closure already computed above (ADR-0023), instead of replacing the
+        # whole answer with the timeout message.
+        try:
+            install = _install_set(session, [name], odoo_version, profile_name,
+                                   closure_label, deadline=deadline)
+        except OrmQueryTimeout:
+            _install_set_timed_out("module_inspect", name, odoo_version)
+            install = None
 
-    # Render the load order (dep_rows already sorted above: min_depth DESC, name ASC).
-    # Odoo loads deepest transitive dependencies FIRST (e.g. 'base' before 'sale').
-    # index 1 = first to be installed / loaded; deepest deps have highest min_depth.
     lines = [f"{name} dependency closure (Odoo {odoo_version})"]
-    lines.append(f"├─ Transitive dependencies ({len(dep_rows)}) — load order:")
-    last_idx = len(dep_rows) - 1
-    for i, row in enumerate(dep_rows):
-        connector = "└─" if i == last_idx else "├─"
-        repo_str = f"[{row['repo']}] " if row.get("repo") else ""
-        url_str = f"  ({row['repo_url']})" if row.get("repo_url") else ""
-        lines.append(
-            f"│   {connector} {i + 1:>2}. {repo_str}{row['dep_name']}{url_str}"
-        )
-    lines.append(format_next_step([
+    if not dep_rows:
+        lines.append("├─ No transitive dependencies found.")
+    else:
+        # Render the load order (dep_rows already sorted above: min_depth DESC,
+        # name ASC). Odoo loads deepest transitive dependencies FIRST (e.g. 'base'
+        # before 'sale'); index 1 = first to be installed / loaded.
+        lines.append(f"├─ Transitive dependencies ({len(dep_rows)}) - load order:")
+        last_idx = len(dep_rows) - 1
+        for i, row in enumerate(dep_rows):
+            connector = "└─" if i == last_idx else "├─"
+            repo_str = f"[{row['repo']}] " if row.get("repo") else ""
+            url_str = f"  ({row['repo_url']})" if row.get("repo_url") else ""
+            lines.append(
+                f"│   {connector} {i + 1:>2}. {repo_str}{row['dep_name']}{url_str}"
+            )
+    lines.extend(_auto_install_branch(install, name))
+    hints = [
         f"describe_module(name='{name}', odoo_version='{odoo_version}')"
         " for full module overview",
-        f"module_inspect(name='{name}', method='summary', odoo_version='{odoo_version}')"
-        " for manifest detail",
-    ]))
+    ]
+    if dep_rows:
+        hints.append(
+            f"module_inspect(name='{name}', method='summary', odoo_version='{odoo_version}')"
+            " for manifest detail",
+        )
+    lines.append(format_next_step(hints))
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Install set: depends closure + auto_install fixpoint (#380)
+# ---------------------------------------------------------------------------
+
+# Baseline cache: the fresh-database fixpoint from `base` does
+# not depend on the request, only on the version and the caller's scope, so it
+# is reused for a short time. The key is the exact scope the reads ran under
+# (ADR-0034: a tenant never reuses another scope's result). Bounded in size and
+# age; a stale entry is at most _BASELINE_TTL_SECONDS old (an index run that
+# changes `base`'s triggers shows up after that).
+_BASELINE_TTL_SECONDS = 120.0
+_BASELINE_CACHE_MAX = 64
+_baseline_cache: dict[tuple, tuple[float, Baseline]] = {}
+_baseline_lock = threading.Lock()
+
+
+def _scope_key(scope: dict) -> tuple:
+    own = scope.get("own")
+    return (
+        None if own is None else tuple(sorted(own)),
+        tuple(sorted(scope.get("shared") or ())),
+    )
+
+
+def _cached_baseline(key: tuple, compute) -> Baseline:
+    now = time.monotonic()
+    with _baseline_lock:
+        hit = _baseline_cache.get(key)
+        if hit is not None and now - hit[0] < _BASELINE_TTL_SECONDS:
+            return hit[1]
+    value = compute()
+    with _baseline_lock:
+        if len(_baseline_cache) >= _BASELINE_CACHE_MAX:
+            # Drop expired entries first, then the oldest one.
+            for k in [k for k, (t, _) in _baseline_cache.items()
+                      if now - t >= _BASELINE_TTL_SECONDS]:
+                _baseline_cache.pop(k, None)
+            while len(_baseline_cache) >= _BASELINE_CACHE_MAX:
+                oldest = min(_baseline_cache, key=lambda k: _baseline_cache[k][0])
+                _baseline_cache.pop(oldest, None)
+        _baseline_cache[key] = (now, value)
+    return value
+
+
+def clear_install_baseline_cache() -> None:
+    """Drop every cached baseline (tests; after a reindex if needed)."""
+    with _baseline_lock:
+        _baseline_cache.clear()
+
+
+def _odoo_major(odoo_version: str) -> int | None:
+    try:
+        return int(str(odoo_version).split(".")[0])
+    except (ValueError, IndexError):
+        return None
+
+
+def _multi_profile_caveat(scope: dict, profile_name: str | None) -> str | None:
+    """Caveat when the install set mixes several profiles.
+
+    Odoo installs from ONE addons path; OSM resolves over every module the
+    caller can see. With no profile filter (explicit or session pin) and a scope
+    of more than one profile, the result assumes they all share one addons path
+    (an Enterprise or Viindoo auto-install module can appear for a CE-only
+    reader). A profile filter narrows to that profile and its parents, which is
+    the addons path the reader asked for, so no caveat is shown then.
+    """
+    if profile_name or _srv._resolve_profile(None):
+        return None
+    own = scope.get("own")
+    if own is None:
+        span = "every indexed profile"
+    else:
+        count = len(set(own) | set(scope.get("shared") or ()))
+        if count <= 1:
+            return None
+        span = f"{count} profiles"
+    return (
+        f"assumes every module of this scope ({span}) is on one addons path;"
+        " pass profile_name= to resolve against one profile and its parents"
+    )
+
+
+def _install_set(
+    session,
+    roots: list[str],
+    odoo_version: str,
+    profile_name: str | None,
+    label: str,
+    *,
+    deadline: float | None = None,
+) -> InstallSet:
+    """Resolve what installing ``roots`` installs, against the indexed graph.
+
+    Binds ``install_set.resolve_install_set`` to two bounded reads, each ONE
+    hop (ADR-0048, no variable-length path): the direct ``DEPENDS_ON`` of a
+    frontier of names, and the auto-install candidates of a round. A module is
+    available only when it is owned by a profile and visible to the caller
+    (``owned_pred`` = the ADR-0034 choke-point plus the "not a dependency stub"
+    guard), so a candidate outside the caller's scope is never added and never
+    named. The dependencies of an unavailable module are not returned either
+    Nothing is reached THROUGH a module the caller cannot see.
+    Triggers come from ``Module.auto_install_triggers``; a node indexed before
+    that property existed (``auto_install = true`` and no triggers) falls back
+    to its ``DEPENDS_ON`` targets, exact for the boolean form. From
+    :data:`COUNTRY_GATE_MIN_MAJOR` the candidates carry ``Module.countries``
+    (Odoo's v18+ country gate, see ``src.mcp.install_set``).
+
+    All reads share ``deadline`` (default: one per-query timeout from now); the
+    fresh-database baseline is cached per (version, scope) for
+    ``_BASELINE_TTL_SECONDS``. Raises ``OrmQueryTimeout``; callers render a
+    degraded line.
+    """
+    if deadline is None:
+        deadline = time.monotonic() + _srv.NEO4J_QUERY_TIMEOUT_SECONDS
+    scope = _srv._scope(profile_name)
+    available = owned_pred(_srv, "m")
+    major = _odoo_major(odoo_version)
+    country_gate = major is None or major >= COUNTRY_GATE_MIN_MAJOR
+
+    def _check_deadline() -> None:
+        if time.monotonic() > deadline:
+            raise _srv._nonorm_timeout(label)
+
+    def depends_of(names: list[str]) -> dict[str, tuple[bool, list[str]]]:
+        _check_deadline()
+        rows = _srv._data_bounded(
+            session,
+            f"""
+            UNWIND $names AS n
+            OPTIONAL MATCH (m:Module {{name: n, odoo_version: $v}})
+            OPTIONAL MATCH (m)-[:{REL_DEPENDS_ON}]->(d:Module {{odoo_version: $v}})
+            WITH n, m, collect(DISTINCT d.name) AS deps
+            WITH n, deps, (m IS NOT NULL AND {available}) AS ok
+            RETURN n AS name, ok AS available,
+                   CASE WHEN ok THEN deps ELSE [] END AS deps
+            ORDER BY name ASC
+            """,
+            label,
+            names=names, v=odoo_version, **scope,
+        )
+        return {
+            r["name"]: (bool(r["available"]), sorted(r["deps"] or []))
+            for r in rows
+        }
+
+    def candidates(installed: frozenset[str], excluded: frozenset[str]):
+        _check_deadline()
+        rows = _srv._data_bounded(
+            session,
+            f"""
+            MATCH (m:Module {{odoo_version: $v}})
+            WHERE (m.auto_install_triggers IS NOT NULL OR m.auto_install = true)
+              AND NOT m.name IN $installed AND NOT m.name IN $excluded
+              AND {available}
+            OPTIONAL MATCH (m)-[:{REL_DEPENDS_ON}]->(d:Module {{odoo_version: $v}})
+            WITH m, collect(DISTINCT d.name) AS deps
+            WITH m.name AS name, coalesce(m.auto_install_triggers, deps) AS triggers,
+                 coalesce(m.countries, []) AS countries
+            WHERE all(t IN triggers WHERE t IN $installed)
+            RETURN name, triggers, countries
+            ORDER BY name ASC
+            """,
+            label,
+            v=odoo_version, installed=sorted(installed), excluded=sorted(excluded),
+            **scope,
+        )
+        return [
+            (r["name"], list(r["triggers"] or []), list(r.get("countries") or []))
+            for r in rows
+        ]
+
+    baseline = _cached_baseline(
+        (odoo_version, *_scope_key(scope)),
+        lambda: compute_baseline(depends_of, candidates),
+    )
+    result = resolve_install_set(roots, depends_of, candidates,
+                                 country_gate=country_gate, baseline=baseline)
+    result.caveat = _multi_profile_caveat(scope, profile_name)
+    return result
+
+
+def _install_set_timed_out(tool: str, subject: str, odoo_version: str) -> None:
+    """Record a degraded auto-install part (metric + log + degraded marker)."""
+    _srv._metric_nonorm_query_timeout(tool)
+    logger.warning("%s: auto-install set timed out for %r (Odoo %s); rendered degraded",
+                   tool, subject, odoo_version)
+    from src.mcp.degraded import mark_degraded  # noqa: PLC0415 - leaf import
+    mark_degraded(f"{tool} auto-install set timed out")
+
+
+def _auto_install_label(entry: AutoInstalled) -> str:
+    if entry.required_by:
+        return f"{entry.name} (dependency of {entry.required_by})"
+    if entry.triggers:
+        return f"{entry.name} (triggered by: {', '.join(entry.triggers)})"
+    return f"{entry.name} (installed with every new database)"
+
+
+def _country_conditional_text(install: InstallSet, cap: int) -> str:
+    items = [
+        f"{mod} ({', '.join(c.upper() for c in countries)})"
+        for mod, countries in sorted(install.country_conditional.items())
+    ]
+    text = ", ".join(items[:cap])
+    if len(items) > cap:
+        text += f", ... and {len(items) - cap} more"
+    return text
+
+
+def _auto_install_branch(install: InstallSet | None, name: str) -> list[str]:
+    """module_inspect(dependencies) branch: what auto_install adds (#380).
+
+    The list is capped at ``LIST_PREVIEW_MAX_ITEMS`` (ADR-0023 section 3) with
+    an "... and N more" row. ``install=None`` is the timed-out case: one
+    degraded line, the rest of the answer is kept.
+    """
+    if install is None:
+        return [
+            "├─ Auto-installed with this module: not computed (the query timed out;"
+            " retry later, or narrow with profile_name=)"
+        ]
+    lines: list[str] = []
+    if install.auto:
+        lines.append(f"├─ Auto-installed with this module ({len(install.auto)}):")
+        rows = [_auto_install_label(e) for e in install.auto[:LIST_PREVIEW_MAX_ITEMS]]
+        if len(install.auto) > LIST_PREVIEW_MAX_ITEMS:
+            rows.append(f"... and {len(install.auto) - LIST_PREVIEW_MAX_ITEMS} more")
+        if install.truncated:
+            rows.append("... stopped at the round limit, the list may be incomplete")
+        lines.extend(render_list_block(rows, prefix="│   "))
+    elif name in install.baseline:
+        lines.append(
+            "├─ Auto-installed with this module: none"
+            " (it is already installed with every new database)"
+        )
+    else:
+        lines.append("├─ Auto-installed with this module: none")
+    if install.country_conditional:
+        lines.append(
+            "├─ Country-conditional, auto-installed only when a company is in one"
+            f" of its countries ({len(install.country_conditional)}): "
+            + _country_conditional_text(install, LIST_PREVIEW_MAX_ITEMS)
+        )
+    if install.unsatisfiable:
+        missing = ", ".join(
+            f"{mod} (needs {dep})" for mod, dep in sorted(install.unsatisfiable.items())
+        )
+        lines.append(
+            "├─ Not auto-installed, a dependency is not indexed in this scope"
+            f" ({len(install.unsatisfiable)}): {missing}"
+        )
+    if install.caveat:
+        lines.append(f"├─ Note: the install set {install.caveat}")
+    return lines
+
+
+def _impact_auto_install_line(
+    session,
+    model_name: str,
+    odoo_version: str,
+    profile_name: str | None,
+    label: str,
+) -> str | None:
+    """impact_analysis row: modules auto-installed with the model's definer (#380).
+
+    The roots are the modules that DEFINE the model (``is_definition``) and the
+    caller can see; every database that has the model has these modules too.
+    Returns None when no defining module is visible. Informational and
+    unscored: a timeout renders a degraded row instead of failing the whole
+    impact report (ADR-0023).
+    """
+    try:
+        roots = [
+            r["name"] for r in _srv._data_bounded(
+                session,
+                f"""
+                MATCH (md:Model {{name: $mn, odoo_version: $v}})-[:DEFINED_IN]->(m:Module)
+                WHERE coalesce(md.is_definition, false) = true AND {owned_pred(_srv, "m")}
+                RETURN DISTINCT m.name AS name
+                ORDER BY name ASC
+                """,
+                label,
+                mn=model_name, v=odoo_version, **_srv._scope(profile_name),
+            )
+        ]
+        if not roots:
+            return None
+        install = _install_set(session, roots, odoo_version, profile_name, label)
+    except OrmQueryTimeout:
+        _install_set_timed_out("impact_analysis", model_name, odoo_version)
+        return ("├─ Auto-installed with the defining module: not computed"
+                " (the query timed out; retry later, or narrow with profile_name=)")
+    noun = "module" if len(roots) == 1 else "modules"
+    header = f"Auto-installed with the defining {noun} {', '.join(roots)}"
+    note = f" (note: {install.caveat})" if install.caveat else ""
+    extra = ""
+    if install.country_conditional:
+        extra = (
+            f"; country-conditional ({len(install.country_conditional)}): "
+            + _country_conditional_text(install, IMPACT_MODULES_MAX)
+        )
+    if not install.auto:
+        return f"├─ {header}: none{extra}{note}"
+    rows = [_auto_install_label(e) for e in install.auto]
+    preview = ", ".join(rows[:IMPACT_MODULES_MAX])
+    if len(rows) > IMPACT_MODULES_MAX:
+        preview += f", ... and {len(rows) - IMPACT_MODULES_MAX} more"
+    return f"├─ {header} ({len(rows)}): {preview}{extra}{note}"
 
 
 # Bind the owning server module generation AFTER the helper functions are defined.

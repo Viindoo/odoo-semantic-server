@@ -337,6 +337,24 @@ xóa module; đường index từng repo chỉ quan sát. Chi tiết: ADR-0056.
 // M4.6 — Module/Method enrichment (property additions, không phải node mới)
 (:Module ..., edition, viindoo_equivalent_qname)
                                   // edition: community|enterprise|viindoo|oca|custom
+(:Module ..., auto_install, auto_install_triggers)
+                                  // #380: auto_install = cờ như Odoo lưu (`is not False`);
+                                  // auto_install_triggers = list[str] | null, resolve theo
+                                  // version bởi registry.auto_install_triggers: null = không
+                                  // auto-install; [] = dạng v13+ "luôn cài" (cài khi tạo DB,
+                                  // không bị kích bởi lần cài sau); còn lại = tên module kích
+                                  // hoạt (v8-v12: mọi depends, `active` thay `auto_install`;
+                                  // v13+: chỉ đọc `auto_install` - list trong manifest, hoặc mọi
+                                  // depends khi True; list có trigger không thuộc depends = Odoo
+                                  // từ chối manifest -> null). Node index trước #380 (null trong
+                                  // khi auto_install=true) được read side coi như = các DEPENDS_ON.
+                                  // Đọc bởi src/mcp/install_set.py (install-set fixpoint, per-hop,
+                                  // không VLP, một BFS mỗi vòng, baseline cache theo (version,
+                                  // scope) 120s). v18+: candidate có `countries` không tự cài trên
+                                  // DB mới (button_install.must_install), liệt kê riêng dòng
+                                  // "Country-conditional". Không đi qua module ngoài scope (deps
+                                  // của module không thấy được không được đọc). Timeout -> một
+                                  // dòng degraded. Backfill: ops/backfill_auto_install.py.
 (:Method ..., convention_kind, super_safety, return_required)
                                   // convention_kind: compute|inverse|search|default|builder|prepare|check|action|crud|private|public
                                   // super_safety: always|usually|never
