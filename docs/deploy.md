@@ -822,7 +822,7 @@ cũng là lượt dọn vòng đời module: scan = manifest git-tracked, module
 + embedding khi không repo nào còn ship. **Không còn lượt monthly `--full --gc`:** `--gc` là
 no-op deprecated (vẫn được nhận, log WARNING), và `--full` KHÔNG cần cho dọn dẹp - chỉ dùng để
 backfill property index-time (xem ghi chú ADR-0053 bên dưới). Lượt chạy tay (backfill `--full`,
-`--allow-mass-retire` một lần) dùng `osm-fernet-run` (KHÔNG bare `systemd-run`): `index-repo`
+bypass khẩn cấp `--allow-mass-retire`) dùng `osm-fernet-run` (KHÔNG bare `systemd-run`): `index-repo`
 chạy `refresh_before_scan` (post-#355) như nightly timer, nên fetch SSH repo riêng tư cần
 FERNET_KEY để decrypt SSH key; `osm-fernet-run` đã wrap sẵn
 `LoadCredential=FERNET_KEY:/etc/credstore/FERNET_KEY` + nạp `.env` (xem `docs/deploy/osm-fernet-run`):
@@ -837,21 +837,32 @@ sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
 
 | Cờ | Ý nghĩa | Được đặt ở đâu |
 |---|---|---|
-| (không cờ) | scan, ghi, flag pending, reconcile retire dưới cổng G-A/G-B | nightly timer |
+| (không cờ) | scan, ghi, flag pending, reconcile retire. Mọi lần xóa (retire module, orphan sweep, embedding sweep, entity prune, shared-module prune) xóa đúng cái git chứng minh đã mất - bất kể số lượng, không ai duyệt (ADR-0057 phase 2); cái git không chứng minh được thì giữ và báo qua `lifecycle-audit`. Chỉ G-A và total wipe ngoài lịch sử branch là còn chặn | nightly timer |
 | `--no-retire` | escape hatch sự cố: scan + ghi, KHÔNG xóa gì; tên chờ xóa giữ `retire_pending`, lượt chạy thường kế tiếp retire | drop-in tạm thời khi có sự cố, gỡ ngay sau đó |
-| `--allow-mass-retire` | bỏ qua cổng G-B (mass retire, total wipe, entity-prune soft gate) cho lượt chạy đó; KHÔNG bao giờ bỏ qua G-A | **một lần, bằng tay**, sau khi đọc `lifecycle_attention` và xác nhận bằng git |
+| `--allow-mass-retire` | **bypass khẩn cấp, không thuộc đường bình thường**: xóa THÊM cái git không chứng minh được đã mất (module manifest còn được track, orphan mà checkout còn ship, phần bị giữ của shared-module prune) và gỡ total wipe bị giữ / embedding sweep bị giữ; KHÔNG bao giờ bỏ qua G-A; KHÔNG tác động entity prune của module một repo ship (giữ parser gap) | chỉ khi oracle git có lỗi đã xác minh, **một lần, bằng tay**, scope hẹp nhất (`--profile <tên>`) |
 | `--gc` | deprecated, không tác dụng | không dùng |
 
-> **KHÔNG BAO GIỜ đặt `--allow-mass-retire` trong timer, cron hay drop-in.** Cổng G-B tồn tại để
-> chặn đúng tình huống một checkout hỏng (clone dở, `reset` nhầm branch, manifest bị xóa hàng
-> loạt) làm cả repo "biến mất" và bị retire. Cờ này chỉ dành cho một lần chạy có người quyết,
-> scope hẹp nhất có thể (`--profile <tên>`).
+> **KHÔNG BAO GIỜ đặt `--allow-mass-retire` trong timer, cron hay drop-in, và không dùng nó để
+> "duyệt" một lần xóa:** từ ADR-0057 phase 2 không có lần xóa nào cần người duyệt. Checkout hỏng
+> (clone dở, `reset` nhầm branch, force-push, clone sai repo) được chặn bằng bằng chứng git: G-A
+> (HEAD == `origin/<branch>`, đủ manifest), module chỉ retire khi manifest đã biến mất khỏi HEAD
+> tree, và total wipe chỉ retire khi commit ledger phản ánh lần trước là tổ tiên của HEAD. Cờ chỉ
+> để xóa thứ mà git KHÔNG chứng minh được - tức là khi nghi oracle sai, không phải khi dữ liệu nhiều.
 
 **Đọc exit code 3 (lifecycle attention).** `index-repo` thoát **3** khi dữ liệu đã được index
-nhưng vòng đời module cần người xem: một cổng bị chặn, một tên không quyết được, hoặc reconcile
-lỗi. `OnFailure=osm-alert@%n` của unit bắn cảnh báo. Chi tiết nằm ở cuối log
+nhưng OSM không phản ánh được code mà hệ thống không tự lành: checkout không tin được (G-A, total
+wipe ngoài lịch sử branch), manifest không parse, một tên không quyết được, graph mất node của
+module present, repo không có checkout và clone lại vẫn lỗi, pre-scan fetch của cùng một repo lỗi
+hai lượt liên tiếp (`stale_repos`), fetch lỗi cho MỌI repo của lượt chạy (ít nhất hai; DNS / mạng,
+`outages: fetch_outage`), embedder không trả vector nào cho mọi chunk lượt chạy gửi
+(`outages: embedder_down`), hoặc reconcile lỗi. Một lần fetch lỗi rồi lượt sau tự lành chỉ là
+WARNING + một dòng `lifecycle_attention` (`pre-scan fetch failed (...)`). Giữ dữ liệu git
+không chứng minh được đã mất KHÔNG phải exit 3 (chỉ là mục thông tin của `lifecycle-audit`). `OnFailure=osm-alert@%n` của unit gửi mail cho mọi admin (kèm khối attention của
+lần chạy này, cùng một nội dung tối đa một lần mỗi `OSM_ALERT_REPEAT_HOURS`, mặc định 20h, nên lỗi kéo dài
+vẫn mail mỗi đêm). Chi tiết nằm ở cuối log
 (`/var/log/odoo-semantic/odoo-semantic-reindex.log`, dòng `Lifecycle needs attention (exit 3):`
-kèm các dòng `gates_tripped: ...` / `undecidable: ...` / `errors: ...`) và ở cột
+kèm các dòng `gates_tripped: ...` / `undecidable: ...` / `errors: ...` / `unavailable_repos: ...`
+/ `stale_repos: ...` / `outages: ...`) và ở cột
 `repos.lifecycle_attention` của từng repo:
 
 ```bash
@@ -862,9 +873,13 @@ psql "$PG_DSN" -c "SELECT id, url, branch, lifecycle_attention_at, lifecycle_att
 | Tín hiệu | Nghĩa | Việc cần làm |
 |---|---|---|
 | `scan_incomplete` / `scan_untrusted`, `git tracking unavailable`, `no origin/<branch> ref` | checkout không khớp branch tip, thiếu manifest được track, hoặc git từ chối repo (`safe.directory`) | sửa checkout (fetch + `reset --hard origin/<branch>`, quyền sở hữu thư mục). Không có cờ nào bỏ qua G-A. Lượt chạy kế tự retire |
-| `mass_retire` / `total_wipe` (`mass retire: N of M ...`) | hơn 50% (và >= 20) module của repo biến mất, hoặc không còn module nào | kiểm bằng `git log --diff-filter=D -- '*/__manifest__.py'` + `lifecycle-audit --profile <p>`; nếu đúng là xóa thật: một lần `index-repo --profile <p> --allow-mass-retire` qua `osm-fernet-run` |
-| `embedding_sweep:mass_retire` / `embedding_sweep:total_wipe` (`embedding sweep at <v>: N of M embedding group(s) ... for profile(s) <p>`; stderr thêm dòng `embedding_orphans_held: <v>: N group(s) of profile(s) <p>`; profile không còn repo nào ở version thì attention nằm trên mọi repo của version) | hơn 50% (và >= 20) nhóm embedding `(module, profile)` của version là orphan, hoặc ledger không còn module nào present ở version đó | đối chiếu `embedding_orphans_held` của `lifecycle-audit --all --json` với git (module còn được repo của profile đó track không?); nếu đúng là rác: một lần `index-repo --profile <p> --allow-mass-retire` với `<p>` là profile mà attention/stderr nêu (`run once index-repo --profile <p> ...`) - một profile CÓ repo ở version đó (một lượt chạy chỉ reconcile các version của repo thuộc profile; profile không còn repo nào ở version thì chạy chính nó không xóa gì). Cờ này gỡ MỌI mass gate (G-B) của lượt chạy đó, không chỉ gate embedding: xem hết `gates_tripped` của profile đó trước |
-| `entity_prune:<module>@<v>` / `entity prune of M@v held` | re-parse module M không còn tạo ra quá nửa node/relationship cũ của nó | kiểm parse của M (file lỗi? thư mục đổi?); nếu thay đổi là thật: một lần `--allow-mass-retire` cho profile đó |
+| `total_wipe` (`total wipe: none of the N module(s) present before is in the scan; ...`) | mọi module của repo biến mất mà git không chứng minh: commit ledger phản ánh lần trước không phải tổ tiên của HEAD (force-push, đổi branch, clone sai repo), hoặc HEAD tree vẫn còn manifest (scan / checkout hỏng), hoặc git không đọc được tree | kiểm checkout: `git -C <local_path> log --oneline -3`, `git merge-base --is-ancestor <presence_head_sha> HEAD`, url/branch đã đăng ký. Sửa checkout (hoặc đăng ký lại đúng repo); lượt chạy kế tự quyết. Một total wipe là commit thật trên branch được retire không cần cờ |
+| `embedding_sweep:graph_unhealthy` (`embedding sweep at <v>: N orphan embedding group(s) ... kept: K module(s) present in the ledger have no graph node (...)`; stderr thêm dòng `embedding_orphans_held: <v>: ...`) | graph mất Module node của module mà ledger còn `present` (profile đã sync), nên không phân biệt được orphan với module sống | ghi lại các module đó: chạy `index-repo --profile <p> --full` với `<p>` là profile mà attention/stderr nêu (profile ship module bị mất node; lượt đó cũng reconcile version). Lượt kế tiếp xét orphan bằng git |
+| `entity_prune:<module>@<v>` | không còn được tạo (ADR-0057 phase 2): entity prune của module một repo ship VÀ shared-module prune xóa cái git chứng minh đã mất (graph + embedding, không ngưỡng); cái source của một owner còn định nghĩa được giữ, ghi vào Module node + finding `parser_gaps` của `lifecycle-audit`, exit 0 - việc cần làm là sửa parser, không phải duyệt | - |
+| `unavailable_repos: repo id=<id> (<url>): ...` (attention `checkout unavailable: ...`) | repo đăng ký không có checkout và lượt chạy không clone được (vd branch chưa tồn tại trên remote, SSH key sai); hoặc `clone_status` là `cloned` nhưng thư mục đã mất; hoặc `manual` với `local_path` do người đăng ký trỏ tới (vd `apply-preset --base-dir`, không phải thư mục clone OSM quản lý) mà thư mục không có - hai trường hợp này không tự clone lại (disk chưa mount không bị thay bằng clone mới); hoặc thư mục clone OSM quản lý đang chứa clone của origin KHÁC (hai repo cùng slug URL trong một profile) | sửa nguyên nhân trong dòng (tạo branch, sửa key / url) - lượt chạy kế tự clone lại (`clone_status` pending / error, hoặc manual tại thư mục clone OSM quản lý); thư mục `cloned` / `manual` bị mất: kiểm disk / mount rồi clone lại từ Web UI, hoặc gỡ đăng ký repo; trùng slug: đăng ký một trong hai repo ở profile khác hoặc xóa thư mục cũ |
+| `stale_repos: repo id=<id> (<url>): <cause>` (attention `pre-scan fetch failed in two consecutive runs (...)`) | `git fetch` của repo lỗi hai lượt liên tiếp (key bị thu hồi, host / repo không còn, DNS): OSM index trạng thái fetch cuối và không còn theo branch remote | sửa nguyên nhân trong dòng (key, url, mạng); lượt chạy kế fetch được thì tự hết |
+| `outages: fetch_outage: the pre-scan fetch failed for all N repos ...` | fetch lỗi cho mọi repo của lượt chạy (ít nhất hai): sự cố DNS / mạng hoặc credential dùng chung | kiểm DNS / mạng / key từ máy chủ (`git -C <local_path> fetch origin` bằng user odoo-semantic); dữ liệu không cần sửa, lượt kế tự fetch |
+| `outages: embedder_down: the embedder returned no vector for any of the N chunk(s) ...` | embedder down cả lượt: graph đã ghi, embedding thì không (row cũ được giữ) | khởi động lại embedder (`EMBEDDER_URL`), rồi chạy lại `index-repo --profile <p> --full` cho profile đã ghi lượt đó (hoặc chờ lượt kế re-parse module) |
 | `undecidable: <module>@<v> kept: repo(s) ... not synced` | một repo có thể vẫn ship module chưa được index lại | index profile của repo đó (hoặc gỡ đăng ký repo không còn dùng); reconcile kế tiếp tự quyết |
 | `entity prune of M@v skipped: parse degraded` | file của M không đọc/parse được | sửa file; module được re-parse khi file đổi (lỗi đọc tạm thời: tự thử lại một lần) |
 | `errors: ...` (vd `LifecycleLockTimeout`) | reconcile không lấy được lock `retire:<v>` trong `RETIRE_LOCK_WAIT_SECONDS` hoặc lỗi Neo4j/PG | xem traceback trong log; lượt chạy kế tự làm lại, tên vẫn `retire_pending` |
@@ -878,20 +893,24 @@ lý) lượt chạy clone nó một lần
 WARNING, `unavailable_repos` + `lifecycle_attention`, exit 3, không traceback. Cho tới khi có
 checkout, repo đó vẫn giữ orphan của profile nó cùng children module-less của cả version (an toàn).
 
-Không có gì bị xóa trong mọi trường hợp trên: dữ liệu được giữ lại cho tới khi lượt chạy sạch
-kế tiếp (hoặc lượt `--allow-mass-retire` có người quyết) xử lý.
+Không có gì bị xóa trong mọi trường hợp trên: dữ liệu được giữ lại cho tới khi lượt chạy kế tiếp
+có bằng chứng git. Không lần xóa nào cần người duyệt (ADR-0057 và phase 2 của nó); những gì git
+không chứng minh được đã mất (`unproven_drops`, orphan / nhóm embedding mà checkout còn ship,
+`parser_gaps`) được giữ và báo qua `lifecycle-audit`, không exit 3 và không exit 4.
 
 **Dry run bất kỳ lúc nào:** `lifecycle-audit` chạy đúng code quyết định của lượt index kế
 tiếp mà KHÔNG ghi gì (không lock, không `git fetch`):
 
 ```bash
 sudo osm-fernet-run /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
-  -m src.indexer lifecycle-audit --all            # text; --json cho schema osm.lifecycle-audit/3
+  -m src.indexer lifecycle-audit --all            # text; --json cho schema osm.lifecycle-audit/5
 ```
 
 Detector hằng tuần: `docs/deploy/odoo-semantic-lifecycle-audit.{service,timer}` chạy
 `lifecycle-audit --all --json --fail-on-findings` (exit **4** khi có finding -> `OnFailure`
-alert). Chỉ bật SAU khi rollout 0.19.0 đã chạy sạch - xem
+alert). `parser_gaps` và `unproven_drops` là dữ liệu được giữ đúng chủ ý (chỉ sửa code mới giải
+quyết): vẫn được liệt kê trong báo cáo (`informational_findings`, dòng text `kept (informational,
+not a finding): ...`) nhưng không tính vào `has_findings`, không exit 4, không mail. Chỉ bật SAU khi rollout 0.19.0 đã chạy sạch - xem
 [`docs/deploy/runbooks/module-lifecycle-cleanup.md`](deploy/runbooks/module-lifecycle-cleanup.md).
 
 **Env của vòng đời** (default + lý do: [`docs/operations/timeouts.md`](operations/timeouts.md)

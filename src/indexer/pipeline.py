@@ -614,7 +614,8 @@ def index_profile(
                        to keep the old local-only behaviour.
         retire:        False (CLI --no-retire) scans and writes but deletes
                        nothing; no longer shipped modules stay pending.
-        allow_mass_retire: bypass the mass-retire gate G-B (never set in a timer).
+        allow_mass_retire: emergency bypass: also delete what the git evidence
+                       cannot prove gone (never set in a timer; ADR-0057 phase 2).
         reconcile:     run the per-version lifecycle reconcile at the end of the
                        profile (default). ``index_all`` passes False and runs it
                        once per version after every profile worker joined.

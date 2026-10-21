@@ -986,16 +986,17 @@ class ModulePresenceStore:
 
         Maps each such name to its owner rows (sorted by repo id): repo_id,
         repo_basename, profile_name, path, local_path (of the repo, None when
-        unknown), needs_rewrite, retire_pending, last_full_parse_at,
-        last_full_parse_sha, last_full_parse_unobserved, last_full_parse_embedded_at,
-        last_full_parse_run.
+        unknown), presence_head_sha (the commit the repo's ledger last
+        reflected, i.e. its last trusted scan), needs_rewrite, retire_pending,
+        last_full_parse_at, last_full_parse_sha, last_full_parse_unobserved,
+        last_full_parse_embedded_at, last_full_parse_run.
         """
         with self._conn(conn) as c:
             rows = self._fetch_all(
                 c,
                 """
                 SELECT mp.name, mp.repo_id, mp.repo_basename, mp.profile_name, mp.path,
-                       r.local_path, mp.needs_rewrite, mp.retire_pending,
+                       r.local_path, r.presence_head_sha, mp.needs_rewrite, mp.retire_pending,
                        mp.last_full_parse_at, mp.last_full_parse_sha,
                        mp.last_full_parse_unobserved, mp.last_full_parse_embedded_at,
                        mp.last_full_parse_run
@@ -1239,7 +1240,9 @@ class ModulePresenceStore:
 
         ``synced`` is True only when ``presence_head_sha`` equals ``head_sha``.
         Keys: repo_id, profile_name, repo_url, repo_basename, head_sha,
-        presence_head_sha, local_path, synced.
+        presence_head_sha, local_path, repo_branch, profile_version, synced
+        (the branch and profile version feed the version rule of the
+        reconcile's checkout evidence).
         """
         with self._conn(conn) as c:
             return self._fetch_all(
@@ -1249,6 +1252,7 @@ class ModulePresenceStore:
                        regexp_replace(regexp_replace(r.local_path, '/+$', ''), '^.*/', '')
                            AS repo_basename,
                        r.head_sha, r.presence_head_sha, r.local_path,
+                       r.branch AS repo_branch, p.odoo_version AS profile_version,
                        (r.presence_head_sha IS NOT NULL
                         AND r.presence_head_sha = r.head_sha) AS synced
                 FROM repos r JOIN profiles p ON p.id = r.profile_id

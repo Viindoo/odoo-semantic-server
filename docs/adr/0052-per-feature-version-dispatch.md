@@ -8,6 +8,12 @@
 
 **Relates to:** ADR-0002 (spec schema per-version), ADR-0005 (core coverage version paths), ADR-0032 (parser version-dispatch registry — `VersionRegistry`), ADR-0025 (stylesheet indexing)
 
+> **Amendment 2026-10-21 (ADR-0057 R9):** the `:AssetBundle` node this wave writes keeps
+> `module` (set on create) and `profile` (union on write) only until the lifecycle
+> reconcile: after the orphan-bundle GC, `reconcile_asset_bundle_owners` resets both to the
+> bundle's live contributors, so a retired, moved or merged-away contributor leaves neither
+> its name nor its profile on a shared bundle.
+
 ---
 
 ## Context

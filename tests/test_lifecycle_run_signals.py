@@ -111,20 +111,20 @@ def _path_prefix(driver, name: str) -> str:
 def test_skipped_repo_attention_drops_the_signal_of_a_confirmed_mass_retire(
     pg, neo4j_driver, tmp_path,
 ):
-    """A commit removes every module: the run trips the total-wipe gate and
-    tells the operator. The operator confirms with --allow-mass-retire, the
-    modules are retired. The next night nothing changed: the run is the
-    zero-cost skip, nothing holds any more, so the repo carries no attention -
-    neither the tripped gate nor the confirmed-retire signal."""
+    """The branch is replaced by an unrelated root (every module vanishes,
+    outside the branch history): the run trips the total-wipe gate and tells
+    the operator. The emergency bypass --allow-mass-retire retires the
+    modules. The next night nothing changed: the run is the zero-cost skip,
+    nothing holds any more, so the repo carries no attention - neither the
+    tripped gate nor the confirmed-retire signal. (A wipe committed on the
+    branch is retired without a trip, ADR-0057 phase 2.)"""
     repo = GitRepo(tmp_path, "wiped_addons")
     write_module(repo, "wipe_a")
     write_module(repo, "wipe_b")
     repo.commit("add")
     (rid,) = register("wipe_99", repo)
     run(pg, "wipe_99")
-    repo.rm("wipe_a")
-    repo.rm("wipe_b")
-    repo.commit("remove every module")
+    repo.force_push_unrelated_root()
     run(pg, "wipe_99")
     assert _attention(pg, rid), "precondition: the tripped gate is signalled"
     run(pg, "wipe_99", allow_mass_retire=True)
@@ -360,16 +360,18 @@ def _bulk_fields(n: int) -> str:
     return ("\n" + " " * 12).join(f"f{i:02d} = fields.Char()" for i in range(n))
 
 
-def test_a_parser_gap_is_an_audit_finding_and_a_git_proven_drop_is_not(
+def test_a_parser_gap_is_reported_but_never_alerts_and_a_git_proven_drop_is_not_reported(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
 ):
     """ADR-0057. A commit that drops 26 of the module's fields is pruned by the
     run itself, so the weekly audit is clean (no approval, nothing to report).
     When instead the parser stops producing fields the unchanged source still
     defines, the run keeps them and the audit reports a ``parser_gaps`` entry
-    with the kept counts and a sample, exits 4 under --fail-on-findings (JSON
-    and text, schema ``osm.lifecycle-audit/4``), and does not double-count it
-    as a shared-module prune. The index run itself exited without attention."""
+    with the kept counts and a sample (JSON and text, schema
+    ``osm.lifecycle-audit/5``) without double-counting it as a shared-module
+    prune. Kept data is no alert: the entry is informational, so
+    --fail-on-findings still exits 0 (the weekly timer mails nobody about it).
+    The index run itself exited without attention."""
     from src.indexer import parser_python
 
     repo = GitRepo(tmp_path, "bulk_addons")
@@ -414,11 +416,13 @@ def test_a_parser_gap_is_an_audit_finding_and_a_git_proven_drop_is_not(
     assert gaps[0]["reevaluated_next_run"] is False
     assert report["findings"]["parser_gaps"] == 1
     assert report["findings"].get("shared_prunes") == 0
-    assert code == 4
-    assert report["schema"] == "osm.lifecycle-audit/4"
+    assert report["has_findings"] is False, report["findings"]
+    assert code == 0, "a parser gap is kept data: listed, never exit 4"
+    assert report["schema"] == "osm.lifecycle-audit/5"
     code, out, _ = _cli(
         monkeypatch, capsys, _ephemeral_pg_db,
         "lifecycle-audit", "--profile", "bulk_99", "--fail-on-findings",
     )
-    assert code == 4
+    assert code == 0
     assert f"parser gap: {BULK}@{V}" in out
+    assert "kept (informational, not a finding): parser_gaps=1" in out

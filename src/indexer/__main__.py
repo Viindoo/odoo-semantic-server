@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from src import config
 from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
-from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS
+from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS, INFORMATIONAL_FINDING_KEYS
 from src.indexer.pipeline import (
     IndexRunError,
     audit_repo_for_profile,
@@ -157,16 +157,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Bypass the mass-drop safety gates: module retirement / orphan sweep "
-            "(more than half of a repo's modules, at least 20, or all of them, "
-            "vanishing in one run) and the entity prune of a module several repos "
-            "ship (more than half of its nodes or relationships, at least 20). A "
-            "tripped gate makes the run exit 3. The entity prune of a module one "
-            "repo ships has no such gate and ignores this flag: it deletes what "
-            "the git HEAD tree proves gone and keeps what the source still "
-            "defines (a parser gap, reported by lifecycle-audit, never exit 3). "
-            "Never set it in a timer; use it once after checking "
-            "lifecycle_attention."
+            "Emergency bypass only, never needed on the normal path: every "
+            "lifecycle deletion already deletes what the git HEAD tree proves "
+            "gone, whatever the count, with no approval (retirement, orphan and "
+            "embedding sweeps, the entity prune of a module several repos ship). "
+            "This flag ALSO deletes what git cannot prove gone: modules whose "
+            "manifest is still tracked, orphans a checkout still ships, the kept "
+            "part of a shared-module prune; and it lifts a held total wipe "
+            "(exit 3: every module vanished but the wipe is not in the branch "
+            "history) and a held embedding sweep. The entity prune of a module "
+            "one repo ships ignores this flag: it keeps a parser gap (reported "
+            "by lifecycle-audit, never exit 3). Never set it in a timer."
         ),
     )
 
@@ -248,9 +249,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fail-on-findings", action="store_true",
         help=(
             f"Exit {EXIT_AUDIT_FINDINGS} when any finding count is non-zero: "
-            f"{', '.join(FINDING_KEYS)} (the report's 'findings'). The shared-module "
-            "bootstrap backlog is reported but is not a finding. The weekly drift "
-            "detector."
+            f"{', '.join(FINDING_KEYS)} (the report's 'findings'), except the "
+            f"informational {', '.join(sorted(INFORMATIONAL_FINDING_KEYS))} (kept data, "
+            "listed in the report, never exit 4). The shared-module bootstrap backlog "
+            "is reported but is not a finding. The weekly drift detector."
         ),
     )
 
@@ -449,7 +451,10 @@ def _run_lifecycle_audit(args) -> int:
     else:
         print(render_text(report))
     if args.fail_on_findings and report["has_findings"]:
-        counts = ", ".join(f"{k}={n}" for k, n in report["findings"].items() if n)
+        informational = set(report.get("informational_findings") or ())
+        counts = ", ".join(
+            f"{k}={n}" for k, n in report["findings"].items() if n and k not in informational
+        )
         print(
             f"Lifecycle audit found drift (exit {EXIT_AUDIT_FINDINGS}): {counts}",
             file=sys.stderr,

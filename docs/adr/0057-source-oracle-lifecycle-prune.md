@@ -9,6 +9,10 @@
 **Amends:** ADR-0056 D6 (soft prune gate row, the `--allow-mass-retire` paragraph for the
 entity prune), D9 (skip list, "Embeddings follow the graph"), D11 (`lifecycle-audit` schema
 `/4`, `held_prunes` -> `parser_gaps`), Known limits.
+**Phase 2 (2026-10-20, below):** also amends ADR-0056 D4 (pending names), D6 (every G-B row,
+the `--allow-mass-retire` paragraph, exit 3), D8 (orphan sweep), D10 (shared-module prune),
+D11 (schema `/5`) and Known limits (registered repo without a checkout).
+
 ---
 
 ## Context
@@ -204,11 +208,140 @@ embedding sweeps) and the shared-module prune can adopt the same rule later (PR-
 - (Closed by phase 2.) The shared-module prune and the repo-level gates used the G-B ratio
   and `--allow-mass-retire`.
 
+---
+
+## Phase 2 - every remaining lifecycle deletion is decided by git (2026-10-20)
+
+**Context.** After phase 1 the only lifecycle deletions still held for a human were the
+repo-level `mass_retire` / `total_wipe` gates, the orphan sweep and the orphan-embedding sweep
+(`orphan_sweep:<gate>`, `embedding_sweep:<gate>`) and the shared-module prune
+(`entity_prune:<M>@<v>`), all behind the same 50% / 20 ratio and `--allow-mass-retire`. A
+ratio is no evidence either way: a commit that deletes 22 of 25 modules was held, a dispatch
+regression that hides 5 of 100 was not. Same owner rule: delete what git proves gone, keep
+what git cannot prove; one-directional; keeping is not an alert.
+
+### P1 - Repo-level drops (`lifecycle.apply_gates`, `pipeline_repo.observe_lifecycle`)
+
+The evidence is the raw HEAD tree of the G-A-trusted checkout
+(`git_utils.head_tree_module_names`): every directory holding a `__manifest__.py` or
+`__openerp__.py` in `git ls-tree -r HEAD`, from the object database (never the working tree
+or the index), with no version dispatch (it must not depend on what the scan accepts), a
+submodule read at the commit its gitlink records. Git unable to list it (not a repository,
+unborn HEAD, an unreadable submodule) proves nothing.
+
+| Drop | Verdict | Effect |
+|---|---|---|
+| ledger row present -> absent, name not in the HEAD tree | proven | flagged `retire_pending` unblocked, whatever the count; the reconcile retires it (D4/H5 unchanged) |
+| ledger row present -> absent, name still in the HEAD tree | unproven | not flagged: the row stays `present` (so neither the reconcile nor the sweep removes the node); logged; `lifecycle-audit` finding `unproven_drops`; no attention, no exit 3; presence may sync |
+| present -> `excluded(unparseable)` | kept by the `manifest_unparseable` rule (unchanged, exit 3) | - |
+| graph baseline (`presence_head_sha` NULL) pair not in the scan | proven when the name is not in the HEAD tree or the scan keys it at another version (re-key); unproven otherwise | the node becomes an orphan; the sweep judges it again (P3) |
+
+**Total wipe** (modules were present, none is now): retired only when every drop is proven
+AND the HEAD the ledger last reflected (`presence_head_sha`, else `repos.head_sha`) is an
+ancestor of HEAD (`git merge-base --is-ancestor`): the wipe is a commit of the branch's own
+history. Otherwise (a manifest still in the tree, the tree unreadable, no recorded base, a
+non-ancestor base: force-push, branch swap, wrong clone) gate `total_wipe` trips: nothing of
+the repo retires, presence is not synced, exit 3 - a checkout OSM cannot trust is exactly
+"OSM cannot reflect this code". The `mass_retire` ratio (`mass_gate_trips`) is informational.
+
+### P2 - Shared-module prune (`reconcile._Reconciler.prune_shared`)
+
+The stale candidates (cutoff mode of `module_stale_children`) are judged by the D1 oracle
+against EACH present owner's HEAD copy (`repos.local_path` + ledger `path`; a file path is
+re-anchored into each owner's module directory first). A candidate is deleted only when every
+owner's verdict is `gone` / `superseded`; the rest is kept with its embedding rows
+(`shared_module_stale_embeddings(also_keep=)`) and recorded on the Module node as a parser gap
+under the first owner (its run re-parses the module when that owner's tree or the indexer
+code changes, which re-opens the evaluation). An owner whose checkout is missing proves
+nothing. The evaluated state recorded on the Module is the owners' parse records plus
+`prune_code_token()`, so a kept set is never re-judged on an unchanged night (the old held
+module was re-evaluated every run and exited 3 every night).
+
+### P3 - Orphan and embedding sweeps (`reconcile._Reconciler.sweep`, `_embedding_orphans`)
+
+- Orphan Module: swept when no checkout of a profile that owns it (its `profile[]` and the
+  repo of its `repo_id`) at the version ships a manifest of its name in the raw HEAD tree
+  (`_head_shipped_names`, version rule applied: a repo placed at another version ships
+  nothing here). A name the ledger has `excluded` (`installable_false` / `license_skip`) is
+  a positive observation and is swept although its manifest is tracked (ADR-0056 D8,
+  "exclusions leave through the sweep"; the embedding sweep likewise). Kept otherwise
+  (`orphans_kept`, a missing / unreadable checkout keeps).
+  Children of a module-less name: swept when no checkout at the version ships the name
+  (`child_orphans_kept` otherwise). Deferral for unsynced repos is unchanged.
+- Orphan embedding group `(module, profile)`: precondition - the graph is healthy (every
+  module a synced profile has `present` keeps its Module node). Unhealthy -> every group is
+  held, gate `embedding_sweep:graph_unhealthy`, exit 3 (OSM lost nodes of live modules and
+  the unchanged skip does not re-write them; the attention names the profile whose `--full`
+  run re-writes them). Healthy -> a group goes when no checkout of its profile ships the
+  module (`embedding_orphans_kept` otherwise).
+
+### P4 - What still exits 3, and the bypass
+
+Exit 3 is kept for failures that stop OSM reflecting code and that it cannot self-heal:
+G-A, `total_wipe` (P1), `manifest_unparseable`, `embedding_sweep:graph_unhealthy`,
+`undecidable`, reconcile errors, and a registered repo without a checkout the run could not
+clone (`unavailable_repos`, issue #383 item 2: the run now clones a repo whose
+`clone_status` is `pending` / `error`, or `manual` at the clone directory OSM manages,
+through the cloner's core, `src/clone_ops.py`, under the same per-repo lock and SSH key
+handling - see rules R1-R9 below for `manual` rows registered by path). Rule R6 adds
+three: the same repo's pre-scan fetch failing in two consecutive runs (`stale_repos`), the
+fetch failing for every repo of the run (at least two, `outages: fetch_outage`) and the
+embedder returning no vector for any chunk the run sent (`outages: embedder_down`). Keeping
+unproven data (`unproven_drops`, kept orphans / groups, parser gaps) is never an exit 3; the
+weekly `lifecycle-audit` lists it without failing (rule R6).
+
+`--allow-mass-retire` remains only as an emergency bypass for a known-wrong oracle: it also
+deletes what git cannot prove gone (unproven drops, kept orphans and groups, the kept part of
+a shared prune) and lifts a held total wipe / embedding sweep. Never G-A, never the
+single-owner entity prune, never in a timer.
+
+### P5 - Audit schema `osm.lifecycle-audit/5`
+
+New finding `unproven_drops` (per repo); version keys `orphan_modules[].kept_because`,
+`child_orphans_kept`, `embedding_orphans_kept` (counted in `orphan_modules` /
+`child_orphans` / `embedding_orphans`); `embedding_orphans_held` means an unhealthy graph;
+`shared_prunes[].outcome` is `would_prune` or `partial`. Every /4 key stays. New top-level key
+`informational_findings` (`["parser_gaps", "unproven_drops"]`): those counts stay in
+`findings` but do not set `has_findings`, so `--fail-on-findings` never exits 4 on them
+(rule R6).
+
+### Consequences (phase 2)
+
+- A commit that deletes any number of modules, a sweep of any number of ghosts and a mass
+  orphan-embedding delete run on the next plain run; nobody approves.
+- A scan regression that hides tracked modules no longer deletes them (the old ratio let a
+  small one through) and no longer alerts nightly; it is a weekly audit finding.
+- No migration (`repo_sync_state` reads two more existing columns; the shared-prune state
+  string changes format, so every shared module is evaluated once after the deploy).
+
+### Known limits (phase 2)
+
+- An unproven ledger row stays `present` while its manifest is tracked; it is re-evaluated
+  only when the repo is scanned again (HEAD moves, `needs_rewrite`, `--full`), not when the
+  indexer code changes.
+- A module that only exists inside an uninitialized submodule makes the whole repo's tree
+  unreadable for the evidence: none of that repo's drops is proven until it is initialized.
+- The orphan evidence is name-level per profile: a tracked manifest of the same name in any
+  checkout of an owning profile keeps the orphan (the safe direction).
+- Only a total wipe is checked against the branch history (`is_ancestor`); a drop of some
+  modules is proven by the HEAD tree alone, also after a force-push. Decided on purpose:
+  G-A already guarantees the checkout is the `origin/<branch>` tip, so a force-pushed remote
+  IS the real code, and what its tree no longer ships is gone from the code OSM reflects.
+
+---
+
 ## Rules R1-R9 (2026-10-20)
 
 Cases where the oracle or the run still deleted live data, kept data for ever, or stayed
 silent. Each rule below is protected by a behaviour test.
 
+- **R1 - Test GC follows the kept modules.** The module-level test-node GC (graph-only, no
+  embedding rows) keeps the tests of every module the lifecycle keeps although the scan lost
+  it: the unparseable ones (as before) and the unproven drops (`GateResult.kept_names`;
+  graph-baseline `name@version` entries at the versions the GC runs at)
+  (`pipeline_repo._test_gc_live_names`). With `--allow-mass-retire` they retire and leave
+  through the retirement cascade with their rows. The file-level exclusion of judged modules
+  is per `(version, name)` (`_test_gc_judged`; the prune report is keyed that way).
 - **R2 - A module at the repo root is judged.** Its directory prefix is empty; the oracle
   lists the whole tree instead of passing git an empty pathspec (which it rejects), in the
   per-repo prune and for a shared module's root-copy owner.
@@ -223,6 +356,16 @@ silent. Each rule below is protected by a behaviour test.
   identity (labels, name, model, xmlid, qualified name; DELEGATES_TO also `via_field`):
   `module_stale_children` returns `twin`. A USES_CORE_SYMBOL edge whose CoreSymbol is no
   longer `deprecated` (the only status it is written to) is `superseded` too.
+- **R5 - Owner trust and scope.** The shared-module prune treats an owner whose checkout HEAD
+  is not its `presence_head_sha` (the commit its last trusted scan reflected) as unavailable
+  (keeps), and the owners' trust is part of the evaluated state, so the module is judged
+  again once that checkout is trusted. A class-body name also bound outside the class counts
+  both values. `prune_code_token` covers every file that changes the parse or the verdicts
+  (also `version_registry.py`, `_xmlid.py`, `framework_bases.py`, `scanner.py`, the curated
+  `tools_symbols_*.json` / `lint_rules_*.json`). Binary formats are not loaded; a text blob
+  above 32 MiB makes the source unavailable (keep) instead of being skipped. The parser no
+  longer names a model after the second parent when `_inherit[0]` is unresolvable and no
+  `_name` is set: the class is not indexed (its stale nodes are kept by the oracle).
 - **R6 - Alerts and reports.** A pre-scan fetch failure is returned by
   `refresh_before_scan` and written to `lifecycle_attention`; exit 3 when the same repo's
   fetch failed in two consecutive runs (`stale_repos`, marker read back from the previous
@@ -253,6 +396,21 @@ silent. Each rule below is protected by a behaviour test.
   module's own Views (`view_xmlid IN` the module's View xmlids, index seek) whose path lies
   under no prefix but has a `<m>/` directory segment - a foreign-xmlid override raised in
   another module's file keeps that module's directory and is never selected.
+- **R9 - Shared AssetBundles follow their live contributors.** The bundle writer only
+  unions `profile` and sets `module` on create, and the lifecycle never touched a shared
+  label (ADR-0056 D8), so a bundle kept the profile of a contributor that moved to another
+  profile and named a module that was retired or merged away. Right after
+  `gc_orphan_asset_bundles` the reconcile runs `Neo4jWriter.reconcile_asset_bundle_owners`
+  (one bounded statement per version, idempotent): `profile` = sorted union of the
+  contributing Modules' profiles (unchanged when none carries one), `module` = kept while
+  it still contributes, else the bundle's namespace module when it contributes, else the
+  first contributor by name; a bundle with no inbound CONTRIBUTES_TO is left alone. This is
+  D14's exact reset applied to the one shared label. No MCP tool or resource reads
+  AssetBundle (nor `CONTRIBUTES_TO` / `INCLUDES_BUNDLE` / `EXTENDS_ASSET_BUNDLE`), so the
+  stale profile was provenance drift, never a visible tenant leak. A contributor written
+  by a concurrent run of another profile between the statement's read and its write can be
+  dropped from `profile` until the next reconcile restores it (unread data).
+
 Known limits of rules R1-R9: the fetch-failure memory is the previous run's
 `lifecycle_attention` text (no migration); a run that crashes before writing attention keeps
 the earlier note. A test node the file-level GC removes for a module whose prune is skipped

@@ -13,12 +13,22 @@
 # Module lifecycle (ADR-0056): every run of this unit also retires modules no
 # repo ships any more (renamed, deleted, moved) with their subtree and
 # embeddings, through the module_presence ledger and one reconcile per Odoo
-# version, under safety gates. No flag is needed. Exit code 3 means the index
-# was written but the lifecycle needs an operator (a gate tripped, a name was
-# undecidable, the reconcile failed): OnFailure= fires; read the tail of the log
-# and repos.lifecycle_attention (deploy.md s3.6). NEVER add --allow-mass-retire
-# here or in a drop-in: it is a one-shot manual decision. Incident escape hatch:
-# a temporary drop-in with --no-retire (scan + write, delete nothing).
+# version. No flag is needed and nobody approves a deletion (ADR-0057 and its
+# phase 2): retirement, the orphan and embedding sweeps, the entity prune and
+# the shared-module prune delete what the git HEAD tree proves gone, whatever
+# the count; what git cannot prove is kept and reported by lifecycle-audit
+# (unproven_drops, kept orphans, parser_gaps), never an exit 3. A registered
+# repo without a checkout is cloned by the run when its clone never succeeded
+# (issue #383 item 2). Exit code 3 means the index was written but OSM cannot
+# reflect part of the code by itself (an untrusted checkout, a total wipe that
+# is not in the branch history, a graph missing Module nodes, an unparseable
+# manifest, an undecidable name, a repo that still cannot be cloned, a failed
+# reconcile, a repo whose fetch failed two runs in a row, a fetch failure for
+# every repo of the run, the embedder down all run): OnFailure= fires; read the tail of the log and
+# repos.lifecycle_attention (deploy.md s3.6). NEVER add --allow-mass-retire
+# here or in a drop-in: it is an emergency bypass that also deletes what git
+# cannot prove gone. Incident escape hatch: a temporary drop-in with
+# --no-retire (scan + write, delete nothing).
 #
 # WHY a systemd timer (not a bare cron.d entry): the indexer reads PG_DSN +
 # NEO4J_PASSWORD via config; a cron.d line does NOT load .env, so it would fail

@@ -75,3 +75,38 @@ def test_a_failed_relink_skips_the_placeholder_gc_and_is_reported():
     # The other version-wide GCs are unaffected.
     assert "gc_orphan_asset_bundles" in writer.calls
     assert "gc_null_repo_dep_stubs" in writer.calls
+
+
+class _BundleWriter(_RecordingWriter):
+    def __init__(self, bundle_error: Exception | None = None):
+        super().__init__()
+        self._bundle_error = bundle_error
+
+    def reconcile_asset_bundle_owners(self, version):
+        self.calls.append("reconcile_asset_bundle_owners")
+        if self._bundle_error is not None:
+            raise self._bundle_error
+        return 2
+
+
+def test_shared_bundles_follow_their_live_contributors_after_the_orphan_gc():
+    """ADR-0057 R9: the surviving shared bundles are reset to their live
+    contributors right after the orphan-bundle GC, in every reconcile."""
+    writer = _BundleWriter()
+    rec = _reconciler(writer)
+    rec.global_gcs(run_dep_stub_gc=False)
+    calls = writer.calls
+    assert calls.index("gc_orphan_asset_bundles") < calls.index(
+        "reconcile_asset_bundle_owners"
+    )
+    assert rec.report.gc["asset_bundle_owners"] == 2
+    assert not rec.report.errors
+
+
+def test_a_failed_bundle_owner_reset_is_reported_and_the_other_gcs_still_run():
+    writer = _BundleWriter(bundle_error=ValueError("bundle reset refused"))
+    rec = _reconciler(writer)
+    rec.global_gcs(run_dep_stub_gc=True)
+    assert "bundle reset refused" in rec.report.errors["reconcile_asset_bundle_owners"]
+    assert "gc_unresolved_placeholders" in writer.calls
+    assert "gc_null_repo_dep_stubs" in writer.calls

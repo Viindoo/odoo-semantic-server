@@ -10,14 +10,17 @@ Business rules protected here:
 - It lists exactly what the next real index run will do, proven by running that
   run afterwards and comparing the graph with the prediction.
 - ``--fail-on-findings`` is the weekly drift detector (Q9): exit 4 on any
-  finding, 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/4`` is a
+  actionable finding (``parser_gaps`` / ``unproven_drops`` are listed but
+  informational), 0 on a clean graph. The JSON schema ``osm.lifecycle-audit/5`` is a
   contract for that timer and for the P3/P4 rollout review (``/2``: a
   soft-gate-held entity prune is a finding, ``held_prunes``, renamed
   ``parser_gaps`` by ``/4`` - ADR-0057; ``/3``: the
   shared-module entity prune of F49 is a finding, ``shared_prunes``, with
   ``shared_prune_waiting`` / ``shared_prune_rewrites`` per version and the
   post-deploy ``shared_parse_backlog`` per repo; additive under ``/3`` per
-  version: ``child_orphans_deferred`` and ``embedding_orphans_held``).
+  version: ``child_orphans_deferred`` and ``embedding_orphans_held``; ``/5``:
+  ADR-0057 phase 2 adds ``unproven_drops`` and the ``kept_because`` /
+  ``*_kept`` keys, every earlier key kept).
 - F36: ONE plain run heals Module nodes whose path is not the registry winner
   (F15 posbox stub, F7 untracked ``.odoo-ai`` copy) or that name a stale repo;
   two co-owners of one module never re-write each other every night.
@@ -55,8 +58,8 @@ POSBOX_STUB_MANIFEST = "{\n    'license': 'LGPL-3',\n}\n"
 REQUIRED_FINDING_KEYS = {
     "would_retire", "would_drop_owner", "undecidable", "blocked", "orphan_modules",
     "child_orphans", "embedding_orphans", "modules_without_profile", "would_rewrite",
-    "unparseable_kept",
     "wrong_paths", "unapplied_changes", "errors", "parser_gaps", "shared_prunes",
+    "unparseable_kept", "unproven_drops",
 }
 
 
@@ -447,6 +450,7 @@ def test_audit_lists_exactly_what_the_next_run_will_do(
         "modules_without_profile": 1, "would_rewrite": 4, "wrong_paths": 0,
         "unapplied_changes": 0, "errors": 0, "parser_gaps": 0, "shared_prunes": 0,
         "unparseable_kept": 0,
+        "unproven_drops": 0,
     }
     assert repo["unparseable_kept"] == []
     assert ver["orphans_unparseable"] == []
@@ -533,7 +537,7 @@ def test_fail_on_findings_exits_4_and_names_the_findings(drifted, monkeypatch, c
         assert name in out
 
 
-def test_json_report_keeps_the_osm_lifecycle_audit_4_schema(drifted, monkeypatch, capsys):
+def test_json_report_keeps_the_osm_lifecycle_audit_5_schema(drifted, monkeypatch, capsys):
     """Keys and types the weekly timer and the rollout review read.
 
     Updated for the held-prune finding: the shape changed (``held_prunes`` in
@@ -558,18 +562,29 @@ def test_json_report_keeps_the_osm_lifecycle_audit_4_schema(drifted, monkeypatch
     Updated for ADR-0057 (source-oracle prune): ``held_prunes`` is renamed
     ``parser_gaps`` in ``findings`` and in each repo entry (entities kept
     because the source still defines them, not a held prune), so the schema
-    id is ``osm.lifecycle-audit/4``."""
+    id is ``osm.lifecycle-audit/4``.
+
+    Updated for ADR-0057 phase 2 (every deletion judged by git): ``findings``
+    and each repo entry gain ``unproven_drops`` (``gates.unproven`` too), each
+    version entry ``child_orphans_kept`` / ``embedding_orphans_kept`` and
+    ``orphan_modules[].kept_because``, and the shared prune outcome vocabulary
+    changed, so the schema id is ``osm.lifecycle-audit/5``. Every earlier key
+    is still pinned with its type."""
     _, out, _ = _cli(monkeypatch, capsys, "--profile", PROFILE, "--json")
     report = json.loads(out)
 
-    assert report["schema"] == "osm.lifecycle-audit/4"
+    assert report["schema"] == "osm.lifecycle-audit/5"
     assert report["dry_run"] is True
     assert isinstance(report["generated_at"], str) and "T" in report["generated_at"]
     assert isinstance(report["duration_s"], float | int)
     assert report["scope"] == {"profile": PROFILE, "all": False, "version": None}
     assert set(report["findings"]) == REQUIRED_FINDING_KEYS
     assert all(isinstance(n, int) for n in report["findings"].values())
-    assert report["has_findings"] is any(report["findings"].values())
+    informational = {"parser_gaps", "unproven_drops"}
+    assert report["informational_findings"] == sorted(informational)
+    assert report["has_findings"] is any(
+        n for k, n in report["findings"].items() if k not in informational
+    )
 
     repo_keys = {
         "repo_id": int, "profile": str, "url": str, "basename": str, "branch": str,
@@ -580,7 +595,7 @@ def test_json_report_keeps_the_osm_lifecycle_audit_4_schema(drifted, monkeypatch
         "would_rewrite": list, "wrong_paths": list, "would_retire": list,
         "would_drop_owner": list, "undecidable": list, "blocked": list,
         "parser_gaps": list, "shared_parse_backlog": dict, "error": (str, type(None)),
-        "unparseable_kept": list,
+        "unparseable_kept": list, "unproven_drops": list,
     }
     repo = _repo_entry(report, REPO)
     for key, typ in repo_keys.items():
@@ -594,7 +609,7 @@ def test_json_report_keeps_the_osm_lifecycle_audit_4_schema(drifted, monkeypatch
     assert isinstance(repo["scan"]["unreadable_manifests"], int)
     assert {
         "scan_ok", "mass_ok", "retire_allowed", "tripped", "bypassed", "reasons",
-        "n_soft_drop", "n_present_before", "baseline",
+        "n_soft_drop", "n_present_before", "baseline", "unproven",
     } <= set(repo["gates"])
     assert repo["gates"]["baseline"] in {"ledger", "graph"}
     assert set(repo["shared_parse_backlog"]) == {"remaining", "next_run"}
@@ -617,16 +632,20 @@ def test_json_report_keeps_the_osm_lifecycle_audit_4_schema(drifted, monkeypatch
         # wait for an unsynced repo, and orphan embedding groups held by G-B.
         # Both feed existing finding counters, so the timer must see the keys.
         "child_orphans_deferred": list, "embedding_orphans_held": list,
+        # ADR-0057 phase 2 (/5): orphans a checkout still ships, kept.
+        "child_orphans_kept": dict, "embedding_orphans_kept": list,
     }
     ver = _version_entry(report)
     for key, typ in ver_keys.items():
         assert key in ver, key
         assert isinstance(ver[key], typ), (key, ver[key])
     for o in ver["orphan_modules"]:
-        assert {"name", "deferred_for", "evidence"} <= set(o)
+        assert {"name", "deferred_for", "kept_because", "evidence"} <= set(o)
     for m in ver["modules_without_profile"]:
         assert {"name", "path", "repo", "repo_id", "children"} <= set(m)
-    for e in ver["embedding_orphans"] + ver["embedding_orphans_held"]:
+    for e in ver["embedding_orphans"] + ver["embedding_orphans_held"] + ver[
+        "embedding_orphans_kept"
+    ]:
         assert {"module", "profile", "rows"} <= set(e)
 
 
@@ -768,10 +787,12 @@ def test_simulation_session_refuses_writes_to_the_real_tables(pg):
 def test_all_profiles_audit_gates_owner_drops_and_never_cloned_repo(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys,
 ):
-    """--all: a 25-module repo losing 22 trips the mass-retire gate (nothing
-    retired, all 22 blocked); a module two repos ship, dropped by one, loses only
-    that owner; a never-cloned repo keeps its profile's orphans deferred (F22)
-    while another profile's orphan is swept. The real runs afterwards match."""
+    """--all: a 25-module repo losing 22 in a commit retires all 22 - git
+    proves them gone, no mass gate, no approval (ADR-0057 phase 2; the old
+    G-B blocked all 22 until --allow-mass-retire); a module two repos ship,
+    dropped by one, loses only that owner; a never-cloned repo keeps its
+    profile's orphans deferred (F22) while another profile's orphan, which no
+    checkout of its profile ships, is swept. The real runs afterwards match."""
     big = [f"b{i:02d}" for i in range(24)]
     o_big, w_big = _make_repo(tmp_path, "big", [*big, "shared_mod"])
     o_oth, w_oth = _make_repo(tmp_path, "other", ["shared_mod", "o1"])
@@ -807,10 +828,9 @@ def test_all_profiles_audit_gates_owner_drops_and_never_cloned_repo(
     assert report["scope"]["all"] is True
 
     b = _repo_entry(report, "big")
-    assert b["gates"]["tripped"] == ["mass_retire"]
-    assert _names(b["blocked"]) == sorted(big[:22])
-    assert {i["reason"] for i in b["blocked"]} == {"gate:mass_retire"}
-    assert b["would_retire"] == []
+    assert b["gates"]["tripped"] == []
+    assert b["blocked"] == [] and b["unproven_drops"] == []
+    assert _names(b["would_retire"]) == sorted(big[:22])
 
     o = _repo_entry(report, "other")
     assert _names(o["would_drop_owner"]) == ["shared_mod"]
@@ -825,14 +845,15 @@ def test_all_profiles_audit_gates_owner_drops_and_never_cloned_repo(
     assert orphans == {"pc_ghost": ["pc"], "pb_ghost": []}
     unsynced = {u["repo"]: u["why"] for u in ver["unsynced_repos"]}
     assert unsynced["never_cloned"] == "no checkout"
-    assert "big" in unsynced, "a tripped gate keeps big's ledger behind its HEAD"
+    assert "big" not in unsynced, "big syncs once its pending names are retired"
     assert "other" not in unsynced
 
     # Oracle: the real runs.
     _index(pg, "pa")
     _index(pg, "pb")
     names = _module_names(neo4j_driver)
-    assert set(big[:22]) <= names, "blocked by the mass-retire gate: nothing deleted"
+    assert not set(big[:22]) & names, "git-proven deletions leave on the first run"
+    assert set(big[22:]) <= names
     assert "pb_ghost" not in names and "pc_ghost" in names
     shared = _module_node(neo4j_driver, "shared_mod")
     assert "pa" in shared["profile"] and "pb" not in shared["profile"]

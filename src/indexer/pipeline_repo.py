@@ -620,23 +620,29 @@ def observe_lifecycle(
     allow_mass_retire: bool = False,
     writer: IndexWriterProtocol | None = None,
     owning_profile: str | None = None,
+    last_head: str | None = None,
 ) -> LifecycleObservation:
-    """Trust, classification and gates of one repo scan (ADR-0056, B5).
+    """Trust, classification, git evidence and gates of one repo scan
+    (ADR-0056 B5, ADR-0057 phase 2).
 
     Read-only: reads the repo's ledger rows through *presence* (None = no
     ledger), git and, through *writer*, the graph; writes nothing. The
     per-repo index path and the dry-run ``lifecycle-audit`` both decide
     through this function.
 
-    While the ledger has never reflected the repo (``presence_head_sha``
-    NULL: the first runs after the ledger was deployed, a new registration)
-    G-B is evaluated against the graph baseline
-    (``writer.repo_module_baseline`` for *owning_profile*) instead of the
-    ledger rows, which cannot tell what the repo shipped before. The scan's
-    unparseable names that have a graph node feed the ``manifest_unparseable``
-    signal (``lifecycle.unparseable_kept``).
+    Every drop is judged by git (``lifecycle.apply_gates``): proven gone when
+    the raw HEAD tree has no manifest of that name
+    (``git_utils.head_tree_module_names``), otherwise unproven and kept. While
+    the ledger has never reflected the repo (``presence_head_sha`` NULL: the
+    first runs after the ledger was deployed, a new registration) the drops
+    are counted against the graph baseline (``writer.repo_module_baseline``
+    for *owning_profile*) instead of the ledger rows, which cannot tell what
+    the repo shipped before. A total wipe needs the reflected HEAD (else
+    *last_head*, ``repos.head_sha``) to be an ancestor of *current_head*. The
+    scan's unparseable names that have a graph node feed the
+    ``manifest_unparseable`` signal (``lifecycle.unparseable_kept``).
     """
-    from src.git_utils import head_matches_remote_branch
+    from src.git_utils import head_matches_remote_branch, head_tree_module_names
     from src.indexer import lifecycle
 
     repo_path = Path(repo["local_path"])
@@ -656,10 +662,8 @@ def observe_lifecycle(
     rows: list[dict] = presence.rows_for_repo(repo["id"]) if lifecycle_on else []
     transitions = lifecycle.classify(rows, scan)
     graph_baseline = None
-    if (
-        lifecycle_on and writer is not None
-        and presence.presence_head_sha(repo["id"]) is None
-    ):
+    presence_head = presence.presence_head_sha(repo["id"]) if lifecycle_on else None
+    if lifecycle_on and writer is not None and presence_head is None:
         graph_baseline = writer.repo_module_baseline(
             repo.get("id"), repo_path.name,
             owning_profile or repo.get("profile_name") or "",
@@ -670,11 +674,36 @@ def observe_lifecycle(
     indexed_names: list[str] = []
     if lifecycle_on and writer is not None and unparseable:
         indexed_names = sorted(writer.module_identity(scan.odoo_version, unparseable))
+    # Git evidence for the drops (ADR-0057 phase 2): the module names the raw
+    # HEAD tree still has a manifest for, read only when something dropped.
+    shipped_at_head = None
+    if transitions.soft_drops or graph_baseline:
+        shipped_at_head = head_tree_module_names(repo_path)
+    # A total wipe is retired only as a commit of the branch's own history:
+    # the HEAD the ledger last reflected (else the last indexed HEAD) must be
+    # an ancestor of the current HEAD.
+    wipe_base = presence_head or last_head
+
+    def wipe_in_history() -> bool | None:
+        if not wipe_base or not current_head:
+            return None
+        return _incremental.is_ancestor(repo_path, wipe_base, current_head)
+
     gates = lifecycle.apply_gates(
         transitions, scan, trusted=trusted, allow_mass_retire=allow_mass_retire,
         graph_baseline=graph_baseline, indexed_names=indexed_names,
+        shipped_at_head=shipped_at_head, wipe_in_history=wipe_in_history,
     )
     attention.extend(gates.reasons)
+    if gates.unproven:
+        _logger.warning(
+            "Repo %s: %d module(s) no longer in the scan but their manifest is still "
+            "in the HEAD tree - kept, not retired (scan gap, reported by "
+            "lifecycle-audit as unproven_drops)%s: %s",
+            repo.get("url", repo_path), len(gates.unproven),
+            "; retired anyway (--allow-mass-retire)" if gates.allow_unproven else "",
+            ", ".join(gates.unproven[:10]),
+        )
     return LifecycleObservation(
         trusted=trusted, lifecycle_on=lifecycle_on, rows=rows,
         transitions=transitions, gates=gates, attention=attention,
@@ -1165,9 +1194,9 @@ def _mass_drop(stale: int, total: int) -> bool:
     """The G-B ratio (> MASS_RETIRE_FRACTION and >= MASS_RETIRE_FLOOR) applied
     to one module's children or relationships.
 
-    A gate only for the shared-module prune (``reconcile.prune_shared``); the
-    per-repo entity prune decides per entity from the source (ADR-0057) and
-    uses it for an informational log line only."""
+    No longer a gate anywhere: the per-repo entity prune and the
+    shared-module prune decide per entity from the source (ADR-0057 and its
+    phase 2); the per-repo prune uses it for an informational log line only."""
     from src.indexer.lifecycle import MASS_RETIRE_FLOOR, MASS_RETIRE_FRACTION
 
     return stale > MASS_RETIRE_FRACTION * total and stale >= MASS_RETIRE_FLOOR
@@ -1890,6 +1919,35 @@ def _pg_clock(pg_conn):
         return None
 
 
+def _test_gc_live_names(live_module_names_by_version: dict, scan, gates) -> dict[str, set[str]]:
+    """The module names whose test nodes the module-level test GC keeps,
+    per version: the scan's modules, plus every module the lifecycle keeps
+    although the scan lost it (``_gc_stale_test_nodes`` deletes the tests of
+    any other module of the repo, graph-only, without their embedding rows).
+
+    - A module whose manifest does not parse is kept as it is (E2E-D1).
+    - An unproven drop (ADR-0057 phase 2: absent from the scan, manifest
+      still in the HEAD tree) keeps its ledger row ``present`` and its Module
+      node, so its test nodes and their embedding rows stay too
+      (``GateResult.kept_names``; against the graph baseline, the
+      ``name@version`` entries of ``unproven``, which the orphan sweep judges
+      again). With ``--allow-mass-retire`` the unproven drops retire, and the
+      retirement cascade deletes their tests with their rows.
+    """
+    test_live = {v: set(names) for v, names in live_module_names_by_version.items()}
+    kept = test_live.setdefault(scan.odoo_version, set())
+    kept.update(n for n, ex in scan.excluded.items() if ex.reason == EXCLUSION_UNPARSEABLE)
+    kept.update(gates.kept_names)
+    if gates.baseline == "graph" and not gates.allow_unproven:
+        for item in gates.unproven:
+            name, sep, version = item.rpartition("@")
+            # Only versions the GC runs at anyway: a version the scan does not
+            # cover gets no GC call at all (a call with this one name as the
+            # live set would delete every other test node of the repo there).
+            if sep and name and version in test_live:
+                test_live[version].add(name)
+    return test_live
+
 
 def _test_gc_judged(
     modules_by_version: dict, prune_report: dict | None, module_health: dict,
@@ -2006,10 +2064,14 @@ def _index_repo(
       shipping a module this repo still ships, M5) and self-heal names (present
       in the scan but without a graph node carrying this repo's profile, H2).
     - After the writes: ``commit_observed`` (present/excluded rows), names the
-      scan no longer contains are flagged ``retire_pending`` with the removing
-      commit and successor as evidence, blocked by the repo's gates (G-A scan
-      complete + trusted, G-B mass drop) or by ``retire=False``; the Module
-      nodes are stamped with the HEAD and their ledger owners (L6).
+      scan no longer contains AND whose manifest the raw HEAD tree no longer
+      has (git proves them gone, any count, ADR-0057 phase 2) are flagged
+      ``retire_pending`` with the removing commit and successor as evidence,
+      blocked by the repo's gates (G-A scan complete + trusted, a total wipe
+      git does not prove) or by ``retire=False``; a name whose manifest git
+      still tracks is kept as it is (logged, ``lifecycle-audit``
+      ``unproven_drops``); the Module nodes are stamped with the HEAD and
+      their ledger owners (L6).
     - ``head_sha`` advances after all writes succeed. ``presence_head_sha``
       advances only when no gate tripped, the stamp matched every present
       module, and nothing is pending (H1); when the only reason is pending
@@ -2051,7 +2113,11 @@ def _index_repo(
     ``gc`` is accepted for backward compatibility and ignored (retirement and
     test-node GC always run). ``retire=False`` (CLI ``--no-retire``) scans and
     writes but deletes nothing: absent names stay pending (``no_retire``) and
-    the test-node GC is skipped. ``allow_mass_retire`` bypasses gate G-B.
+    the test-node GC is skipped. ``allow_mass_retire`` (emergency bypass)
+    lifts a held total wipe and also retires the drops git cannot prove gone
+    (it does not change the entity prune). A repo without a checkout is
+    cloned first when its clone never succeeded (``_ensure_repo_checkout``),
+    else :class:`RepoCheckoutUnavailable` is raised.
 
     refresh (nightly-fetch): when True (default), do a ``git fetch`` +
         ``reset --hard origin/<branch>`` on the local clone BEFORE the incremental
@@ -2220,7 +2286,7 @@ def _index_repo(
     # === Lifecycle pre-write: trust, gates, self-heal (ADR-0056) ===
     observation = observe_lifecycle(
         repo, scan, presence, current_head, allow_mass_retire=allow_mass_retire,
-        writer=writer, owning_profile=owning_profile,
+        writer=writer, owning_profile=owning_profile, last_head=last_head,
     )
     attention: list[str] = observation.attention
     if fetch_line:
@@ -2357,13 +2423,7 @@ def _index_repo(
     # complete scan (a degraded scan would drop live modules' tests) and is
     # skipped under --no-retire (which deletes nothing).
     if retire and gates.scan_ok and present_names:
-        # A module whose manifest does not parse is kept as it is (E2E-D1):
-        # its test nodes are live too.
-        test_live = {v: set(names) for v, names in live_module_names_by_version.items()}
-        test_live.setdefault(scan.odoo_version, set()).update(
-            n for n, ex in scan.excluded.items()
-            if ex.reason == EXCLUSION_UNPARSEABLE
-        )
+        test_live = _test_gc_live_names(live_module_names_by_version, scan, gates)
         judged = _test_gc_judged(
             modules_by_version, prune_report, module_health if modules_by_version else {},
         )
@@ -2488,7 +2548,11 @@ def _commit_lifecycle(
     if done_rewrites:
         presence.clear_needs_rewrite(repo_id, done_rewrites)
 
-    absent = transitions.retired
+    # Absent names git proves gone (ADR-0057 phase 2). An unproven one (its
+    # manifest is still in the HEAD tree) is not flagged: its row stays
+    # present, so neither the reconcile nor the orphan sweep removes it.
+    kept = gates.kept_names
+    absent = tuple(t for t in transitions.retired if t.name not in kept)
     pending: list[str] = []
     if absent:
         changes = (

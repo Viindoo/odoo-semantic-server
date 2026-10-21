@@ -47,6 +47,23 @@ All notable changes to Odoo Semantic MCP are documented here.
   (`viin_freight_mixed_container_patch1@17.0` `package_type_id`, `viin_ai@17.0`
   `_get_sensitive_header_keys` moved to the request-log mixin), and a declaration left only in
   a comment of a parseable file no longer keeps it.
+- **Every lifecycle deletion is decided by git, nobody approves (ADR-0057 phase 2).** The
+  repo-level gate G-B held a drop of more than half of a repo's modules (at least 20), every
+  total wipe, a mass orphan sweep, a mass orphan-embedding delete and a mass shared-module
+  prune until an operator ran `--allow-mass-retire`. Now: a module the scan lost is retired
+  when its manifest is gone from the raw HEAD tree of the trusted checkout
+  (`git_utils.head_tree_module_names`: object database, no version dispatch, submodules at
+  their recorded commit), whatever the count; one whose manifest git still tracks is kept and
+  reported (`lifecycle-audit` `unproven_drops`), never an exit 3. A total wipe is retired only
+  when the HEAD the ledger last reflected is an ancestor of HEAD; otherwise `total_wipe` holds
+  it and exits 3 (force-push, branch swap, wrong clone). The orphan sweep and the
+  orphan-embedding sweep remove what no checkout of the owning profile still ships (the
+  embedding sweep also needs a graph that has a Module node for every present module, else
+  `embedding_sweep:graph_unhealthy`, exit 3); what a checkout still ships is kept and
+  reported. The shared-module prune judges every candidate with the source oracle against
+  each owner's HEAD copy, deletes what every copy proves gone and keeps the rest as a parser
+  gap with its embeddings; it is re-evaluated only when an owner's parse record or the
+  indexer code changes (the nightly re-hold loop is gone).
 - **A repo whose first clone failed is cloned by the next index run (#383 item 2).** Repo 388
   (themes.git 19.0) was registered before its branch existed; from 2026-08-07 to 09-25 every
   nightly run raised `FileNotFoundError` for it before the pre-scan fetch, logged a traceback
@@ -69,6 +86,9 @@ All notable changes to Odoo Semantic MCP are documented here.
 - **`osm-alert@.service` now mails the admins (#383 item 1):** the hook only printed a journal line, so from 2026-08-25 to 2026-09-25 the nightly reindex failed 32 nights out of 32 unnoticed (and a DNS failure made the 2026-10-18/19 runs no-ops). It now runs `python -m src.ops.alert_notify --unit %i` as `odoo-semantic` and mails every active Web UI admin with an email (`webui_users.is_admin AND is_active`, read from PostgreSQL at send time) through the Web UI's SES `SMTP_*` settings: unit, host, exit status and its meaning, the `Lifecycle needs attention` block when this run wrote one, the last 60 lines of this run's output (its `append:` log file, else its journal) and a runbook pointer, with passwords, DSN credentials, tokens, API keys and private keys redacted. Database down: the last known admin list (`/var/lib/osm-alert/admins.json`, refreshed on every successful read) plus `OSM_ALERT_FALLBACK_TO`; no recipient at all is logged loudly. The same alert (unit, exit status, attention block) is mailed once per `OSM_ALERT_REPEAT_HOURS` (20, see the Alerts entry below), at most `OSM_ALERT_MAX_PER_HOUR` (6) mails an hour; a failed delivery logs `DELIVERY_FAILED` and the hook always exits 0. The reindex and lifecycle-audit units write an `osm-run-start ... invocation=<id>` line first so only this run's lines count. `OnFailure=` is spelled `osm-alert@%n` everywhere (the offsite-sync template used `osm-alert@%n.service`), and `make check-systemd-overrides` now audits `osm-alert@.service` (it also no longer aborts on an installed unit without `User=`). SMTP delivery moved to the leaf `src/mailer.py`, shared by the Web UI mails (the admin-issued password reset mail included) and the hook. The alert is one mail with every admin in `Bcc` (`To: undisclosed-recipients:;`): no admin sees the other admins' addresses; `src.mailer.send` builds the SMTP envelope from To / Cc / Bcc and logs the recipient count, not the addresses.
 - **The indexer CLI honours the admin-tuned embedder read timeout (#383 item 3):** `index-repo` and `reembed-stubs` built the embedder before the PostgreSQL pool existed, so `embedding.timeout_read_seconds` (resolved once, when the embedder is built) fell back to the constant on every CLI run and each run logged `overlay-only resolve failed: PostgreSQL pool is not initialized`. The pool is now opened first.
 - **Exact process identity for Web UI index jobs (#383 item 4):** the indexer child (index-repo, index-core, seed-patterns) writes its own `proc_start_ticks` (`/proc/self/stat` field 22) and `boot_id` with its `running` report, and `job_registry.job_staleness` compares them for equality: a wall-clock step no longer expires a live job, and a pid reused seconds after the job started is caught. Legacy rows (either column NULL) keep the 120 s heuristic. Code running before the migration still records `running` (the update retries without the two columns). A non-admin's repo listing no longer carries the attached job's `pid` (nor the new columns), matching `/api/jobs/{id}/status`.
+- The module-level test-node GC no longer deletes (graph-only, without their embedding
+  rows) the tests of a module an unproven drop keeps (`_test_gc_live_names`); the file-level
+  exclusion and the prune report are keyed by `(version, name)`.
 - A module whose manifest sits at the repo root is judged by the source oracle (git rejected
   the empty pathspec, so its ghosts were kept for ever as an "unavailable" parser gap), also
   for a shared module's root-copy owner.
@@ -78,6 +98,12 @@ All notable changes to Odoo Semantic MCP are documented here.
   DELEGATES_TO / REPORTS_ON Model, PATCHES OWLComp, USES_CORE_SYMBOL) is superseded instead
   of kept beside the new one for ever (`module_stale_children` `twin`); a USES_CORE_SYMBOL
   edge to a CoreSymbol no longer `deprecated` too.
+- The shared-module prune treats an owner whose checkout HEAD is not its
+  `presence_head_sha` as unavailable (keeps) and re-judges once it is trusted; a class-body
+  name also bound outside the class counts both values; `prune_code_token` covers the
+  version dispatch, xmlid qualification, framework bases, scanner and curated
+  `tools_symbols_*` / `lint_rules_*` data; binary formats are not loaded and a text blob
+  over 32 MiB keeps everything instead of being skipped.
 - The parser no longer indexes a class without `_name` under its SECOND parent when
   `_inherit[0]` is an unresolvable constant.
 - The nightly clone retry never replaces an operator's checkout: a `manual` row is cloned
@@ -97,12 +123,38 @@ All notable changes to Odoo Semantic MCP are documented here.
   copy's LintViolations, selected by file prefix, were never even candidates; the prune
   selector now also picks a violation of one of the module's own Views whose path has a
   `<m>/` directory segment (bounded by the view_xmlid index).
+- Shared AssetBundle nodes follow their live contributors: after a contributor is
+  retired, moved to another profile or merged away, the reconcile resets the bundle's
+  `profile` to the union of the contributing Modules' profiles and its `module` to a
+  module that still contributes (`reconcile_asset_bundle_owners`, after the orphan-bundle
+  GC; ADR-0057 R9). No MCP tool or resource reads AssetBundle, so the departed profile
+  was stale provenance, not a visible leak.
+- Merge / move scenarios covered end to end (`tests/test_module_merge_move_pipeline.py`):
+  moves between repos of one and of two profiles in either order and with `index_all`,
+  a target not synced yet, a target that ships the module `installable: False`, a move
+  inside a repo, N:1 merges in one repo and across repos, a dropped fork, a re-pointed repo.
 - **Alerts:** the osm-alert repeat window defaults to 20h, so a failure that persists every night mails every night (a 24h window equal to the timer period skipped nights). With no lifecycle attention block, the dedupe key includes the normalized last error line, so a new cause with the same exit status mails at once. An `ExecStartPre=` failure (no `$MONITOR_EXIT_STATUS`) is reported from `systemctl show -p ExecStartPre`, e.g. "exit 124 (ExecStartPre) - pre-flight timed out: PostgreSQL not ready within 60s", not "exit unknown". Alerts held by the hourly cap are recorded and listed in the next mail instead of being dropped. The state lock is held only to decide and reserve, with a bounded wait; the SMTP send has a 45s hard deadline; `osm-alert@.service` `TimeoutStartSec` 120 -> 180. Log excerpts are redacted before truncation, with new rules for `NEO4J_AUTH`, GitHub tokens, bare Fernet keys, base64 key material and key blocks cut by the window. The last known admin list is ignored after `OSM_ALERT_ADMIN_CACHE_MAX_DAYS` (7); the nightly reindex refreshes it (`alert_notify --refresh-admins`). Known limit, documented: docker.service failing to start does not trigger `OnFailure=` of the reindex / audit units (optional docker drop-in).
 ### Changed
+
+- `lifecycle-audit`: `parser_gaps` and `unproven_drops` are informational (kept data by owner
+  decision): still counted in `findings` and listed, named in the new top-level
+  `informational_findings`, but they no longer set `has_findings` and never make
+  `--fail-on-findings` exit 4 (the weekly timer mailed every week about data kept correctly).
+  Schema id unchanged (`/5`, not yet released).
 
 - `lifecycle-audit` JSON schema `osm.lifecycle-audit/4`: finding and repo key `held_prunes`
   renamed `parser_gaps` (rows: `kept`, `total`, `rels_kept`, `rels_total`, `sample`, `reason`,
   `reevaluated_next_run`).
+- `lifecycle-audit` JSON schema `osm.lifecycle-audit/5` (ADR-0057 phase 2): new finding and
+  repo key `unproven_drops`; version keys `orphan_modules[].kept_because`,
+  `child_orphans_kept`, `embedding_orphans_kept` (counted in `orphan_modules` /
+  `child_orphans` / `embedding_orphans`); `embedding_orphans_held` now means a graph missing
+  Module nodes; `shared_prunes[].outcome` is `would_prune` or `partial` (`held` is gone).
+  Every /4 key is kept.
+- `--allow-mass-retire` is an emergency bypass only: no deletion needs it any more. It also
+  deletes what git cannot prove gone and lifts a held total wipe / embedding sweep; it never
+  affects G-A nor the entity prune of a module one repo ships. CLI help, deploy.md s3.6, the
+  module-lifecycle runbook and the reindex unit comment say so.
 - Exit 3 now also covers a repo with no checkout the run could clone (`unavailable_repos`),
   a graph that lost Module nodes of present modules (`embedding_sweep:graph_unhealthy`), the
   same repo's pre-scan fetch failing two runs in a row (`stale_repos`), the fetch failing for
@@ -113,6 +165,9 @@ All notable changes to Odoo Semantic MCP are documented here.
   (re-exported by `src.indexer.pipeline`); contention raises `RepoGitLockBusy`, a
   `RuntimeError`. A cloner that finds the lock held exits 1 without overwriting the holder's
   `clone_status`.
+- Writer API: `module_stale_children(written_before=)` (shared-module cutoff mode);
+  `writer_pgvector.shared_module_stale_embeddings(also_keep=)`;
+  `ModulePresenceStore.repo_sync_state` rows carry `repo_branch` and `profile_version`.
 - Writer API: `module_stale_children`, `prune_module_children(only_ids=, only_rel_ids=)`,
   `record_module_parser_gap` / `clear_module_parser_gap` / `parser_gap_modules` replace the
   soft-gate hold records (a legacy `prune_held_*` record is cleared by the next prune).
@@ -128,6 +183,13 @@ All notable changes to Odoo Semantic MCP are documented here.
   its 76 methods, every other stale node of `viin_ai_voice` (120) and
   `viin_freight_mixed_container_patch1` (65) is git-proven gone, and of `viin_ai` only one
   test method stays, listed under `parser_gaps`.
+- Phase 2 (no migration): the first nightly after the deploy retires every module, orphan and
+  orphan embedding group git proves gone, whatever its size, and re-judges every shared
+  module once (the evaluated state now carries the indexer code digest). Run
+  `lifecycle-audit --all --json` before and after to see what it removes (`would_retire`,
+  `orphan_modules`, `embedding_orphans`, `shared_prunes`) and what it keeps
+  (`unproven_drops`, `kept_because`, `parser_gaps`). A repo whose clone never succeeded is
+  cloned by that run (needs FERNET_KEY for an SSH repo, as the pre-scan fetch already does).
 
 ## [0.19.1] - 2026-09-25 - Web UI index jobs never stay queued; index-core runs from the Web UI; held embedding sweeps name their profile (#381)
 

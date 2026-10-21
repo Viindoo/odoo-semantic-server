@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Module lifecycle classification and mass-retire gates (ADR-0056).
+"""Module lifecycle classification, git evidence and safety gates (ADR-0056,
+ADR-0057 phase 2).
 
 No Neo4j, no Postgres (``removal_evidence`` reads git history). They compare
 the previous presence-ledger rows of ONE repo with a fresh ``RegistryScan`` of
-that repo and decide what changed, whether retirement may proceed, and who
+that repo and decide what changed, which drops git proves (the raw HEAD tree
+no longer has the manifest), whether retirement may proceed, and who
 succeeds a retired module. Callers (the per-repo index path and the
 per-version reconcile) own every write.
 
@@ -18,7 +20,7 @@ Import discipline: models, git_utils and incremental only.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,14 +51,17 @@ KIND_INCLUDED = "included"        # excluded -> present
 KIND_UNCHANGED = "unchanged"      # same state (path or reason may differ)
 
 # Exclusion reasons that come from a successfully parsed manifest or explicit
-# config: a module moving there was positively observed, so it never counts
-# toward the mass-retire gate (real case: 436 modules flipped installable False
-# at tvtmaaddons 19.0, commit 48d741b7de).
+# config: a module moving there was positively observed, so it is never a drop
+# (real case: 436 modules flipped installable False at tvtmaaddons 19.0,
+# commit 48d741b7de).
 GATE_EXEMPT_REASONS = frozenset({EXCLUSION_INSTALLABLE_FALSE, EXCLUSION_LICENSE_SKIP})
 
 GATE_SCAN_INCOMPLETE = "scan_incomplete"
 GATE_SCAN_UNTRUSTED = "scan_untrusted"
+# The ratio id of mass_gate_trips; no longer a delete gate since ADR-0057
+# phase 2 (a drop is judged by the HEAD tree, whatever the count).
 GATE_MASS_RETIRE = "mass_retire"
+# A total wipe git does not prove (see apply_gates): the one remaining hold.
 GATE_TOTAL_WIPE = "total_wipe"
 # Soft signal, never blocks the repo's other retirements: a tracked manifest
 # of an indexed module was read but does not parse; the module is kept.
@@ -129,8 +134,9 @@ class Transition:
     def is_soft_drop(self) -> bool:
         """A previously present module that vanished, or became unparseable.
 
-        These are the transitions a broken checkout, a parser regression or a
-        permission fault would produce en masse, so they feed gate G-B.
+        These are the transitions a broken checkout, a scan regression or a
+        permission fault would produce en masse, so each is judged by the
+        git evidence of :func:`apply_gates`.
         """
         if self.before != STATE_PRESENT:
             return False
@@ -235,23 +241,27 @@ def classify(prev_rows: Iterable[object], scan: RegistryScan) -> Transitions:
 
 @dataclass(frozen=True)
 class GateResult:
-    """Outcome of the mass-delete safety gates for one repo scan.
+    """Outcome of the safety gates and the git evidence for one repo scan.
 
     - G-A (``scan_ok``): the scan is complete (no tracked manifest missing on
-      disk) AND trusted (the tree is the registered branch).
-    - G-B (``mass_ok``): the soft drops (present -> retired, present ->
-      excluded(unparseable)) are not a mass event: it trips when
-      ``n > 0.5 * n_present_before AND n >= 20``, or on a total wipe (the
-      ledger had present modules and the scan has none left) regardless of
-      the floor. A rename or merge that leaves >= 1 present module is judged
-      by the ratio rule only. ``installable_false``
-      and ``license_skip`` exclusions never count. ``allow_mass_retire`` bypasses
-      G-B (never G-A).
+      disk) AND trusted (the tree is the registered branch). Never bypassable.
+    - Git evidence (ADR-0057 phase 2, :func:`apply_gates`): a drop (present ->
+      retired) whose manifest the raw HEAD tree no longer has is retired with
+      no threshold and no approval; a drop whose manifest git still tracks is
+      ``unproven`` and kept (``kept_names``), never an exit 3.
+    - ``total_wipe`` (``mass_ok`` False): every module vanished and the wipe is
+      not proven by git (a manifest still tracked, the HEAD tree unreadable, or
+      the last reflected commit not an ancestor of HEAD). Nothing of the repo
+      retires; exit 3. ``allow_mass_retire`` bypasses it (``bypassed``) and
+      lets the unproven drops retire too (``allow_unproven``).
 
-    ``retire_allowed`` = G-A and G-B. ``tripped`` lists the gate ids that
-    blocked (``scan_incomplete``, ``scan_untrusted``, ``mass_retire``,
-    ``total_wipe``) - a bypassed G-B is reported in ``bypassed`` instead.
-    ``reasons`` are operator-facing sentences for ``lifecycle_attention``.
+    ``retire_allowed`` = G-A and no held total wipe. ``tripped`` lists the gate
+    ids that blocked (``scan_incomplete``, ``scan_untrusted``, ``total_wipe``)
+    plus the soft signal ``manifest_unparseable``. ``reasons`` are
+    operator-facing sentences for ``lifecycle_attention``. ``unproven`` holds
+    names (graph baseline: ``name@version``) kept because git still tracks
+    their manifest; they are not in ``reasons`` (no attention, like a parser
+    gap) but in the run log and the ``lifecycle-audit`` report.
     """
     scan_ok: bool
     mass_ok: bool
@@ -263,19 +273,30 @@ class GateResult:
     # "ledger" (the repo's present rows) or "graph" (the Module nodes the
     # graph attributes to a repo the ledger never reflected, see apply_gates).
     baseline: str = "ledger"
+    unproven: tuple[str, ...] = ()
+    allow_unproven: bool = False
 
     @property
     def retire_allowed(self) -> bool:
         return self.scan_ok and self.mass_ok
 
+    @property
+    def kept_names(self) -> frozenset[str]:
+        """Absent names NOT to flag pending: the unproven ledger drops, unless
+        ``--allow-mass-retire`` lets them go."""
+        if self.allow_unproven or self.baseline != "ledger":
+            return frozenset()
+        return frozenset(self.unproven)
+
 
 def mass_gate_trips(
     n_soft_drop: int, n_present_before: int, n_present_after: int | None = None,
 ) -> str | None:
-    """Gate id G-B trips with for these counts, or None.
+    """The mass shape of these counts, or None (``apply_gates`` and log lines).
 
     ``total_wipe``: modules were present before and NONE is present now - the
-    shape of a broken clone or checkout, blocked regardless of the floor.
+    shape of a broken clone or checkout; ``apply_gates`` holds it unless git
+    proves the wipe. ``mass_retire`` (the ratio) is informational only.
     ``n_present_after`` defaults to ``n_present_before - n_soft_drop`` (no
     module added). A rename or merge that leaves at least one present module
     (a one-module repo whose module is renamed) is judged only by the ratio
@@ -336,21 +357,41 @@ def apply_gates(
     allow_mass_retire: bool = False,
     graph_baseline: Iterable[tuple[str, str]] | None = None,
     indexed_names: Iterable[str] | None = None,
+    shipped_at_head: Iterable[str] | None = None,
+    wipe_in_history: Callable[[], bool | None] | None = None,
 ) -> GateResult:
-    """Evaluate G-A and G-B for one repo (see ``GateResult``).
+    """Evaluate G-A and the git evidence for one repo's drops (see ``GateResult``).
 
     ``trusted`` must come from ``git_utils.head_matches_remote_branch`` for the
     repo's registered branch, evaluated after the pre-scan refresh.
 
+    *shipped_at_head*: the module names the repo's raw HEAD tree has a
+    manifest for (``git_utils.head_tree_module_names``, no version dispatch),
+    None when git cannot list it. A drop is **proven** when its name is not
+    there (ADR-0057 phase 2: git proves the module gone; no count threshold,
+    nobody approves) or, against the graph baseline, when the scan now keys
+    the name at another version (re-keyed). Every other drop is **unproven**
+    (``unproven``): its manifest is still in the tree, so the scan, not git,
+    lost it - it is kept (not flagged pending), logged, and reported by
+    ``lifecycle-audit`` (``unproven_drops``), never an exit 3.
+
     *graph_baseline* (given while the ledger has never reflected the repo,
     ``presence_head_sha`` NULL - the first runs after the ledger was deployed,
-    or a newly registered repo) replaces the ledger baseline for G-B: the
+    or a newly registered repo) replaces the ledger baseline: the
     ``(odoo_version, name)`` Module nodes the graph attributes to the repo,
-    against :func:`graph_baseline_drops`. Such nodes are removed by the orphan
-    sweep, not by a pending retirement, so a trip holds the repo unsynced and
-    the sweep keeps every orphan of its profile (exit 3 + attention) until an
-    operator-confirmed ``--allow-mass-retire`` run. An empty baseline (a repo
-    the graph never saw) never trips.
+    against :func:`graph_baseline_drops`. Such nodes leave through the orphan
+    sweep, which judges each against the checkouts itself; an empty baseline
+    never trips.
+
+    **Total wipe** (modules were present before and none is present now):
+    retired only when every drop is proven AND *wipe_in_history* (called only
+    for this shape) answers True - the commit the ledger last reflected is an
+    ancestor of HEAD, so the wipe is a commit of the branch's own history, not
+    a force-push, a branch swap or a wrong clone. Otherwise gate
+    ``total_wipe`` trips: nothing of the repo retires, its presence is not
+    synced, the run exits 3 (checkout integrity: OSM cannot tell what the
+    repo ships). ``allow_mass_retire`` (emergency bypass, never in a timer)
+    lifts that trip and also retires the unproven drops (never G-A).
 
     ``manifest_unparseable`` (:func:`unparseable_kept`, *indexed_names* = the
     scan's unparseable names that have a graph node) is listed in ``tripped``
@@ -385,38 +426,72 @@ def apply_gates(
         )
     scan_ok = not tripped
 
+    shipped = None if shipped_at_head is None else frozenset(shipped_at_head)
+    unproven: list[str] = []
     if graph_baseline is not None:
         baseline_pairs = set(graph_baseline)
         drops = graph_baseline_drops(baseline_pairs, scan)
         n = len(drops)
         n_before = len(baseline_pairs)
         baseline = "graph"
+        keyed_elsewhere = {
+            (v, name) for v, name in drops
+            if any(name in mods for v2, mods in scan.modules.items() if v2 != v)
+        }
+        n_unparseable = 0
+        for v, name in drops:
+            if (v, name) in keyed_elsewhere:
+                continue
+            ex = scan.excluded.get(name)
+            if ex is not None and ex.reason == EXCLUSION_UNPARSEABLE:
+                n_unparseable += 1  # kept by the manifest_unparseable rule
+                continue
+            if shipped is None or name in shipped:
+                unproven.append(f"{name}@{v}")
     else:
         n = len(transitions.soft_drops)
         n_before = transitions.n_present_before
         baseline = "ledger"
+        n_unparseable = sum(1 for t in transitions.soft_drops if t.after != STATE_RETIRED)
+        for t in transitions.soft_drops:
+            # A present -> unparseable drop is kept by the manifest_unparseable
+            # rule and never retires; only an absent name can be proven gone.
+            if t.after == STATE_RETIRED and (shipped is None or t.name in shipped):
+                unproven.append(t.name)
     mass_ok = True
     gate = mass_gate_trips(n, n_before, len(scan.present_names()))
-    if gate is not None:
-        if baseline == "graph":
-            sample = ", ".join(f"{name}@{v}" for v, name in drops[:3])
-            message = (
-                f"mass retire: {n} of {n_before} module node(s) the graph attributes "
-                f"to this repo are not in the scan (absent, unparseable or keyed at "
-                f"another version, e.g. {sample}; ledger not yet synced for this repo)"
+    if gate == GATE_TOTAL_WIPE:
+        n_kept = len(unproven) + n_unparseable
+        if shipped is None:
+            cause = "git cannot list the HEAD tree, so the wipe cannot be proven"
+        elif n_kept:
+            cause = (
+                f"{n_kept} of {n} dropped module(s) still have a manifest in the HEAD "
+                "tree (scan or checkout problem)"
             )
         else:
-            message = (
-                f"mass retire: {n} of {n_before} present module(s) would drop "
-                f"(absent or unparseable)"
+            in_history = wipe_in_history() if wipe_in_history is not None else None
+            cause = None if in_history else (
+                "the wipe is not in the branch history (the commit the ledger last "
+                "reflected is not an ancestor of HEAD: force-push, branch swap or "
+                "wrong clone)" if in_history is False
+                else "no earlier commit of this repo is recorded to prove the wipe "
+                "is in the branch history"
             )
-        if allow_mass_retire:
-            bypassed.append(gate)
-            reasons.append(message + "; applied (--allow-mass-retire)")
-        else:
-            mass_ok = False
-            tripped.append(gate)
-            reasons.append(message + "; no module retired (use --allow-mass-retire)")
+        if cause is not None:
+            message = (
+                f"total wipe: none of the {n_before} module(s) present before is in "
+                f"the scan; {cause}"
+            )
+            if allow_mass_retire:
+                bypassed.append(GATE_TOTAL_WIPE)
+                reasons.append(message + "; applied (--allow-mass-retire)")
+            else:
+                mass_ok = False
+                tripped.append(GATE_TOTAL_WIPE)
+                reasons.append(
+                    message + "; no module retired, the repo's checkout must be checked"
+                )
 
     kept = unparseable_kept(transitions, scan, indexed_names)
     if kept:
@@ -436,6 +511,8 @@ def apply_gates(
         bypassed=tuple(bypassed),
         reasons=tuple(reasons),
         baseline=baseline,
+        unproven=tuple(sorted(unproven)),
+        allow_unproven=allow_mass_retire,
     )
 
 

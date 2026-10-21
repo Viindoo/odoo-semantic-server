@@ -63,17 +63,19 @@ def test_full_help_does_not_sell_full_reindex_as_the_cleanup_step():
         ("--no-embed", ("prune", "deleted")),
         ("--no-retire", ("entity prune",)),
         ("--allow-mass-retire", (
-            "entity prune", f"exit {EXIT_LIFECYCLE_ATTENTION}", "ignores this flag",
-            "git head tree proves gone", "parser gap",
+            "emergency", "never needed on the normal path", "git head tree proves gone",
+            "cannot prove gone", "total wipe", f"exit {EXIT_LIFECYCLE_ATTENTION}",
+            "entity prune", "ignores this flag", "parser gap", "never set it in a timer",
         )),
     ],
 )
 def test_lifecycle_flag_help_states_its_effect_on_the_entity_prune(option, claims):
     """--no-embed still deletes the rows of pruned entities; --no-retire also
-    suspends the entity prune; --allow-mass-retire opens only the gates that
-    can still trip exit 3 (repo-level retirement, the shared-module prune) and
-    says that the single-owner entity prune ignores it: that prune deletes
-    what git proves gone and keeps a parser gap (ADR-0057)."""
+    suspends the entity prune; --allow-mass-retire is an emergency bypass
+    since ADR-0057 phase 2: every deletion already removes what git proves
+    gone with no approval, the flag also deletes what git cannot prove and
+    lifts the one remaining hold that exits 3 (a total wipe outside the
+    branch history), and the single-owner entity prune ignores it."""
     text = _help("index-repo", option).lower()
 
     for claim in claims:

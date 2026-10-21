@@ -322,12 +322,14 @@ class IndexWriterProtocol(Protocol):
         odoo_version: str,
         name: str,
         *,
-        run_id: str,
+        run_id: str | None = None,
+        written_before: Any = None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
     ) -> dict:
         """Identities of the children / relationships the run did not write
-        (``{"nodes": [...], "rels": [...]}``, read-only)."""
+        (``{"nodes": [...], "rels": [...]}``, read-only); *written_before*:
+        the shared-module cutoff mode instead of a run token."""
         ...
 
     def record_module_parse_degraded(

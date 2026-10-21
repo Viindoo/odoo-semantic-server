@@ -978,6 +978,18 @@ _SHARED_STALE_EMBEDDINGS_WHERE = """
 """
 
 
+_SHARED_KEEP_WHERE = """
+    AND NOT EXISTS (
+        SELECT 1
+        FROM unnest(%(keep_types)s::text[], %(keep_names)s::text[], %(keep_files)s::text[])
+             AS a(chunk_type, entity_name, file_path)
+        WHERE a.chunk_type = e.chunk_type
+          AND (a.entity_name IS NULL OR a.entity_name = e.entity_name)
+          AND (a.file_path IS NULL OR a.file_path = e.file_path)
+    )
+"""
+
+
 def shared_module_stale_embeddings(
     conn,
     module: str,
@@ -986,6 +998,7 @@ def shared_module_stale_embeddings(
     *,
     delete: bool,
     expected: int | None = None,
+    also_keep: Iterable[tuple] = (),
 ) -> int:
     """Count or delete the rows of a shared module no owner's latest parse produced.
 
@@ -1001,18 +1014,29 @@ def shared_module_stale_embeddings(
     (:func:`_write_scope`, a FORCEd policy must not hide rows); *delete*
     False only counts. *expected* (a prior count): fewer rows deleted logs a
     WARNING. Returns the number of rows counted or deleted.
+
+    *also_keep*: ``(chunk_type, entity_name | None, file_path | None)``
+    filters (:func:`kept_entity_chunk_filters`) of the entities the source
+    oracle kept (ADR-0057 phase 2): their rows stay with their nodes, exactly
+    as in :func:`delete_module_embeddings_except`.
     """
     pairs = [(p, since) for p, since in owners if p and p != GLOBAL_PROFILE]
     profiles = sorted({p for p, _ in pairs})
     if not profiles:
         return 0
+    kept = sorted(
+        {(str(f[0]), f[1], f[2]) for f in also_keep if f[1] is not None or f[2] is not None},
+        key=lambda f: (f[0], f[1] or "", f[2] or ""),
+    )
     params = {
         "module": module, "v": version, "profiles": profiles,
         "owner_profiles": [p for p, _ in pairs], "owner_since": [s for _, s in pairs],
+        "keep_types": [f[0] for f in kept], "keep_names": [f[1] for f in kept],
+        "keep_files": [f[2] for f in kept],
     }
     verb = "DELETE FROM embeddings e WHERE" if delete else "SELECT count(*) FROM embeddings e WHERE"
     with _write_scope(conn), conn.cursor() as cur:
-        cur.execute(f"{verb} {_SHARED_STALE_EMBEDDINGS_WHERE}", params)
+        cur.execute(f"{verb} {_SHARED_STALE_EMBEDDINGS_WHERE}{_SHARED_KEEP_WHERE}", params)
         n = cur.rowcount if delete else cur.fetchone()[0]
     if delete:
         _warn_short_delete(module, version, profiles, n, expected)

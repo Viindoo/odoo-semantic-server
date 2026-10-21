@@ -46,15 +46,29 @@ it from ``held_prunes``). An indexed module whose tracked manifest was read but 
 is kept as it is until it parses again (``unparseable_kept``, a finding; the
 index run exits 3 for it); a manifest that cannot be read at all makes the scan
 incomplete (gate G-A). The version reconcile's shared-module prune (a module two or more repos
-ship loses what no present owner's latest complete parse defines) is predicted
-from the ledger's complete-parse records as they stand: ``shared_prunes``
-(``would_prune`` or ``held``) is a finding, ``shared_prune_waiting`` names the
+ship loses what no present owner's latest complete parse defines and the
+source oracle proves gone in every owner's copy) is predicted from the
+ledger's complete-parse records as they stand: ``shared_prunes``
+(``would_prune`` or ``partial`` - part kept because an owner's source still
+defines it) is a finding, ``shared_prune_waiting`` names the
 modules an unsynced repo holds, ``shared_prune_rewrites`` the owners the reconcile
 sends back to re-parse a module. Each repo entry's ``shared_parse_backlog``
 (``remaining``, ``next_run``) is the bootstrap still to do: copies of shared
 modules without a complete-parse record, re-parsed at most
 ``SHARED_PARSE_BOOTSTRAP_PER_RUN`` per repo per run (not a finding: it drains
-by itself) (schema /4).
+by itself).
+
+Schema /5 (ADR-0057 phase 2: every repo-level and version-level deletion is
+judged by git, no mass gate): ``unproven_drops`` (a finding, per repo) lists
+the modules the scan no longer indexes although the raw HEAD tree still has
+their manifest - kept by the index run, never an exit 3; version entries add
+``orphan_modules[].kept_because``, ``child_orphans_kept`` and
+``embedding_orphans_kept`` (orphans a checkout of the owning profile still
+ships, counted in ``orphan_modules`` / ``child_orphans`` /
+``embedding_orphans``); ``embedding_orphans_held`` now means a graph that lost
+Module nodes of present modules (gate ``embedding_sweep:graph_unhealthy``);
+``shared_prunes[].outcome`` is ``would_prune`` or ``partial`` (``held`` is
+gone). Every /4 key is still present.
 """
 from __future__ import annotations
 
@@ -89,16 +103,18 @@ from src.indexer.registry import build_registry_scan, resolve_repo_version
 
 _logger = logging.getLogger(__name__)
 
-AUDIT_SCHEMA = "osm.lifecycle-audit/4"
+AUDIT_SCHEMA = "osm.lifecycle-audit/5"
 
 # Finding categories, in report order. Any non-zero count is a finding
-# (``--fail-on-findings``).
+# (``has_findings``, ``--fail-on-findings`` exit 4) - except the
+# INFORMATIONAL ones below.
 FINDING_KEYS: tuple[str, ...] = (
     "would_retire",
     "would_drop_owner",
     "undecidable",
     "blocked",
     "parser_gaps",
+    "unproven_drops",
     "shared_prunes",
     "orphan_modules",
     "child_orphans",
@@ -110,6 +126,15 @@ FINDING_KEYS: tuple[str, ...] = (
     "unparseable_kept",
     "errors",
 )
+
+# Kept data, by owner decision (ADR-0057): a parser gap (the source still
+# defines what the parse no longer produces) and an unproven drop (a module
+# the scan lost while git still tracks its manifest) are kept on purpose and
+# only a code change resolves them. They are counted and listed in the
+# report, but they are neither a ``has_findings`` finding nor an exit 4, so
+# the weekly ``--fail-on-findings`` timer does not mail admins every week
+# about data that is kept correctly.
+INFORMATIONAL_FINDING_KEYS: frozenset[str] = frozenset({"parser_gaps", "unproven_drops"})
 
 _SIMULATED_TABLES = ("module_presence", "repos")
 
@@ -133,6 +158,7 @@ class ReadOnlyWriter:
         "parser_gap_modules",
         "prune_deferred_modules",
         "module_children_census",
+        "module_stale_children",
         "shared_prune_states",
         "module_unattributed_latest",
     })
@@ -274,6 +300,7 @@ def _gate_dict(gates) -> dict:
         "n_soft_drop": gates.n_soft_drop,
         "n_present_before": gates.n_present_before,
         "baseline": gates.baseline,
+        "unproven": list(gates.unproven),
     }
 
 
@@ -306,6 +333,7 @@ def _new_repo_entry(repo: dict) -> dict:
         "undecidable": [],
         "blocked": [],
         "parser_gaps": [],
+        "unproven_drops": [],
         "unparseable_kept": [],
         "shared_parse_backlog": {"remaining": 0, "next_run": []},
         "error": None,
@@ -316,7 +344,10 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     """Simulate one repo's index run on the session copy of the ledger.
 
     Returns the repo entry and the presence head the reconcile may advance
-    (the index path's ``presence_deferred_head``), or None.
+    (the index path's ``presence_deferred_head``), or None. The entry's
+    private ``_writes`` key holds the present modules the run would write
+    (for the version reconcile's graph-health check; removed before the
+    report is returned).
     """
     entry = _new_repo_entry(repo)
     local_path = entry["local_path"]
@@ -324,6 +355,7 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     if not local_path or not repo_path.is_dir():
         entry["next_run"] = "not_cloned"
         entry["attention"].append(
+            "no checkout on disk: the next index run clones it when its clone never "
             "succeeded (clone_status pending / error, or manual at the clone directory "
             "OSM manages), otherwise reports it unavailable (exit 3); nothing of it is "
             "observed"
@@ -363,6 +395,7 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     owning_profile = _owning_profiles(repo, repo.get("profile_name"), repo_path.name)[0]
     observation = observe_lifecycle(
         repo, scan, bound, current_head, writer=writer, owning_profile=owning_profile,
+        last_head=last_head,
     )
     present = scan.present_names()
     entry["scan"] = {
@@ -379,6 +412,9 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
     entry["scan_attention"] = list(scan.attention)
     entry["gates"] = _gate_dict(observation.gates)
     entry["unparseable_kept"] = list(observation.unparseable_kept)
+    # Drops whose manifest the HEAD tree still has (ADR-0057 phase 2): kept by
+    # the index run, never an exit 3; a scan gap to look at.
+    entry["unproven_drops"] = list(observation.gates.unproven)
     changed = observation.transitions.changed
     kinds: dict[str, list[str]] = {}
     for t in changed:
@@ -427,6 +463,11 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
             )
         ]
     reparse = sorted((set(rewrite_names) | degraded_changed | gap_changed) & present)
+    if plan.mode != RUN_SKIP and observation.lifecycle_on:
+        entry["_writes"] = sorted(
+            (regular_write_names(repo_path, scan, plan, current_head) | set(reparse)
+             | {i["name"] for i in entry["would_rewrite"]}) & present
+        )
     if reparse and plan.mode != RUN_SKIP:
         # The audit does not parse, so it cannot count what an entity prune
         # (B14) would remove; it names the modules whose deferred, degraded or
@@ -495,9 +536,14 @@ def _audit_version(
     version: str, *, conn, store, writer: ReadOnlyWriter,
     advance: dict[int, str], entries_by_id: dict[int, dict],
 ) -> dict:
+    written = {
+        n for e in entries_by_id.values() if e.get("odoo_version") == version
+        for n in e.get("_writes") or ()
+    }
     report = reconcile_version(
         version, writer=writer, run_started_at=None, store=store,
         advance_presence=advance, global_gc=False, sweep=True, dry_run=True, conn=conn,
+        assume_written=written,
     )
     evidence = _pending_evidence(store.pending_retirements(version, conn=conn))
 
@@ -544,7 +590,9 @@ def _audit_version(
             "profile": r["profile_name"], "why": why,
         })
 
-    orphans = sorted(set(report.orphan_candidates) | set(report.orphans_deferred))
+    orphans = sorted(
+        set(report.orphan_candidates) | set(report.orphans_deferred) | set(report.orphans_kept)
+    )
     return {
         "odoo_version": version,
         "would_retire": report.retired,
@@ -561,12 +609,14 @@ def _audit_version(
             {
                 "name": name,
                 "deferred_for": report.orphans_deferred.get(name, []),
+                "kept_because": report.orphans_kept.get(name),
                 "evidence": report.orphan_evidence.get(name),
             }
             for name in orphans
         ],
         "child_orphans": report.child_orphan_candidates,
         "child_orphans_deferred": report.child_orphans_deferred,
+        "child_orphans_kept": report.child_orphans_kept,
         "embedding_orphans": [
             {"module": m, "profile": p, "rows": n} for m, p, n in report.embedding_orphans
         ],
@@ -574,15 +624,23 @@ def _audit_version(
             {"module": m, "profile": p, "rows": n}
             for m, p, n in report.embedding_orphans_held
         ],
+        "embedding_orphans_kept": [
+            {"module": m, "profile": p, "rows": n}
+            for m, p, n in report.embedding_orphans_kept
+        ],
         "gates_tripped": report.gates_tripped,
         "orphans_unparseable": report.orphans_unparseable,
         "prune_rewrites": report.prune_rewrites,
         "shared_prunes": [
-            {"name": name, "outcome": "would_prune", **report.shared_pruned[name]}
+            {
+                "name": name,
+                "outcome": (
+                    "partial" if report.shared_pruned[name].get("kept")
+                    or report.shared_pruned[name].get("rels_kept") else "would_prune"
+                ),
+                **report.shared_pruned[name],
+            }
             for name in sorted(report.shared_pruned)
-        ] + [
-            {"name": name, "outcome": "held", **report.shared_prune_held[name]}
-            for name in sorted(report.shared_prune_held)
         ],
         "shared_prune_waiting": {
             k: report.shared_prune_waiting[k] for k in sorted(report.shared_prune_waiting)
@@ -615,13 +673,16 @@ def _findings(repos: list[dict], versions: list[dict]) -> dict[str, int]:
         counts["orphan_modules"] += len(v["orphan_modules"])
         counts["child_orphans"] += len(v["child_orphans"])
         counts["child_orphans"] += len(v.get("child_orphans_deferred") or [])
+        counts["child_orphans"] += len(v.get("child_orphans_kept") or {})
         counts["embedding_orphans"] += len(v["embedding_orphans"])
         counts["embedding_orphans"] += len(v.get("embedding_orphans_held") or [])
+        counts["embedding_orphans"] += len(v.get("embedding_orphans_kept") or [])
         counts["modules_without_profile"] += len(v["modules_without_profile"])
         counts["errors"] += len(v["errors"])
     for r in repos:
         counts["would_rewrite"] += len(r["would_rewrite"])
         counts["parser_gaps"] += len(r["parser_gaps"])
+        counts["unproven_drops"] += len(r.get("unproven_drops") or [])
         counts["wrong_paths"] += len(r["wrong_paths"])
         counts["unapplied_changes"] += sum(len(n) for n in r["unapplied_changes"].values())
         counts["unparseable_kept"] += len(r.get("unparseable_kept") or [])
@@ -695,6 +756,8 @@ def audit_lifecycle(
             version_reports.append({"odoo_version": v, "error": _error_text(exc)})
 
     findings = _findings(entries, version_reports)
+    for e in entries:
+        e.pop("_writes", None)
     return {
         "schema": AUDIT_SCHEMA,
         "dry_run": True,
@@ -704,8 +767,14 @@ def audit_lifecycle(
         "repos": entries,
         "versions": version_reports,
         "findings": findings,
-        "has_findings": any(findings.values()),
+        "informational_findings": sorted(INFORMATIONAL_FINDING_KEYS),
+        "has_findings": has_actionable_findings(findings),
     }
+
+
+def has_actionable_findings(findings: dict[str, int]) -> bool:
+    """True when a finding other than the informational ones is non-zero."""
+    return any(n for k, n in findings.items() if k not in INFORMATIONAL_FINDING_KEYS)
 
 
 def _version_key(v: str) -> tuple:
@@ -852,6 +921,11 @@ def render_text(report: dict) -> str:
                 f"{item['rels_total']} relationship(s) ({why}; {when}): "
                 + "; ".join(item.get("sample") or [])
             )
+        if r.get("unproven_drops"):
+            lines.append(
+                "  no longer in the scan but the manifest is still in the HEAD tree, "
+                "kept (scan gap): " + ", ".join(r["unproven_drops"])
+            )
         if r.get("unparseable_kept"):
             lines.append(
                 "  manifest does not parse, module kept until it does: "
@@ -893,7 +967,9 @@ def render_text(report: dict) -> str:
         for item in v.get("shared_prunes", []):
             verdict = (
                 "would prune" if item["outcome"] == "would_prune"
-                else "HELD (mass drop; index with --allow-mass-retire)"
+                else f"would prune part ({item.get('kept', 0)} node(s) and "
+                f"{item.get('rels_kept', 0)} relationship(s) kept: some owner's HEAD "
+                "source still defines them)"
             )
             lines.append(
                 f"  shared module entity prune {verdict}: {item['name']} ({item['stale']} "
@@ -927,6 +1003,8 @@ def render_text(report: dict) -> str:
         for item in v["orphan_modules"]:
             if item["deferred_for"]:
                 how = f"kept until profile(s) {', '.join(item['deferred_for'])} sync"
+            elif item.get("kept_because"):
+                how = f"kept: {item['kept_because']}"
             else:
                 how = "would be swept"
             ev = item["evidence"]
@@ -937,6 +1015,8 @@ def render_text(report: dict) -> str:
             lines.append(f"  orphan module: {item['name']} ({how}{proof})")
         if v["child_orphans"]:
             lines.append(f"  module-less children of: {', '.join(v['child_orphans'])}")
+        for name, why in (v.get("child_orphans_kept") or {}).items():
+            lines.append(f"  module-less children of {name} kept: {why}")
         if v.get("child_orphans_deferred"):
             lines.append(
                 "  module-less children kept until every repo at this version is synced: "
@@ -948,8 +1028,13 @@ def render_text(report: dict) -> str:
             )
         for item in v.get("embedding_orphans_held") or []:
             lines.append(
-                f"  embedding orphans held by the gate: {item['module']} / {item['profile']} "
-                f"({item['rows']} rows)"
+                f"  embedding orphans held (graph lacks nodes of present modules): "
+                f"{item['module']} / {item['profile']} ({item['rows']} rows)"
+            )
+        for item in v.get("embedding_orphans_kept") or []:
+            lines.append(
+                f"  embedding orphans kept (a checkout of the profile still ships the "
+                f"module): {item['module']} / {item['profile']} ({item['rows']} rows)"
             )
         for item in v["modules_without_profile"]:
             lines.append(
@@ -965,6 +1050,13 @@ def render_text(report: dict) -> str:
             lines.append(f"  error: {key}: {text}")
     lines.append("")
     f = report["findings"]
-    listed = ", ".join(f"{k}={n}" for k, n in f.items() if n)
+    listed = ", ".join(
+        f"{k}={n}" for k, n in f.items() if n and k not in INFORMATIONAL_FINDING_KEYS
+    )
+    kept = ", ".join(
+        f"{k}={n}" for k, n in f.items() if n and k in INFORMATIONAL_FINDING_KEYS
+    )
     lines.append(f"findings: {listed or 'none'} ({report['duration_s']}s)")
+    if kept:
+        lines.append(f"kept (informational, not a finding): {kept}")
     return "\n".join(lines)

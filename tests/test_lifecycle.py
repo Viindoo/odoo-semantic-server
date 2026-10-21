@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Module lifecycle: classify, mass-retire gates, successors (OSM #378 node B5).
+"""Module lifecycle: classify, git evidence and gates, successors (OSM #378 node B5).
 
 Business rules (plan 08 T13, M3, G-A, successors):
 
@@ -7,13 +7,17 @@ Business rules (plan 08 T13, M3, G-A, successors):
   a ledger row absent from the scan is retired (last known path kept); an
   already retired, still absent row yields nothing.
 - Gate G-A: retirement needs a complete AND trusted scan.
-- Gate G-B: a mass event blocks retirement - total wipe (all present modules
-  dropped) always; otherwise more than half of the present modules AND at
-  least 20. Soft drops = present -> retired and present -> unparseable
-  (a parser regression looks like mass deletion). ``installable_false`` /
-  ``license_skip`` flips never count: tvtmaaddons19 lands hundreds of modules
-  as installable False on purpose (48d741b7de: 436).
-- ``allow_mass_retire`` bypasses G-B only, never G-A.
+- Git evidence (ADR-0057 phase 2): a drop whose manifest the raw HEAD tree no
+  longer has retires whatever the count, with no approval; one whose
+  manifest is still tracked is kept (``unproven``), never an exit 3. A total
+  wipe (all present modules dropped) retires only when every drop is proven
+  and the last reflected commit is an ancestor of HEAD; otherwise
+  ``total_wipe`` holds it (exit 3). Soft drops = present -> retired and
+  present -> unparseable. ``installable_false`` / ``license_skip`` flips
+  never count: tvtmaaddons19 lands hundreds of modules as installable False
+  on purpose (48d741b7de: 436).
+- ``allow_mass_retire`` (emergency bypass) lifts a held wipe and retires the
+  unproven drops, never G-A.
 - Successors come from hard evidence only: git rename first, manifest
   ``old_technical_name`` second, nothing else.
 """
@@ -191,14 +195,15 @@ def test_changed_omits_only_truly_unchanged_rows():
 
 
 # --------------------------------------------------------------------------
-# G-B thresholds (T13)
+# Git evidence for drops (ADR-0057 phase 2): delete what git proves gone,
+# keep what it cannot prove - no count threshold, nobody approves
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize(("n", "before", "expected"), [
-    (3, 3, GATE_TOTAL_WIPE),      # small repo wiped out: trips regardless of floor
+    (3, 3, GATE_TOTAL_WIPE),      # small repo wiped out: the wipe shape regardless of floor
     (1, 1, GATE_TOTAL_WIPE),
     (2, 3, None),                 # 2 of 3: below the floor, not a wipe
-    (20, 39, GATE_MASS_RETIRE),   # 20 > 19.5 and 20 >= 20
+    (20, 39, GATE_MASS_RETIRE),   # 20 > 19.5 and 20 >= 20 (informational shape)
     (20, 40, None),               # exactly half is not "more than half"
     (19, 30, None),               # above half but below the floor
     (11, 20, None),
@@ -210,31 +215,100 @@ def test_mass_gate_threshold(n, before, expected):
     assert mass_gate_trips(n, before) == expected
 
 
-def test_total_wipe_blocks_retirement():
-    prev = _rows(present=["a", "b", "c"])
-    tr = classify(prev, _scan(present=[]))
-    g = apply_gates(tr, _scan(present=[]), trusted=True)
-    assert g.retire_allowed is False
-    assert g.mass_ok is False
-    assert GATE_TOTAL_WIPE in g.tripped
-    assert g.n_soft_drop == 3 and g.n_present_before == 3
-    assert g.reasons and all(r.isascii() for r in g.reasons)
+def test_a_mass_drop_git_proves_gone_retires_without_a_flag():
+    """21 of 30 modules deleted by a commit: the old G-B held them until an
+    operator ran --allow-mass-retire; the HEAD tree proves each one gone."""
+    names = _names(30)
+    scan = _scan(present=names[:9])
+    tr = classify(_rows(present=names), scan)
+    g = apply_gates(tr, scan, trusted=True, shipped_at_head=names[:9])
+    assert g.retire_allowed is True
+    assert g.tripped == () and g.reasons == ()
+    assert g.unproven == () and g.kept_names == frozenset()
+    assert GATE_MASS_RETIRE not in g.tripped
+
+
+def test_drops_whose_manifest_git_still_tracks_are_kept_not_alerted():
+    """A scan that loses 21 modules whose manifests are still in the HEAD tree
+    (a dispatch or registry regression): nothing retires, nothing alerts."""
+    names = _names(30)
+    scan = _scan(present=names[:9])
+    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
+                    shipped_at_head=names)
+    assert g.unproven == tuple(names[9:])
+    assert g.kept_names == frozenset(names[9:])
+    assert g.tripped == () and g.reasons == (), "keeping unproven data is never an exit 3"
+    assert g.retire_allowed is True, "the repo's proven retirements proceed"
+
+
+def test_only_the_proven_part_of_a_mixed_drop_retires():
+    names = _names(15)
+    scan = _scan(present=names[:5])
+    still_tracked = names[10:]
+    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
+                    shipped_at_head=names[:5] + still_tracked)
+    assert g.kept_names == frozenset(still_tracked)
+    assert set(names[5:10]).isdisjoint(g.kept_names)
+
+
+def test_an_unreadable_head_tree_proves_nothing():
+    names = _names(3)
+    scan = _scan(present=names[:2])
+    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
+                    shipped_at_head=None)
+    assert g.kept_names == frozenset(names[2:])
 
 
 def test_two_of_three_retire_is_allowed():
     prev = _rows(present=["a", "b", "c"])
     scan = _scan(present=["a"])
-    g = apply_gates(classify(prev, scan), scan, trusted=True)
+    g = apply_gates(classify(prev, scan), scan, trusted=True, shipped_at_head=["a"])
     assert g.retire_allowed is True
-    assert g.tripped == ()
+    assert g.tripped == () and g.kept_names == frozenset()
 
 
-def test_more_than_half_of_at_least_twenty_blocks_retirement():
-    names = _names(30)
-    scan = _scan(present=names[:9])  # 21 of 30 vanish
-    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True)
-    assert g.retire_allowed is False
-    assert GATE_MASS_RETIRE in g.tripped
+def test_total_wipe_in_the_branch_history_retires_without_a_flag():
+    """Every module deleted by a commit of the registered branch."""
+    calls = []
+
+    def in_history():
+        calls.append(1)
+        return True
+
+    prev = _rows(present=["a", "b", "c"])
+    scan = _scan(present=[])
+    g = apply_gates(classify(prev, scan), scan, trusted=True, shipped_at_head=[],
+                    wipe_in_history=in_history)
+    assert g.retire_allowed is True and g.tripped == ()
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(("in_history", "shipped", "words"), [
+    (False, [], "not an ancestor"),          # force-push, branch swap, wrong clone
+    (None, [], "no earlier commit"),         # nothing recorded to compare with
+    (True, ["b"], "still have a manifest"),  # the tree still ships a module
+    (True, None, "cannot list"),             # git cannot read the tree
+])
+def test_total_wipe_git_does_not_prove_is_held_and_alerted(in_history, shipped, words):
+    prev = _rows(present=["a", "b", "c"])
+    scan = _scan(present=[])
+    g = apply_gates(classify(prev, scan), scan, trusted=True, shipped_at_head=shipped,
+                    wipe_in_history=lambda: in_history)
+    assert g.retire_allowed is False and g.mass_ok is False
+    assert GATE_TOTAL_WIPE in g.tripped
+    assert g.n_soft_drop == 3 and g.n_present_before == 3
+    assert any(words in r for r in g.reasons), g.reasons
+    assert all(r.isascii() for r in g.reasons)
+
+
+def test_the_ancestry_check_runs_only_for_a_total_wipe():
+    def boom():
+        raise AssertionError("ancestry checked for a partial drop")
+
+    prev = _rows(present=["a", "b", "c"])
+    scan = _scan(present=["a"])
+    apply_gates(classify(prev, scan), scan, trusted=True, shipped_at_head=["a"],
+                wipe_in_history=boom)
 
 
 def test_mass_installable_false_flip_does_not_trip():
@@ -246,82 +320,81 @@ def test_mass_installable_false_flip_does_not_trip():
         excluded={n: EXCLUSION_INSTALLABLE_FALSE for n in names[:436]},
     )
     tr = classify(_rows(present=names), scan)
-    g = apply_gates(tr, scan, trusted=True)
+    g = apply_gates(tr, scan, trusted=True, shipped_at_head=names)
     assert len(tr.of_kind(KIND_EXCLUDED)) == 436
     assert g.n_soft_drop == 0
     assert g.retire_allowed is True
-    assert g.tripped == ()
+    assert g.tripped == () and g.unproven == ()
 
 
 def test_mass_license_skip_flip_does_not_trip():
     names = _names(40)
     scan = _scan(excluded={n: EXCLUSION_LICENSE_SKIP for n in names})
-    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True)
+    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
+                    shipped_at_head=names)
     assert g.n_soft_drop == 0 and g.retire_allowed is True
 
 
-def test_mass_unparseable_trips_like_mass_deletion():
-    """M3: a parser regression turns every manifest unparseable; that must
-    block like a mass deletion."""
+def test_mass_unparseable_is_kept_and_signalled_not_held_by_a_mass_gate():
+    """M3: a parser regression turns many manifests unparseable. Those modules
+    are kept by the manifest_unparseable rule (exit 3 + attention); no ratio
+    gate holds the repo's other, git-proven retirements any more."""
     names = _names(40)
     scan = _scan(present=names[:5], excluded={n: EXCLUSION_UNPARSEABLE for n in names[5:]})
-    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True)
+    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
+                    shipped_at_head=names)
     assert g.n_soft_drop == 35
-    assert g.retire_allowed is False
-    assert GATE_MASS_RETIRE in g.tripped
+    assert GATE_MASS_RETIRE not in g.tripped
+    assert "manifest_unparseable" in g.tripped
+    assert g.retire_allowed is True and g.unproven == ()
 
 
 def test_all_unparseable_is_a_total_wipe():
     names = _names(3)
     scan = _scan(excluded={n: EXCLUSION_UNPARSEABLE for n in names})
-    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True)
+    g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
+                    shipped_at_head=names, wipe_in_history=lambda: True)
     assert GATE_TOTAL_WIPE in g.tripped and g.retire_allowed is False
 
 
 # --------------------------------------------------------------------------
-# G-B on the GRAPH baseline: the first run after the ledger deploy (final
-# review D3, owner decision 2026-09-24; ADR-0056 D6). The ledger is empty, so a
-# ledger baseline would see 0 present modules and never trip; the baseline is
-# what the graph attributes to the repo, judged by the same rule (drops > 50%
-# of the baseline AND >= 20, or a total wipe).
+# The GRAPH baseline: the first run after the ledger deploy (ADR-0056 D6). The
+# ledger is empty, so the drops are counted against what the graph attributes
+# to the repo; since ADR-0057 phase 2 each is judged by git.
 # --------------------------------------------------------------------------
 
 def _graph(names, version=V):
     return [(version, n) for n in names]
 
 
-def test_first_run_on_an_empty_ledger_trips_when_the_scan_covers_far_less_than_the_graph():
-    """The review's example: a 400-module repo whose scan now finds 150."""
+def test_first_run_retires_graph_nodes_git_proves_gone_whatever_their_count():
+    """A 400-module repo whose scan now finds 150 - the
+    other 250 deleted upstream; the old gate held them for an operator."""
     names = _names(400)
     scan = _scan(present=names[:150])
-    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names))
+    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names),
+                    shipped_at_head=names[:150])
     assert g.baseline == "graph"
-    assert GATE_MASS_RETIRE in g.tripped and g.mass_ok is False
+    assert g.tripped == () and g.mass_ok is True and g.unproven == ()
     assert (g.n_soft_drop, g.n_present_before) == (250, 400)
-    assert any("400" in r and "250" in r for r in g.reasons), g.reasons
 
 
-def test_first_run_with_a_few_ghosts_does_not_trip():
+def test_first_run_reports_graph_nodes_whose_manifest_git_still_tracks():
     names = _names(400)
-    scan = _scan(present=names[:395])
-    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names))
-    assert g.baseline == "graph" and g.tripped == () and g.retire_allowed is True
-    assert g.n_soft_drop == 5
+    scan = _scan(present=names[:150])
+    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names),
+                    shipped_at_head=names)
+    assert g.tripped == ()
+    assert g.unproven == tuple(sorted(f"{n}@{V}" for n in names[150:]))
+    assert g.kept_names == frozenset(), "graph drops have no ledger row to keep"
 
 
 def test_empty_graph_baseline_never_trips():
     """A repo the graph never saw (newly registered) has nothing to lose."""
     scan = _scan(present=_names(3))
-    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=[])
+    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=[],
+                    shipped_at_head=_names(3))
     assert g.tripped == () and g.retire_allowed is True
-
-
-@pytest.mark.parametrize(("missing", "trips"), [(20, False), (21, True)])
-def test_graph_baseline_uses_the_more_than_half_and_at_least_twenty_rule(missing, trips):
-    names = _names(40)
-    scan = _scan(present=names[missing:])
-    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names))
-    assert (GATE_MASS_RETIRE in g.tripped) is trips, g
 
 
 def test_graph_baseline_does_not_count_installable_false_or_license_skip_exclusions():
@@ -331,13 +404,16 @@ def test_graph_baseline_does_not_count_installable_false_or_license_skip_exclusi
         **{n: EXCLUSION_INSTALLABLE_FALSE for n in names[10:30]},
         **{n: EXCLUSION_LICENSE_SKIP for n in names[30:]},
     })
-    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names))
+    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names),
+                    shipped_at_head=names)
     assert g.n_soft_drop == 0 and g.tripped == ()
 
 
-def test_graph_baseline_counts_unparseable_and_re_keyed_modules_as_drops():
-    """Absent, unparseable, and now keyed at another version: each turns the
-    graph node at its old version into an orphan the sweep would remove."""
+def test_a_re_keyed_graph_module_is_proven_and_an_unparseable_one_is_left_to_its_rule():
+    """A module the scan now keys at another version leaves its old node (the
+    sweep's job, proven by the re-key even though its manifest is tracked); an
+    unparseable one is kept by the manifest_unparseable rule, not reported as
+    an unproven drop."""
     from dataclasses import replace
 
     names = _names(40)
@@ -345,16 +421,21 @@ def test_graph_baseline_counts_unparseable_and_re_keyed_modules_as_drops():
     moved = _scan(present=names[25:])
     other_v = "98.0"
     scan = replace(base, modules={V: base.modules[V], other_v: moved.modules[V]})
-    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names))
-    assert g.n_soft_drop == 30 and GATE_MASS_RETIRE in g.tripped
+    g = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names),
+                    shipped_at_head=names)
+    assert g.n_soft_drop == 30
+    assert g.tripped == () and g.unproven == ()
 
 
-def test_allow_mass_retire_bypasses_a_graph_baseline_trip():
-    names = _names(40)
-    scan = _scan(present=names[:5])
-    g = apply_gates(classify([], scan), scan, trusted=True, allow_mass_retire=True,
-                    graph_baseline=_graph(names))
-    assert g.retire_allowed is True and GATE_MASS_RETIRE in g.bypassed
+def test_a_graph_baseline_total_wipe_needs_the_branch_history():
+    names = _names(5)
+    scan = _scan(present=[])
+    held = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names),
+                       shipped_at_head=[], wipe_in_history=lambda: False)
+    assert GATE_TOTAL_WIPE in held.tripped and held.mass_ok is False
+    ok = apply_gates(classify([], scan), scan, trusted=True, graph_baseline=_graph(names),
+                     shipped_at_head=[], wipe_in_history=lambda: True)
+    assert ok.tripped == () and ok.mass_ok is True
 
 
 # --------------------------------------------------------------------------
@@ -410,35 +491,37 @@ def test_untrusted_scan_blocks_retirement():
     assert GATE_SCAN_UNTRUSTED in g.tripped
 
 
-def test_allow_mass_retire_bypasses_mass_gate_only():
+def test_allow_mass_retire_is_an_emergency_bypass_never_of_g_a():
+    """It retires what git cannot prove gone, never on a bad scan."""
     names = _names(30)
     scan = _scan(present=names[:5])
     tr = classify(_rows(present=names), scan)
 
-    ok = apply_gates(tr, scan, trusted=True, allow_mass_retire=True)
+    ok = apply_gates(tr, scan, trusted=True, allow_mass_retire=True, shipped_at_head=names)
     assert ok.retire_allowed is True
-    assert ok.mass_ok is True
-    assert GATE_MASS_RETIRE in ok.bypassed
-    assert GATE_MASS_RETIRE not in ok.tripped
+    assert ok.unproven == tuple(names[5:]), "still reported"
+    assert ok.kept_names == frozenset(), "and retired anyway"
 
-    untrusted = apply_gates(tr, scan, trusted=False, allow_mass_retire=True)
+    untrusted = apply_gates(tr, scan, trusted=False, allow_mass_retire=True,
+                            shipped_at_head=names)
     assert untrusted.retire_allowed is False
     assert GATE_SCAN_UNTRUSTED in untrusted.tripped
 
     incomplete_scan = _scan(present=names[:5], complete=False)
     inc = apply_gates(classify(_rows(present=names), incomplete_scan), incomplete_scan,
-                      trusted=True, allow_mass_retire=True)
+                      trusted=True, allow_mass_retire=True, shipped_at_head=names)
     assert inc.retire_allowed is False
     assert GATE_SCAN_INCOMPLETE in inc.tripped
 
 
-def test_allow_mass_retire_bypasses_total_wipe_too():
+def test_allow_mass_retire_lifts_a_held_total_wipe():
     names = _names(3)
     scan = _scan(present=[])
     g = apply_gates(classify(_rows(present=names), scan), scan, trusted=True,
-                    allow_mass_retire=True)
+                    allow_mass_retire=True, shipped_at_head=[],
+                    wipe_in_history=lambda: False)
     assert g.retire_allowed is True
-    assert GATE_TOTAL_WIPE in g.bypassed
+    assert GATE_TOTAL_WIPE in g.bypassed and GATE_TOTAL_WIPE not in g.tripped
 
 
 # --------------------------------------------------------------------------

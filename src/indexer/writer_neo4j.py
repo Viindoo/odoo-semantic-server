@@ -93,7 +93,9 @@ MODULE_CHILD_LABELS: tuple[str, ...] = (
 # many modules; they are NEVER part of a per-module cascade. AssetBundle stores
 # its first contributor as ``module`` (ON CREATE only) - deleting it with that
 # module would cut every other contributor's CONTRIBUTES_TO edge. Reclaimed by
-# gc_orphan_asset_bundles once nothing references it.
+# gc_orphan_asset_bundles once nothing references it; while it lives, the
+# reconcile resets its module / profile to the live contributors
+# (reconcile_asset_bundle_owners, ADR-0057 R9).
 MODULE_SHARED_LABELS: tuple[str, ...] = ("AssetBundle",)
 
 # Sentinel ``module`` values owned by no repo: framework test bases
@@ -1887,13 +1889,19 @@ class Neo4jWriter:
         odoo_version: str,
         name: str,
         *,
-        run_id: str,
+        run_id: str | None = None,
+        written_before=None,
         file_prefixes: Iterable[str] = (),
         skip_labels: Iterable[str] = (),
     ) -> dict:
         """The identities of module *name*'s children and relationships run
         *run_id* did not write - the candidates :meth:`module_children_census`
         counts, for the source oracle (``prune_evidence``, ADR-0057). Read-only.
+
+        *written_before* instead of *run_id*: the shared-module mode (written
+        before that instant or never stamped, whoever wrote it; a ``twin`` /
+        ``parent_live`` is then a node written at or after it, by an owner's
+        latest parse), as in :meth:`module_children_census`.
 
         Node rows: ``id`` (elementId), ``label``, ``name``, ``model``,
         ``xmlid`` (a LintViolation's ``view_xmlid``), ``file_path``,
@@ -1919,7 +1927,7 @@ class Neo4jWriter:
 
         Returns ``{"nodes": [...], "rels": [...]}``.
         """
-        mode = _prune_mode(run_id, None, self._prune_started_at)
+        mode = _prune_mode(run_id, written_before, self._prune_started_at)
         skip = set(skip_labels)
         labels = [lb for lb in MODULE_CHILD_LABELS if lb not in skip]
         out: dict = {"nodes": [], "rels": []}
@@ -2908,6 +2916,65 @@ class Neo4jWriter:
                 "version %s", deleted, odoo_version,
             )
         return deleted
+
+    def reconcile_asset_bundle_owners(self, odoo_version: str) -> int:
+        """Reset ``profile`` / ``module`` of every contributed :AssetBundle at
+        *odoo_version* to its LIVE contributors (ADR-0057 R9).
+
+        The bundle writer only unions ``profile`` and sets ``module`` on
+        create (ADR-0034 union on write), and the lifecycle never touches a
+        shared label (ADR-0056 D8), so after a contributor is retired, moved
+        to another profile (``drop_module_owner``) or merged away, the bundle
+        kept the departed profile and named a module that no longer
+        contributes. Run by the reconcile right after
+        :meth:`gc_orphan_asset_bundles` - the lifecycle's exact reset (D14) for
+        the one shared label:
+
+        * ``profile`` = sorted union of the contributing Modules' profiles
+          (left as it is when no contributor carries one);
+        * ``module`` = kept while that module still contributes; else the
+          bundle's namespace module (``web`` for ``web.assets_backend``) when it
+          contributes; else the alphabetically first contributor.
+
+        Bundles without an inbound CONTRIBUTES_TO (kept only by INCLUDES_BUNDLE
+        / EXTENDS_ASSET_BUNDLE references) are left alone. One bounded
+        statement per version; idempotent (an unchanged bundle is not written).
+        Returns the number of bundles updated.
+        """
+        with self.driver.session() as session:
+            row = _run_single_with_retry(
+                session, "reconcile_asset_bundle_owners",
+                """
+                MATCH (b:AssetBundle {odoo_version: $v})
+                WHERE EXISTS { (:Module)-[:CONTRIBUTES_TO]->(b) }
+                CALL (b) {
+                    MATCH (m:Module)-[:CONTRIBUTES_TO]->(b)
+                    UNWIND CASE WHEN size(coalesce(m.profile, [])) = 0 THEN [null]
+                                ELSE m.profile END AS p
+                    WITH m, p ORDER BY p
+                    RETURN collect(DISTINCT p) AS profs, collect(DISTINCT m.name) AS mods
+                }
+                WITH b, profs, mods,
+                     CASE WHEN b.module IN mods THEN b.module
+                          WHEN split(b.name, '.')[0] IN mods THEN split(b.name, '.')[0]
+                          ELSE reduce(lo = head(mods), x IN mods |
+                                      CASE WHEN x < lo THEN x ELSE lo END)
+                     END AS owner
+                WITH b, owner,
+                     CASE WHEN size(profs) > 0 THEN profs ELSE b.profile END AS profile
+                WHERE coalesce(b.module, '') <> owner OR coalesce(b.profile, []) <> profile
+                SET b.module = owner, b.profile = profile
+                RETURN count(b) AS updated
+                """,
+                v=odoo_version,
+            )
+        updated = row["updated"] if row is not None else 0
+        if updated:
+            _logger.info(
+                "AssetBundle owners: reset %d bundle(s) to their live contributors "
+                "for version %s", updated, odoo_version,
+            )
+        return updated
 
     def reconcile_same_name_inherits(self, odoo_version: str) -> int:
         """MERGE any missing extender-to-definition INHERITS edges for odoo_version.

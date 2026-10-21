@@ -20,6 +20,17 @@ ADR-0055 (each carries a dated amendment pointing here).
 > `--allow-mass-retire` does not affect the per-repo entity prune. The test-node GC leaves
 > the modules the prune judged alone, so embeddings always follow.
 >
+> **Amendment 2026-10-20 (ADR-0057 phase 2):** no G-B row of D6 is a delete gate any more.
+> A dropped module is retired when its manifest is gone from the raw HEAD tree, whatever the
+> count; one git still tracks is kept (`unproven_drops`); a total wipe is held (exit 3) only
+> when git does not prove it (base not an ancestor of HEAD, a manifest still tracked). The
+> orphan / embedding sweeps remove what no checkout of the owning profile ships (the
+> embedding sweep holds only on a graph missing nodes of present modules); the shared-module
+> prune (D10) uses the source oracle per owner, with no nightly re-hold. `--allow-mass-retire`
+> is an emergency bypass only. A registered repo without a checkout is cloned by the run
+> (issue #383 item 2) or reported as `unavailable_repos` (exit 3, no traceback), replacing
+> the exit-1 Known limit. Audit schema `/5`.
+>
 ---
 
 ## Context
@@ -242,7 +253,9 @@ the branch (`16.0.1.0.0` on a 17.0 branch was keyed 16.0).
   it with what still stands (F38).
 - `index-repo` exits **3** (`EXIT_LIFECYCLE_ATTENTION`) when a gate tripped, a
   name was undecidable or the reconcile failed: the index was written, but an
-  operator must look, so systemd `OnFailure=` fires. Details go to stderr and to
+  operator must look, so systemd `OnFailure=` fires. (Amended by ADR-0057 P4 and
+  its rule R6: which gates still trip, plus `unavailable_repos`,
+  `stale_repos` and the `outages` fetch / embedder signals.) Details go to stderr and to
   `repos.lifecycle_attention`.
 
 ### D7 - Who may still ship a module: decided per module (F48)

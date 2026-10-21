@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A failed repo or profile keeps the lifecycle outcome of the healthy ones, a
-missing checkout never holds a version's cleanup silently, and a mass orphan
-embedding delete is held by the mass-retire gate (PR #379 review, ADR-0056).
+missing checkout is cloned or reported, never a silent hold, and the orphan
+embedding sweep is judged by git (PR #379 review, ADR-0056, ADR-0057 phase 2,
+issue #383 item 2).
 
 Business rules protected here:
 
@@ -26,13 +27,13 @@ Business rules protected here:
   ``child_orphans_deferred`` and counts them in ``findings.child_orphans``
   (``--fail-on-findings`` exits 4). Once the repo is cloned and synced, the
   next run sweeps those children.
-- Gate G-B holds a mass orphan embedding delete: more than half, and at least
-  20, of a version's (module, profile) embedding groups being orphans keeps
-  every row (exit 3, ``embedding_sweep:<gate>``, attention on the affected
-  profile's repos) and ``lifecycle-audit`` predicts it
-  (``embedding_orphans_held``, counted in ``findings.embedding_orphans``);
-  ``--allow-mass-retire`` deletes them; below the floor or the ratio they are
-  deleted on a normal run; the pattern catalogue (``__global__``) never counts.
+- The orphan embedding sweep deletes the (module, profile) groups no checkout
+  of the profile ships, whatever their share of the version (no ratio, no
+  approval) and ``lifecycle-audit`` predicts it; a group whose module a
+  checkout still tracks is kept; a graph that lost the Module node of a
+  present module holds every group (``embedding_sweep:graph_unhealthy``, exit
+  3) until the module is re-written; the pattern catalogue (``__global__``)
+  never counts.
 
 Every test drives the real ``index_profile`` / ``index_all`` / CLI ``main`` over
 temp git repos with a bare origin, against real Neo4j and PostgreSQL + pgvector.
@@ -190,7 +191,8 @@ def _rows(pg_conn, modules: list[str], profile: str) -> int:
 
 def _failed_profile_night(tmp_path: Path, pg_conn, monkeypatch, failure: str) -> dict:
     """Profile ``fail_99``: a healthy repo drops one module, a second healthy repo
-    drops every module (total-wipe gate), and a third repo fails. *failure*: ``crash``
+    has its branch replaced by an unrelated root (a total wipe git does not
+    prove: gate ``total_wipe``), and a third repo fails. *failure*: ``crash``
     (its indexing raises: the profile fails, exit 1) or ``no_checkout``
     (registered without a clone directory and its clone fails - repo 388,
     issue #383 item 2: reported, the profile does not fail, exit 3).
@@ -232,9 +234,7 @@ def _failed_profile_night(tmp_path: Path, pg_conn, monkeypatch, failure: str) ->
         rid_failing = _register_missing_checkout("fail_99", tmp_path, "never_cloned")
     healthy.rm("healthy_drop")
     healthy.commit("[REM] healthy_drop")
-    wiped.rm("wiped_one")
-    wiped.rm("wiped_two")
-    wiped.commit("[REM] every module")
+    wiped.force_push_unrelated_root()
     other.rm("other_drop")
     other.commit("[REM] other_drop")
     return {
@@ -482,7 +482,7 @@ def test_missing_checkout_holds_module_less_children_with_attention_and_an_audit
 
 
 # ---------------------------------------------------------------------------
-# 167b7360 - the orphan embedding sweep goes through gate G-B
+# 167b7360 / ADR-0057 phase 2 - the orphan embedding sweep is judged by git
 # ---------------------------------------------------------------------------
 
 def _embedding_profile(tmp_path: Path, pg_conn, n_live: int = 1) -> tuple[GitRepo, int]:
@@ -525,14 +525,15 @@ def _catalogue_rows(pg_conn) -> int:
         return cur.fetchone()[0]
 
 
-def test_mass_orphan_embedding_groups_are_held_by_the_gate_until_allow_mass_retire(
+def test_a_mass_of_orphan_embedding_groups_git_proves_gone_is_deleted_without_a_flag(
     pg, neo4j_driver, tmp_path, monkeypatch, capsys, _ephemeral_pg_db,
 ):
-    """1 live module + exactly 20 orphan embedding groups (20/21 > 50%, at the
-    floor of 20) under the profile: the audit predicts the hold, the run keeps
-    every row, exits 3 with ``embedding_sweep:mass_retire`` and attention on the
-    profile's repo; ``--allow-mass-retire`` deletes the 20 groups. The pattern
-    catalogue (``__global__``) is never listed, held or deleted."""
+    """1 live module + 20 orphan embedding groups (20/21: the old G-B ratio
+    held this until --allow-mass-retire). No checkout of the profile ships any
+    ``ghost_*`` module and the graph is complete, so git proves them gone:
+    the audit predicts the delete, the plain run deletes all 20 groups and
+    exits 0. The pattern catalogue (``__global__``) is never listed, held or
+    deleted."""
     _repo, rid = _embedding_profile(tmp_path, pg)
     ghosts = [f"ghost_{i:02d}" for i in range(20)]
     _add_embedding_groups(pg, ghosts, "emb_99")
@@ -541,26 +542,77 @@ def test_mass_orphan_embedding_groups_are_held_by_the_gate_until_allow_mass_reti
 
     code, report = _audit(monkeypatch, capsys, _ephemeral_pg_db, "--profile", "emb_99")
     ver = _version_entry(report)
-    assert "embedding_sweep:mass_retire" in ver["gates_tripped"], ver["gates_tripped"]
-    held = ver.get("embedding_orphans_held") or []
-    assert sorted(g["module"] for g in held) == ghosts, held
-    assert {g["profile"] for g in held} == {"emb_99"}
+    assert ver["gates_tripped"] == [], ver["gates_tripped"]
+    assert sorted(g["module"] for g in ver["embedding_orphans"]) == ghosts
+    assert ver.get("embedding_orphans_held") == []
     assert report["findings"]["embedding_orphans"] == 20, report["findings"]
 
     code, _, err = _cli(monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--profile", "emb_99")
 
-    assert code == 3, err
-    assert "embedding_sweep:mass_retire" in err, err
-    assert _rows(pg, ghosts, "emb_99") == 20, "the gate keeps every orphan row"
-    assert "embedding sweep" in _attention(pg, rid), _attention(pg, rid)
-    assert _catalogue_rows(pg) == catalogue
-
-    summary = run(pg, "emb_99", allow_mass_retire=True)
-
-    assert not any("embedding_sweep" in g for g in lc(summary).get("gates_tripped", []))
-    assert _rows(pg, ghosts, "emb_99") == 0, "--allow-mass-retire deletes the held groups"
+    assert code == 0, err
+    assert _rows(pg, ghosts, "emb_99") == 0, "git-proven orphan rows are deleted, no approval"
+    assert "embedding sweep" not in _attention(pg, rid), _attention(pg, rid)
     assert _catalogue_rows(pg) == catalogue, "the catalogue is never an orphan"
     assert embeddings(pg, "emb_live_00", "emb_99") > 0
+
+
+def test_orphan_embedding_groups_a_checkout_still_ships_are_kept(pg, neo4j_driver, tmp_path):
+    """The profile's checkout still tracks ``ghost_00`` (here: tracked but
+    not a module the scan accepts - a legacy ``__openerp__.py`` on a modern
+    branch): git cannot prove it gone, so its rows stay; the others go."""
+    repo, _rid = _embedding_profile(tmp_path, pg)
+    (repo.path / "ghost_00").mkdir()
+    (repo.path / "ghost_00" / "__openerp__.py").write_text("{'name': 'ghost_00'}\n")
+    repo.commit("[ADD] legacy ghost_00 manifest")
+    ghosts = [f"ghost_{i:02d}" for i in range(3)]
+    _add_embedding_groups(pg, ghosts, "emb_99")
+
+    summary = run(pg, "emb_99")
+
+    assert not lc(summary).get("needs_attention"), lc(summary)
+    assert _rows(pg, ["ghost_00"], "emb_99") == 1, "unproven rows are kept"
+    assert _rows(pg, ghosts[1:], "emb_99") == 0
+
+
+def test_a_graph_that_lost_a_present_module_holds_the_embedding_sweep_until_it_is_rewritten(
+    pg, neo4j_driver, tmp_path,
+):
+    """Repo B's module lost its Module node while B is unchanged (its run is
+    the unchanged skip, which does not re-write it). The graph is incomplete,
+    so no orphan can be told from a live module: every orphan group is held,
+    the run exits 3 (``embedding_sweep:graph_unhealthy``) and names the
+    profile whose ``--full`` run re-writes the node. After that run the sweep
+    proceeds by git."""
+    repo_a, rid_a = _embedding_profile(tmp_path, pg)
+    repo_b = GitRepo(tmp_path, "emb_b_addons")
+    write_module(repo_b, "emb_b_mod")
+    repo_b.commit("add")
+    register("emb_99", repo_b)
+    run(pg, "emb_99")
+    with neo4j_driver.session() as s:
+        s.run(
+            "MATCH (m:Module {name: 'emb_b_mod', odoo_version: $v}) DETACH DELETE m", v=V,
+        ).consume()
+    record = repo_a.path / "emb_live_00" / "models" / "record.py"
+    record.write_text(record.read_text() + "\n# touched again\n")
+    repo_a.commit("[IMP] emb_live_00: touch again")
+    ghosts = [f"ghost_{i:02d}" for i in range(3)]
+    _add_embedding_groups(pg, ghosts, "emb_99")
+
+    held = run(pg, "emb_99")
+
+    assert "embedding_sweep:graph_unhealthy" in " ".join(lc(held).get("gates_tripped", []))
+    assert _rows(pg, ghosts, "emb_99") == 3, "nothing is deleted while the graph is incomplete"
+    attention = _attention(pg, rid_a)
+    assert "emb_b_mod" in attention and "index-repo --profile emb_99 --full" in attention, (
+        attention
+    )
+
+    rewritten = run(pg, "emb_99", full_reindex=True)
+
+    assert not lc(rewritten).get("needs_attention"), lc(rewritten)
+    assert _rows(pg, ghosts, "emb_99") == 0
+    assert embeddings(pg, "emb_b_mod", "emb_99") > 0
 
 
 def test_orphan_embedding_groups_below_the_floor_are_deleted_on_a_normal_run(

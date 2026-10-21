@@ -41,6 +41,13 @@ Then the orphan sweep (review M6, H5b) removes what the ledger never saw
 ``--gc``): Module nodes with no ``present`` row anywhere, attributed through
 their own ``profile[]`` / ``repo_id`` and swept only when every repo of those
 profiles at the version is synced; module-owned children whose Module is gone;
+embedding groups no live owner accounts for. Each is removed only when git
+proves it gone - no checkout of an owning profile ships a manifest of it in
+its raw HEAD tree (ADR-0057 phase 2, no ratio, no approval); the embedding
+sweep also needs a graph that has a Module node for every present module.
+What git cannot prove gone is kept and reported. The shared-module prune
+judges each candidate by every owner's HEAD source (the same oracle as the
+per-repo entity prune). Finally the version-wide GCs run (``gc_orphan_asset_bundles``,
 ``relink_unresolved_placeholders`` then ``gc_unresolved_placeholders`` - the
 relink moves placeholder edges onto targets indexed since, the GC is skipped
 when it fails - and ``gc_null_repo_dep_stubs`` once every
@@ -78,7 +85,6 @@ from src.indexer.lifecycle import (
     BLOCKED_SKIPPED_RECENT,
     BLOCKED_UNDECIDABLE_PREFIX,
     SUCCESSOR_OLD_TECHNICAL_NAME,
-    mass_gate_trips,
     reconcile_may_retry,
     removal_evidence,
 )
@@ -109,17 +115,22 @@ class ReconcileReport:
     synced (children carry no profile, so any unsynced repo holds them).
     ``modules_deleted`` / ``children_deleted`` count the Neo4j nodes the
     cascade removed (0 in a dry run). ``gates_tripped`` holds
-    ``orphan_sweep:<gate>`` when the sweep was stopped by G-B, and
-    ``embedding_sweep:<gate>`` when G-B held the orphan embedding groups
+    ``embedding_sweep:graph_unhealthy`` when a graph that lost Module nodes of
+    present modules held the orphan embedding groups
     (``embedding_orphans_held``; ``embedding_orphans`` lists only groups that
-    were, or in a dry run would be, deleted).
+    were, or in a dry run would be, deleted). Git evidence, no ratio
+    (ADR-0057 phase 2): ``orphans_kept`` / ``child_orphans_kept`` map an
+    orphan (a module-less name) to the checkout that still ships it or cannot
+    be read; ``embedding_orphans_kept`` lists the orphan groups a checkout of
+    their profile still ships; ``shared_pruned`` entries carry the source
+    oracle's ``kept`` / ``rels_kept`` (``outcome`` ``partial`` when some are
+    kept). None of those is an exit 3.
     ``needs_attention`` is what makes the CLI exit 3.
 
     Also filled, executed or dry, for the operator and ``lifecycle-audit``:
     ``owners_kept`` maps an owner-dropped name to the repos that keep it;
     ``orphan_candidates`` / ``child_orphan_candidates`` are the orphans the
-    sweep (when it runs) found decidable before the mass gate (swept unless
-    G-B trips);
+    sweep (when it runs) found decidable and git proves gone (swept);
     ``orphan_evidence`` (dry run only) maps an orphan Module to the git proof of
     how it left its repo: ``{repo_id, removing_commit: {sha, date, subject},
     successor: {names, source} | None}``.
@@ -138,11 +149,14 @@ class ReconcileReport:
     child_orphans_deferred: list[str] = field(default_factory=list)
     embedding_orphans: list[tuple[str, str, int]] = field(default_factory=list)
     embedding_orphans_held: list[tuple[str, str, int]] = field(default_factory=list)
-    # The profile whose one-shot ``index-repo --profile <p> --allow-mass-retire``
-    # reconciles this version and deletes the held groups: a held profile with
-    # a repo here, else any profile with one (a run reconciles only the
-    # versions of its own repos). None when no repo is registered at it.
+    embedding_orphans_kept: list[tuple[str, str, int]] = field(default_factory=list)
+    # The profile whose run reconciles this version once the graph is complete
+    # again: a held profile with a repo here, else any profile with one (a run
+    # reconciles only the versions of its own repos). None when no repo is
+    # registered at it.
     embedding_sweep_run_profile: str | None = None
+    orphans_kept: dict[str, str] = field(default_factory=dict)
+    child_orphans_kept: dict[str, str] = field(default_factory=dict)
     embeddings_deleted: int = 0
     modules_deleted: int = 0
     children_deleted: int = 0
@@ -160,10 +174,12 @@ class ReconcileReport:
     # shared_unsynced prune waited for synced without present-owning them.
     prune_rewrites: list[str] = field(default_factory=list)
     # Shared-module prune (B14, a module two or more repos ship): name ->
-    # {stale, total, rels_stale, rels_total, cutoff, owners} of what was (dry
-    # run: would be) removed, plus {deleted, rels_deleted, embeddings_deleted}
-    # when executed; held by the mass-drop gate; waiting for unsynced repos
-    # that may ship it (name -> repo labels).
+    # {stale, total, rels_stale, rels_total, cutoff, owners, verdicts, kept,
+    # rels_kept, outcome} of what was (dry run: would be) removed, plus
+    # {deleted, rels_deleted, embeddings_deleted} when executed; waiting for
+    # unsynced repos that may ship it (name -> repo labels).
+    # ``shared_prune_held`` stays empty since the source oracle decides
+    # (ADR-0057 phase 2); kept for the report's shape.
     shared_pruned: dict[str, dict] = field(default_factory=dict)
     shared_prune_held: dict[str, dict] = field(default_factory=dict)
     shared_prune_waiting: dict[str, list[str]] = field(default_factory=dict)
@@ -348,6 +364,31 @@ def _tracked_module_names(row: Mapping, odoo_version: str) -> set[str] | None:
     }
 
 
+def _head_shipped_names(row: Mapping, odoo_version: str) -> set[str] | None:
+    """Module names the checkout of *row* ships at *odoo_version* by its raw
+    HEAD tree (``git_utils.head_tree_module_names``: any manifest, no version
+    dispatch - the evidence must not depend on what the scan accepts).
+
+    The repo's version rule (``registry.resolve_repo_version``) still applies:
+    a repo placed at another version ships nothing here (a re-keyed module's
+    old node is provably not shipped at this version). None when the
+    checkout is missing or git cannot list it (nothing can be proven).
+    """
+    from src.git_utils import head_tree_module_names
+    from src.indexer.registry import resolve_repo_version
+
+    local_path = row.get("local_path")
+    if not local_path or not Path(local_path).is_dir():
+        return None
+    repo_version = resolve_repo_version(
+        str(local_path), branch=row.get("repo_branch"),
+        profile_version=row.get("profile_version") or odoo_version,
+    ).odoo_version
+    if repo_version is not None and repo_version != odoo_version:
+        return set()
+    return head_tree_module_names(local_path)
+
+
 def _owner_file_prefixes(owners: Iterable[Mapping]) -> list[str]:
     """Directory prefixes (``/``-terminated) of every owner's copy of a module.
 
@@ -365,12 +406,62 @@ def _owner_file_prefixes(owners: Iterable[Mapping]) -> list[str]:
     return sorted(c.rstrip("/") + "/" for c in candidates)
 
 
+def _owner_anchors(owners: Iterable[Mapping]) -> list[str]:
+    """Every form (``/``-terminated) a file path of a shared module's copy may
+    start with: each owner's repo-relative module directory and its absolute
+    path under the owner's checkout (longest first, so a nested directory
+    wins). A repo-root module (empty ``path``) contributes its absolute form
+    only - an empty relative prefix would match every path."""
+    out: set[str] = set()
+    for o in owners:
+        rel = (o.get("path") or "").strip("/")
+        if rel:
+            out.add(rel + "/")
+        if o.get("local_path"):
+            out.add(str(Path(o["local_path"]) / rel).rstrip("/") + "/")
+    return sorted(out, key=len, reverse=True)
+
+
+def _reanchor(path: str | None, owner: Mapping, anchors: list[str]) -> str | None:
+    """*path* (a file of some owner's copy) moved into *owner*'s module
+    directory, repo-relative; unchanged when it starts with no owner's
+    directory (the oracle then cannot map it and keeps the item)."""
+    if not path:
+        return path
+    p = path.replace("\\", "/")
+    for prefix in anchors:
+        if p.startswith(prefix):
+            inner = p[len(prefix):]
+            rel = (owner.get("path") or "").strip("/")
+            return f"{rel}/{inner}" if rel else inner
+    return path
+
+
 def _owner_record_state(owners: Iterable[Mapping]) -> str:
     """Fingerprint of the owners' complete-parse records (repo, time, token)."""
     return ";".join(sorted(
         f"{o['repo_id']}@{o['last_full_parse_at'].isoformat()}#{o.get('last_full_parse_run') or ''}"
         for o in owners
     ))
+
+
+def _owner_checkout_untrusted(owner: dict, cache: dict[str, str | None]) -> bool:
+    """True when the owner's checkout HEAD is not ``presence_head_sha``, the
+    commit its ledger last reflected (only a run whose scan passed G-A
+    advances it). The shared prune reads each owner's HEAD tree; a checkout
+    another run left on the wrong branch, or a repo never synced, proves
+    nothing. One ``git rev-parse`` per checkout per reconcile (*cache*)."""
+    local = owner.get("local_path")
+    if not local:
+        return False  # judged unavailable anyway ("owner checkout path unknown")
+    if local not in cache:
+        from src.indexer import incremental
+
+        cache[local] = (
+            incremental.get_repo_head(Path(local)) if Path(local).is_dir() else None
+        )
+    head = cache[local]
+    return head is None or head != owner.get("presence_head_sha")
 
 
 def _owner_embedding_marks(owners: Iterable[Mapping]) -> list[tuple[str, object]] | None:
@@ -388,13 +479,13 @@ def _repo_label(row: Mapping) -> str:
 
 
 def embedding_sweep_hint(version: str, run_profile: str | None) -> str:
-    """How to delete a held embedding sweep of *version* once confirmed."""
+    """How to release an embedding sweep of *version* held by a graph that lost
+    Module nodes of present modules (``embedding_sweep:graph_unhealthy``)."""
     if run_profile is None:
         return f" (no repo is registered at {version}: no index run reconciles it)"
     return (
-        f"; once confirmed, run once `index-repo --profile {run_profile} "
-        "--allow-mass-retire` (it reconciles this version; the flag lifts every "
-        "mass gate of that run)"
+        f"; re-write the missing modules (`index-repo --profile {run_profile} --full` "
+        "for the profile that ships them) and the next run judges the orphans by git"
     )
 
 
@@ -411,6 +502,7 @@ class _Reconciler:
         allow_mass_retire: bool,
         dry_run: bool,
         report: ReconcileReport,
+        assume_written: Iterable[str] = (),
     ) -> None:
         self.v = odoo_version
         self.writer = writer
@@ -426,6 +518,9 @@ class _Reconciler:
         # as synced by the sweep exactly like the executed mark_presence_synced.
         self._assumed_synced: set[int] = set()
         self._heads: dict[int, str | None] | None = None
+        # Raw HEAD-tree module names per checkout (orphan / embedding evidence).
+        self._shipped: dict[int | None, set[str] | None] = {}
+        self.assume_written = set(assume_written)
 
     # --- helpers -------------------------------------------------------------
 
@@ -480,6 +575,24 @@ class _Reconciler:
                 for r in self.store.repo_sync_state(self.v, conn=self.conn)
             }
         return self._heads.get(repo_id)
+
+    def _checkout_claim(self, rows: Iterable[Mapping], name: str) -> str | None:
+        """Why *name* cannot be proven gone from the checkouts *rows* (repo sync
+        rows): the first repo whose raw HEAD tree still ships a manifest of it,
+        or whose checkout cannot be read (``_head_shipped_names`` None). None
+        when every checkout proves it absent - or when there is no checkout
+        (nothing registered can ship it). Each tree is read once per reconcile.
+        """
+        for row in rows:
+            rid = row.get("repo_id")
+            if rid not in self._shipped:
+                self._shipped[rid] = _head_shipped_names(row, self.v)
+            names = self._shipped[rid]
+            if names is None:
+                return f"{_repo_label(row)}: checkout missing or unreadable"
+            if name in names:
+                return f"{_repo_label(row)}: manifest in the HEAD tree"
+        return None
 
     def _commit_retired(self, rows: Iterable[Mapping]) -> None:
         """Record each row ``retired`` at its repo's HEAD (``state_changed_sha``)."""
@@ -849,24 +962,33 @@ class _Reconciler:
         * an unsynced repo that may ship M (:class:`PotentialOwners`) holds it
           (``shared_prune_waiting``; attention when it is not simply a
           checkout tracking M);
-        * the mass-drop gate G-B of the per-repo prune applies (bypassed by
-          ``allow_mass_retire``): ``shared_prune_held``, gate id
-          ``entity_prune:<M>@<v>``, attention on every owner;
+        * each candidate is judged by the SOURCE of every owner, never by a
+          ratio (ADR-0057 phase 2, :meth:`_judge_shared`): it goes only when
+          the source oracle (``prune_evidence``) calls it ``gone`` or
+          ``superseded`` in EVERY owner's copy at its HEAD tree; what any
+          owner's source still defines is kept with its embeddings and
+          recorded on the Module node as a parser gap (``lifecycle-audit``
+          ``parser_gaps``), never an exit 3. No approval;
+          ``allow_mass_retire`` (emergency bypass) prunes the whole stale
+          selection;
         * embeddings: a row of M in an owner profile goes when no owner's
           profile holds a row of its chunk key stamped since that owner's
-          latest complete parse (``last_full_parse_embedded_at``) - every
-          chunk kind, before the graph prune, RLS-unrestricted, with the
-          prior count as ``expected``. When some owner's latest parse did not
-          embed completely the rows are left alone (``embeddings_stale``
-          None), as the per-repo prune does without embeddings.
+          latest complete parse (``last_full_parse_embedded_at``) and it does
+          not describe a kept entity - every chunk kind, before the graph
+          prune, RLS-unrestricted, with the prior count as ``expected``. When
+          some owner's latest parse did not embed completely the rows are left
+          alone (``embeddings_stale`` None), as the per-repo prune does
+          without embeddings.
 
         What remains undecided (stamped after the cutoff by no owner's latest
         parse) sends the owners whose latest parse predates it back to
         re-parse M (:meth:`_settle_shared`, ``shared_prune_rewrites``).
-        The evaluated owner-record state is recorded on the Module node; M is
-        examined again only once an owner's record changed, so an unchanged
-        night costs one ledger query and one batched read. Runs in dry runs
-        too (the audit's prediction), deleting and flagging nothing.
+        The evaluated state (owner records + the indexer code digest,
+        ``prune_evidence.prune_code_token``) is recorded on the Module node;
+        M is examined again only once an owner's record or the code changed,
+        so an unchanged night costs one ledger query and one batched read and
+        a kept parser gap is never re-judged nightly. Runs in dry runs too
+        (the audit's prediction), deleting and flagging nothing.
         """
         if not self.report.retire_enabled:
             return
@@ -875,8 +997,9 @@ class _Reconciler:
         shared_owners = getattr(self.store, "shared_module_owners", None)
         if not (callable(census) and callable(applied_read) and callable(shared_owners)):
             return
-        from src.indexer.pipeline_repo import PRUNE_GATE_PREFIX, _mass_drop
+        from src.indexer.prune_evidence import prune_code_token
 
+        token = prune_code_token()
         candidates: dict[str, list[dict]] = {}
         for name, owners in sorted(shared_owners(self.v, conn=self.conn).items()):
             if any(
@@ -888,9 +1011,16 @@ class _Reconciler:
         if not candidates:
             return
         applied = applied_read(self.v, list(candidates)) or {}
+        heads: dict[str, str | None] = {}
         for name, owners in candidates.items():
             cutoff = min(o["last_full_parse_at"] for o in owners)
-            state = _owner_record_state(owners)
+            for o in owners:
+                o["_untrusted"] = _owner_checkout_untrusted(o, heads)
+            # The trust of each owner's checkout is part of the evaluated
+            # state: a kept set judged while an owner was untrusted is judged
+            # again once its checkout is back on the trusted commit.
+            untrusted = sorted(o["repo_id"] for o in owners if o["_untrusted"])
+            state = f"{_owner_record_state(owners)}|untrusted={untrusted}|{token}"
             if applied.get(name) == state:
                 continue
             owner_ids = [o["repo_id"] for o in owners]
@@ -920,33 +1050,26 @@ class _Reconciler:
             summary = {
                 "stale": counts["stale"], "total": counts["total"],
                 "rels_stale": counts["rels_stale"], "rels_total": counts["rels_total"],
-                "embeddings_stale": (
-                    self._shared_stale_embeddings(name, embedded, delete=False)
-                    if embedded is not None else None
-                ),
                 "cutoff": cutoff.isoformat(),
                 "owners": sorted(_repo_label(o) for o in owners),
             }
-            if not (summary["stale"] or summary["rels_stale"] or summary["embeddings_stale"]):
-                self._settle_shared(name, owners, cutoff, state, prefixes, skip)
-                continue
-            if not self.allow_mass_retire and (
-                _mass_drop(summary["stale"], summary["total"])
-                or _mass_drop(summary["rels_stale"], summary["rels_total"])
-            ):
-                self.report.shared_prune_held[name] = summary
-                self.report.gates_tripped.append(f"{PRUNE_GATE_PREFIX}{name}@{self.v}")
-                text = (
-                    f"entity prune of shared module {name}@{self.v} held: "
-                    f"{summary['stale']} of {summary['total']} indexed node(s) and "
-                    f"{summary['rels_stale']} of {summary['rels_total']} relationship(s) "
-                    "are produced by no present owner's latest parse; graph and "
-                    "embeddings kept; check the owners' parses, then re-run with "
-                    "--allow-mass-retire"
+            judged = None
+            if summary["stale"] or summary["rels_stale"]:
+                judged = self._judge_shared(name, owners, cutoff, prefixes, skip)
+                judged.update(total=counts["total"], rels_total=counts["rels_total"])
+                summary.update(
+                    verdicts=judged["verdicts"], kept=judged["kept"],
+                    rels_kept=judged["rels_kept"],
                 )
-                _logger.warning("reconcile %s: %s", self.v, text)
-                for rid in owner_ids:
-                    self._attend(rid, text)
+            keep_chunks = judged["chunk_filters"] if judged else []
+            summary["embeddings_stale"] = (
+                self._shared_stale_embeddings(name, embedded, delete=False, also_keep=keep_chunks)
+                if embedded is not None else None
+            )
+            deletes = bool(judged and (judged["node_ids"] or judged["rel_ids"]))
+            if not (deletes or summary["embeddings_stale"]):
+                self._record_shared_gap(name, owners, judged)
+                self._settle_shared(name, owners, cutoff, state, prefixes, skip)
                 continue
             if not self.execute:
                 self.report.shared_pruned[name] = summary
@@ -957,8 +1080,10 @@ class _Reconciler:
                     **summary,
                     **self._prune_shared_module(
                         name, cutoff, prefixes, skip, embedded, summary["embeddings_stale"],
+                        judged, keep_chunks,
                     ),
                 }
+                self._record_shared_gap(name, owners, judged)
                 self._settle_shared(name, owners, cutoff, state, prefixes, skip)
             except Exception as exc:  # noqa: BLE001 - one name never aborts the others
                 message = f"{type(exc).__name__}: {exc}"[:300]
@@ -966,6 +1091,142 @@ class _Reconciler:
                 _logger.error(
                     "reconcile %s: shared-module prune of %s failed: %s", self.v, name, message,
                 )
+
+    def _judge_shared(
+        self, name: str, owners: list[dict], cutoff, prefixes: list[str], skip: list[str],
+    ) -> dict:
+        """Source-oracle verdicts for a shared module's stale candidates.
+
+        The candidates (``module_stale_children`` in cutoff mode) are judged
+        against EACH owner's copy at its HEAD tree (``prune_evidence``); a file
+        path is re-anchored into each owner's module directory first, since
+        the copies may sit at different paths. A node or relationship is
+        deleted only when every owner's oracle calls it ``gone`` or
+        ``superseded``; ``allow_mass_retire`` deletes the whole stale
+        selection. Returns ``{node_ids, rel_ids, kept, rels_kept, verdicts,
+        sample, reason, fingerprint, paths, chunk_filters}`` (``node_ids`` /
+        ``rel_ids`` None = the whole selection; ``chunk_filters``: the
+        embedding rows of the kept entities, in every owner's path form).
+        """
+        from dataclasses import replace
+
+        from src.indexer import prune_evidence as pe
+        from src.indexer.models import to_repo_relative
+        from src.indexer.writer_pgvector import kept_entity_chunk_filters
+
+        rows = self.writer.module_stale_children(
+            self.v, name, written_before=cutoff, file_prefixes=prefixes, skip_labels=skip,
+        )
+        nodes = [pe.stale_node_from_row(r) for r in rows.get("nodes") or []]
+        rels = [pe.stale_rel_from_row(r) for r in rows.get("rels") or []]
+        anchors = _owner_anchors(owners)
+        node_ok: set[str] | None = None
+        rel_ok: set[str] | None = None
+        verdicts: dict[str, int] = {}
+        reasons: list[str] = []
+        anchored: list[tuple[dict, list]] = []
+        first_source = None
+        for o in owners:
+            local = o.get("local_path")
+            rel_dir = (o.get("path") or "").strip("/")
+            if not local:
+                source = pe.ModuleSource(
+                    name, Path("."), (), False, "owner checkout path unknown",
+                )
+            elif o.get("_untrusted"):
+                # Its checkout is not on the commit its ledger last reflected
+                # (a G-A-failed run left it on another branch, or the repo was
+                # never synced): that HEAD proves nothing about the trusted copy.
+                source = pe.ModuleSource(
+                    name, Path(local), (), False,
+                    "owner checkout HEAD is not the commit its ledger last reflected",
+                )
+            else:
+                source = pe.load_module_source(local, name, rel_dir)
+            if first_source is None:
+                first_source = source
+            if source.reason:
+                reasons.append(f"{_repo_label(o)}: {source.reason}")
+            o_nodes = [
+                replace(n, file_path=_reanchor(n.file_path, o, anchors)) for n in nodes
+            ]
+            o_rels = [
+                replace(
+                    r, start_file=_reanchor(r.start_file, o, anchors),
+                    end_file=_reanchor(r.end_file, o, anchors),
+                )
+                for r in rels
+            ]
+            judged = pe.classify(source, o_nodes, o_rels)
+            for k, v in judged.counts.items():
+                verdicts[f"{_repo_label(o)}:{k}"] = v
+            ids, rel_ids = set(judged.delete_node_ids), set(judged.delete_rel_ids)
+            node_ok = ids if node_ok is None else node_ok & ids
+            rel_ok = rel_ids if rel_ok is None else rel_ok & rel_ids
+            anchored.append((o, o_nodes))
+        node_ok = node_ok or set()
+        rel_ok = rel_ok or set()
+        if self.allow_mass_retire:
+            node_ok = {n.id for n in nodes}
+            rel_ok = {r.id for r in rels}
+        kept_nodes = [n for n in nodes if n.id not in node_ok]
+        kept_rels = [r for r in rels if r.id not in rel_ok]
+        kept_ids = {n.id for n in kept_nodes}
+        chunk_filters: list = []
+        for o, o_nodes in anchored:
+            local = o.get("local_path") or ""
+            chunk_filters.extend(kept_entity_chunk_filters([
+                replace(n, file_path=to_repo_relative(n.file_path, Path(local)) if local
+                        and n.file_path else n.file_path)
+                for n in o_nodes if n.id in kept_ids
+            ]))
+        sample = [n.describe() for n in kept_nodes] + [r.describe() for r in kept_rels]
+        owner0 = owners[0]
+        paths = [(owner0.get("path") or "").strip("/")]
+        fingerprint = (
+            f"{first_source.fingerprint if first_source else ''}|{pe.prune_code_token()}"
+        )
+        return {
+            "node_ids": sorted(node_ok), "rel_ids": sorted(rel_ok),
+            "kept": len(kept_nodes), "rels_kept": len(kept_rels),
+            "verdicts": {k: v for k, v in sorted(verdicts.items()) if v},
+            "sample": sample[:10], "reason": "; ".join(reasons) or None,
+            "fingerprint": fingerprint, "paths": paths,
+            "chunk_filters": sorted(set(chunk_filters), key=lambda f: tuple(x or "" for x in f)),
+        }
+
+    def _record_shared_gap(self, name: str, owners: list[dict], judged: dict | None) -> None:
+        """Record (or clear) the parser gap the shared prune kept on the Module.
+
+        Recorded under the first owner's repo id and module directory, so that
+        owner's run re-parses the module once its tree or the indexer code
+        changes (``pipeline_repo._parser_gap_state``), which re-evaluates the
+        shared prune with a new owner record - never nightly. Dry runs write
+        nothing.
+        """
+        if not self.execute:
+            return
+        kept = bool(judged and (judged["kept"] or judged["rels_kept"]))
+        if not kept:
+            clear = getattr(self.writer, "clear_module_parser_gap", None)
+            if callable(clear):
+                clear(self.v, [name])
+            return
+        record = getattr(self.writer, "record_module_parser_gap", None)
+        if not callable(record):
+            return
+        record(
+            self.v, name, repo_id=owners[0]["repo_id"], fingerprint=judged["fingerprint"],
+            paths=judged["paths"], kept=judged["kept"], total=judged.get("total", 0),
+            rels_kept=judged["rels_kept"], rels_total=judged.get("rels_total", 0),
+            sample=judged["sample"], reason=judged["reason"],
+        )
+        _logger.warning(
+            "reconcile %s: parser gap in shared module %s: kept %d node(s) and %d "
+            "relationship(s) some owner's HEAD source still defines (re-evaluated when "
+            "an owner's copy or the indexer code changes): %s",
+            self.v, name, judged["kept"], judged["rels_kept"], "; ".join(judged["sample"]),
+        )
 
     def _settle_shared(
         self, name: str, owners: list[dict], cutoff, state: str,
@@ -1005,7 +1266,7 @@ class _Reconciler:
 
     def _shared_stale_embeddings(
         self, name: str, embedded: list[tuple[str, object]], *, delete: bool,
-        expected: int | None = None,
+        expected: int | None = None, also_keep=(),
     ) -> int:
         from src.indexer.writer_pgvector import shared_module_stale_embeddings
 
@@ -1014,25 +1275,31 @@ class _Reconciler:
                 f"shared_prune_embeddings[{name}]",
                 lambda: shared_module_stale_embeddings(
                     conn, name, self.v, embedded, delete=delete, expected=expected,
+                    also_keep=also_keep,
                 ),
             )
 
     def _prune_shared_module(
         self, name: str, cutoff, prefixes: list[str], skip: list[str],
         embedded: list[tuple[str, object]] | None, embeddings_expected: int | None,
+        judged: dict | None, keep_chunks,
     ) -> dict:
         embeddings = 0
         if embedded is not None and embeddings_expected:
             embeddings = self._shared_stale_embeddings(
                 name, embedded, delete=True, expected=embeddings_expected,
+                also_keep=keep_chunks,
             )
-        result = _retrying(
-            f"shared_prune[{name}]",
-            lambda: self.writer.prune_module_children(
-                self.v, name, written_before=cutoff,
-                file_prefixes=prefixes, skip_labels=skip,
-            ),
-        )
+        result: dict = {}
+        if judged is not None and (judged["node_ids"] or judged["rel_ids"]):
+            result = _retrying(
+                f"shared_prune[{name}]",
+                lambda: self.writer.prune_module_children(
+                    self.v, name, written_before=cutoff,
+                    file_prefixes=prefixes, skip_labels=skip,
+                    only_ids=judged["node_ids"], only_rel_ids=judged["rel_ids"],
+                ),
+            )
         self.report.embeddings_deleted += embeddings
         self.report.children_deleted += int(result.get("deleted") or 0)
         _logger.info(
@@ -1062,6 +1329,15 @@ class _Reconciler:
         history, so EVERY unsynced repo blocks the orphans of its profile - a
         registered repo whose checkout vanished may have written them. The
         blocking repos get lifecycle_attention naming what waits for them.
+
+        A decidable orphan is swept only when git proves it gone (ADR-0057
+        phase 2, no ratio, no approval): no checkout of a profile that owns
+        it ships a manifest of its name in the raw HEAD tree
+        (:meth:`_checkout_claim`); the children of a module-less name only
+        when no checkout at the version does. The rest is kept
+        (``orphans_kept`` / ``child_orphans_kept``, logged, reported by
+        ``lifecycle-audit``), never an exit 3; ``allow_mass_retire`` sweeps it
+        too.
         """
         sync_rows = self.store.repo_sync_state(self.v, conn=self.conn)
         blocking = [
@@ -1130,13 +1406,71 @@ class _Reconciler:
                     f"module-less name(s) kept until every repo at this version is synced",
                 )
 
-        # Nodes of modules the ledger positively saw become installable False /
-        # license-skipped are removals by design, not a mass event (real case:
-        # 436 modules flipped installable False at tvtmaaddons 19.0).
+        # Git evidence (ADR-0057 phase 2), no ratio and no approval: an orphan
+        # is swept when no checkout of a profile that owns it ships a manifest
+        # of its name in the raw HEAD tree; the children of a module-less name
+        # when no checkout at the version does. Kept otherwise (a scan gap or
+        # an unreadable checkout keeps the data, never an exit 3);
+        # --allow-mass-retire sweeps those too.
+        rows_by_profile: dict[str, list[Mapping]] = {}
+        for r in sync_rows:
+            rows_by_profile.setdefault(r["profile_name"], []).append(r)
+        # A module a scan positively observed as not indexable (installable
+        # False, license policy) still has its manifest in the tree, but the
+        # ledger's excluded row is the evidence: "Exclusions leave through the
+        # sweep" (ADR-0056 D8; 436 such flips at tvtmaaddons 19.0).
         exempt = self.store.excluded_names(self.v, conn=self.conn)
-        indexed = set(self.writer.module_profiles(self.v)) - retired
-        self.report.orphan_candidates = sorted(decidable)
-        self.report.child_orphan_candidates = sorted(child_names)
+        kept: dict[str, str] = {}
+        proven: list[str] = []
+        for name in decidable:
+            if name in exempt:
+                proven.append(name)
+                continue
+            ident = identity.get(name, {})
+            rows = [
+                r for p in sorted(set(ident.get("profile") or []))
+                for r in rows_by_profile.get(p, [])
+            ]
+            own = repo_by_id.get(ident.get("repo_id"))
+            if own is not None and own not in rows:
+                rows.append(own)
+            why = self._checkout_claim(rows, name)
+            if why is None:
+                proven.append(name)
+            else:
+                kept[name] = why
+        child_kept: dict[str, str] = {}
+        child_proven: list[str] = []
+        for name in child_names:
+            why = None if name in exempt else self._checkout_claim(sync_rows, name)
+            if why is None:
+                child_proven.append(name)
+            else:
+                child_kept[name] = why
+        if kept or child_kept:
+            message = (
+                f"orphan sweep at {self.v}: {len(kept)} orphan module(s) and the "
+                f"children of {len(child_kept)} module-less name(s) are still shipped "
+                "by a checkout's HEAD tree (or the checkout cannot be read)"
+            )
+            if self.allow_mass_retire:
+                _logger.warning("reconcile %s: %s; swept anyway (--allow-mass-retire)",
+                                self.v, message)
+                proven.extend(kept)
+                child_proven.extend(child_kept)
+            else:
+                self.report.orphans_kept = dict(sorted(kept.items()))
+                self.report.child_orphans_kept = dict(sorted(child_kept.items()))
+                sample = ", ".join(f"{n} [{w}]" for n, w in sorted(kept.items())[:5])
+                _logger.warning(
+                    "reconcile %s: %s; kept (reported by lifecycle-audit as "
+                    "orphan_modules / child_orphans)%s", self.v, message,
+                    f": {sample}" if sample else "",
+                )
+        decidable = sorted(proven)
+        child_names = sorted(child_proven)
+        self.report.orphan_candidates = list(decidable)
+        self.report.child_orphan_candidates = list(child_names)
         if self.report.dry_run:
             for name in orphans:
                 found = self._orphan_evidence(name, identity.get(name, {}), repo_by_id, present)
@@ -1153,25 +1487,6 @@ class _Reconciler:
                             if successor else None
                         ),
                     }
-        n_swept = len((set(decidable) | set(child_names)) - exempt)
-        n_before = len((set(indexed) | set(child_names)) - exempt)
-        # Total wipe here = the sweep would empty the version while the ledger
-        # shows nothing present at it (every repo lost everything).
-        gate = mass_gate_trips(n_swept, n_before, len(present)) if n_swept else None
-        if gate is not None:
-            message = (
-                f"orphan sweep at {self.v}: {n_swept} of {n_before} module(s) "
-                f"would be removed"
-            )
-            if self.allow_mass_retire:
-                _logger.warning("reconcile %s: %s; applied (--allow-mass-retire)", self.v, message)
-            else:
-                self.report.gates_tripped.append(f"orphan_sweep:{gate}")
-                text = f"{message}; nothing swept (use --allow-mass-retire)"
-                _logger.warning("reconcile %s: %s", self.v, text)
-                for name in decidable:
-                    self._attend(identity.get(name, {}).get("repo_id"), text)
-                return all_synced
 
         if not self.execute:
             self.report.orphans_swept.extend(decidable)
@@ -1288,76 +1603,124 @@ class _Reconciler:
         self, present: set[str], unsynced_profiles: set[str],
         sync_rows: Iterable[Mapping], *, delete: bool,
     ) -> None:
-        """Orphan embedding groups: listed, then deleted under gate G-B.
+        """Orphan embedding groups: listed, then deleted when git proves them gone.
 
-        The gate judges ``(module, profile)`` groups - the unit the sweep
-        deletes, as Modules are for the orphan sweep - against every group at
-        the version: more than half (and at least 20) of them, or any while the
-        ledger shows nothing present at the version (total wipe), holds the
-        whole sweep (``embedding_sweep:<gate>``, attention naming the held
-        profiles on the repos of those profiles, or on every repo of the
-        version when none of them has a repo at it) unless
-        ``allow_mass_retire``.
+        A ``(module, profile)`` group no live owner accounts for (no Module node
+        of that profile, no ``present`` ledger row) - the unit the sweep
+        deletes, as Modules are for the orphan sweep - is judged by git
+        (ADR-0057 phase 2), with no ratio and no approval:
+
+        * precondition, the graph is healthy: every module a synced profile has
+          ``present`` in the ledger has its Module node. A graph that lost
+          nodes cannot tell an orphan from a live module whose node is gone, so
+          every group is held (``embedding_orphans_held``, gate
+          ``embedding_sweep:graph_unhealthy``, attention on the repos of the
+          held profiles - or on every repo of the version when none of them has
+          a repo at it - exit 3: OSM no longer reflects those modules and the
+          unchanged skip does not re-write them);
+        * then a group goes when no checkout of its profile at the version
+          ships a manifest of the module in its raw HEAD tree; otherwise it is
+          kept (``embedding_orphans_kept``, reported by ``lifecycle-audit``).
+
+        ``allow_mass_retire`` (emergency bypass) deletes every orphan group.
         """
         from src.indexer.writer_pgvector import embedding_groups
-        live = {
-            (m, p)
-            for m, profiles in self.writer.module_profiles(self.v).items()
-            for p in profiles
-        } | self.store.present_pairs(self.v, conn=self.conn)
+        node_profiles = self.writer.module_profiles(self.v)
+        pairs = self.store.present_pairs(self.v, conn=self.conn)
+        live = {(m, p) for m, profiles in node_profiles.items() for p in profiles} | pairs
         with self._vec_conn() as conn:
             all_groups = embedding_groups(conn, self.v)
         groups = [
             g for g in all_groups
             if (g[0], g[1]) not in live and g[1] not in unsynced_profiles
         ]
-        # Total wipe as for the orphan sweep: every group would go while the
-        # ledger shows nothing present at the version.
-        gate = mass_gate_trips(len(groups), len(all_groups), len(present)) if groups else None
-        if gate is not None:
-            row_total = sum(n for _m, _p, n in groups)
-            message = (
-                f"embedding sweep at {self.v}: {len(groups)} of {len(all_groups)} "
-                f"embedding group(s) ({row_total} rows) would be removed"
+        if not groups:
+            return
+        repo_rows = list(sync_rows)
+        synced_profiles = {r["profile_name"] for r in repo_rows} - unsynced_profiles
+        # A Module node of any profile counts (a node whose profile list is
+        # empty, F24, is not lost); names the caller's runs write before this
+        # reconcile (``assume_written``, the dry-run audit) are not lost either.
+        candidates = {
+            m for m, p in pairs
+            if p in synced_profiles and m not in node_profiles
+            and m not in self.report.retired and m not in self.assume_written
+        }
+        lost = sorted(candidates - set(self.writer.module_identity(self.v, candidates)))
+        row_total = sum(n for _m, _p, n in groups)
+        if lost and not self.allow_mass_retire:
+            self.report.gates_tripped.append("embedding_sweep:graph_unhealthy")
+            self.report.embedding_orphans_held = groups
+            profiles = sorted({p for _m, p, _n in groups})
+            lost_set = set(lost)
+            # The profiles that ship the modules whose node is gone: their
+            # repos must re-write them (a --full run of one of them reconciles
+            # this version too).
+            lost_profiles = sorted({p for m, p in pairs if m in lost_set and p in synced_profiles})
+            targets = [
+                r for r in repo_rows
+                if r["profile_name"] in profiles or r["profile_name"] in lost_profiles
+            ]
+            if not targets:
+                # No repo of a held profile at this version (its rows are
+                # leftovers): the version's repos carry the attention so
+                # the exit-3 run always names what holds it (#381 F3).
+                targets = repo_rows
+            run_profile = min(
+                lost_profiles or [r["profile_name"] for r in targets], default=None,
             )
-            if self.allow_mass_retire:
-                _logger.warning("reconcile %s: %s; applied (--allow-mass-retire)", self.v, message)
+            self.report.embedding_sweep_run_profile = run_profile
+            sample = ", ".join(lost[:5]) + (f", ... {len(lost) - 5} more" if len(lost) > 5 else "")
+            text = (
+                f"embedding sweep at {self.v}: {len(groups)} orphan embedding group(s) "
+                f"({row_total} rows) of profile(s) {', '.join(profiles)} kept: "
+                f"{len(lost)} module(s) present in the ledger have no graph node "
+                f"({sample}), so orphans cannot be told from live modules"
+                + embedding_sweep_hint(self.v, run_profile)
+            )
+            _logger.warning("reconcile %s: %s", self.v, text)
+            for r in targets:
+                self._attend(r["repo_id"], text)
+            return
+        rows_by_profile: dict[str, list[Mapping]] = {}
+        for r in repo_rows:
+            rows_by_profile.setdefault(r["profile_name"], []).append(r)
+        doomed: list[tuple[str, str, int]] = []
+        kept: list[tuple[str, str, int]] = []
+        exempt = self.store.excluded_names(self.v, conn=self.conn)
+        for g in groups:
+            if self.allow_mass_retire or g[0] in exempt or self._checkout_claim(
+                rows_by_profile.get(g[1], []), g[0],
+            ) is None:
+                doomed.append(g)
             else:
-                self.report.gates_tripped.append(f"embedding_sweep:{gate}")
-                self.report.embedding_orphans_held = groups
-                profiles = sorted({p for _m, p, _n in groups})
-                repo_rows = list(sync_rows)
-                targets = [r for r in repo_rows if r["profile_name"] in profiles]
-                if not targets:
-                    # No repo of a held profile at this version (its rows are
-                    # leftovers): the version's repos carry the attention so
-                    # the exit-3 run always names what holds it (#381 F3).
-                    targets = repo_rows
-                # A run reconciles only the versions of its own repos, so the
-                # one-shot must name a profile with a repo at this version.
-                run_profile = min((r["profile_name"] for r in targets), default=None)
-                self.report.embedding_sweep_run_profile = run_profile
-                text = (
-                    f"{message} for profile(s) {', '.join(profiles)}; nothing deleted"
-                    + embedding_sweep_hint(self.v, run_profile)
-                )
-                _logger.warning("reconcile %s: %s", self.v, text)
-                for r in targets:
-                    self._attend(r["repo_id"], text)
-                return
-        self.report.embedding_orphans = groups
+                kept.append(g)
+        if kept:
+            self.report.embedding_orphans_kept = kept
+            _logger.warning(
+                "reconcile %s: kept %d orphan embedding group(s) whose module a checkout "
+                "of the profile still ships (reported by lifecycle-audit): %s",
+                self.v, len(kept), ", ".join(f"{m}/{p}" for m, p, _n in kept[:10]),
+            )
+        if self.allow_mass_retire and lost:
+            _logger.warning(
+                "reconcile %s: %d module(s) present in the ledger have no graph node; "
+                "orphan embedding groups deleted anyway (--allow-mass-retire)",
+                self.v, len(lost),
+            )
+        self.report.embedding_orphans = doomed
         if not delete:
             return
-        for module, profile, n in groups:
+        for module, profile, n in doomed:
             try:
                 self._delete_embeddings(module, [profile], expected=n)
             except Exception as exc:  # noqa: BLE001
                 self.report.errors[f"embeddings:{module}:{profile}"] = (
                     f"{type(exc).__name__}: {exc}"[:300]
                 )
-        if groups:
+        if doomed:
             _logger.info(
-                "reconcile %s: deleted %d orphan embedding group(s)", self.v, len(groups),
+                "reconcile %s: deleted %d orphan embedding group(s)", self.v, len(doomed),
             )
 
     @contextmanager
@@ -1387,7 +1750,7 @@ class _Reconciler:
         reported. A residue node is retired when no repo that could still ship
         it is unsynced (the orphan-sweep attribution rule, with the removed
         repos themselves not counted as blockers); otherwise it is kept and
-        listed in ``orphans_deferred``. No G-B gate applies: removing every
+        listed in ``orphans_deferred``. No checkout evidence is asked for: removing every
         module of the repo is what the operator asked for.
         """
         if not basenames or not (removed_profiles or removed_repo_ids):
@@ -1464,6 +1827,21 @@ class _Reconciler:
         gc["asset_bundles"] = _retrying(
             "gc_orphan_asset_bundles", lambda: self.writer.gc_orphan_asset_bundles(self.v),
         )
+        # The shared bundles that survive follow their live contributors
+        # (ADR-0057 R9): a retired, moved or merged-away module leaves neither
+        # its profile nor its name on them.
+        reset_bundles = getattr(self.writer, "reconcile_asset_bundle_owners", None)
+        if callable(reset_bundles):
+            try:
+                gc["asset_bundle_owners"] = _retrying(
+                    "reconcile_asset_bundle_owners", lambda: reset_bundles(self.v),
+                )
+            except Exception as exc:  # noqa: BLE001 - hygiene, never fails the run
+                self.report.errors["reconcile_asset_bundle_owners"] = (
+                    f"{type(exc).__name__}: {exc}"[:300]
+                )
+                _logger.error("reconcile %s: asset bundle owner reset failed: %s",
+                              self.v, exc)
         # The GC DETACH DELETEs every placeholder with its edges: first move the
         # edges whose real target was indexed since (a parent of another repo,
         # a record-form QWeb base), or they are lost until their module is
@@ -1523,6 +1901,7 @@ def reconcile_version(
     sweep: bool = True,
     dry_run: bool = False,
     conn=None,
+    assume_written: Iterable[str] = (),
 ) -> ReconcileReport:
     """Decide and execute every pending module retirement at *odoo_version*.
 
@@ -1536,8 +1915,11 @@ def reconcile_version(
         store:             ledger store (default: on the shared pool).
         retire:            False (``--no-retire``) decides nothing and deletes
                            nothing; pending rows stay pending.
-        allow_mass_retire: bypass G-B for the orphan sweep (never G-A, which is
-                           a per-repo gate evaluated by the index path).
+        allow_mass_retire: emergency bypass - also delete what git cannot prove
+                           gone (kept orphans, kept embedding groups, a held
+                           embedding sweep, the kept part of a shared-module
+                           prune). Never G-A, which is a per-repo gate
+                           evaluated by the index path.
         advance_presence:  ``{repo_id: head}`` of repos the index path held
                            back ONLY because they had pending names; their
                            ``presence_head_sha`` advances to *head* once none of
@@ -1560,6 +1942,11 @@ def reconcile_version(
                            counted as orphans, and repos in *advance_presence*
                            whose pending names would all be resolved count as
                            synced for the sweep (``lifecycle-audit``).
+        assume_written:    module names the caller's runs write before this
+                           reconcile although their nodes do not exist yet
+                           (the dry-run audit, which writes nothing); the
+                           graph-health check of the embedding sweep does not
+                           count them as lost.
         conn:              an autocommit connection the caller owns (not from
                            the shared pool) to hold the ledger lock and run
                            every ledger / embeddings statement on. None = one
@@ -1583,6 +1970,7 @@ def reconcile_version(
             odoo_version, writer=writer, store=store, conn=conn,
             run_started_at=run_started_at, retire=retire,
             allow_mass_retire=allow_mass_retire, dry_run=dry_run, report=report,
+            assume_written=assume_written,
         )
         rec.pending()
         rec.drop_excluded_owners()

@@ -380,6 +380,72 @@ def list_tracked_manifests(local_path: Path | str) -> set[str] | None:
     }
 
 
+# Submodule nesting the HEAD-tree manifest listing follows (a vendored addon
+# submodule inside a submodule is the deepest real shape).
+_HEAD_TREE_MAX_DEPTH = 4
+
+
+def _head_tree_manifest_dirs(repo: Path, rev: str, prefix: str, depth: int) -> set[str] | None:
+    out = _git_out(
+        repo, "ls-tree", "-r", "-z", "--full-tree", rev, timeout=TIMEOUT_GIT_DIFF * 3,
+    )
+    if out is None:
+        return None
+    dirs: set[str] = set()
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition("\t")
+        parts = meta.split()
+        if len(parts) != 3:
+            return None
+        mode, kind, oid = parts
+        if mode == "160000" or kind == "commit":
+            # A gitlink: the submodule's files are in its own repository, at
+            # the commit the superproject records. Unreadable -> unknown.
+            if depth >= _HEAD_TREE_MAX_DEPTH:
+                return None
+            sub = _head_tree_manifest_dirs(
+                repo / path, oid, f"{prefix}{path}/", depth + 1,
+            )
+            if sub is None:
+                return None
+            dirs |= sub
+        elif kind == "blob" and Path(path).name in MANIFEST_FILENAMES:
+            parent = str(Path(path).parent)
+            dirs.add(prefix + ("" if parent == "." else parent))
+    return {d.rstrip("/") for d in dirs}
+
+
+def head_tree_manifest_dirs(local_path: Path | str) -> set[str] | None:
+    """Repo-relative directories holding a ``__manifest__.py`` or
+    ``__openerp__.py`` in the HEAD **tree** (ADR-0057 phase 2).
+
+    Read from the git object database (``git ls-tree HEAD``), never from the
+    working tree or the index, and with no version dispatch: this is the
+    evidence that a module is gone, so it must not depend on what the OSM scan
+    accepts. A submodule is listed at the commit its gitlink records, from the
+    submodule's own repository. ``""`` is the repo root. None when git cannot
+    list the tree (not a repository, unborn HEAD, an unreadable submodule):
+    then nothing can be proven gone.
+    """
+    repo = Path(local_path)
+    if _git_out(repo, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") is None:
+        return None
+    return _head_tree_manifest_dirs(repo, "HEAD", "", 0)
+
+
+def head_tree_module_names(local_path: Path | str) -> set[str] | None:
+    """Module names (manifest directory basenames; the repo root's own name for
+    a manifest at the root) the HEAD tree of *local_path* ships, any version
+    dispatch. None when git cannot tell (:func:`head_tree_manifest_dirs`)."""
+    dirs = head_tree_manifest_dirs(local_path)
+    if dirs is None:
+        return None
+    root = Path(str(local_path).rstrip("/")).name
+    return {Path(d).name if d else root for d in dirs}
+
+
 def removing_commit(
     local_path: Path | str, path: str, rev: str = "HEAD",
 ) -> tuple[str, str, str] | None:
