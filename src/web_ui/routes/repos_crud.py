@@ -28,6 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 
 from src.db.audit import audit_action
+from src.db.exceptions import ProfileVisibilityError
 from src.web_ui._json import _json_safe
 from src.web_ui.auth import (
     is_admin_session,
@@ -143,8 +144,13 @@ async def add_repo(
                 # immediately transitions it to 'pending'. `status` defaults to 'pending'
                 # (indexer lifecycle) — repo is freshly added, not yet indexed.
                 clone_status="manual",
-                tenant_id=profile_tenant_id,  # W2: inherit tenant from profile
+                # The tenant the write-scope check approved: add_repo re-reads the
+                # profile FOR SHARE and raises ProfileVisibilityError when an admin
+                # moved the profile to another tenant in between (TOCTOU guard).
+                tenant_id=profile_tenant_id,
             )
+        except ProfileVisibilityError as e:
+            return _tenant_changed_response(e)
         except Exception as e:
             _logger.warning("Add SSH repo failed: %s", e)
 
@@ -181,12 +187,27 @@ async def add_repo(
             # via the normal index flow. `status` (indexer lifecycle) defaults to
             # 'pending' — correct, repo is new and has not been indexed yet.
             clone_status="manual",
-            tenant_id=profile_tenant_id,  # W2: inherit tenant from profile
+            # The tenant the write-scope check approved (TOCTOU guard, see above).
+            tenant_id=profile_tenant_id,
         )
+    except ProfileVisibilityError as e:
+        return _tenant_changed_response(e)
     except Exception as e:
         _logger.warning("Add repo failed: %s", e)
         return JSONResponse(_json_safe({"error": str(e)}), status_code=500)
     return JSONResponse(_json_safe({"ok": True}))
+
+
+def _tenant_changed_response(e: Exception) -> JSONResponse:
+    """409: the profile's tenant changed between the write-scope check and the insert."""
+    _logger.warning("Add repo refused, profile tenant changed during the request: %s", e)
+    return JSONResponse(
+        _json_safe({
+            "error": "The profile's tenant changed while the repo was being added;"
+                     " nothing was added. Reload the page and try again.",
+        }),
+        status_code=409,
+    )
 
 
 @router.get("/ssh-keys-list")

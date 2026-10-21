@@ -2032,6 +2032,54 @@ After applying the baseline, (re-)grant the least-privilege read-only role:
 psql "$PG_DSN" -f ops/rls_create_osm_reader.sql
 ```
 
+### 0005 profile tenant backfill (#385, data only)
+
+`0005_profile_tenant_backfill` changes no schema and no grant: it gives every
+shared profile under a private ancestor that ancestor's tenant, gives
+`standard_viindoo_20` the tenant of the `standard_viindoo_<N>` family under the
+owner's 2026-10-20 decision (only when that whole family belongs to ONE tenant;
+no profile is ever assigned a tenant from its name alone), and gives repos left
+shared under a private profile their profile's tenant. Each change is a
+`profile.tenant_backfill` row in `admin_audit_log`. The migration ABORTS (nothing
+applied) when a private profile sits under another tenant's private profile
+(`cross_tenant_chain`): that is never repaired by a guess, an admin decides.
+
+Every command below runs as `odoo-semantic` from the app checkout (ADR-0027
+layout), never with the operator's own venv or `.env`:
+
+```bash
+cd /home/odoo-semantic/odoo-semantic-mcp
+sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.manager profile-visibility-audit
+```
+
+Deploy order:
+
+1. [Human sudo] Back up Postgres (ADR-0018).
+2. [Human sudo] `git pull --ff-only` of the app checkout as `odoo-semantic`.
+   (`profile-visibility-audit` is new in this release: it does not exist before
+   the pull.)
+3. [Human sudo] Preview, AFTER the pull and BEFORE migrate (read-only):
+   `profile-visibility-audit` as above. Exit 1 lists what 0005 repairs
+   (`shared_child_of_private`, `repo_tenant_mismatch` rows). Any
+   `cross_tenant_chain` row would abort the migration: fix it first with
+   `PATCH /api/profiles/<id>/tenant` (or re-parent), then re-run the preview.
+4. [Human sudo] `sudo -u odoo-semantic -H /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.db.migrate` (owner role,
+   applies 0005). 0004 / 0006 give up after a 5 s `lock_timeout` behind an
+   idle-in-transaction holder ("canceling statement due to lock timeout", nothing
+   applied): re-run the same command.
+5. [Human sudo] `cd site && pnpm build` (admin repos/tenants UI), then restart the
+   Web UI (:8003), Astro (:4321) and MCP (:8002) services (the MCP tier notices a
+   scope change within ~5 s anyway, `session.scope_epoch`; restart for the code).
+6. [AI] Verify: `profile-visibility-audit` exits 0;
+   `SELECT target, detail FROM admin_audit_log WHERE action = 'profile.tenant_backfill'`
+   lists the repaired rows (`rule` = `nearest_private_ancestor`, `owner_decision`
+   or `repo_follows_profile`); `check_module_exists('to_odoo_module', '17.0',
+   profile_name='viindoo_internal_17')` answers Indexed: Yes with a tenant key.
+
+Rollback: `0005_profile_tenant_backfill.rollback.sql` (yoyo rollback) restores
+exactly the logged rows to shared - it re-opens the exposure, prefer fixing
+forward.
+
 ---
 
 ## Enable Paid Checkout (post-KYB)

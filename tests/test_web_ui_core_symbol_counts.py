@@ -53,7 +53,7 @@ class TestCoreSymbolCountsRoute:
         """When Neo4j writer is None (password missing), route returns empty dict."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("core_counts_profile", "17.0")
+        pid = repo_store().add_profile("core_counts_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -78,7 +78,7 @@ class TestCoreSymbolCountsRoute:
         """When Neo4j session raises, route returns empty counts (not 500)."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("core_counts_err_profile", "17.0")
+        pid = repo_store().add_profile("core_counts_err_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -105,7 +105,7 @@ class TestCoreSymbolCountsRoute:
         """Mocked Neo4j returning a count row -> route exposes it in counts dict."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("core_counts_ok_profile", "17.0")
+        pid = repo_store().add_profile("core_counts_ok_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",
@@ -146,7 +146,7 @@ class TestCoreSymbolCountsRoute:
         """When Neo4j returns count=0, route exposes it (admin can see not-indexed state)."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile("core_counts_zero_profile", "17.0")
+        pid = repo_store().add_profile("core_counts_zero_profile", "17.0", shared=True)
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local",

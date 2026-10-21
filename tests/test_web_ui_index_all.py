@@ -36,7 +36,7 @@ def _async_client(app):
 def _setup_profile(migrated_pg, profile_name="all_test_profile"):
     from src.db.pg import repo_store
 
-    return repo_store().add_profile(name=profile_name, odoo_version="99.0")
+    return repo_store().add_profile(name=profile_name, odoo_version="99.0", shared=True)
 
 
 def _count_jobs_by_label(pg_conn, label):

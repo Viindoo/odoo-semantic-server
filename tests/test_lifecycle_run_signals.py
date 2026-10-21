@@ -178,7 +178,7 @@ def test_index_all_reports_a_profile_without_repo_apart_from_ok_and_failed(
     write_module(repo, "real_mod")
     repo.commit("add")
     register("real_99", repo)
-    repo_store().add_profile("empty_99", V)
+    repo_store().add_profile("empty_99", V, shared=True)
     seeded_empty = {
         p["name"] for p in repo_store().list_profiles()
         if p["name"] not in {"real_99", "empty_99"}
@@ -199,7 +199,7 @@ def test_cli_names_profiles_without_repo_and_still_exits_0(
     write_module(repo, "real_mod")
     repo.commit("add")
     register("real_99", repo)
-    repo_store().add_profile("empty_99", V)
+    repo_store().add_profile("empty_99", V, shared=True)
 
     code, _, err = _cli(monkeypatch, capsys, _ephemeral_pg_db, "index-repo", "--all", "--no-embed")
 

@@ -93,6 +93,10 @@ def seed_profiles(conn) -> tuple[int, int]:
     # We do a fresh import here to avoid circular-import issues; repo_store()
     # is not available at module import time (pool may not be initialised).
     # Direct SQL is simpler and avoids the pool entirely for this seed path.
+    import sys
+
+    from src.db.repo_registry import RepoStore  # local: no import cycle via src.db.pg
+
     parent_updates = 0
     for name, _version, _desc, parent_name in _PROFILE_DEFS:
         if parent_name is None:
@@ -111,6 +115,16 @@ def seed_profiles(conn) -> tuple[int, int]:
 
         child_id = child_row[0]
         parent_id = parent_row[0]
+
+        # The same guards as every other parent write (RepoStore._validate_parent):
+        # no cycle, same version, child never more visible than its parent. A
+        # seeded def that breaks one is skipped loudly, never written.
+        try:
+            RepoStore(None)._validate_parent(child_id, parent_id, conn=conn)
+        except (ValueError, KeyError) as e:  # ProfileNotFoundError is a KeyError
+            print(f"! Skipped parent {parent_name!r} for seeded profile {name!r}: {e}",
+                  file=sys.stderr)
+            continue
 
         with conn.cursor() as cur:
             cur.execute(

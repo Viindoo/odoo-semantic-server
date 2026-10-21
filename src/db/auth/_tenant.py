@@ -472,38 +472,3 @@ class _TenantMixin:
             for r in rows
         ]
 
-    def assign_profile_tenant(self, profile_id: int, tenant_id: int | None) -> bool:
-        """Assign (or clear) the tenant for a profile.
-
-        Args:
-            profile_id: profiles.id to update.
-            tenant_id: tenants.id, or None to set as shared/global.
-
-        Returns:
-            True if the profile was found and updated, False otherwise.
-        """
-        with self._pool.checkout() as conn:
-            rowcount = self._pool.execute(
-                conn,
-                "UPDATE profiles SET tenant_id = %s WHERE id = %s",
-                (tenant_id, profile_id),
-            )
-        return rowcount > 0
-
-    def assign_repo_tenant(self, repo_id: int, tenant_id: int | None) -> bool:
-        """Assign (or clear) the tenant for a repo.
-
-        Args:
-            repo_id: repos.id to update.
-            tenant_id: tenants.id, or None to set as shared/global.
-
-        Returns:
-            True if the repo was found and updated, False otherwise.
-        """
-        with self._pool.checkout() as conn:
-            rowcount = self._pool.execute(
-                conn,
-                "UPDATE repos SET tenant_id = %s WHERE id = %s",
-                (tenant_id, repo_id),
-            )
-        return rowcount > 0

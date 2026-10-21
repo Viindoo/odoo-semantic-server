@@ -128,7 +128,7 @@ def _commit_push(work: Path, message: str) -> None:
 def _register(profile: str, repos: list[tuple[Path, Path]]) -> list[int]:
     from src.db.pg import repo_store
 
-    pid = repo_store().add_profile(profile, V)
+    pid = repo_store().add_profile(profile, V, shared=True)
     return [repo_store().add_repo(pid, str(o), V, str(w)) for o, w in repos]
 
 
@@ -760,7 +760,7 @@ def test_simulation_session_refuses_writes_to_the_real_tables(pg):
     from src.indexer.lifecycle_audit import open_simulation
     from tests import conftest
 
-    pid = repo_store().add_profile("ro_p", V)
+    pid = repo_store().add_profile("ro_p", V, shared=True)
     rid = repo_store().add_repo(pid, "file:///x", V, "/nonexistent/x")
     conn = open_simulation(conftest.get_test_dsn())
     try:

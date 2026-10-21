@@ -153,7 +153,9 @@ def register(profile: str, *repos: GitRepo) -> list[int]:
     """Profile + repos (ids in the given order). Profile is created on first use."""
     store = repo_store()
     existing = {p["name"]: p for p in store.list_profiles()}
-    pid = existing[profile]["id"] if profile in existing else store.add_profile(profile, V)
+    pid = existing[profile]["id"] if profile in existing else store.add_profile(
+        profile, V, shared=True,
+    )
     return [store.add_repo(pid, r.url, r.branch, str(r.path)) for r in repos]
 
 

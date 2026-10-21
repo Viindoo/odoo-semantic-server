@@ -559,6 +559,17 @@ pass. Rows tenant-private bị chặn; chỉ shared/global (D3) hiển thị. KH
 - **No MERGE-key change.** Module stays keyed `(name, odoo_version)`; repo
   ownership lives in the ledger, not in the graph key.
 
+## Amendment 2026-10-20 (issue #385) - profile_name resolves the accessible ancestor chain; profile visibility invariant
+
+- **Write side: one visibility invariant** (`RepoStore.check_child_visibility`):
+  a child of a private profile belongs to the same tenant; a child of a shared
+  profile may be shared or private. Enforced by `add_profile` (tenant inherited
+  from a private parent, else required, or explicit `shared=true` - omitting
+  both is refused), `set_profile_parent`, `set_profile_tenant` (parent and
+  children checked; `null` needs `confirm_shared`; the profile's repos follow)
+  and `add_repo` / `set_repo_tenant` (`repos.tenant_id` = the profile's tenant).
+  Migration 0005 repaired the existing rows (logged in `admin_audit_log`);
+  `python -m src.manager profile-visibility-audit` is the read-only check.
 ## References
 
 - ADR-0008 — SSH auto-clone (`GIT_SSH_COMMAND`, deploy-key delivery).

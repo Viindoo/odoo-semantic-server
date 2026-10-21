@@ -46,7 +46,7 @@ def test_pipeline_writes_models_views_qweb_to_neo4j(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_test", branch=TEST_VERSION)
     _seed_module(repo, "demo_mod")
-    pid = repo_store().add_profile(name="test_prof", odoo_version=TEST_VERSION)
+    pid = repo_store().add_profile(name="test_prof", odoo_version=TEST_VERSION, shared=True)
     repo_store().add_repo(profile_id=pid, url="local/test", branch=TEST_VERSION,
              local_path=str(repo))
 
@@ -79,7 +79,7 @@ def test_pipeline_marks_repo_indexed_on_success(
     run_migrations(clean_pg)
     repo = make_git_repo(tmp_path / "repo_ok", branch=TEST_VERSION)
     _seed_module(repo, "ok_mod")
-    pid = repo_store().add_profile("test_prof", TEST_VERSION)
+    pid = repo_store().add_profile("test_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/ok", TEST_VERSION, str(repo))
 
     index_profile(clean_pg, profile_name="test_prof")
@@ -99,7 +99,7 @@ def test_pipeline_index_all_iterates_every_profile(
     for prof in ("p_a", "p_b"):
         repo = make_git_repo(tmp_path / f"repo_{prof}", branch=TEST_VERSION)
         _seed_module(repo, f"mod_{prof}")
-        pid = repo_store().add_profile(prof, TEST_VERSION)
+        pid = repo_store().add_profile(prof, TEST_VERSION, shared=True)
         repo_store().add_repo(pid, f"local/{prof}", TEST_VERSION, str(repo))
 
     summary = index_all(clean_pg)
@@ -128,8 +128,10 @@ def test_index_all_continues_after_profile_failure(
 
     run_migrations(clean_pg)
 
-    pid1 = repo_store().add_profile(name="bad_prof", odoo_version=TEST_VERSION, description="")
     # Profile 1: a repo whose indexing crashes.
+    pid1 = repo_store().add_profile(
+        name="bad_prof", odoo_version=TEST_VERSION, description="", shared=True,
+    )
     bad_dir = tmp_path / "bad"
     bad_dir.mkdir()
     bad_id = repo_store().add_repo(profile_id=pid1, url="x", branch="b",
@@ -144,7 +146,9 @@ def test_index_all_continues_after_profile_failure(
     monkeypatch.setattr(pipeline_mod, "_index_repo", crash_bad_repo)
 
     # Profile 2: no repos — returns {modules:0} without error
-    repo_store().add_profile(name="empty_prof", odoo_version=TEST_VERSION, description="")
+    repo_store().add_profile(
+        name="empty_prof", odoo_version=TEST_VERSION, description="", shared=True,
+    )
 
     summary = index_all(clean_pg)
 
@@ -167,7 +171,7 @@ def test_index_repo_raises_for_missing_path(
 
     run_migrations(clean_pg)
     pid = repo_store().add_profile(name="test_path_val", odoo_version=TEST_VERSION,
-                      description="")
+                      description="", shared=True)
     repo_store().add_repo(profile_id=pid, url="x", branch="b",
              local_path="/nonexistent/__does_not_exist__/path")
 
@@ -233,7 +237,7 @@ def test_pipeline_writes_embeddings_when_embedder_provided(
             "        self.write({'state': 'confirmed'})\n"
         )
 
-        pid = _repo_store().add_profile("embed_test_prof", PG_EMBED_VERSION)
+        pid = _repo_store().add_profile("embed_test_prof", PG_EMBED_VERSION, shared=True)
         _repo_store().add_repo(pid, "local/embed", PG_EMBED_VERSION, str(repo_path))
 
         summary = index_profile(
@@ -285,7 +289,7 @@ def test_index_repo_returns_js_graph_counters(
         }
     """).strip())
 
-    pid = repo_store().add_profile("js_prof", TEST_VERSION)
+    pid = repo_store().add_profile("js_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/js", TEST_VERSION, str(repo))
     repos = repo_store().get_repos_for_profile("js_prof")
 
@@ -332,7 +336,7 @@ def test_index_profile_aggregates_js_counters(
         }
     """).strip())
 
-    pid = repo_store().add_profile("agg_prof", TEST_VERSION)
+    pid = repo_store().add_profile("agg_prof", TEST_VERSION, shared=True)
     repo_store().add_repo(pid, "local/agg", TEST_VERSION, str(repo))
 
     summary = index_profile(clean_pg, profile_name="agg_prof")
@@ -355,8 +359,8 @@ def test_index_profile_warns_when_ancestor_not_indexed(
     run_migrations(clean_pg)
 
     # --- Set up 2-tier hierarchy: root (no repos indexed) → child ---
-    root_id = repo_store().add_profile("root_warn_prof", TEST_VERSION)
-    child_id = repo_store().add_profile("child_warn_prof", TEST_VERSION)
+    root_id = repo_store().add_profile("root_warn_prof", TEST_VERSION, shared=True)
+    child_id = repo_store().add_profile("child_warn_prof", TEST_VERSION, shared=True)
     repo_store().set_profile_parent(child_id, root_id)
 
     # Root profile has a repo but it stays in 'pending' status (never indexed)

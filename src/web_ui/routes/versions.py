@@ -1,67 +1,74 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/web_ui/routes/versions.py
-"""GET /api/versions — data-driven version list from bootstrap_versions.json (W4)."""
-import json
+"""GET /api/versions - the Odoo versions registered on this server (data-driven).
+
+Source of truth: the ``profiles`` registry (``profiles.odoo_version``). Every
+indexed node comes from a profile's repo, so the registered profile versions
+ARE the server's supported series - a new series (e.g. 20.0) appears as soon
+as its first profile exists, with no code or curated-data change.
+
+This route used to read the keys of
+``src/indexer/spec_data/bootstrap_versions.json``. That file is curated
+Bootstrap-CSS reference data (ADR-0055 obligations: every entry needs verified
+facts), so it can lag a new Odoo series by design; using it as the version list
+kept 20.0 out of the admin dropdowns and pre-filled new repos with 19.0. The
+public /bootstrap page still reads that file for what it is: the Bootstrap
+table.
+"""
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.requests import Request
 
+from src.db.repo_registry import ODOO_VERSION_RE
 from src.web_ui._json import _json_safe
-from src.web_ui.auth import require_authenticated
+from src.web_ui.auth import is_in_scope, require_authenticated, resolve_read_scope
 
 _logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
-# Canonical path to bootstrap_versions.json relative to this file's package root.
-_BOOTSTRAP_JSON = (
-    Path(__file__).parent.parent.parent / "indexer" / "spec_data" / "bootstrap_versions.json"
-)
+
+def _version_key(version: str) -> tuple[int, int]:
+    """Numeric (major, minor) sort key: 9.0 < 10.0 < 20.0 (never lexicographic)."""
+    major, minor = version.split(".", 1)
+    return int(major), int(minor)
+
+
+def registered_versions(profiles: list[dict], scope) -> list[str]:
+    """Distinct well-formed ``odoo_version`` of the profiles visible in *scope*, ascending.
+
+    Pure (no I/O). A tenant member sees only the versions of profiles it may
+    read (own tenant + shared), like ``GET /api/repos/profiles``; a malformed
+    legacy value is skipped rather than breaking the sort.
+    """
+    versions = {
+        p["odoo_version"] for p in profiles
+        if is_in_scope(scope, p.get("tenant_id"))
+        and isinstance(p.get("odoo_version"), str)
+        and ODOO_VERSION_RE.match(p["odoo_version"])
+    }
+    return sorted(versions, key=_version_key)
 
 
 @router.get("/versions")
-async def list_versions(_user_id: int = Depends(require_authenticated)):
-    """Return Odoo versions supported by this server, sorted numerically ascending.
+async def list_versions(request: Request, _user_id: int = Depends(require_authenticated)):
+    """Return the Odoo versions of the registered profiles, sorted numerically ascending.
 
-    Response: ``{"versions": ["8.0", "9.0", ..., "19.0"]}``
+    Response: ``{"versions": ["8.0", "9.0", ..., "20.0"]}``
 
-    Data source: ``src/indexer/spec_data/bootstrap_versions.json`` (key ``versions``).
-    Returns 500 if the file cannot be read or parsed — never returns an empty list silently.
+    Returns 500 if the profile registry cannot be read - never an empty list
+    silently. An empty list means no profile is registered yet (fresh install):
+    the admin profile form then accepts a typed version.
     """
+    _is_admin, scope = resolve_read_scope(request)
     try:
-        raw = _BOOTSTRAP_JSON.read_text(encoding="utf-8")
-    except OSError as exc:
-        _logger.error("Cannot read bootstrap_versions.json: %s", exc)
+        from src.db.pg import repo_store
+
+        profiles = repo_store().list_profiles()
+    except Exception as exc:
+        _logger.error("Cannot read the profile registry for /api/versions: %s", exc)
         raise HTTPException(
-            status_code=500,
-            detail=f"Cannot read version manifest: {exc}",
+            status_code=500, detail="Cannot read the profile registry",
         ) from exc
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        _logger.error("bootstrap_versions.json is malformed: %s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Version manifest is malformed JSON: {exc}",
-        ) from exc
-
-    versions_raw = data.get("versions")
-    if not isinstance(versions_raw, dict):
-        raise HTTPException(
-            status_code=500,
-            detail='bootstrap_versions.json missing or invalid "versions" key (expected object).',
-        )
-
-    # Sort numerically (toFloat equivalent): "10.0" > "9.0", not lexicographic.
-    try:
-        sorted_versions = sorted(versions_raw.keys(), key=lambda v: float(v))
-    except (ValueError, TypeError) as exc:
-        _logger.error("Cannot sort versions numerically: %s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Version sort failed (non-numeric key): {exc}",
-        ) from exc
-
-    return JSONResponse(_json_safe({"versions": sorted_versions}))
+    return JSONResponse(_json_safe({"versions": registered_versions(profiles, scope)}))

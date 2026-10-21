@@ -97,7 +97,9 @@ def _register_missing_checkout(profile: str, parent: Path, name: str) -> int:
     Web UI clone failed, ``clone_status='error'``, so the run retries it)."""
     store = repo_store()
     existing = {p["name"] for p in store.list_profiles()}
-    pid = _profile_id(profile) if profile in existing else store.add_profile(profile, V)
+    pid = _profile_id(profile) if profile in existing else store.add_profile(
+        profile, V, shared=True,
+    )
     path = parent / name
     assert not path.exists()
     return store.add_repo(
@@ -403,7 +405,7 @@ def test_a_failed_first_clone_is_healed_by_the_next_run(
     write_module(upstream, "theme_x")
     upstream.commit("add theme_x")
     store = repo_store()
-    pid = store.add_profile("themes_99", V)
+    pid = store.add_profile("themes_99", V, shared=True)
     rid = store.add_repo(pid, upstream.url, V, str(tmp_path / "not_cloned_yet"))
     store.set_clone_status(rid, "error", error_msg="Remote branch 99.0 not found")
 

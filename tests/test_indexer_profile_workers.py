@@ -422,10 +422,10 @@ def test_two_profiles_neo4j_isolation_at_version_boundary(
     )
 
     # --- Register profiles + repos in Postgres ---
-    pid99 = repo_store().add_profile("test_iso_99", TEST_VERSION)
+    pid99 = repo_store().add_profile("test_iso_99", TEST_VERSION, shared=True)
     repo_store().add_repo(pid99, "file://local99", TEST_VERSION, str(repo99))
 
-    pid98 = repo_store().add_profile("test_iso_98", TEST_VERSION_ALT)
+    pid98 = repo_store().add_profile("test_iso_98", TEST_VERSION_ALT, shared=True)
     repo_store().add_repo(pid98, "file://local98", TEST_VERSION_ALT, str(repo98))
 
     # --- Run index_all with profile_workers=2 (parallel) ---

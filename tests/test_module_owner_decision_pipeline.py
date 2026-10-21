@@ -239,7 +239,7 @@ def test_unreadable_sibling_checkout_stays_a_potential_owner_with_attention(
     (blind / M).mkdir()
     (blind / M / "__manifest__.py").write_text(repr({"name": M, "installable": True}) + "\n")
     (rid,) = register("owner_99", a)
-    pid = repo_store().add_profile("blind_99", V)
+    pid = repo_store().add_profile("blind_99", V, shared=True)
     repo_store().add_repo(pid, "file:///nowhere/customer_blind.git", V, str(blind))
     run(pg, "owner_99")
     _drop_note_and_rag_gone(a)

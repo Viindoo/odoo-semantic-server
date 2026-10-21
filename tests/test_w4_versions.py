@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_w4_versions.py
-"""Integration tests for GET /api/versions — W4 Wave 4.
+"""Integration tests for GET /api/versions - W4 Wave 4, re-sourced from the profile registry (#385).
 
 Business intent:
-  - Endpoint returns versions read from bootstrap_versions.json (data-driven, NOT hardcoded).
+  - Endpoint returns the Odoo versions of the REGISTERED PROFILES (data-driven,
+    NOT hardcoded, and NOT the curated Bootstrap table bootstrap_versions.json,
+    which lags a new series by design - ADR-0055).
+  - A new series (e.g. 20.0) appears as soon as its first profile exists.
   - Versions are sorted numerically: 8.0 < 9.0 < 10.0 < ... (NOT lexicographic "10.0"<"9.0").
   - Any authenticated user (admin or non-admin) may call the endpoint.
   - Unauthenticated request → 401.
@@ -11,9 +14,6 @@ Business intent:
 
 Markers: pytest.mark.postgres (app creation needs DB — create_app acquires PG pool).
 """
-import json
-from pathlib import Path
-
 import httpx
 import pytest
 
@@ -21,12 +21,6 @@ from src.db.migrate import run_migrations
 from src.web_ui.app import create_app
 
 pytestmark = pytest.mark.postgres
-
-# Path to the canonical data source so tests stay data-driven.
-_BOOTSTRAP_JSON = (
-    Path(__file__).parent.parent
-    / "src" / "indexer" / "spec_data" / "bootstrap_versions.json"
-)
 
 
 @pytest.fixture
@@ -40,11 +34,12 @@ def _async_client(app):
     return httpx.AsyncClient(transport=transport, base_url="http://test")
 
 
-def _expected_versions() -> list[str]:
-    """Read and sort versions from bootstrap_versions.json — same logic as endpoint."""
-    raw = _BOOTSTRAP_JSON.read_text(encoding="utf-8")
-    data = json.loads(raw)
-    return sorted(data["versions"].keys(), key=lambda v: float(v))
+def _expected_versions(conn) -> list[str]:
+    """Distinct profile versions in the DB, numeric order - the endpoint's source."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT odoo_version FROM profiles")
+        versions = [r[0] for r in cur.fetchall()]
+    return sorted(versions, key=lambda v: tuple(int(x) for x in v.split(".")))
 
 
 class TestVersionsEndpoint:
@@ -61,13 +56,12 @@ class TestVersionsEndpoint:
         assert isinstance(body["versions"], list)
 
     @pytest.mark.asyncio
-    async def test_versions_match_bootstrap_json_exactly(self, migrated_pg):
-        """GET /api/versions → version list equals keys of bootstrap_versions.json.
+    async def test_versions_match_registered_profiles_exactly(self, migrated_pg):
+        """GET /api/versions → the distinct versions of the registered profiles.
 
-        Data-driven: if admin adds a version to the JSON, endpoint reflects it.
-        Test never hardcodes version strings.
+        Data-driven: the test reads the same table, never hardcodes versions.
         """
-        expected = _expected_versions()
+        expected = _expected_versions(migrated_pg)
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.get("/api/versions")
@@ -75,8 +69,24 @@ class TestVersionsEndpoint:
         assert resp.status_code == 200
         actual = resp.json()["versions"]
         assert actual == expected, (
-            f"Endpoint versions {actual!r} != bootstrap_versions.json keys {expected!r}"
+            f"Endpoint versions {actual!r} != registered profile versions {expected!r}"
         )
+
+    @pytest.mark.asyncio
+    async def test_a_new_series_appears_once_its_first_profile_exists(self, migrated_pg):
+        """A profile at a series absent from bootstrap_versions.json (here 21.0)
+        makes that series selectable - the v20 dropdown gap must not recur."""
+        with migrated_pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO profiles (name, odoo_version) VALUES ('w4v_odoo_21', '21.0')"
+            )
+        app = create_app()
+        async with _async_client(app) as client:
+            resp = await client.get("/api/versions")
+
+        versions = resp.json()["versions"]
+        assert "21.0" in versions, versions
+        assert versions[-1] == "21.0", "the newest series sorts last (default selection)"
 
     @pytest.mark.asyncio
     async def test_versions_sorted_numerically(self, migrated_pg):
@@ -134,14 +144,14 @@ class TestVersionsEndpoint:
 
     @pytest.mark.asyncio
     async def test_versions_list_not_empty(self, migrated_pg):
-        """Endpoint must not return an empty list (fail-fast on JSON parse error)."""
+        """A migrated DB (baseline seeds odoo_8..odoo_19) never yields an empty list."""
         app = create_app()
         async with _async_client(app) as client:
             resp = await client.get("/api/versions")
 
         versions = resp.json()["versions"]
         assert len(versions) > 0, (
-            "Endpoint returned empty version list — check bootstrap_versions.json"
+            "Endpoint returned an empty version list; the baseline seeds odoo_N profiles"
         )
 
 
@@ -180,7 +190,7 @@ class TestIndexAllBodyGcField:
 
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name="gc_test_profile", odoo_version="99.0")
+        repo_store().add_profile(name="gc_test_profile", odoo_version="99.0", shared=True)
         app = create_app()
         with mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False
@@ -204,7 +214,7 @@ class TestIndexAllBodyGcField:
 
         from src.db.pg import repo_store
 
-        repo_store().add_profile(name="gc_off_profile", odoo_version="99.0")
+        repo_store().add_profile(name="gc_off_profile", odoo_version="99.0", shared=True)
         app = create_app()
         with mock.patch(
             "src.indexer.pipeline.indexer_is_running", return_value=False

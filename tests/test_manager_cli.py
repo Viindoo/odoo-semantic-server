@@ -35,7 +35,7 @@ def test_add_profile_prints_id(migrated_pg, tmp_path):
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
-        ["add-profile", "viindoo_17", "--version", "17.0"],
+        ["add-profile", "viindoo_17", "--version", "17.0", "--shared"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
     )
     assert res.returncode == 0, res.stderr
@@ -62,7 +62,7 @@ def test_add_repo_attaches_to_profile(migrated_pg, tmp_path):
     repo_dir = tmp_path / "fake_repo"
     repo_dir.mkdir()
 
-    _run(["add-profile", "viindoo_17", "--version", "17.0"], env_extra=env)
+    _run(["add-profile", "viindoo_17", "--version", "17.0", "--shared"], env_extra=env)
     res = _run([
         "add-repo", "--profile", "viindoo_17",
         "--url", "github.com/odoo/odoo", "--branch", "17.0",
@@ -89,7 +89,7 @@ def test_list_shows_profile_and_repo(migrated_pg, tmp_path):
     repo_dir = tmp_path / "y"
     repo_dir.mkdir()
 
-    _run(["add-profile", "viindoo_17", "--version", "17.0"], env_extra=env)
+    _run(["add-profile", "viindoo_17", "--version", "17.0", "--shared"], env_extra=env)
     _run([
         "add-repo", "--profile", "viindoo_17",
         "--url", "github.com/x/y", "--branch", "17.0",
@@ -134,7 +134,7 @@ def test_add_profile_rejects_invalid_name(migrated_pg, tmp_path):
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
-        ["add-profile", "bad name with space!", "--version", "17.0"],
+        ["add-profile", "bad name with space!", "--version", "17.0", "--shared"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
     )
     assert res.returncode == 1
@@ -148,11 +148,28 @@ def test_add_profile_rejects_invalid_version(migrated_pg, tmp_path):
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     res = _run(
-        ["add-profile", "viindoo17", "--version", "latest"],
+        ["add-profile", "viindoo17", "--version", "latest", "--shared"],
         env_extra={"ODOO_SEMANTIC_CONF": str(cfg)},
     )
     assert res.returncode == 1
     assert "version" in res.stderr.lower()
+
+
+def test_add_profile_without_an_owner_is_refused(migrated_pg, tmp_path):
+    """Tenant fail-closed: no --tenant, no --shared, no private --parent -> exit 1,
+    nothing written (a forgotten flag never publishes a profile to every key)."""
+    from src.db.pg import repo_store
+
+    test_dsn = get_test_dsn()
+    if test_dsn is None:
+        pytest.skip("PostgreSQL not available (PG_ADMIN_DSN not set)")
+    cfg = tmp_path / "odoo-semantic.conf"
+    cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
+    res = _run(["add-profile", "ownerless_17", "--version", "17.0"],
+               env_extra={"ODOO_SEMANTIC_CONF": str(cfg)})
+    assert res.returncode == 1, res.stderr
+    assert "tenant_id is required" in res.stderr
+    assert all(p["name"] != "ownerless_17" for p in repo_store().list_profiles())
 
 
 def test_add_profile_duplicate_friendly_error(migrated_pg, tmp_path):
@@ -162,8 +179,8 @@ def test_add_profile_duplicate_friendly_error(migrated_pg, tmp_path):
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
-    _run(["add-profile", "dupe17", "--version", "17.0"], env_extra=env)
-    res = _run(["add-profile", "dupe17", "--version", "17.0"], env_extra=env)
+    _run(["add-profile", "dupe17", "--version", "17.0", "--shared"], env_extra=env)
+    res = _run(["add-profile", "dupe17", "--version", "17.0", "--shared"], env_extra=env)
     assert res.returncode == 2
     assert "already exists" in res.stderr.lower()
 
@@ -178,7 +195,7 @@ def test_add_repo_url_only_derives_path_and_rejects_local_path(migrated_pg, tmp_
     cfg = tmp_path / "odoo-semantic.conf"
     cfg.write_text(f"[database]\npg_dsn = {test_dsn}\n")
     env = {"ODOO_SEMANTIC_CONF": str(cfg)}
-    _run(["add-profile", "okprofile17", "--version", "17.0"], env_extra=env)
+    _run(["add-profile", "okprofile17", "--version", "17.0", "--shared"], env_extra=env)
     # URL-only succeeds even though no local dir exists yet (clone creates it).
     res = _run([
         "add-repo", "--profile", "okprofile17",

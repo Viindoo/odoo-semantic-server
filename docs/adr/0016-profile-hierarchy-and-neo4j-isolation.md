@@ -276,3 +276,10 @@ framework only exists from Odoo v14 onwards.
 - **Existence on the read side** is `size(profile) > 0` plus the ADR-0034 choke
   (`src/mcp/lifecycle_read.py::owned_pred`): a profile-less dependency stub
   answers "not indexed" to every caller, admin included (ADR-0056 D13).
+
+## Amendment 2026-10-20 (issue #385) - D6 "inheritance-resolved" restored, access-checked
+
+- The hierarchy now also carries a visibility rule: a profile is never more
+  visible than its parent (`RepoStore.check_child_visibility`), checked with the
+  cycle and version rules on create and re-parent.
+

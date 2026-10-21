@@ -24,6 +24,34 @@ class ProfileNameConflictError(ValueError):
     """Raised when a profile name already exists (UNIQUE constraint violation)."""
 
 
+class ProfileVisibilityError(ValueError):
+    """Raised when a profile would be MORE visible than its parent profile.
+
+    The invariant (RepoStore, #385): a child of a tenant-private
+    profile must belong to that same tenant; a child of a shared profile may
+    be shared or private to any tenant. Also raised when a repo's tenant would
+    differ from its profile's tenant (``repos.tenant_id`` follows the profile).
+
+    HTTP mapping: 422 Unprocessable Entity.
+    """
+
+
+class ProfileTenantRequiredError(ValueError):
+    """Raised when a profile is created without a tenant and without an explicit
+    ``shared`` choice, and no private parent supplies the tenant (fail-closed:
+    a forgotten tenant must never silently publish a profile to every key).
+
+    HTTP mapping: 422 Unprocessable Entity.
+    """
+
+
+class ProfileInputError(ValueError):
+    """Raised when a profile name or Odoo version does not match the accepted format.
+
+    HTTP mapping: 422 Unprocessable Entity.
+    """
+
+
 class RepoNotFoundError(KeyError):
     """Raised when a referenced repo ID does not exist in the database."""
 

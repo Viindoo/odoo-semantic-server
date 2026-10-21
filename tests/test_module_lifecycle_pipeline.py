@@ -874,7 +874,7 @@ def test_never_synced_repo_blocks_retirement_only_when_its_checkout_ships_the_na
         if z_checkout == "cloned_ships_it":
             write_module(z, "y_gone")
         z.commit("z")
-    pid = repo_store().add_profile("tenant_z_99", V)
+    pid = repo_store().add_profile("tenant_z_99", V, shared=True)
     repo_store().add_repo(pid, "file:///nowhere/z.git", V, str(z_path))
     y.rm("y_gone")
     y.commit("drop y_gone")

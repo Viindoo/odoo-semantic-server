@@ -89,7 +89,9 @@ class TestDeleteRepoHappyPath:
         """DELETE repo_A -> repo_A gone from PG, 200 ok JSON; sibling repo_B intact."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="parity_test_99", odoo_version=TEST_VERSION)
+        pid = repo_store().add_profile(
+            name="parity_test_99", odoo_version=TEST_VERSION, shared=True,
+        )
         rid_a = repo_store().add_repo(
             profile_id=pid,
             url="file://local/repo_a", branch=TEST_VERSION,
@@ -226,7 +228,9 @@ class TestDeleteRepoGuard:
         """Guard: indexer running for profile → 409 JSON, repo NOT deleted."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="guarded_repo_99", odoo_version=TEST_VERSION)
+        pid = repo_store().add_profile(
+            name="guarded_repo_99", odoo_version=TEST_VERSION, shared=True,
+        )
         rid = repo_store().add_repo(
             profile_id=pid,
             url="file://local/guarded_repo", branch=TEST_VERSION,

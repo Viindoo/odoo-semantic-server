@@ -18,7 +18,7 @@ class TestDeleteProfile:
         run_migrations(clean_pg)
         conn = clean_pg
 
-        profile_id = repo_store().add_profile("test_profile", "17.0")
+        profile_id = repo_store().add_profile("test_profile", "17.0", shared=True)
         repo_id_1 = repo_store().add_repo(
             profile_id, "https://example.com/r1", "17.0", "/tmp/repo1"
         )
@@ -49,7 +49,7 @@ class TestDeleteProfile:
         """delete_profile returns odoo_version for each repo."""
         run_migrations(clean_pg)
 
-        profile_id = repo_store().add_profile("ver_profile", "16.0")
+        profile_id = repo_store().add_profile("ver_profile", "16.0", shared=True)
         repo_store().add_repo(profile_id, "https://example.com/r", "16.0", "/srv/odoo_16.0")
 
         result = repo_store().delete_profile(profile_id)
@@ -69,7 +69,7 @@ class TestDeleteRepo:
         run_migrations(clean_pg)
         conn = clean_pg
 
-        profile_id = repo_store().add_profile("rp_profile", "17.0")
+        profile_id = repo_store().add_profile("rp_profile", "17.0", shared=True)
         local_path = "/home/user/git/viindoo_17.0"
         repo_id = repo_store().add_repo(profile_id, "https://example.com/r", "17.0", local_path)
 
@@ -88,7 +88,7 @@ class TestDeleteRepo:
         run_migrations(clean_pg)
         conn = clean_pg
 
-        profile_id = repo_store().add_profile("multi_repo_prof", "17.0")
+        profile_id = repo_store().add_profile("multi_repo_prof", "17.0", shared=True)
         repo_id_a = repo_store().add_repo(
             profile_id, "https://example.com/a", "17.0", "/tmp/repo_a"
         )
@@ -116,7 +116,7 @@ class TestResetRepoHeadSha:
         run_migrations(clean_pg)
         conn = clean_pg
 
-        profile_id = repo_store().add_profile("sha_profile", "17.0")
+        profile_id = repo_store().add_profile("sha_profile", "17.0", shared=True)
         repo_id = repo_store().add_repo(
             profile_id, "https://example.com/r", "17.0", "/tmp/sha_repo"
         )

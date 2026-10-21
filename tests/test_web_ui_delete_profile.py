@@ -74,7 +74,7 @@ class TestDeleteProfileHappyPath:
         """DELETE /api/repos/profiles/{id} -> profile + repos gone from PG, 200 ok JSON."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="victim_99", odoo_version=TEST_VERSION)
+        pid = repo_store().add_profile(name="victim_99", odoo_version=TEST_VERSION, shared=True)
         repo_store().add_repo(
             profile_id=pid,
             url="file://local/repo_a",
@@ -164,7 +164,7 @@ class TestDeleteProfileGuard:
         """Guard: indexer running for profile → 409 JSON, profile NOT deleted."""
         from src.db.pg import repo_store
 
-        pid = repo_store().add_profile(name="guarded_99", odoo_version=TEST_VERSION)
+        pid = repo_store().add_profile(name="guarded_99", odoo_version=TEST_VERSION, shared=True)
 
         app = create_app()
         with mock.patch(

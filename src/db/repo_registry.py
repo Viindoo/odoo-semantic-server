@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/db/repo_registry.py
 """CRUD for profiles + repos in PostgreSQL."""
+import re
 from pathlib import Path
 
 import psycopg2.errors
@@ -9,13 +10,146 @@ from src.constants import WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS
 from src.db.exceptions import (
     ProfileCycleError,
     ProfileIndexedError,
+    ProfileInputError,
     ProfileNameConflictError,
     ProfileNotFoundError,
+    ProfileTenantRequiredError,
     ProfileVersionMismatchError,
+    ProfileVisibilityError,
     RepoConflictError,
     RepoNotFoundError,
 )
 from src.db.pg import PgPool
+
+# Profile name: alphanumeric + underscore, 1-50 chars (shell-safe, readable;
+# also a Neo4j ``profile[]`` value and a comma-free RLS GUC list element).
+# Anchored with ``\Z``, not ``$``: ``$`` also matches before a final "\n", so
+# ``.match`` would accept "foo\n". Both patterns are used with ``.match``.
+PROFILE_NAME_RE = re.compile(r"^[a-zA-Z0-9_]{1,50}\Z")
+# Odoo version: N.N (e.g. 17.0, 8.0, 20.0). Major.minor only, the registry
+# convention; the Odoo series list itself is data (see versions route).
+ODOO_VERSION_RE = re.compile(r"^\d{1,2}\.\d+\Z")
+
+
+def validate_profile_identity(name: str, odoo_version: str) -> None:
+    """Raise :class:`ProfileInputError` unless *name* / *odoo_version* are well formed.
+
+    The single validation the Web UI, the CLI and :meth:`RepoStore.add_profile`
+    share, so a profile created by any path has the same shape.
+    """
+    if not isinstance(name, str) or not PROFILE_NAME_RE.match(name):
+        raise ProfileInputError(
+            f"profile name {name!r} invalid: 1-50 chars, letters, digits and"
+            " underscore only (e.g. 'odoo_17', 'viindoo_internal_18')"
+        )
+    if not isinstance(odoo_version, str) or not ODOO_VERSION_RE.match(odoo_version):
+        raise ProfileInputError(
+            f"Odoo version {odoo_version!r} invalid: required format N.N"
+            " (e.g. 17.0, 20.0)"
+        )
+
+
+def check_child_visibility(
+    child_tenant_id: int | None,
+    parent_tenant_id: int | None,
+    *,
+    child: str = "profile",
+    parent: str = "parent profile",
+) -> None:
+    """The ONE visibility invariant: a child is never more visible than its parent.
+
+    - parent shared (``tenant_id IS NULL``): any child is fine (shared, or
+      private to any tenant - the normal ``odoo_17`` -> ``customer_17`` shape);
+    - parent private to tenant T: the child must be private to T too. A shared
+      child would publish a private chain's name and repos to every key, and a
+      child of another tenant would let that tenant extend a chain it cannot see.
+
+    Raises :class:`ProfileVisibilityError`; pure (no I/O).
+    """
+    if parent_tenant_id is None or child_tenant_id == parent_tenant_id:
+        return
+    shown = "shared (visible to every key)" if child_tenant_id is None else (
+        f"tenant {child_tenant_id}"
+    )
+    raise ProfileVisibilityError(
+        f"{child} would be more visible than {parent}: {parent} is private to"
+        f" tenant {parent_tenant_id}, {child} would be {shown}. A profile under"
+        f" a private parent must belong to the same tenant."
+    )
+
+
+def resolve_new_profile_tenant(
+    *,
+    parent_tenant_id: int | None,
+    has_parent: bool,
+    tenant_id: int | None,
+    shared: bool,
+) -> int | None:
+    """Tenant of a profile being created - fail-closed (pure, no I/O).
+
+    - ``tenant_id`` and ``shared`` together -> :class:`ProfileInputError`;
+    - parent private to T: inherit T (an explicit ``tenant_id`` must be T,
+      ``shared`` is refused) - :func:`check_child_visibility`;
+    - otherwise (no parent, or a shared parent): ``tenant_id`` is required,
+      unless ``shared=True`` says, explicitly, "visible to every key".
+      Omitting both raises :class:`ProfileTenantRequiredError`.
+    """
+    if shared and tenant_id is not None:
+        raise ProfileInputError("pass either tenant_id or shared=true, not both")
+    if has_parent and parent_tenant_id is not None:
+        if shared:
+            check_child_visibility(None, parent_tenant_id)
+        if tenant_id is None:
+            return parent_tenant_id
+        check_child_visibility(tenant_id, parent_tenant_id)
+        return tenant_id
+    if tenant_id is not None:
+        return tenant_id
+    if shared:
+        return None
+    raise ProfileTenantRequiredError(
+        "tenant_id is required: choose the tenant that owns this profile, pick a"
+        " private parent profile (its tenant is inherited), or pass shared=true"
+        " to publish the profile to every key (Odoo CE/EE base profiles only)"
+    )
+
+
+# Sentinel: "derive the repo's tenant from its profile" (RepoStore.add_repo).
+_INHERIT_TENANT = object()
+
+# RepoStore.visibility_violations - read-only. ``chain`` walks every profile's
+# ancestors with their depth; the NEAREST private ancestor decides (a shared
+# profile above a private one does not relax it). Depth is capped as a guard;
+# _validate_parent keeps the hierarchy acyclic.
+_VISIBILITY_AUDIT_SQL = """
+WITH RECURSIVE chain AS (
+    SELECT p.id AS leaf_id, p.parent_profile_id AS anc_id, 1 AS depth
+    FROM profiles p WHERE p.parent_profile_id IS NOT NULL
+    UNION ALL
+    SELECT c.leaf_id, a.parent_profile_id, c.depth + 1
+    FROM chain c JOIN profiles a ON a.id = c.anc_id
+    WHERE a.parent_profile_id IS NOT NULL AND c.depth < 64
+),
+nearest_private AS (
+    SELECT DISTINCT ON (c.leaf_id) c.leaf_id, a.name AS anc_name,
+           a.tenant_id AS anc_tenant
+    FROM chain c JOIN profiles a ON a.id = c.anc_id
+    WHERE a.tenant_id IS NOT NULL
+    ORDER BY c.leaf_id, c.depth
+)
+SELECT CASE WHEN p.tenant_id IS NULL THEN 'shared_child_of_private'
+            ELSE 'cross_tenant_chain' END AS kind,
+       p.id AS profile_id, p.name AS profile_name, p.tenant_id,
+       np.anc_name AS ancestor_name, np.anc_tenant AS ancestor_tenant_id,
+       NULL::integer AS repo_id
+FROM nearest_private np JOIN profiles p ON p.id = np.leaf_id
+WHERE p.tenant_id IS DISTINCT FROM np.anc_tenant
+UNION ALL
+SELECT 'repo_tenant_mismatch', p.id, p.name, p.tenant_id, NULL, r.tenant_id, r.id
+FROM repos r JOIN profiles p ON p.id = r.profile_id
+WHERE r.tenant_id IS DISTINCT FROM p.tenant_id
+ORDER BY 1, 3, 7
+"""
 
 
 # Sentinel: distinguishes "profile row missing" from "profile exists, tenant_id IS NULL".
@@ -44,47 +178,75 @@ class RepoStore:
         description: str = "",
         *,
         parent_id: int | None = None,
+        tenant_id: int | None = None,
+        shared: bool = False,
     ) -> int:
-        """Insert a new profile. Raises ValueError if name already exists.
+        """Insert a new profile and return its id - tenant fail-closed.
 
-        When *parent_id* is provided, the parent's existence and odoo_version
-        match are validated **before** the INSERT so that a failed validation
-        cannot leave an orphan row.  (``checkout()`` sets autocommit=True, so
-        an INSERT that auto-commits before validation would create an orphan.)
+        The tenant is resolved by :func:`resolve_new_profile_tenant`: inherited
+        from a private parent, else *tenant_id* is required unless *shared* is
+        set explicitly. Name and version are validated by
+        :func:`validate_profile_identity`.
+
+        Parent existence, version match, the visibility invariant and the INSERT
+        run in ONE transaction with the parent row locked (``FOR SHARE``), so a
+        concurrent tenant change of the parent cannot slip between the check and
+        the write, and a failed validation leaves no orphan row.
+
+        Raises:
+            ProfileInputError - bad name/version, tenant_id and shared together,
+                or tenant_id does not exist.
+            ProfileTenantRequiredError - no tenant, no private parent, no shared.
+            ProfileVisibilityError - the child would be more visible than its parent.
+            ValueError - parent not found, version mismatch, or name taken.
         """
-        if parent_id is not None:
-            # Validate parent existence + version match before touching the DB.
-            # The child doesn't exist yet so cycle detection is trivially safe —
-            # only version match and parent existence need to be checked here.
-            with self._pool.checkout() as conn:
+        validate_profile_identity(name, odoo_version)
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT odoo_version FROM profiles WHERE id = %s",
-                        (parent_id,),
+                    parent_tenant_id = None
+                    if parent_id is not None:
+                        cur.execute(
+                            "SELECT odoo_version, tenant_id FROM profiles"
+                            " WHERE id = %s FOR SHARE",
+                            (parent_id,),
+                        )
+                        parent_row = cur.fetchone()
+                        if parent_row is None:
+                            raise ValueError(f"parent profile id={parent_id} not found")
+                        parent_version, parent_tenant_id = parent_row
+                        if parent_version != odoo_version:
+                            raise ValueError(
+                                f"version mismatch: child odoo_version={odoo_version!r} != "
+                                f"parent odoo_version={parent_version!r}"
+                            )
+                    resolved_tenant = resolve_new_profile_tenant(
+                        parent_tenant_id=parent_tenant_id,
+                        has_parent=parent_id is not None,
+                        tenant_id=tenant_id,
+                        shared=shared,
                     )
-                    parent_row = cur.fetchone()
-            if parent_row is None:
-                raise ValueError(f"parent profile id={parent_id} not found")
-            parent_version = parent_row[0]
-            if parent_version != odoo_version:
-                raise ValueError(
-                    f"version mismatch: child odoo_version={odoo_version!r} != "
-                    f"parent odoo_version={parent_version!r}"
-                )
-
-        try:
-            with self._pool.checkout() as conn:
-                with conn.cursor() as cur:
                     cur.execute(
                         "INSERT INTO profiles "
-                        "(name, odoo_version, description, parent_profile_id) "
-                        "VALUES (%s, %s, %s, %s) RETURNING id",
-                        (name, odoo_version, description, parent_id),
+                        "(name, odoo_version, description, parent_profile_id, tenant_id) "
+                        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                        (name, odoo_version, description, parent_id, resolved_tenant),
                     )
                     row_id = cur.fetchone()[0]
-            return row_id
-        except psycopg2.errors.UniqueViolation as e:
-            raise ValueError(f"Profile '{name}' already exists") from e
+                conn.commit()
+            except psycopg2.errors.UniqueViolation as e:
+                conn.rollback()
+                raise ValueError(f"Profile '{name}' already exists") from e
+            except psycopg2.errors.ForeignKeyViolation as e:
+                conn.rollback()
+                raise ProfileInputError(f"tenant id={tenant_id} not found") from e
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+        return row_id
 
     def list_profiles(self) -> list[dict]:
         with self._pool.checkout() as conn:
@@ -136,6 +298,8 @@ class RepoStore:
         - Following parent_profile_id upward from *parent_id* reaches
           *profile_id* (would create a cycle).
         - parent.odoo_version != child.odoo_version (version mismatch).
+        - the child would be more visible than the parent
+          (:func:`check_child_visibility`, ProfileVisibilityError).
 
         *conn* is an optional already-open connection (used by add_profile to
         reuse the transaction). When None a new checkout is used.
@@ -153,14 +317,14 @@ class RepoStore:
             # via recursive CTE to detect cycles.
             with c.cursor() as cur:
                 cur.execute(
-                    "SELECT odoo_version FROM profiles WHERE id = %s",
+                    "SELECT odoo_version, tenant_id, name FROM profiles WHERE id = %s",
                     (profile_id,),
                 )
                 child_row = cur.fetchone()
 
             with c.cursor() as cur:
                 cur.execute(
-                    "SELECT odoo_version FROM profiles WHERE id = %s",
+                    "SELECT odoo_version, tenant_id, name FROM profiles WHERE id = %s",
                     (parent_id,),
                 )
                 parent_row = cur.fetchone()
@@ -170,14 +334,18 @@ class RepoStore:
             if parent_row is None:
                 raise ProfileNotFoundError(f"parent profile id={parent_id} not found")
 
-            child_version = child_row[0]
-            parent_version = parent_row[0]
+            child_version, child_tenant, child_name = child_row
+            parent_version, parent_tenant, parent_name = parent_row
 
             if child_version != parent_version:
                 raise ProfileVersionMismatchError(
                     f"version mismatch: child odoo_version={child_version!r} != "
                     f"parent odoo_version={parent_version!r}"
                 )
+            check_child_visibility(
+                child_tenant, parent_tenant,
+                child=f"profile {child_name!r}", parent=f"parent {parent_name!r}",
+            )
 
             # Cycle check: walk upward from parent_id; if we reach profile_id
             # then setting this parent would create a cycle.
@@ -187,7 +355,8 @@ class RepoStore:
                     WITH RECURSIVE ancestors AS (
                         SELECT id, parent_profile_id
                         FROM profiles WHERE id = %s
-                        UNION ALL
+                        -- UNION (not ALL): terminates on a cycle already in the data
+                        UNION
                         SELECT p.id, p.parent_profile_id
                         FROM profiles p
                         JOIN ancestors a ON p.id = a.parent_profile_id
@@ -220,18 +389,37 @@ class RepoStore:
             True if the row was actually changed, False if already at the
             requested value (idempotent).
 
+        Validation and UPDATE run in ONE transaction with both rows locked, so a
+        concurrent tenant change cannot break the visibility invariant between
+        the check and the write.
+
         Raises:
-            ValueError — cycle detected, version mismatch, or profile not found.
+            ValueError - cycle detected, version mismatch, visibility
+                (ProfileVisibilityError), or profile not found.
         """
-        self._validate_parent(profile_id, parent_id)
         with self._pool.checkout() as conn:
-            rowcount = self._pool.execute(
-                conn,
-                "UPDATE profiles "
-                "SET parent_profile_id = %s "
-                "WHERE id = %s AND parent_profile_id IS DISTINCT FROM %s",
-                (parent_id, profile_id, parent_id),
-            )
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM profiles WHERE id = ANY(%s) ORDER BY id FOR UPDATE",
+                        ([profile_id] + ([parent_id] if parent_id is not None else []),),
+                    )
+                self._validate_parent(profile_id, parent_id, conn=conn)
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE profiles "
+                        "SET parent_profile_id = %s "
+                        "WHERE id = %s AND parent_profile_id IS DISTINCT FROM %s",
+                        (parent_id, profile_id, parent_id),
+                    )
+                    rowcount = cur.rowcount
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
         if rowcount == 0:
             # Distinguish "already at the requested value" (idempotent, profile
             # exists) from "profile does not exist at all".
@@ -239,6 +427,165 @@ class RepoStore:
             if profile is None:
                 raise ProfileNotFoundError(f"profile id={profile_id} not found")
         return rowcount > 0
+
+    def set_profile_tenant(
+        self,
+        profile_id: int,
+        tenant_id: int | None,
+        *,
+        confirm_shared: bool = False,
+    ) -> dict:
+        """Assign (or, with *confirm_shared*, clear) a profile's tenant - fail-closed.
+
+        In ONE transaction (profile row locked ``FOR UPDATE``):
+
+        - ``tenant_id=None`` (publish to every key) requires *confirm_shared*;
+        - the profile must not become more visible than its parent, and no child
+          may become more visible than the profile (:func:`check_child_visibility`);
+        - the profile's repos follow: ``repos.tenant_id`` is set to the new tenant
+          (the portal's write/read scope reads the repo row, ADR-0038).
+
+        Returns ``{"changed": bool, "repos_updated": int}``.
+
+        Raises:
+            ProfileNotFoundError - no such profile.
+            ProfileTenantRequiredError - ``None`` without *confirm_shared*.
+            ProfileVisibilityError - parent or child invariant violated.
+            ProfileInputError - *tenant_id* does not exist.
+        """
+        if tenant_id is None and not confirm_shared:
+            raise ProfileTenantRequiredError(
+                "making a profile shared publishes its modules to every key;"
+                " pass confirm_shared=true to confirm"
+            )
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT name, tenant_id, parent_profile_id FROM profiles"
+                        " WHERE id = %s FOR UPDATE",
+                        (profile_id,),
+                    )
+                    row = cur.fetchone()
+                    if row is None:
+                        raise ProfileNotFoundError(f"profile id={profile_id} not found")
+                    name, current_tenant, parent_id = row
+                    if parent_id is not None:
+                        cur.execute(
+                            "SELECT name, tenant_id FROM profiles WHERE id = %s FOR SHARE",
+                            (parent_id,),
+                        )
+                        parent_name, parent_tenant = cur.fetchone()
+                        check_child_visibility(
+                            tenant_id, parent_tenant,
+                            child=f"profile {name!r}", parent=f"parent {parent_name!r}",
+                        )
+                    cur.execute(
+                        "SELECT name, tenant_id FROM profiles WHERE parent_profile_id = %s"
+                        " ORDER BY name FOR SHARE",
+                        (profile_id,),
+                    )
+                    for child_name, child_tenant in cur.fetchall():
+                        check_child_visibility(
+                            child_tenant, tenant_id,
+                            child=f"child profile {child_name!r}",
+                            parent=f"profile {name!r}",
+                        )
+                    cur.execute(
+                        "UPDATE profiles SET tenant_id = %s WHERE id = %s",
+                        (tenant_id, profile_id),
+                    )
+                    cur.execute(
+                        "UPDATE repos SET tenant_id = %s"
+                        " WHERE profile_id = %s AND tenant_id IS DISTINCT FROM %s",
+                        (tenant_id, profile_id, tenant_id),
+                    )
+                    repos_updated = cur.rowcount
+                conn.commit()
+            except psycopg2.errors.ForeignKeyViolation as e:
+                conn.rollback()
+                raise ProfileInputError(f"tenant id={tenant_id} not found") from e
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+        return {"changed": current_tenant != tenant_id, "repos_updated": repos_updated}
+
+    def set_repo_tenant(self, repo_id: int, tenant_id: int | None) -> bool:
+        """Re-sync a repo's tenant; it must equal its profile's tenant.
+
+        ``repos.tenant_id`` follows the profile (:meth:`set_profile_tenant`
+        propagates it): a repo with another tenant than its profile would let
+        that tenant manage content indexed into a profile it does not own, or
+        expose a private profile's repo as shared in the portal. Returns False
+        when the repo does not exist; raises ProfileVisibilityError on mismatch.
+
+        Check and UPDATE run in ONE transaction with the profile row locked
+        ``FOR SHARE`` (lock order profile -> repo, the same as
+        :meth:`set_profile_tenant` and :meth:`add_repo`), so a concurrent
+        tenant change of the profile cannot commit between the check and the
+        write and leave the repo on the old tenant (``repo_tenant_mismatch``).
+        """
+        with self._pool.checkout() as conn:
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT profile_id FROM repos WHERE id = %s", (repo_id,))
+                    rrow = cur.fetchone()
+                    if rrow is None:
+                        conn.rollback()
+                        return False
+                    profile_id = rrow[0]
+                    cur.execute(
+                        "SELECT tenant_id, name FROM profiles WHERE id = %s FOR SHARE",
+                        (profile_id,),
+                    )
+                    prow = cur.fetchone()
+                    if prow is None:
+                        conn.rollback()
+                        return False
+                    profile_tenant, profile_name = prow
+                    if profile_tenant != tenant_id:
+                        owner = (
+                            "shared" if profile_tenant is None
+                            else f"private to tenant {profile_tenant}"
+                        )
+                        raise ProfileVisibilityError(
+                            f"a repo's tenant follows its profile: profile"
+                            f" {profile_name!r} is {owner}; change the profile's"
+                            " tenant instead"
+                        )
+                    cur.execute(
+                        "UPDATE repos SET tenant_id = %s WHERE id = %s AND profile_id = %s",
+                        (tenant_id, repo_id, profile_id),
+                    )
+                    updated = cur.rowcount
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
+        return updated > 0
+
+    def visibility_violations(self) -> list[dict]:
+        """Read-only audit of the visibility invariant over the whole registry.
+
+        One row per violation, ``kind`` one of:
+
+        - ``shared_child_of_private``: a shared profile with a private ancestor
+          (the leak shape: the private chain's names and repos reach every key);
+        - ``cross_tenant_chain``: a private profile whose nearest private
+          ancestor belongs to another tenant;
+        - ``repo_tenant_mismatch``: a repo whose tenant differs from its profile's.
+
+        An empty list means the invariant holds. Ops run it as
+        ``python -m src.manager profile-visibility-audit`` (exit 1 on any row).
+        """
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(conn, _VISIBILITY_AUDIT_SQL)
 
     def _has_indexed_repos(self, profile_id: int) -> int:
         """Return the count of indexed repos for a profile (head_sha IS NOT NULL).
@@ -584,7 +931,7 @@ class RepoStore:
         *,
         ssh_key_id: int | None = None,
         clone_status: str = "manual",
-        tenant_id: int | None = None,
+        tenant_id=_INHERIT_TENANT,
     ) -> int:
         """Insert a new repo row and return its id.
 
@@ -607,21 +954,46 @@ class RepoStore:
             local_path: Server-managed path (derived via default_clone_dir).
             ssh_key_id: ssh_key_pairs.id for SSH auth; None for HTTPS.
             clone_status: git-clone lifecycle start state (default 'manual').
-            tenant_id: tenants.id for tenant isolation; None = shared/global.
+            tenant_id: omit to inherit the profile's tenant (the normal case).
+                When given it must EQUAL the profile's tenant (None = shared):
+                ``repos.tenant_id`` follows the profile, never more visible
+                (ProfileVisibilityError otherwise).
 
         Returns:
             Integer id of the newly inserted repo row.
         """
         with self._pool.checkout() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO repos "
-                    "(profile_id, url, branch, local_path, ssh_key_id, clone_status, tenant_id) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                    (profile_id, url, branch, local_path, ssh_key_id, clone_status, tenant_id),
-                )
-                row_id = cur.fetchone()[0]
-            conn.commit()
+            conn.autocommit = False
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT tenant_id, name FROM profiles WHERE id = %s FOR SHARE",
+                        (profile_id,),
+                    )
+                    prow = cur.fetchone()
+                    if prow is None:
+                        raise ProfileNotFoundError(f"profile id={profile_id} not found")
+                    profile_tenant, profile_name = prow
+                    if tenant_id is not _INHERIT_TENANT and tenant_id != profile_tenant:
+                        raise ProfileVisibilityError(
+                            f"repo tenant {tenant_id!r} differs from profile"
+                            f" {profile_name!r} tenant {profile_tenant!r}; a repo's"
+                            " tenant follows its profile"
+                        )
+                    cur.execute(
+                        "INSERT INTO repos (profile_id, url, branch, local_path,"
+                        " ssh_key_id, clone_status, tenant_id) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                        (profile_id, url, branch, local_path, ssh_key_id, clone_status,
+                         profile_tenant),
+                    )
+                    row_id = cur.fetchone()[0]
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                conn.autocommit = True
         return row_id
 
     def list_repos(self) -> list[dict]:
