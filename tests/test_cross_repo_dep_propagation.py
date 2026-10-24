@@ -746,7 +746,10 @@ class TestDepPropagationEndToEnd:
     def test_full_reindex_skips_propagation(
         self, clean_neo4j, pg_conn, tmp_path
     ):
-        """full_reindex=True skips cross-repo propagation (no head_sha reset)."""
+        """A full run without a usable baseline and without a ledger does not
+        propagate (no head_sha reset): it cannot tell a first index from a
+        reset (ADR-0007 W14 note 3). 'deadbeef' is no commit of the checkout,
+        and the ledger is stubbed out."""
         from src.db.migrate import run_migrations
         from src.db.pg import repo_store
         from src.indexer.pipeline import _index_repo

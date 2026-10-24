@@ -48,21 +48,44 @@ Type=oneshot
 # is infinite). A timed-out attempt counts as a failure: Restart=on-failure and
 # OnFailure= apply as for any other failure.
 TimeoutStartSec=1h
-# Never back up while the nightly reindex runs: Neo4j is exported online, so a
-# backup taken while the run writes holds a graph and a PostgreSQL that disagree.
+# Never back up while an index run writes: Neo4j is exported online, so a
+# backup taken while a run writes holds a graph and a PostgreSQL that disagree.
 # The reindex's After= only waits for a backup start job that exists when the
 # reindex starts; in the RestartSec gap after a failed attempt there is none, so
-# the reindex starts and the restarted backup would run beside it. This check
-# refuses that attempt. Exit 255 (not 1) on purpose: 1-254 would SKIP the unit
-# silently (not failed, no OnFailure=), and a night without a backup must reach
-# the admins. 255 fails the attempt: the journal line below says why, and
-# OnFailure= mails it. Restart=on-failure retries it (StartLimitBurst bounds the
-# retries while the reindex still runs); after the reindex ends, run
+# the reindex starts and the restarted backup would run beside it. An index run
+# started from the Web UI (python -m src.indexer index-repo ... --job-id N,
+# src/web_ui/helpers/subprocess_runner.py), a reembed-stubs, index-core or
+# seed-patterns job is no systemd unit at all. This check refuses the attempt
+# in all those cases:
+#   - odoo-semantic-reindex.service is activating (a running oneshot; not
+#     counted by `systemctl is-active`, hence ActiveState), active, reloading
+#     or deactivating;
+#   - a process of this unit's user runs `python -m src.indexer` with a
+#     writing subcommand. The pattern is anchored on the interpreter (the
+#     command line starts with .../python), and `src[.]indexer` cannot match
+#     this shell's own command line, which holds the bracket text.
+# Fail-closed: when systemctl or pgrep fails, a running index cannot be ruled
+# out, so the attempt is refused too (an inconsistent bundle is silent, a
+# missed backup is mailed). Exit 255 (not 1) on purpose: 1-254 would SKIP the
+# unit silently (not failed, no OnFailure=), and a night without a backup must
+# reach the admins. 255 fails the attempt: the journal line says why, and
+# OnFailure= mails it. Restart=on-failure retries it 30s later; with the index
+# still running the retries end in start-limit-hit (StartLimitBurst=3 within
+# StartLimitIntervalSec=1800, within ~2 min), so after the index run ends:
+# `sudo systemctl reset-failed odoo-semantic-backup.service` then
 # `sudo systemctl start odoo-semantic-backup.service` (backup-runbook.md).
-# A oneshot that is running is "activating", which `systemctl is-active` does
-# not count as active, hence ActiveState. Only the systemd unit is seen: an
-# index run started from the Web UI is a plain process.
-ExecCondition=/bin/sh -c 'state=$$(systemctl show --property=ActiveState --value odoo-semantic-reindex.service); case "$$state" in activating|active|reloading|deactivating) echo "odoo-semantic-backup: not started, odoo-semantic-reindex.service is $$state (a backup during the run would export a graph and a PostgreSQL that disagree); start the backup again after the reindex" >&2; exit 255;; esac'
+ExecCondition=/bin/sh -c '\
+  why="a backup during it would export a graph and a PostgreSQL that disagree; start the backup again after it ends"; \
+  state=$$(systemctl show --property=ActiveState --value odoo-semantic-reindex.service) \
+    || { echo "odoo-semantic-backup: not started, systemctl could not read odoo-semantic-reindex.service, so a running index cannot be ruled out" >&2; exit 255; }; \
+  case "$$state" in activating|active|reloading|deactivating) \
+    echo "odoo-semantic-backup: not started, odoo-semantic-reindex.service is $$state ($$why)" >&2; exit 255;; esac; \
+  pids=$$(pgrep -u "$$(id -u)" -f -- "^[^ ]*python[0-9.]* -m src[.]indexer (index-repo|index-core|reembed-stubs|seed-patterns)( |$$)"); rc=$$?; \
+  case "$$rc" in \
+    0) echo "odoo-semantic-backup: not started, an index run is running (pid $$(echo $$pids), e.g. started from the Web UI; $$why)" >&2; exit 255;; \
+    1) exit 0;; \
+    *) echo "odoo-semantic-backup: not started, pgrep failed (exit $$rc), so a running index cannot be ruled out" >&2; exit 255;; \
+  esac'
 User=odoo-semantic
 Group=odoo-semantic
 WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp

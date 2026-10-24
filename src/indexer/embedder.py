@@ -477,14 +477,23 @@ class _BaseHttpEmbedder:
         # Any non-None read_timeout routes through the fixed query client.
         return await asyncio.to_thread(self._run_batch, texts, client=self._query_http)
 
-    def _embed_with_timeout(self, texts: list[str], read_timeout: int) -> list[list[float]]:  # noqa: ARG002
-        """Backward-compat shim: embed() variant that routes through the query client.
+    def embed_short(self, texts: list[str]) -> list[list[float]]:
+        """Synchronous embed through the short-timeout query client.
 
-        ``read_timeout`` is accepted but ignored — the query client timeout is
-        fixed at :data:`TIMEOUT_EMBEDDER_READ_QUERY` (set once in ``__init__``).
-        Callers should prefer ``embed_async(read_timeout=...)`` directly.
+        Same retries and backoff as :meth:`embed`, but each attempt's read is
+        bounded by :data:`TIMEOUT_EMBEDDER_READ_QUERY` instead of the batch read
+        timeout. For a caller on a plain thread that must not wait the batch
+        timeout on a hung embedder (the indexer's end-of-run probe,
+        ``pipeline._probe_silent_embedder``); async code uses
+        ``embed_async(read_timeout=...)``.
         """
         return self._run_batch(texts, client=self._query_http)
+
+    def _embed_with_timeout(self, texts: list[str], read_timeout: int) -> list[list[float]]:  # noqa: ARG002
+        """Backward-compat shim for :meth:`embed_short` (``read_timeout`` is
+        accepted but ignored: the query client timeout is fixed at
+        :data:`TIMEOUT_EMBEDDER_READ_QUERY`, set once in ``__init__``)."""
+        return self.embed_short(texts)
 
     def close(self) -> None:
         """Close the underlying HTTP client(s) and release connections."""

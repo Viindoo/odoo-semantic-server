@@ -13,8 +13,14 @@ Business rules protected here (ADR-0007 W14 note 3):
 - The repo that was just indexed never flags its own modules.
 - A dependent repo without ledger rows at the version cannot be flagged per
   module: its ``head_sha`` is reset, as before the ledger existed. The same
-  reset is the fallback when the run has no ledger or the flag write fails.
+  reset is the fallback when the run has no ledger or the flag write fails,
+  and it covers the repos of EVERY dependent, transitive ones included.
 - The dependency walk ends on a dependency cycle.
+- Every run mode propagates what it changed: the incremental diff, the sync
+  path's one-shot seeds, a full run's changes since its baseline.
+- A propagation that cannot be recorded in full keeps the repo's head_sha
+  (the next run repeats it), is named in ``lifecycle_attention``, and is an
+  alert only when it was not recorded in the previous run either.
 """
 from __future__ import annotations
 
@@ -182,22 +188,29 @@ def test_a_dependent_repo_without_ledger_rows_is_reset_instead():
     assert result.marked == {32: ["viin_saas_portal"]}
 
 
-def test_without_a_ledger_the_repos_of_the_direct_dependents_are_reset():
+def test_without_a_ledger_the_repos_of_every_dependent_are_reset():
     result, repos = _propagate({"to_git"}, ledger=None)
 
-    # saas-infrastructure ships a DIRECT dependent; erponline only a transitive one.
-    assert repos.reset == [42]
+    # saas-infrastructure ships a DIRECT dependent; erponline only a transitive
+    # one, which a one-hop reset never reaches (a ledger-less full re-index
+    # does not propagate further).
+    assert repos.reset == [32, 42]
     assert result.marked == {}
 
 
-def test_a_failed_flag_write_falls_back_to_the_reset(caplog):
+def test_a_failed_flag_write_resets_the_repos_of_every_dependent_transitive_included(caplog):
+    """erponline-enterprise ships only a depth-2 dependent: a reset of the
+    direct dependents' repos left it with stale edges while the propagation
+    counted as recorded."""
     ledger = _Ledger(LEDGER_ROWS, fail=True)
 
     with caplog.at_level(logging.WARNING, logger="src.indexer.cross_repo"):
         result, repos = _propagate({"to_git"}, ledger=ledger)
 
-    assert repos.reset == [42]
+    assert repos.reset == [32, 42]
+    assert result.reset_repo_ids == [32, 42]
     assert result.marked == {}
+    assert result.complete is True
     assert "could not flag" in caplog.text
 
 
@@ -346,20 +359,27 @@ def test_a_failed_dependency_walk_resets_the_direct_dependents_repos(caplog):
     assert repos.reset == [42], "the indexed repo itself is never reset"
     assert result.reset_repo_ids == [42]
     assert ledger.flagged == set()
+    # The transitive dependents are unknown: the caller must repeat the walk.
+    assert result.complete is False
     assert "dependency walk failed" in caplog.text
 
 
-def test_a_failed_fallback_raises_so_the_caller_keeps_its_head_sha():
-    with pytest.raises(RuntimeError, match="ServiceUnavailable"):
-        propagate_to_dependents(
-            _WalkFailsDriver(None), V, {"to_git"},
-            exclude_repo_id=31, exclude_basenames={"tvtmaaddons"},
-            presence=_Ledger(LEDGER_ROWS), repo_store=_Repos(REPOS),
-        )
+def test_a_failed_walk_and_fallback_report_an_incomplete_propagation():
+    repos = _Repos(REPOS)
+
+    result = propagate_to_dependents(
+        _WalkFailsDriver(None), V, {"to_git"},
+        exclude_repo_id=31, exclude_basenames={"tvtmaaddons"},
+        presence=_Ledger(LEDGER_ROWS), repo_store=repos,
+    )
+
+    assert result.complete is False
+    assert repos.reset == []
 
 
 def _run_index_repo(
     tmp_path, *, walk=None, bootstrap=(), meta_only=False, stack_extra=None, store=None,
+    attention=None, stored_head="a", full_reindex=False,
 ):
     """``_index_repo`` on a real two-commit git repo (in-memory parsers, no DB).
 
@@ -369,7 +389,11 @@ def _run_index_repo(
     ``cross_repo.find_dependent_modules`` (a callable side effect or a return
     value); *bootstrap* are the names the shared-module bootstrap re-parses.
     *store* (a MagicMock) stands for ``repo_store()``; pass one to inspect
-    it after a raising run. Returns ``(fake_store, walk_mock, parsed_module_names)``.
+    it after a raising run. *attention* is the repo row's
+    ``lifecycle_attention`` from the previous run. *stored_head*: the
+    ``repos.head_sha`` the store reports, ``"a"`` (commit A), ``"b"`` (HEAD:
+    nothing moved) or None (reset). Returns ``(fake_store, walk_mock,
+    parsed_module_names, counters)``.
     """
     import contextlib
     from unittest.mock import MagicMock, patch
@@ -397,9 +421,12 @@ def _run_index_repo(
     repo_row = {
         "id": 7, "local_path": str(repo), "odoo_version": "17.0",
         "url": "file://upstream", "branch": "17.0", "ssh_key_id": None,
+        "lifecycle_attention": attention,
     }
     fake_store = store if store is not None else MagicMock()
-    fake_store.get_repo_head_sha.return_value = sha_a
+    fake_store.get_repo_head_sha.return_value = {
+        "a": sha_a, "b": _head(repo), None: None,
+    }[stored_head]
     fake_store.get_repo_ids_by_local_path_basenames.return_value = [99]
     fake_store.reset_head_sha.return_value = 1
     parsed: list[str] = []
@@ -427,8 +454,11 @@ def _run_index_repo(
         )
         if stack_extra is not None:
             stack_extra(stack)
-        _index_repo(repo_row, MagicMock(), pg_conn=object(), refresh=False)
-    return fake_store, walk_mock, parsed
+        counters = _index_repo(
+            repo_row, MagicMock(), pg_conn=object(), refresh=False,
+            full_reindex=full_reindex,
+        )
+    return fake_store, walk_mock, parsed, counters
 
 
 def test_propagation_runs_before_head_sha_advances_so_a_stop_loses_nothing(tmp_path):
@@ -458,16 +488,19 @@ def test_head_sha_is_still_old_while_the_dependents_are_flagged(tmp_path):
         seen_head_updates.append(store.update_repo_head_sha.call_count)
         return {"dep_mod": ("downstream_repo", 1)}
 
-    fake_store, _walk, _parsed = _run_index_repo(tmp_path, walk=walk, store=store)
+    fake_store, _walk, _parsed, _c = _run_index_repo(tmp_path, walk=walk, store=store)
 
     assert seen_head_updates == [0], "head_sha advanced before the propagation ran"
     fake_store.update_repo_head_sha.assert_called_once()
     fake_store.reset_head_sha.assert_called_once_with([99])
 
 
-def test_a_walk_error_falls_back_to_the_direct_reset_and_the_repo_is_not_failed(
+def test_a_walk_error_resets_the_direct_dependents_and_keeps_head_sha(
     tmp_path, caplog,
 ):
+    """The direct dependents' repos are reset at once, but the walk is what
+    finds the transitive ones: head_sha is kept so the next run repeats it,
+    and the repo is not reported failed."""
     def stack_extra(stack):
         from unittest.mock import patch
         stack.enter_context(patch(
@@ -475,20 +508,22 @@ def test_a_walk_error_falls_back_to_the_direct_reset_and_the_repo_is_not_failed(
         ))
 
     with caplog.at_level(logging.WARNING):
-        fake_store, _walk, _parsed = _run_index_repo(
+        fake_store, _walk, _parsed, counters = _run_index_repo(
             tmp_path, walk=RuntimeError("Neo4j TransientError"), stack_extra=stack_extra,
         )
 
     fake_store.reset_head_sha.assert_called_once_with([99])
-    fake_store.update_repo_head_sha.assert_called_once()
+    fake_store.update_repo_head_sha.assert_not_called()
     assert "dependency walk failed" in caplog.text
+    assert counters["propagation"]["unrecorded"]
 
 
 def test_a_propagation_that_cannot_be_recorded_keeps_head_sha_and_does_not_fail(
     tmp_path, caplog,
 ):
-    """Walk and fallback both fail (Neo4j down after the writes): the repo is
-    not reported failed, and head_sha stays so the next run repeats it."""
+    """Walk and fallback both fail (Neo4j down after the writes), or a reset
+    write raises: the repo is not reported failed, and head_sha stays so the
+    next run repeats it."""
     def stack_extra(stack):
         from unittest.mock import patch
         stack.enter_context(patch(
@@ -497,13 +532,27 @@ def test_a_propagation_that_cannot_be_recorded_keeps_head_sha_and_does_not_fail(
         ))
 
     with caplog.at_level(logging.WARNING):
-        fake_store, _walk, _parsed = _run_index_repo(
+        fake_store, _walk, _parsed, _c = _run_index_repo(
             tmp_path, walk=RuntimeError("Neo4j TransientError"), stack_extra=stack_extra,
         )
 
     fake_store.update_repo_head_sha.assert_not_called()
-    assert "could not be recorded" in caplog.text
     assert "head_sha is not advanced" in caplog.text
+
+
+def test_a_failed_reset_write_keeps_head_sha_and_does_not_fail(tmp_path, caplog):
+    from unittest.mock import MagicMock
+
+    store = MagicMock()
+    store.reset_head_sha.side_effect = RuntimeError("PostgreSQL connection reset")
+    with caplog.at_level(logging.WARNING):
+        _store, _walk, _parsed, counters = _run_index_repo(
+            tmp_path, walk={"dep_mod": ("downstream_repo", 1)}, store=store,
+        )
+
+    store.update_repo_head_sha.assert_not_called()
+    assert "could not be recorded" in caplog.text
+    assert counters["propagation"]["unrecorded"]
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +563,7 @@ def test_a_propagation_that_cannot_be_recorded_keeps_head_sha_and_does_not_fail(
 def test_a_module_re_written_only_for_a_rewrite_reason_does_not_propagate(tmp_path):
     """mod_old is re-parsed for the shared-module bootstrap (its source did not
     change), mod_new is new in git: only mod_new seeds the propagation."""
-    _store, walk, parsed = _run_index_repo(
+    _store, walk, parsed, _c = _run_index_repo(
         tmp_path, walk={"dep_mod": ("downstream_repo", 1)}, bootstrap=["mod_old"],
     )
 
@@ -526,7 +575,7 @@ def test_a_module_re_written_only_for_a_rewrite_reason_does_not_propagate(tmp_pa
 def test_a_run_that_only_re_writes_unchanged_modules_propagates_nothing(tmp_path):
     """The ping-pong guard: a repo re-writing its dependents (flagged by another
     repo) or retrying their embeddings must not flag anything back."""
-    store, walk, parsed = _run_index_repo(tmp_path, bootstrap=["mod_old"], meta_only=True)
+    store, walk, parsed, _c = _run_index_repo(tmp_path, bootstrap=["mod_old"], meta_only=True)
 
     assert parsed == ["mod_old"], "precondition: mod_old was re-written"
     walk.assert_not_called()
@@ -559,3 +608,171 @@ def test_the_seed_keeps_changed_sources_and_drops_what_was_not_written():
     )
 
     assert seed == {"git_changed", "files_fixed", "gap_reevaluated"}
+
+
+# ---------------------------------------------------------------------------
+# Every run mode propagates what it changed (round 2, item 2)
+# ---------------------------------------------------------------------------
+
+
+def test_the_sync_path_propagates_its_one_shot_seeds(tmp_path):
+    """HEAD did not move, but a degraded module's failing files changed on
+    disk: the sync path re-parses it, and its dependents must hear of it (the
+    sync path used to never propagate, so the one-shot seed was lost)."""
+    def stack_extra(stack):
+        from unittest.mock import patch
+
+        import src.indexer.pipeline_repo as _pr
+        stack.enter_context(patch.object(_pr, "_degraded_state", return_value=({}, {"mod_old"})))
+
+    _store, walk, parsed, _c = _run_index_repo(
+        tmp_path, walk={"dep_mod": ("downstream_repo", 1)}, stored_head="b",
+        stack_extra=stack_extra,
+    )
+
+    assert parsed == ["mod_old"], "precondition: the sync path re-wrote only mod_old"
+    walk.assert_called_once()
+    assert walk.call_args.args[2] == {"mod_old"}
+
+
+def test_a_full_run_propagates_the_modules_changed_since_its_baseline(tmp_path):
+    """``--full`` re-writes every module; only mod_new changed since the
+    stored head_sha, so only mod_new seeds (full runs used to never propagate)."""
+    _store, walk, parsed, _c = _run_index_repo(
+        tmp_path, walk={"dep_mod": ("downstream_repo", 1)}, full_reindex=True,
+    )
+
+    assert sorted(parsed) == ["mod_new", "mod_old"], "precondition: a full run"
+    walk.assert_called_once()
+    assert walk.call_args.args[2] == {"mod_new"}
+
+
+def test_a_full_run_without_baseline_or_ledger_does_not_propagate(tmp_path):
+    """head_sha reset and no ledger: a first index cannot be told from a reset,
+    and seeding every module after each reset would bounce full re-indexes
+    between ledger-less repos that depend on each other."""
+    store, walk, parsed, _c = _run_index_repo(
+        tmp_path, walk={"dep_mod": ("downstream_repo", 1)}, stored_head=None,
+    )
+
+    assert sorted(parsed) == ["mod_new", "mod_old"]
+    walk.assert_not_called()
+    store.update_repo_head_sha.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("mode", "since", "ledger", "expected"),
+    [
+        ("incremental", None, True, {"changed"}),
+        ("sync", None, True, set()),
+        ("full", {"moved"}, True, {"moved"}),
+        ("full", set(), True, set()),
+        ("full", None, True, {"changed"}),
+        ("full", None, False, set()),
+    ],
+    ids=["incremental", "sync", "full-diff", "full-no-change", "full-first-index",
+         "full-no-baseline-no-ledger"],
+)
+def test_source_changed_names_per_run_mode(mode, since, ledger, expected):
+    from src.indexer import pipeline_repo as pr
+
+    mode_value = {"incremental": pr.RUN_INCREMENTAL, "sync": pr.RUN_SYNC, "full": pr.RUN_FULL}
+    got = pr.source_changed_names(mode_value[mode], {"changed"}, ledger=ledger, since=since)
+
+    assert got == expected
+
+
+def test_a_full_run_baseline_falls_back_to_the_ledger_head_and_survives_a_force_push(
+    tmp_path,
+):
+    """head_sha NULL (reset) leaves the ledger's presence head as the baseline;
+    a force-pushed old head still in the object store is diffed too; a head
+    the checkout does not have is skipped."""
+    from src.indexer.pipeline_repo import full_run_changed_names
+    from src.indexer.registry import build_registry_scan
+    from tests.test_pipeline_refresh import _add_module, _git, _head, _make_repo
+
+    repo = _make_repo(tmp_path / "addons", branch="17.0")
+    _add_module(repo, "mod_old")
+    sha_a = _head(repo)
+    _add_module(repo, "mod_gone")
+    sha_b = _head(repo)
+    _git(repo, "reset", "--hard", sha_a)  # force-push: B is no longer an ancestor
+    _add_module(repo, "mod_new")
+    head = _head(repo)
+    scan = build_registry_scan(str(repo), "17.0", branch="17.0")
+
+    assert full_run_changed_names(repo, scan, head, [None, sha_a]) == {"mod_new"}
+    assert full_run_changed_names(repo, scan, head, [sha_b, None]) == {"mod_new"}
+    assert full_run_changed_names(repo, scan, head, ["0" * 40, sha_a]) == {"mod_new"}
+    assert full_run_changed_names(repo, scan, head, [head, sha_a]) == set()
+    assert full_run_changed_names(repo, scan, head, [None, "0" * 40]) is None
+
+
+# ---------------------------------------------------------------------------
+# An unrecorded propagation is visible (round 2, item 4)
+# ---------------------------------------------------------------------------
+
+
+def _walk_and_fallback_fail(stack):
+    from unittest.mock import patch
+    stack.enter_context(patch(
+        "src.indexer.cross_repo.find_dependent_repos",
+        side_effect=RuntimeError("Neo4j ServiceUnavailable"),
+    ))
+
+
+def test_an_unrecorded_propagation_is_named_with_the_kept_head(tmp_path, caplog):
+    from src.indexer.pipeline_repo import PROPAGATION_UNRECORDED_MARK
+
+    with caplog.at_level(logging.WARNING):
+        store, _walk, _parsed, counters = _run_index_repo(
+            tmp_path, walk=RuntimeError("Neo4j TransientError"),
+            stack_extra=_walk_and_fallback_fail,
+        )
+
+    stuck = store.get_repo_head_sha.return_value[:12]
+    line = counters["propagation"]["unrecorded"]
+    assert PROPAGATION_UNRECORDED_MARK in line and stuck in line and "mod_new" in line
+    assert counters["propagation"]["persistent"] is False
+    # Without a ledger the attention lines are logged (WARNING) instead of stored.
+    assert any(PROPAGATION_UNRECORDED_MARK in r.getMessage() for r in caplog.records)
+
+
+def test_the_second_unrecorded_run_in_a_row_is_persistent(tmp_path):
+    from src.indexer.pipeline_repo import PROPAGATION_UNRECORDED_MARK
+
+    _store, _walk, _parsed, counters = _run_index_repo(
+        tmp_path, walk=RuntimeError("Neo4j TransientError"),
+        stack_extra=_walk_and_fallback_fail,
+        attention=f"{PROPAGATION_UNRECORDED_MARK} for 1 module(s) (mod_new) at HEAD x",
+    )
+
+    assert counters["propagation"]["persistent"] is True
+    assert "two consecutive runs" in counters["propagation"]["unrecorded"]
+
+
+def test_once_is_a_warning_twice_in_a_row_is_an_alert(capsys):
+    """One unrecorded propagation retries by itself (head_sha kept): printed,
+    exit 0. The same repo again in the next run is exit 3 (OnFailure= mail)."""
+    from src.indexer import pipeline as pipeline_mod
+    from src.indexer.__main__ import EXIT_LIFECYCLE_ATTENTION, _lifecycle_exit_code
+
+    def summary(persistent: bool) -> dict:
+        lc = pipeline_mod._empty_lifecycle()
+        pipeline_mod._absorb_repo_lifecycle(lc, {"id": 7, "url": "file://up"}, {
+            "propagation": {"unrecorded": "cross-repo propagation not recorded ...",
+                            "persistent": persistent},
+        })
+        return pipeline_mod._finish_lifecycle(lc)
+
+    once = summary(False)
+    assert once["propagation_unrecorded"] and once["stale_propagation"] == []
+    assert once["needs_attention"] is False
+    assert _lifecycle_exit_code(once) == 0
+    assert "Cross-repo propagation not recorded" in capsys.readouterr().err
+
+    twice = summary(True)
+    assert twice["needs_attention"] is True
+    assert _lifecycle_exit_code(twice) == EXIT_LIFECYCLE_ATTENTION
+    assert "stale_propagation: repo id=7" in capsys.readouterr().err

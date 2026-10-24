@@ -690,11 +690,13 @@ def write_module_embeddings(
     the caller did not seed it) by the chunks written with a stored vector
     instead, which are in neither of the other two. The index pipeline sums
     them per repo (``embed_attempted`` / ``embed_ok`` / ``embed_reused``) and
-    per run (the ``embeddings_reused`` of the run summary). Zero embedded
-    while chunks were attempted is not by itself an outage: the run probes the
-    embedder before it reports ``embedder_down``
-    (``pipeline._probe_silent_embedder``), since with reuse a quiet night may
-    send only a chunk the embedder refuses for its content.
+    per run (the ``embeddings_reused`` of the run summary); the pipeline also
+    counts, per module, the chunks sent for modules not re-written as a retry
+    (``embed_attempted_fresh``). Zero embedded while chunks were attempted is
+    ``embedder_down``, except on a quiet night (at most one batch, all of
+    retried modules) whose embedder answers an end-of-run probe
+    (``pipeline._quiet_night_shape``): with reuse such a night may send only a
+    chunk the embedder refuses for its content.
 
     Unchanged chunks are not re-embedded: a chunk whose ``content`` equals the
     content of a row this module already has (same version and profile)

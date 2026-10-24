@@ -71,8 +71,9 @@ Description=OSM periodic incremental reindex (index-repo --all)
 # TimeoutStartSec bounds that wait. It does NOT wait during the backup's
 # RestartSec gap after a failed attempt (no job exists then): this run starts,
 # and the backup's ExecCondition= refuses the restarted attempt while this run
-# is active (a failed backup, so OnFailure= reports the missed night). Ordering
-# only; the run does not need the backup to succeed.
+# (or any index process, e.g. a Web UI job) is active: a failed backup, so
+# OnFailure= reports the missed night. Ordering only; the run does not need the
+# backup to succeed.
 After=network-online.target docker.service odoo-semantic-backup.service
 Wants=network-online.target
 Requires=docker.service

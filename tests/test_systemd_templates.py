@@ -214,9 +214,14 @@ def test_service_files_pass_systemd_analyze_verify():
 # ---------------------------------------------------------------------------
 
 def _directive(path: Path, key: str) -> list[str]:
+    """The values of *key*, as systemd reads them: a line ending in a
+    backslash is joined with the next one (the backslash becomes a space)."""
+    import re
+
+    text = re.sub(r"\\\n", " ", path.read_text(encoding="utf-8"))
     return [
         line.split("=", 1)[1].strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
+        for line in text.splitlines()
         if line.strip().startswith(f"{key}=") and line.split("=", 1)[1].strip()
     ]
 
@@ -342,28 +347,43 @@ def _backup_condition_argv() -> list[str]:
     return [part.replace("$$", "$") for part in shlex.split(condition)]
 
 
-def _run_backup_condition(tmp_path: Path, reindex_state: str) -> subprocess.CompletedProcess:
-    """Run the condition with a ``systemctl`` stub reporting *reindex_state* for
-    odoo-semantic-reindex.service (and failing for any other query)."""
+def _run_backup_condition(
+    tmp_path: Path, reindex_state: str | None, *, pgrep: tuple[int, str] = (1, ""),
+) -> subprocess.CompletedProcess:
+    """Run the condition with stubs: ``systemctl`` reports *reindex_state* for
+    odoo-semantic-reindex.service (None: systemctl fails), ``pgrep`` exits
+    ``pgrep[0]`` printing ``pgrep[1]`` and records its arguments."""
     import os
 
     stub = tmp_path / "systemctl"
+    answer = "exit 1" if reindex_state is None else f"echo {reindex_state}"
     stub.write_text(
         "#!/bin/sh\n"
         'case "$*" in\n'
         '  *"--property=ActiveState --value odoo-semantic-reindex.service"*)'
-        f" echo {reindex_state};;\n"
+        f" {answer};;\n"
         '  *) echo "unexpected systemctl $*" >&2; exit 99;;\n'
         "esac\n"
     )
     stub.chmod(0o755)
+    code, out = pgrep
+    pgrep_stub = tmp_path / "pgrep"
+    pgrep_stub.write_text(
+        "#!/bin/sh\n"
+        f'for a in "$@"; do printf "%s\\n" "$a"; done > "{tmp_path}/pgrep.args"\n'
+        + (f"echo {out}\n" if out else "")
+        + f"exit {code}\n"
+    )
+    pgrep_stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
     return subprocess.run(
         _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
     )
 
 
-@pytest.mark.parametrize("state", ["activating", "active", "reloading", "deactivating"])
+@pytest.mark.parametrize(
+    "state", ["activating", "active", "reloading", "deactivating"],
+)
 def test_a_backup_never_starts_while_the_reindex_runs(tmp_path, state):
     """After a failed backup attempt the reindex is not held back (no backup job
     exists during RestartSec), so the restarted backup must refuse to run beside
@@ -378,11 +398,79 @@ def test_a_backup_never_starts_while_the_reindex_runs(tmp_path, state):
 
 
 @pytest.mark.parametrize("state", ["inactive", "failed"])
-def test_a_backup_runs_when_the_reindex_is_not_running(tmp_path, state):
-    result = _run_backup_condition(tmp_path, state)
+def test_a_backup_runs_when_no_index_run_is_running(tmp_path, state):
+    result = _run_backup_condition(tmp_path, state, pgrep=(1, ""))
 
     assert result.returncode == 0, (result.returncode, result.stderr)
     assert result.stderr == ""
+
+
+def test_a_backup_never_starts_while_a_web_ui_index_run_runs(tmp_path):
+    """A Web UI index job is a plain process (``python -m src.indexer
+    index-repo ... --job-id N``), invisible to the unit state check."""
+    result = _run_backup_condition(tmp_path, "inactive", pgrep=(0, "4242"))
+
+    assert result.returncode == 255, (result.returncode, result.stderr)
+    assert "an index run is running (pid 4242" in result.stderr
+    args = (tmp_path / "pgrep.args").read_text().splitlines()
+    assert args[:1] == ["-u"] and "-f" in args
+    pattern = args[-1]
+    import re
+    assert re.search(pattern, "/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m "
+                     "src.indexer index-repo --profile p --job-id 7")
+    assert re.search(pattern, "/usr/bin/python3.12 -m src.indexer reembed-stubs --profile p")
+    assert not re.search(pattern, "/usr/bin/python3 -m src.indexer lifecycle-audit --all")
+    # The guard's own shell command line holds the pattern text: never itself.
+    assert not re.search(pattern, " ".join(_backup_condition_argv()))
+
+
+@pytest.mark.parametrize(
+    ("state", "pgrep", "says"),
+    [(None, (1, ""), "systemctl could not read"), ("inactive", (2, ""), "pgrep failed")],
+    ids=["systemctl-fails", "pgrep-fails"],
+)
+def test_the_guard_fails_closed_when_it_cannot_tell(tmp_path, state, pgrep, says):
+    """A guard that cannot tell refuses the backup: a missed backup is mailed,
+    an inconsistent bundle is silent."""
+    result = _run_backup_condition(tmp_path, state, pgrep=pgrep)
+
+    assert result.returncode == 255, (result.returncode, result.stderr)
+    assert says in result.stderr
+
+
+def test_the_guard_sees_a_real_index_process_and_not_itself(tmp_path):
+    """Real pgrep: a process whose command line is a Web UI index job is
+    refused; with none running the guard (whose own command line holds the
+    pattern) lets the backup run."""
+    import os
+
+    stub = tmp_path / "systemctl"
+    stub.write_text("#!/bin/sh\necho inactive\n")
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+    if not shutil.which("pgrep"):
+        pytest.skip("pgrep not available")
+    clean = subprocess.run(
+        _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
+    )
+    fake = subprocess.Popen([
+        "bash", "-c",
+        f'exec -a "{tmp_path}/bin/python -m src.indexer index-repo --profile p --job-id 9" '
+        "sleep 30",
+    ])
+    try:
+        import time
+        time.sleep(0.3)
+        busy = subprocess.run(
+            _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
+        )
+    finally:
+        fake.kill()
+        fake.wait()
+
+    assert clean.returncode == 0, clean.stderr
+    assert busy.returncode == 255, busy.stderr
+    assert f"pid {fake.pid}" in busy.stderr
 
 
 def test_the_backup_refusal_is_reported_not_skipped():

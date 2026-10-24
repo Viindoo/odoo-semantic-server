@@ -23,6 +23,7 @@ from neo4j import GraphDatabase, NotificationMinimumSeverity
 
 from src import clone_ops as _clone_ops
 from src import config
+from src.constants import EMBEDDER_MAX_BATCH
 from src.db.pg import repo_store
 
 # --- Collaborators kept on THIS module namespace for the moved _index_repo ---
@@ -347,10 +348,19 @@ def _empty_lifecycle() -> dict:
         "embed_attempted": 0,
         "embed_ok": 0,
         "embed_reused": 0,
-        # The embedder answered the end-of-run probe (_probe_silent_embedder):
-        # it is reachable, so a run without one returned vector refused its
+        # Chunks sent for modules re-written for another reason than a retry
+        # (changed source, full run, self-heal, ...): see _quiet_night_shape.
+        "embed_attempted_fresh": 0,
+        # The embedder answered the end-of-run probe (_probe_silent_embedder)
+        # of a quiet-night run: it is reachable, so it refused the few retried
         # chunks for their content (each module is retried, needs_rewrite).
         "embedder_answered": False,
+        # Cross-repo propagations this run could not record: the repo keeps its
+        # head_sha and the next run repeats them (WARNING + lifecycle_attention,
+        # no exit 3); ``stale_propagation``: the same repo's propagation was not
+        # recorded in the previous run either (exit 3).
+        "propagation_unrecorded": [],
+        "stale_propagation": [],
         # Run-wide failures derived by _finish_lifecycle (exit 3): every fetch
         # of the run failed, or the embedder returned nothing all run.
         "outages": [],
@@ -406,6 +416,17 @@ def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
     lc["embed_attempted"] += counters.get("embed_attempted", 0) or 0
     lc["embed_ok"] += counters.get("embed_ok", 0) or 0
     lc["embed_reused"] += counters.get("embed_reused", 0) or 0
+    # Conservative default: counters without the split count every sent chunk
+    # as fresh, so they can never exonerate a silent embedder.
+    lc["embed_attempted_fresh"] += counters.get(
+        "embed_attempted_fresh", counters.get("embed_attempted", 0),
+    ) or 0
+    propagation = counters.get("propagation") or {}
+    if propagation.get("unrecorded"):
+        item = f"repo id={repo['id']} ({repo.get('url')}): {propagation['unrecorded']}"
+        lc["propagation_unrecorded"].append(item)
+        if propagation.get("persistent"):
+            lc["stale_propagation"].append(item)
     repo_lc = counters.get("lifecycle")
     if not repo_lc:
         return
@@ -438,14 +459,18 @@ def run_outages(lc: dict) -> list[str]:
     """Run-wide failures that stop OSM reflecting code (exit 3): the pre-scan
     fetch failed for every repo the run fetched (network / DNS outage, a
     revoked credential shared by all repos), or the embedder returned no
-    vector for any chunk the run sent and did not answer the end-of-run probe
-    either (down for the whole run). Derived from the counts, so a merged
-    summary (``index_all``) is judged as a whole.
+    vector for any chunk the run sent (down for the whole run). Derived from
+    the counts, so a merged summary (``index_all``) is judged as a whole.
 
-    Why the probe: unchanged chunks are not sent (vector reuse), so a quiet
-    night may send only the one chunk a healthy embedder keeps refusing (a
-    module flagged ``needs_rewrite`` for its incomplete embeddings every
-    night); "0 of 1 returned" would then raise this alarm every night."""
+    One exception, the quiet night (:func:`_quiet_night_shape`): unchanged
+    chunks are not sent (vector reuse), so a run may send only the few chunks
+    a healthy embedder keeps refusing (modules re-written as an
+    incomplete-embedding retry); "0 of 2 returned" would then raise this
+    alarm every night. Such a run is not an outage when the embedder answered
+    the end-of-run probe. Any other "sent N, got 0" stays ``embedder_down``
+    whatever a probe says: an embedder that fails every batch all night (504
+    model-swap thrash, a busy GPU) can still answer one short text, and the
+    changed code it never embedded must not pass silently."""
     out: list[str] = []
     attempted = lc.get("fetch_attempted", 0) or 0
     failed = len(lc.get("fetch_failed") or [])
@@ -456,7 +481,8 @@ def run_outages(lc: dict) -> list[str]:
             "the on-disk state and does not follow the remote branches"
         )
     sent = lc.get("embed_attempted", 0) or 0
-    if sent and not (lc.get("embed_ok", 0) or 0) and not lc.get("embedder_answered"):
+    exonerated = _quiet_night_shape(lc) and bool(lc.get("embedder_answered"))
+    if sent and not (lc.get("embed_ok", 0) or 0) and not exonerated:
         out.append(
             f"embedder_down: the embedder returned no vector for any of the {sent} "
             "chunk(s) this run sent; the graph was written, the embeddings were not "
@@ -469,29 +495,53 @@ def run_outages(lc: dict) -> list[str]:
 # embedder return a vector" is read).
 EMBEDDER_PROBE_TEXT = "def ping(self):\n    return True"
 
+# The most chunks a quiet-night run may send and still be exonerated by the
+# probe: one embed request's worth (EMBEDDER_MAX_BATCH). A retry night sends
+# the few chunks refused the night before; more than one batch of them all
+# failing is no longer "one chunk the embedder dislikes" but a failing
+# embedder, and is reported as such.
+QUIET_NIGHT_MAX_CHUNKS = EMBEDDER_MAX_BATCH
+
+
+def _quiet_night_shape(lc: dict) -> bool:
+    """True when every chunk the run sent belongs to a module re-written only
+    as a retry (``embed_attempted_fresh`` 0: no changed source, no full run,
+    no self-heal sent anything) and they fit in one batch
+    (:data:`QUIET_NIGHT_MAX_CHUNKS`). The only shape in which "sent N, got 0"
+    may come from content a healthy embedder refuses."""
+    sent = lc.get("embed_attempted") or 0
+    fresh = lc.get("embed_attempted_fresh", sent) or 0
+    return 0 < sent <= QUIET_NIGHT_MAX_CHUNKS and fresh == 0
+
 
 def _probe_silent_embedder(lc: dict, embedder) -> None:
-    """Ask the embedder for one vector when the run sent chunks and got none.
+    """Ask the embedder for one vector when a quiet-night run got none.
 
-    Sets ``lc["embedder_answered"]`` when it returns one: the embedder is up
-    and refused this run's chunks for their content, which the per-module
-    retry (``needs_rewrite``, ``lifecycle_attention``) already reports, so
-    :func:`run_outages` raises no ``embedder_down``. A failed probe (or no
-    probe-able embedder) leaves the flag unset: the outage stands. The probe
-    goes through the embedder's short query read timeout when it has one
-    (``_embed_with_timeout``), so a hung embedder costs its retries times
-    ``EMBEDDER_TIMEOUT_READ_QUERY``, not the batch read timeout. Runs once per
-    run: ``index_profile`` when it ends the run, ``index_all`` for the merged
-    run (it calls ``index_profile`` with ``reconcile=False``)."""
+    Only for the :func:`_quiet_night_shape` (a few retried chunks, all
+    refused): sets ``lc["embedder_answered"]`` when the embedder returns a
+    vector, so :func:`run_outages` raises no ``embedder_down`` for chunks the
+    per-module retry (``needs_rewrite``, ``lifecycle_attention``) already
+    reports. Any other run that got no vector is not probed: it is an outage
+    whatever one short text would get. A failed probe leaves the flag unset.
+
+    The probe goes through the embedder's short query client when it has one
+    (``embed_short``), so a hung embedder costs at most its retries
+    (``retries``, 3) times one attempt's connect + write + read timeouts
+    (``EMBEDDER_TIMEOUT_CONNECT`` 10s + ``EMBEDDER_TIMEOUT_WRITE`` 30s +
+    ``EMBEDDER_TIMEOUT_READ_QUERY`` 30s) plus the backoff between attempts
+    (``EMBEDDER_RETRY_BACKOFF_BASE`` 2s, then 4s): 3 x 70 + 6 = 216s (about
+    3.6 min) with the defaults, about 96s for an embedder that accepts and
+    never answers. Not the 1200s batch read timeout. Runs once per run:
+    ``index_profile`` when it ends the run, ``index_all`` for the merged run
+    (it calls ``index_profile`` with ``reconcile=False``)."""
     if embedder is None or lc.get("embedder_answered"):
         return
-    if not (lc.get("embed_attempted") or 0) or (lc.get("embed_ok") or 0):
+    if (lc.get("embed_ok") or 0) or not _quiet_night_shape(lc):
         return
-    from src.constants import TIMEOUT_EMBEDDER_READ_QUERY  # noqa: PLC0415
-    short = getattr(embedder, "_embed_with_timeout", None)
+    short = getattr(embedder, "embed_short", None)
     try:
         vecs = (
-            short([EMBEDDER_PROBE_TEXT], TIMEOUT_EMBEDDER_READ_QUERY) if callable(short)
+            short([EMBEDDER_PROBE_TEXT]) if callable(short)
             else embedder.embed([EMBEDDER_PROBE_TEXT])
         )
     except Exception as exc:  # noqa: BLE001 - a failed probe is the outage itself
@@ -503,8 +553,9 @@ def _probe_silent_embedder(lc: dict, embedder) -> None:
         lc["embedder_answered"] = True
         _logger.warning(
             "embedder answered the end-of-run probe although it returned no vector for "
-            "the %d chunk(s) this run sent: it refused them, it is not down (the "
-            "modules are flagged needs_rewrite and retried)", lc.get("embed_attempted") or 0,
+            "the %d retried chunk(s) this run sent: it refused them, it is not down "
+            "(the modules stay flagged needs_rewrite and are retried)",
+            lc.get("embed_attempted") or 0,
         )
 
 
@@ -514,6 +565,7 @@ def _finish_lifecycle(lc: dict) -> dict:
     lc["needs_attention"] = bool(
         lc["gates_tripped"] or lc["undecidable"] or lc["errors"]
         or lc.get("unavailable_repos") or lc.get("stale_repos") or lc["outages"]
+        or lc.get("stale_propagation")
     )
     return lc
 
@@ -1425,6 +1477,11 @@ def index_all(
             lifecycle[key].extend(plc.get(key) or [])
         for key in ("fetch_attempted", "embed_attempted", "embed_ok", "embed_reused"):
             lifecycle[key] += plc.get(key, 0) or 0
+        lifecycle["embed_attempted_fresh"] += plc.get(
+            "embed_attempted_fresh", plc.get("embed_attempted", 0),
+        ) or 0
+        for key in ("propagation_unrecorded", "stale_propagation"):
+            lifecycle[key].extend(plc.get(key) or [])
         lifecycle["embedder_answered"] = bool(
             lifecycle["embedder_answered"] or plc.get("embedder_answered")
         )

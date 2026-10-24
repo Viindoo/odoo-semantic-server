@@ -401,8 +401,12 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     clone (``unavailable_repos``, #383 item 2: the other repos were indexed,
     this one cannot be), a repo's pre-scan fetch failed in two consecutive
     runs (``stale_repos``), or a run-wide outage (``outages``: every fetch of
-    the run failed, or the embedder returned no vector all run). The details
-    go to stderr; the per-repo text is in ``repos.lifecycle_attention``.
+    the run failed, or the embedder returned no vector all run), or a repo's
+    cross-repo propagation could not be recorded in two consecutive runs
+    (``stale_propagation``). The details go to stderr; the per-repo text is in
+    ``repos.lifecycle_attention``. A propagation not recorded once
+    (``propagation_unrecorded``: the repo keeps its head_sha and the next run
+    repeats it) is printed to stderr without changing the exit code.
 
     *run_failed*: a repo or profile failed to index. The run exits 1, which
     outranks 3, but the lifecycle details are printed all the same."""
@@ -412,11 +416,16 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
         code = EXIT_LIFECYCLE_ATTENTION
     else:
         code = 0
+    for item in lifecycle.get("propagation_unrecorded") or []:
+        print(
+            f"Cross-repo propagation not recorded, retried by the next run: {item}",
+            file=sys.stderr,
+        )
     if not lifecycle.get("needs_attention"):
         return code
     print(f"Lifecycle needs attention (exit {code}):", file=sys.stderr)
     for key in ("gates_tripped", "undecidable", "errors", "unavailable_repos",
-                "stale_repos", "outages"):
+                "stale_repos", "stale_propagation", "outages"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
     # The embedding gate id names no profile; say which ones it holds (#381 F3).

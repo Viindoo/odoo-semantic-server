@@ -351,8 +351,11 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
        both too wide (every module of the dependent repo) and too narrow (a
        transitive dependent in a third repo was never re-written). A dependent
        repo with no ledger row at the version, a run without a ledger, or a
-       failed flag write keep the old reset of the DIRECT dependents' repos
-       (`cross_repo.propagate_to_dependents`). The flag also survives a
+       failed flag write keep the old `head_sha` reset, now for the repos of
+       EVERY dependent found, direct or transitive
+       (`cross_repo.propagate_to_dependents`; a one-hop reset left a repo
+       holding only depth-2 dependents with stale edges while the propagation
+       counted as recorded). The flag also survives a
        concurrent run of the dependent repo, which the reset did not (that run
        re-stamped `head_sha` at its end). The propagation line is a WARNING
        (the nightly log is WARNING-level; the INFO line was invisible there).
@@ -378,15 +381,41 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
        made two repos that depend on each other flag each other forever. The
        transitive closure is walked from the change itself, so a dependent
        never has to re-propagate.
+     - *Every run mode* (`pipeline_repo.source_changed_names`). The sync path
+       (unchanged HEAD) propagates its one-shot seeds; it used to never
+       propagate, so a degraded / parser-gap / self-heal seed there was lost.
+       Its git part is empty, so the ping-pong guard above holds. A full run
+       (force-push, a `head_sha` reset, manual `--full`) used to never
+       propagate although its source may have moved; it now seeds the modules
+       changed since its baseline: `repos.head_sha` when the checkout still
+       has that commit (manual `--full`, a force-pushed old head), else the
+       ledger's `presence_head_sha`, which a `head_sha` reset leaves in place
+       (`full_run_changed_names`). With no baseline left: every module when
+       the repo has a ledger (a first index; other repos' modules were written
+       against its absence), none without one. That last rule is the
+       ping-pong guard for full runs: a ledger-less repo cannot tell a first
+       index from a reset, and seeding every module after each reset would
+       bounce full re-indexes between ledger-less repos that depend on each
+       other. With a ledger the loop cannot start: a full run caused only by a
+       propagation fallback reset diffs against `presence_head_sha`, finds no
+       source change and seeds nothing new. Module-level flags plus vector
+       reuse keep what a full-run propagation sets off cheap.
      - *Ordering and failure.* The propagation runs BEFORE `repos.head_sha`
        advances: a stop (SIGTERM) or an error between the two used to lose it
        for good (the next run saw an unchanged HEAD). The flags and resets are
        idempotent, so a repeated diff costs only time. A failed dependency
-       walk logs a WARNING and falls back to resetting the repos of the DIRECT
-       dependents (`find_dependent_repos`); when that fails too, or a ledger /
-       repo write raises, a WARNING says the propagation was not recorded and
-       `head_sha` is not advanced, so the next run repeats the diff and its
-       propagation. The repo is not reported failed: its own writes succeeded.
+       walk logs a WARNING, resets the repos of the DIRECT dependents at once
+       (`find_dependent_repos`, best effort) and leaves the propagation
+       incomplete: the transitive dependents are unknown. That, or a ledger /
+       repo write that raises, keeps `head_sha` so the next run repeats the
+       diff and its propagation; the repo is not reported failed (its own
+       writes succeeded). It is visible: a WARNING, a `lifecycle_attention`
+       line ("cross-repo propagation not recorded ... head_sha kept at
+       <sha>") and a `propagation_unrecorded` line on the CLI's stderr. Once
+       is exit 0, like one failed fetch: the retry is automatic. The same repo
+       not recorded in two consecutive runs (the marker is read back from its
+       previous attention) is `stale_propagation`, exit 3 and an alert: the
+       retry does not heal it and its dependents keep stale edges.
      - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
        longer embeds a chunk whose text equals a row the module already has
        (same version and profile) embedded by the same `embedding_model` and
@@ -407,10 +436,23 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
      - *Outage signal.* With reuse a quiet night may send the embedder only
        the chunk a healthy embedder keeps refusing (a module flagged for its
        incomplete embeddings every night): "chunks sent, none returned" is no
-       longer proof the embedder is down. A run in that state probes the
-       embedder once at its end (`pipeline._probe_silent_embedder`, one short
-       text over the short query read timeout; `index_all` probes once for the
-       merged run) and reports `embedder_down` only when the probe fails too.
+       longer proof the embedder is down. But a probe alone proves too little
+       the other way: an embedder that fails every batch all night (504
+       model-swap thrash, a busy GPU) can answer one short text at the end,
+       and exonerating that run would let changed code go unembedded with no
+       alert. So only the quiet-night shape is exonerated
+       (`pipeline._quiet_night_shape`): every chunk the run sent belongs to a
+       module re-written only as a retry (`needs_rewrite` or bootstrap; counted
+       per module, `embed_attempted_fresh` is the rest) AND they fit in one
+       batch (`QUIET_NIGHT_MAX_CHUNKS` = `EMBEDDER_MAX_BATCH`). Such a run
+       probes the embedder once at its end (`pipeline._probe_silent_embedder`
+       through `embed_short`, the short query read timeout; `index_all`
+       probes once for the merged run) and is no outage when it answers. Any
+       other "sent N, got 0" is `embedder_down` without a probe. A chunk sent
+       for a retry-only module is by construction one with no stored vector
+       for unchanged text, i.e. one refused before; the batch cap bounds the
+       case where an indexer change altered every chunk text of retried
+       modules on a failing night.
 
      Tests: `tests/test_cross_repo_propagation_unit.py`,
      `tests/test_embedding_reuse_unit.py`, `tests/test_embed_reuse_opt_out.py`,
