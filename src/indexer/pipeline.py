@@ -332,6 +332,10 @@ def _empty_lifecycle() -> dict:
         "undecidable": [],
         "errors": [],
         "deferred_presence": {},
+        # Repos whose run kept head_sha / presence head back (unrecorded
+        # cross-repo propagation): {repo_id: {head, odoo_version}} of the HEAD
+        # they observed, for the reconcile's state_changed_sha.
+        "held_heads": {},
         "reports": [],
         # Registered repos with no checkout this run could create (#383 item 2):
         # "repo id=<id> (<url>): <cause>". Exit 3, no traceback.
@@ -394,9 +398,14 @@ def _report_unavailable_repo(lc: dict, repo: dict, exc) -> None:
     store = _presence_store()
     if store is not None and repo_id is not None:
         try:
-            store.set_lifecycle_attention(
-                repo_id, f"checkout unavailable: {exc.cause}; the next index run retries",
-            )
+            from src.indexer.pipeline_repo import carry_propagation_mark  # noqa: PLC0415
+
+            # A cross-repo propagation retry mark survives: only a run that
+            # records the propagation clears it.
+            store.set_lifecycle_attention(repo_id, "; ".join(carry_propagation_mark(
+                repo.get("lifecycle_attention"),
+                [f"checkout unavailable: {exc.cause}; the next index run retries"],
+            )))
         except Exception:  # noqa: BLE001
             _logger.warning(
                 "could not write lifecycle_attention of repo id=%s", repo_id, exc_info=True,
@@ -438,6 +447,9 @@ def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
     head = repo_lc.get("presence_deferred_head")
     if head and version:
         lc["deferred_presence"][repo["id"]] = {"head": head, "odoo_version": version}
+    held = repo_lc.get("presence_held_head")
+    if held and version:
+        lc["held_heads"][repo["id"]] = {"head": held, "odoo_version": version}
 
 
 def _absorb_report(lc: dict, report) -> None:
@@ -678,6 +690,10 @@ def run_lifecycle_reconcile(
         advance = {
             rid: d["head"] for rid, d in deferred.items() if d["odoo_version"] == version
         }
+        observed = {
+            rid: d["head"] for rid, d in (lifecycle.get("held_heads") or {}).items()
+            if d["odoo_version"] == version
+        }
         try:
             report = reconcile_version(
                 version,
@@ -686,6 +702,7 @@ def run_lifecycle_reconcile(
                 retire=retire,
                 allow_mass_retire=allow_mass_retire,
                 advance_presence=advance,
+                observed_heads=observed,
                 global_gc=global_gc,
                 sweep=allow_mass_retire or version in scanned,
                 conn=conn if getattr(conn, "autocommit", None) is True else None,
@@ -1472,6 +1489,7 @@ def index_all(
         lifecycle["versions"].extend(plc.get("versions") or [])
         lifecycle["gates_tripped"].extend(plc.get("gates_tripped") or [])
         lifecycle["deferred_presence"].update(plc.get("deferred_presence") or {})
+        lifecycle["held_heads"].update(plc.get("held_heads") or {})
         lifecycle["unavailable_repos"].extend(plc.get("unavailable_repos") or [])
         for key in ("fetch_failed", "stale_repos"):
             lifecycle[key].extend(plc.get(key) or [])

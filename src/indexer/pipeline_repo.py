@@ -330,21 +330,78 @@ def _fetch_attention(repo: dict, cause: str) -> tuple[str, bool]:
 
 PROPAGATION_UNRECORDED_MARK = "cross-repo propagation not recorded"
 
+# The one-shot seed names a failed propagation carries in its mark, so the
+# retry re-seeds exactly them; more than this many and the retry re-seeds
+# every present module instead (``[reseed: all]``).
+PROPAGATION_RESEED_NAMES_MAX = 50
+_RESEED_RE = re.compile(r"\[reseed: ([^\]]*)\]")
+_FAILED_AT_RE = re.compile(r" at HEAD ([0-9a-f]+|none)")
 
-def propagation_retry(repo: dict, *, ledger: bool) -> bool:
-    """True when the previous run of *repo* could not record its cross-repo
-    propagation: its ``lifecycle_attention`` (read at the start of this run)
+
+@dataclass(frozen=True)
+class PropagationRetry:
+    """What the previous, unrecorded propagation of a repo leaves this run.
+
+    ``reseed``: the one-shot seed names it had (degraded, parser-gap,
+    self-heal), which may not show again. ``reseed_all``: there were more than
+    :data:`PROPAGATION_RESEED_NAMES_MAX`, so every present module is re-seeded.
+    The git part of the seed needs no carrying: the kept ``head_sha`` repeats
+    an incremental diff and the held presence head repeats a full run's.
+    ``failed_at``: the HEAD of the failed run (short sha), for the log line.
+    """
+    reseed: frozenset[str]
+    reseed_all: bool
+    failed_at: str | None
+
+
+def _mark_segments(text: str | None) -> list[str]:
+    return [p for p in (text or "").split("; ") if PROPAGATION_UNRECORDED_MARK in p]
+
+
+def carry_propagation_mark(previous: str | None, parts: list[str]) -> list[str]:
+    """*parts* plus every segment of *previous* that carries
+    :data:`PROPAGATION_UNRECORDED_MARK`, for a writer that REPLACES
+    ``lifecycle_attention`` without having run the propagation (an unavailable
+    checkout, the unchanged skip): the retry mark must survive until a run
+    records the propagation, which alone clears it."""
+    out = list(parts)
+    for segment in _mark_segments(previous):
+        if segment not in out:
+            out.append(segment)
+    return out
+
+
+def propagation_retry(repo: dict, *, ledger: bool) -> PropagationRetry | None:
+    """The retry the previous run of *repo* left, or None.
+
+    Set when its ``lifecycle_attention`` (read at the start of this run)
     carries :data:`PROPAGATION_UNRECORDED_MARK`. Such a run is never skipped
-    and re-seeds every present module of the repo (``_index_repo``): the
-    seeds the failed run had (a one-shot degraded / parser-gap / self-heal
-    module, a full run's diff) may not show again, so the retry cannot rely
-    on them. Over-eager but rare. Only with a ledger: without one the
-    attention is never stored."""
-    return ledger and PROPAGATION_UNRECORDED_MARK in (repo.get("lifecycle_attention") or "")
+    (``plan_repo_run(retry_propagation=)``) and adds the mark's one-shot seed
+    names, or every present module for ``[reseed: all]``, to its own seed
+    (``_index_repo``). Only with a ledger: without one the attention is never
+    stored."""
+    segments = _mark_segments(repo.get("lifecycle_attention")) if ledger else []
+    if not segments:
+        return None
+    reseed: set[str] = set()
+    reseed_all = False
+    failed_at: str | None = None
+    for segment in segments:
+        found = _RESEED_RE.search(segment)
+        if found:
+            if found.group(1).strip() == "all":
+                reseed_all = True
+            else:
+                reseed |= {n for n in found.group(1).split(",") if n}
+        at = _FAILED_AT_RE.search(segment)
+        if at and failed_at is None:
+            failed_at = at.group(1)
+    return PropagationRetry(frozenset(reseed), reseed_all, failed_at)
 
 
 def _propagation_attention(
     repo: dict, seed: set[str], *, kept_head: str | None, head: str | None,
+    one_shot: set[str] | None = None, retry: PropagationRetry | None = None,
 ) -> tuple[str, bool]:
     """The attention line of a propagation this run could not record, and
     whether the previous run's could not be recorded either (its
@@ -356,19 +413,37 @@ def _propagation_attention(
     (:func:`propagation_retry`), like one failed fetch. Twice in a row is
     ``stale_propagation`` (exit 3, an alert): the retry does not heal it, and
     the dependents in other repos keep edges resolved against the old state
-    of *seed*."""
+    of *seed*.
+
+    *one_shot*: the seed names the next run cannot rediscover from git; they
+    are carried as ``[reseed: a,b]`` (``[reseed: all]`` past
+    :data:`PROPAGATION_RESEED_NAMES_MAX`). *retry*: this run was itself a
+    retry that re-seeded every present module; the line then names that
+    instead of the inflated seed."""
     previous = repo.get("lifecycle_attention") or ""
     consecutive = PROPAGATION_UNRECORDED_MARK in previous
-    names = ", ".join(sorted(seed)[:10])
-    if len(seed) > 10:
-        names += f", ... {len(seed) - 10} more"
+    if retry is not None and retry.reseed_all:
+        what = (
+            "all present modules (re-seeded after an unrecorded propagation at HEAD "
+            f"{retry.failed_at or 'none'})"
+        )
+    else:
+        names = ", ".join(sorted(seed)[:10])
+        if len(seed) > 10:
+            names += f", ... {len(seed) - 10} more"
+        what = f"{len(seed)} module(s) ({names})"
     stuck = (kept_head or "none")[:12]
     line = (
         f"{PROPAGATION_UNRECORDED_MARK}"
-        f"{' in two consecutive runs' if consecutive else ''} for {len(seed)} module(s) "
-        f"({names}) at HEAD {(head or 'none')[:12]}: head_sha kept at {stuck} and the "
+        f"{' in two consecutive runs' if consecutive else ''} for {what} "
+        f"at HEAD {(head or 'none')[:12]}: head_sha kept at {stuck} and the "
         "ledger presence head not advanced, so the next run repeats the propagation"
     )
+    carried = sorted(one_shot or ())
+    if (retry is not None and retry.reseed_all) or len(carried) > PROPAGATION_RESEED_NAMES_MAX:
+        line += " [reseed: all]"
+    elif carried:
+        line += f" [reseed: {','.join(carried)}]"
     return line, consecutive
 
 
@@ -2298,8 +2373,9 @@ def _index_repo(
       reset write) keeps ``head_sha`` and the ledger's presence head (not
       advanced, not deferred), with a WARNING, a ``lifecycle_attention`` line
       carrying ``PROPAGATION_UNRECORDED_MARK`` and the ``propagation``
-      counters; the next run is then never skipped and re-seeds every present
-      module (``propagation_retry``), in every run mode, and reports
+      counters; the mark is stored at once and carries the seed's one-shot
+      names (``[reseed: ...]``); the next run is never skipped and re-seeds
+      exactly them (``propagation_retry``), in every run mode, and reports
       ``stale_propagation`` (exit 3) when it fails again. Without a ledger
       the attention is only logged: no retry mark, no exit 3. It never fails
       the repo.
@@ -2442,13 +2518,13 @@ def _index_repo(
         rewrite_names = sorted(set(rewrite_names) | set(bootstrap))
 
     # The previous run could not record its cross-repo propagation: never
-    # skip, and re-seed every present module (``propagation_retry``).
-    retry_propagation = propagation_retry(repo, ledger=presence is not None)
+    # skip, and re-seed its one-shot names (``propagation_retry``).
+    retry = propagation_retry(repo, ledger=presence is not None)
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=full_reindex, ledger=presence is not None,
         degraded_changed=bool(degraded_changed or gap_changed),
-        retry_propagation=retry_propagation,
+        retry_propagation=retry is not None,
     )
     if plan.mode == RUN_SKIP:
         _logger.info(
@@ -2458,6 +2534,7 @@ def _index_repo(
             standing = _standing_attention(repo, repo_path, degraded_records)
             if fetch_line:
                 standing.append(fetch_line)
+            standing = carry_propagation_mark(repo.get("lifecycle_attention"), standing)
             _write_attention(presence, repo, standing, url)
         return {**_EMPTY_COUNTERS, "fetch": fetch_counters}
 
@@ -2653,10 +2730,10 @@ def _index_repo(
     # or a failure in between must not lose it (the flags and the resets are
     # idempotent, so a repeated diff costs only time). Not recorded: head_sha
     # is kept, the ledger's presence head is not advanced (``_commit_lifecycle``
-    # ``hold_presence``), an attention line marks it, and the next run is not
-    # skipped and re-seeds every present module (``propagation_retry``), so the
-    # retry and the twice-in-a-row alert work in every run mode, a full or sync
-    # run whose seeds would not show again included.
+    # ``hold_presence``), an attention line marks it (stored at once, carrying
+    # the seed's one-shot names), and the next run is not skipped and re-seeds
+    # those names (``propagation_retry``): the kept heads reproduce the git
+    # part, so the retry and the twice-in-a-row alert work in every run mode.
     propagation_recorded = True
     propagation_counters: dict = {}
     if pg_conn is not None:
@@ -2664,19 +2741,27 @@ def _index_repo(
             diff_names, heal=heal, degraded_changed=degraded_changed,
             gap_changed=gap_changed, written=written_names,
         )
-        if retry_propagation:
-            seed |= present_names
+        if retry is not None:
+            seed |= present_names if retry.reseed_all else (retry.reseed & present_names)
         if seed:
             propagation_recorded = _propagate_to_dependents(
                 writer, repo, odoo_version, seed, presence=presence,
                 repo_root_name=repo_root_name, url=url,
             )
         if not propagation_recorded:
+            # The names the next run cannot rediscover from git (the kept
+            # head_sha / held presence head repeat the diff part).
             line, consecutive = _propagation_attention(
                 repo, seed, kept_head=last_head, head=current_head,
+                one_shot=seed - diff_names, retry=retry,
             )
             attention.append(line)
             propagation_counters = {"unrecorded": line, "persistent": consecutive}
+            if presence is not None:
+                # Now, not only at the end: a failing ledger commit or a stop
+                # after this point must not lose the retry mark.
+                _write_attention(presence, repo, attention, url)
+                repo = {**repo, "lifecycle_attention": "; ".join(attention)}
     # === End cross-repo dep propagation ===
 
     # === Lifecycle post-write: ledger, pending, stamp (ADR-0056, C1/H1/H2) ===
@@ -2887,13 +2972,25 @@ def _commit_lifecycle(
 
     *hold_presence* (this run's cross-repo propagation was not recorded):
     ``presence_head_sha`` neither advances nor is handed to the reconcile
-    (no ``presence_deferred_head``), like a stamp shortfall. The presence head
-    is the "the index reflects this HEAD" claim (ADR-0056): the skip decision
-    and a later full run's baseline read it, and other repos' graphs do not
-    reflect this HEAD yet. The rows are committed as usual (they describe the
-    HEAD tree), so retirement decisions stay right; the reconcile sees the
-    repo as not synced at HEAD (its ``head_sha`` is kept as well) and holds
-    what an unsynced repo holds, for one run, or until the alert.
+    (no ``presence_deferred_head``). The presence head is the "the index
+    reflects this HEAD" claim (ADR-0056) that the skip decision and a later
+    full run's baseline read, and other repos' graphs do not reflect this
+    HEAD yet. What the reconcile then sees, with ``repos.head_sha`` kept too:
+
+    - the common case, synced at X before this run: both heads stay X, so
+      ``repo_sync_state`` / ``potential_owners_unsynced`` still count the
+      repo as synced (no unsynced-repo hold); the shared-module prune of the
+      modules it co-owns is deferred for the run, because its checkout HEAD
+      is not its presence head (``_owner_checkout_untrusted``);
+    - a ``head_sha`` reset or a first index (presence or head NULL): the repo
+      is not synced, and a never-synced one (presence NULL) also holds the
+      orphan sweep, as for any such repo.
+
+    Retirement stays correct either way: the observed rows are committed as
+    usual (they describe the HEAD tree), the reconcile judges absent names
+    by those rows and the checkouts' HEAD trees, and a name it retires is
+    stamped with the HEAD this run observed (``presence_held_head``, the
+    reconcile's ``observed_heads``), not the kept ``head_sha``.
     """
     from src.db.module_presence import RetireEvidence
     from src.db.module_presence import Successor as LedgerSuccessor
@@ -3002,4 +3099,7 @@ def _commit_lifecycle(
         "attention": list(attention),
         "presence_synced": synced,
         "presence_deferred_head": deferred_head,
+        # Held for an unrecorded propagation: the HEAD this run observed (the
+        # reconcile stamps it as state_changed_sha, repos.head_sha is older).
+        "presence_held_head": current_head if hold_presence else None,
     }

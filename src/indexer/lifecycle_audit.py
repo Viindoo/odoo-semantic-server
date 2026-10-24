@@ -337,7 +337,22 @@ def _new_repo_entry(repo: dict) -> dict:
         "unproven_drops": [],
         "unparseable_kept": [],
         "shared_parse_backlog": {"remaining": 0, "next_run": []},
+        "propagation_retry": {"pending": False, "reseed_all": False, "reseed": []},
         "error": None,
+    }
+
+
+def propagation_retry_entry(repo: dict) -> dict:
+    """The ``propagation_retry`` part of a repo entry: whether the next index
+    run retries an unrecorded cross-repo propagation (never skipped), and how
+    heavy the retry is (``reseed_all``: every present module is re-seeded;
+    ``reseed``: the one-shot names carried in the retry mark). Read from the
+    repo's ``lifecycle_attention`` (ADR-0007 W14 note 3)."""
+    retry = propagation_retry(repo, ledger=True)
+    if retry is None:
+        return {"pending": False, "reseed_all": False, "reseed": []}
+    return {
+        "pending": True, "reseed_all": retry.reseed_all, "reseed": sorted(retry.reseed),
     }
 
 
@@ -385,9 +400,10 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=False, ledger=True,
         degraded_changed=bool(degraded_changed or gap_changed),
-        retry_propagation=propagation_retry(repo, ledger=True),
+        retry_propagation=propagation_retry(repo, ledger=True) is not None,
     )
     entry["next_run"] = plan.mode
+    entry["propagation_retry"] = propagation_retry_entry(repo)
 
     scan = build_registry_scan(
         local_path, repo.get("odoo_version"),

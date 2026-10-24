@@ -419,22 +419,43 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
        unknown. That, or a ledger / repo write that raises, is "not recorded":
        - `head_sha` is kept, and the ledger's `presence_head_sha` neither
          advances nor is handed to the reconcile (`_commit_lifecycle`
-         `hold_presence`, like a stamp shortfall). The presence head is the
-         ADR-0056 "the index reflects this HEAD" claim that the skip decision
-         and a later full run's baseline read; other repos' graphs do not
-         reflect this HEAD yet. The observed rows are still committed (they
-         describe the HEAD tree), so retirement decisions stay right; the
-         reconcile sees the repo as not synced and holds what an unsynced
-         repo holds, for one run or until the alert.
+         `hold_presence`, no `presence_deferred_head`). The presence head is
+         the ADR-0056 "the index reflects this HEAD" claim that the skip
+         decision and a later full run's baseline read; other repos' graphs
+         do not reflect this HEAD yet. What the reconcile then sees: in the
+         common case (synced at X before the run) both heads stay X, so
+         `repo_sync_state` / `potential_owners_unsynced` still count the repo
+         as synced; the shared-module prune of the modules it co-owns is
+         deferred for the run because its checkout HEAD is not its presence
+         head (`_owner_checkout_untrusted`); after a `head_sha` reset or on a
+         first index the repo is not synced, and with no presence head at all
+         it also holds the orphan sweep, as any never-synced repo does.
+         Retirement stays correct: the observed rows are still committed (they
+         describe the HEAD tree) and absent names are judged by those rows and
+         the checkouts' HEAD trees. A name the reconcile retires is stamped
+         (`state_changed_sha`, "the sha at which the state was entered") with
+         the HEAD the run observed (`presence_held_head` -> the reconcile's
+         `observed_heads`), not the kept `head_sha`, which still shipped it.
        - A `lifecycle_attention` line carries `PROPAGATION_UNRECORDED_MARK`
          ("cross-repo propagation not recorded ... head_sha kept at <sha> and
          the ledger presence head not advanced"); the CLI prints a
-         `propagation_unrecorded` line on stderr.
-       - The next run reads the mark back (`propagation_retry`): it is never
-         skipped and re-seeds every present module of the repo, in every run
-         mode. Without that a full run's diff baseline, or a sync run's
-         one-shot seed, may not show again and the retry would be silently
-         empty. Over-eager but rare.
+         `propagation_unrecorded` line on stderr. It is stored right after the
+         propagation failed, before the ledger commit, so a commit that raises
+         or a stop after that point does not lose it. Writers that replace
+         the attention without having run the propagation (an unavailable
+         checkout, the unchanged skip) keep the mark's segment
+         (`carry_propagation_mark`); only a run that records the propagation
+         clears it.
+       - The mark carries what the next run cannot rediscover: the seed's
+         one-shot names (degraded, parser-gap, self-heal) as `[reseed: a,b]`,
+         or `[reseed: all]` past `PROPAGATION_RESEED_NAMES_MAX` (50) names.
+         The git part needs no carrying: the kept `head_sha` repeats an
+         incremental diff and the held presence head repeats a full run's.
+         The next run reads the mark back (`propagation_retry`), is never
+         skipped, and adds exactly those names (every present module for
+         `all`). A failed retry's line names the original failure ("all
+         present modules (re-seeded after an unrecorded propagation at HEAD
+         <sha>)"), not the inflated seed, and carries the names on.
        - Once is exit 0, like one failed fetch: the retry is automatic. The
          same repo not recorded in the next run as well is
          `stale_propagation` (printed once, under that key), exit 3 and an
@@ -445,13 +466,35 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
          kept `head_sha` still makes the next incremental run repeat its diff
          and propagation; a ledger-less full or sync run has nothing to retry
          with.
-       - Cost of a walk that keeps failing in incremental mode (e.g. a query
-         that times out on a huge closure): every night `head_sha` stays, so
-         the L..HEAD re-parse grows with every new commit, the direct
-         dependents' repos are reset every night (a nightly full re-index of
-         each, cheap in embed calls thanks to vector reuse but not in parse
-         and graph writes), and the alert fires from night 2
-         (`stale_propagation`). Fix the walk; the backlog clears in one run.
+       - Cost of a walk that keeps failing (e.g. a query that times out on a
+         huge closure): every night `head_sha` and the presence head stay, so
+         an incremental L..HEAD re-parse grows with every new commit; the
+         repos of the direct dependents of the seed are reset every night (a
+         nightly full re-index of each, cheap in embed calls thanks to vector
+         reuse but not in parse and graph writes) - after an `[reseed: all]`
+         mark that is the direct dependents of ALL present modules of the
+         repo; the alert fires from night 2 (`stale_propagation`). Fix the
+         walk; the backlog clears in one run.
+       - Known limitations (no column to fix them without a migration; follow
+         up separately): (1) `clear_needs_rewrite` clears by name, for the
+         names the run read at its start and re-wrote. If another repo's
+         propagation flags one of THOSE modules again while this run is in
+         progress (`--profile-workers` above 1, or a second process), between
+         this run's read and its ledger commit, the commit clears the new flag
+         with the old one: the module may have been parsed before the
+         upstream change, so its edges can stay stale until its next rewrite.
+         (A module first flagged during the run is not in the read set and
+         keeps its flag.)
+         `updated_at` cannot tell a flag set after the read from one set
+         before: the same commit's `commit_observed` and the full-parse
+         records also stamp it. A `needs_rewrite_at` (or sequence) column set
+         by the flag and compared at clear time would close it. (2) A module
+         of repo S that has no ledger row yet when repo R walks (S wrote its
+         graph, R ran before S's ledger commit, or S's first index) is not
+         flagged: `mark_dependents_needs_rewrite` touches existing `present`
+         rows only, and S has other rows, so the no-ledger-rows reset does
+         not apply either; that module keeps edges resolved against R's old
+         state until it is re-written.
      - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
        longer embeds a chunk whose text equals a row the module already has
        (same version and profile) embedded by the same `embedding_model` and

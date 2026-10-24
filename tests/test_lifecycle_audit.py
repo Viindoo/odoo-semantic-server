@@ -596,7 +596,7 @@ def test_json_report_keeps_the_osm_lifecycle_audit_5_schema(drifted, monkeypatch
         "would_rewrite": list, "wrong_paths": list, "would_retire": list,
         "would_drop_owner": list, "undecidable": list, "blocked": list,
         "parser_gaps": list, "shared_parse_backlog": dict, "error": (str, type(None)),
-        "unparseable_kept": list, "unproven_drops": list,
+        "unparseable_kept": list, "unproven_drops": list, "propagation_retry": dict,
     }
     repo = _repo_entry(report, REPO)
     for key, typ in repo_keys.items():
@@ -614,6 +614,7 @@ def test_json_report_keeps_the_osm_lifecycle_audit_5_schema(drifted, monkeypatch
     } <= set(repo["gates"])
     assert repo["gates"]["baseline"] in {"ledger", "graph"}
     assert set(repo["shared_parse_backlog"]) == {"remaining", "next_run"}
+    assert set(repo["propagation_retry"]) == {"pending", "reseed_all", "reseed"}
     assert isinstance(repo["shared_parse_backlog"]["remaining"], int)
     assert isinstance(repo["shared_parse_backlog"]["next_run"], list)
     for item in repo["would_retire"]:
