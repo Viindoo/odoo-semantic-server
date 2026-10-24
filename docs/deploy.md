@@ -948,6 +948,16 @@ của row ledger. Row git không có bằng chứng vẫn không có successor, 
 thì merge successor bị bỏ qua kèm WARNING (indexer cũng vậy - không lượt retire nào fail).
 Rollback 0006 xóa đúng các successor `git_merge` (row lịch sử giữ nguyên).
 
+**Migration 0007 (needs_rewrite_at + module_presence_pending_rewrite, ADR-0007 W14 note 3):**
+áp dụng bằng `python -m src.db.migrate` (owner DSN, như mọi migration), ngoài khung backup /
+reindex (không chạy giữa 23:30 và lúc lượt nightly xong). Nó thêm cột `needs_rewrite_at`
+(`ADD COLUMN IF NOT EXISTS`, backfill các row đang `needs_rewrite`), tạo bảng
+`module_presence_pending_rewrite` (chỉ indexer đọc/ghi, không grant cho `osm_reader`); bỏ cuộc
+sau `lock_timeout` 5 s nếu có holder idle-in-transaction: chạy lại cùng lệnh. Code pull trước khi
+migrate vẫn chạy như cũ (clear needs_rewrite theo tên, không ghi pending) kèm một WARNING
+`apply migration 0007`. Rollback: `0007_module_presence_needs_rewrite_at.rollback.sql` (yoyo
+rollback) - code vẫn chạy, chỉ mất thời điểm của các flag hiện có và các entry pending.
+
 **Env của vòng đời** (default + lý do: [`docs/operations/timeouts.md`](operations/timeouts.md)
 mục "Module lifecycle ledger"): `RETIRE_LOCK_WAIT_SECONDS` (900s, chờ lock `retire:<v>`),
 `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` (60 module/repo/lượt re-parse bootstrap cho module nhiều

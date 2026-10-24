@@ -475,26 +475,50 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
          mark that is the direct dependents of ALL present modules of the
          repo; the alert fires from night 2 (`stale_propagation`). Fix the
          walk; the backlog clears in one run.
-       - Known limitations (no column to fix them without a migration; follow
-         up separately): (1) `clear_needs_rewrite` clears by name, for the
-         names the run read at its start and re-wrote. If another repo's
-         propagation flags one of THOSE modules again while this run is in
-         progress (`--profile-workers` above 1, or a second process), between
-         this run's read and its ledger commit, the commit clears the new flag
-         with the old one: the module may have been parsed before the
-         upstream change, so its edges can stay stale until its next rewrite.
-         (A module first flagged during the run is not in the read set and
-         keeps its flag.)
-         `updated_at` cannot tell a flag set after the read from one set
-         before: the same commit's `commit_observed` and the full-parse
-         records also stamp it. A `needs_rewrite_at` (or sequence) column set
-         by the flag and compared at clear time would close it. (2) A module
-         of repo S that has no ledger row yet when repo R walks (S wrote its
-         graph, R ran before S's ledger commit, or S's first index) is not
-         flagged: `mark_dependents_needs_rewrite` touches existing `present`
-         rows only, and S has other rows, so the no-ledger-rows reset does
-         not apply either; that module keeps edges resolved against R's old
-         state until it is re-written.
+     - *Flags set during a run, and modules without a ledger row* (migration
+       0007). Two holes the ledger had, both closed:
+       1. `clear_needs_rewrite` cleared by name the flags the run read at its
+          start and re-wrote. A module flagged AGAIN by another repo's
+          propagation while the run was in progress (`--profile-workers`
+          above 1, or a second process) lost the new flag, although its parse
+          may predate the upstream change. Now every writer of the flag
+          (`ModulePresenceStore.mark_needs_rewrite` - incomplete-embedding and
+          entity-prune retries, `reembed-stubs`, the reconcile's owner
+          hand-overs, excluded-owner drops, deferred and shared prune
+          rewrites - and `mark_dependents_needs_rewrite`, the propagation)
+          stamps `needs_rewrite_at = clock_timestamp()`; the run reads its
+          flags with `needs_rewrite_snapshot`, which returns the clock of the
+          read; and the ledger commit clears only the flags stamped at or
+          before it. The read runs under the version ledger lock that every
+          flag writer takes and commits under, so a flag is either visible to
+          the read and stamped before it, or stamped after it: no window.
+          (`updated_at` could not serve: `commit_observed` and the full-parse
+          records stamp it too.)
+       2. A module of repo S that had no ledger row when repo R walked (S
+          wrote it to the graph, its ledger commit was still to come: a run
+          in progress or a new module) was never flagged:
+          `mark_dependents_needs_rewrite` touches existing `present` rows
+          only. R now also records, for every dependent of another repo,
+          `(odoo_version, repo basename, name)` in
+          `module_presence_pending_rewrite` - skipped when that repo already
+          has a `present` row of the name (flagged directly). S's ledger
+          commit, after its rows exist, applies the entries for the names it
+          commits present (`apply_pending_rewrites`): `needs_rewrite` when the
+          entry is newer than S's flag read (S's parse may predate R's change)
+          or S did not re-write the module this run, otherwise S's parse
+          already followed the change; every matched entry is deleted, and
+          entries nobody consumes are purged after 30 days. Smallest design
+          that keeps ADR-0056's states: the entry is not a ledger row and
+          claims nothing about what S ships, so no retirement gate, sync
+          verdict or orphan rule sees it; it is keyed by the Module node's
+          repo basename because that is all the walk knows (two repos with
+          the same basename at a version both apply it: over-eager, safe).
+          A failed entry write leaves the propagation unrecorded (head_sha
+          kept, retried).
+       Before 0007 is applied the store behaves as before (stamps nothing,
+       clears by name, records no entry) and logs one WARNING per store
+       (`_rewrite_stamps_ok`), so a deploy that pulls before migrating does not
+       break the nightly.
      - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
        longer embeds a chunk whose text equals a row the module already has
        (same version and profile) embedded by the same `embedding_model` and

@@ -2486,11 +2486,16 @@ def _index_repo(
     last_head: str | None = None
     presence_head: str | None = None
     rewrite_names: list[str] = []
+    # PostgreSQL clock of the needs_rewrite read: the ledger commit clears only
+    # the flags set at or before it (migration 0007; None before it).
+    rewrite_read_at = None
     if pg_conn is not None:
         last_head = _pipeline.repo_store().get_repo_head_sha(repo["id"])
     if presence is not None:
         presence_head = presence.presence_head_sha(repo["id"])
-        rewrite_names = presence.needs_rewrite_names(repo["id"])
+        rewrite_names, rewrite_read_at = presence.needs_rewrite_snapshot(
+            repo["id"], [odoo_version],
+        )
 
     # Degraded-parse records (B14): a module whose failing files changed on
     # disk since its degraded parse (edited, deleted, permission fixed) is
@@ -2774,6 +2779,7 @@ def _index_repo(
             owning_profile=owning_profile, retire=retire,
             written=write_names - ledger_retry, rewrite_names=rewrite_names,
             attention=attention, hold_presence=not propagation_recorded,
+            rewrite_read_at=rewrite_read_at,
         )
         for name in sorted(ledger_retry & present_names):
             presence.mark_needs_rewrite(repo["id"], name)
@@ -2962,6 +2968,7 @@ def _commit_lifecycle(
     rewrite_names: list[str],
     attention: list[str],
     hold_presence: bool = False,
+    rewrite_read_at=None,
 ) -> dict:
     """Ledger half of ``_index_repo`` (after the graph writes succeeded).
 
@@ -2985,6 +2992,11 @@ def _commit_lifecycle(
     - a ``head_sha`` reset or a first index (presence or head NULL): the repo
       is not synced, and a never-synced one (presence NULL) also holds the
       orphan sweep, as for any such repo.
+
+    *rewrite_read_at* (``needs_rewrite_snapshot``): the done rewrites are
+    cleared only where the flag was set at or before that read, and the
+    pending flags other repos' propagations left for this repo's modules are
+    applied (``apply_pending_rewrites``), after the rows exist.
 
     Retirement stays correct either way: the observed rows are committed as
     usual (they describe the HEAD tree), the reconcile judges absent names
@@ -3010,7 +3022,19 @@ def _commit_lifecycle(
     )
     done_rewrites = sorted(set(rewrite_names) & written)
     if done_rewrites:
-        presence.clear_needs_rewrite(repo_id, done_rewrites)
+        presence.clear_needs_rewrite(repo_id, done_rewrites, read_at=rewrite_read_at)
+    # Only with the run's read clock (migration 0007 applied, an index run;
+    # the dry-run audit has none): the rule needs it.
+    applied = presence.apply_pending_rewrites(
+        repo_id, scan_version, sorted(scan.present_names()),
+        written=written, read_at=rewrite_read_at,
+    ) if rewrite_read_at is not None else []
+    if applied:
+        _logger.warning(
+            "Repo %s: %d module(s) flagged needs_rewrite by another repo's dependency "
+            "propagation before their ledger row existed (re-written next run): %s",
+            repo.get("url", local_path), len(applied), ", ".join(applied[:10]),
+        )
 
     # Absent names git proves gone (ADR-0057 phase 2). An unproven one (its
     # manifest is still in the HEAD tree) is not flagged: its row stays

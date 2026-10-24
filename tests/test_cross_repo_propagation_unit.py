@@ -102,6 +102,10 @@ class _Ledger:
         have = {rid for rid, _name, _state in self.rows}
         return [i for i in sorted(repo_ids) if i not in have]
 
+    def record_pending_rewrites(self, odoo_version, dependents):
+        self.pending = sorted(dependents)
+        return len(self.pending)
+
 
 class _Repos:
     """``repos`` rows: basename -> id at version V, and the head_sha resets."""
@@ -816,6 +820,8 @@ class _StatefulLedger:
         self.store = MagicMock()
         self.store.presence_head_sha.side_effect = lambda _rid: self.presence_head
         self.store.needs_rewrite_names.return_value = []
+        self.store.needs_rewrite_snapshot.return_value = ([], None)
+        self.store.apply_pending_rewrites.return_value = []
         self.store.mark_dependents_needs_rewrite.return_value = []
         self.store.repo_ids_without_rows.return_value = []
         self.store.present_owner_basenames.return_value = {}
@@ -1108,6 +1114,7 @@ def _install_ledger_store_without_lifecycle(stack, presence_head):
     fake = MagicMock()
     fake.presence_head_sha.return_value = presence_head
     fake.needs_rewrite_names.return_value = []
+    fake.needs_rewrite_snapshot.return_value = ([], None)
     fake.mark_dependents_needs_rewrite.return_value = []
     fake.repo_ids_without_rows.return_value = []
     stack.enter_context(patch.object(_pipeline, "_presence_store", return_value=fake))
@@ -1288,3 +1295,35 @@ def test_the_held_head_reaches_the_reconcile():
         )
 
     assert seen == {"17.0": {7: "y" * 40}}
+
+
+# ---------------------------------------------------------------------------
+# A dependent without a ledger row yet (migration 0007, round 5 B)
+# ---------------------------------------------------------------------------
+
+
+def test_every_dependent_of_another_repo_is_offered_as_a_pending_flag():
+    """The store keeps only the pairs whose repo has no present row of the
+    name (a module written to the graph before its ledger commit); the
+    propagation offers every dependent of another repo, never its own."""
+    ledger = _Ledger(LEDGER_ROWS)
+
+    result, _repos = _propagate({"to_git"}, ledger=ledger)
+
+    assert ledger.pending == [
+        ("erponline-enterprise", "viin_saas_portal"),
+        ("saas-infrastructure", "to_odoo_saas"),
+        ("saas-infrastructure", "to_server_ssh_git"),
+    ]
+    assert result.pending == 3 and result.complete is True
+
+
+def test_a_failed_pending_write_leaves_the_propagation_incomplete():
+    class _PendingFails(_Ledger):
+        def record_pending_rewrites(self, odoo_version, dependents):
+            raise RuntimeError("relation module_presence_pending_rewrite: lock timeout")
+
+    result, _repos = _propagate({"to_git"}, ledger=_PendingFails(LEDGER_ROWS))
+
+    assert result.complete is False, "the caller keeps head_sha and retries"
+    assert result.marked, "the direct flags were still written"
