@@ -11,9 +11,14 @@ form sat in docs/deploy.md and CONTRIBUTING.md.
 The scan is static: it reads every tracked workflow, Markdown, shell and
 Makefile in the repository (CHANGELOG.md excluded: it records history), joins
 backslash-continued lines, and checks each ``src.manager add-profile`` command.
+The Python sources under ``src/`` are scanned too, through their string
+literals (CLI help, epilogs, hints such as the empty ``list`` output, module
+docstrings), read with ``ast`` so a Python escape or an implicit string
+concatenation is seen as the user sees it.
 """
 from __future__ import annotations
 
+import ast
 import re
 import shlex
 import subprocess
@@ -44,6 +49,29 @@ def _scanned_files() -> list[Path]:
     ]
 
 
+def _python_sources() -> list[Path]:
+    out = subprocess.run(
+        ["git", "ls-files", "src"], cwd=REPO_ROOT, capture_output=True, text=True,
+        check=True,
+    ).stdout.splitlines()
+    return [REPO_ROOT / rel for rel in out if rel.endswith(".py") and (REPO_ROOT / rel).is_file()]
+
+
+def _string_literals(source: str) -> list[str]:
+    """Every string literal of a Python source, as its runtime text; an
+    f-string's placeholders read ``X`` (the command around them still shows)."""
+    out: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.JoinedStr):
+            out.append("".join(
+                v.value if isinstance(v, ast.Constant) and isinstance(v.value, str) else "X"
+                for v in node.values
+            ))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            out.append(node.value)
+    return out
+
+
 def _commands(text: str) -> list[str]:
     joined = re.sub(r"\\\n\s*", " ", text)
     return [m.group(1) for m in _COMMAND.finditer(joined)]
@@ -69,6 +97,58 @@ def test_documented_add_profile_commands_state_the_owner():
         "add-profile needs --tenant ID, --shared or --parent NAME (fail-closed "
         "profile owner); these commands would exit 1:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_add_profile_commands_in_the_python_sources_state_the_owner():
+    """CLI help, epilogs and hints printed by ``src`` code are documentation too:
+    the empty ``python -m src.manager list`` output told the reader to run
+    ``add-profile <name> --version <ver>``, which exits 1."""
+    offenders = []
+    for path in _python_sources():
+        for literal in _string_literals(path.read_text(encoding="utf-8")):
+            for args in _commands(literal):
+                if not _states_owner(args):
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}: add-profile{args.rstrip()}"
+                    )
+    assert not offenders, (
+        "user-facing add-profile commands without --tenant ID, --shared or "
+        "--parent NAME:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_python_scan_reads_the_manager_cli_strings():
+    # Guards the guard: the manager's help epilog, its usage docstring and the
+    # empty-list hint are all seen (the epilog's backslash continuations are
+    # joined, so its --tenant / --parent are on the command they belong to).
+    manager = REPO_ROOT / "src" / "manager" / "__main__.py"
+    assert manager in _python_sources()
+    found = [
+        args for literal in _string_literals(manager.read_text(encoding="utf-8"))
+        for args in _commands(literal)
+    ]
+    assert len(found) >= 5, found
+    assert any("--parent standard_viindoo_18" in a for a in found), found
+    assert any("<name>" in a for a in found), found
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged"),
+    [
+        ('print("run: python -m src.manager add-profile <name> --version <ver>")', True),
+        ('print("run: python -m src.manager add-profile <name> "\n      "--version <ver>")',
+         True),
+        ('HINT = f"python -m src.manager add-profile {name} --version {v}"', True),
+        ('print("python -m src.manager add-profile x --version 17.0 --shared")', False),
+        ('EPILOG = """\n  python -m src.manager add-profile v --version 18.0 \\\\\n'
+         '      --tenant 3\n"""', False),
+        ('print("Run add-profile first.")', False),
+    ],
+    ids=["hint", "implicit-concat", "f-string", "owner", "continued-owner", "no-command"],
+)
+def test_python_string_scan(source, flagged):
+    found = [a for lit in _string_literals(source) for a in _commands(lit)]
+    assert bool([a for a in found if not _states_owner(a)]) is flagged
 
 
 def test_the_scan_finds_the_workflow_command():

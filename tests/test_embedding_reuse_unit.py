@@ -242,3 +242,88 @@ def test_a_failed_lookup_embeds_the_module_in_full(table, caplog):
     assert embedder.sent == ["[reuse_mod] a = fields.Char()"]
     assert len(table.inserted) == 1
     assert "embedding reuse lookup failed" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Incomplete-embedding retry (PR #392) with reused chunks
+# ---------------------------------------------------------------------------
+
+
+class _RefusingEmbedder(_RecordingEmbedder):
+    """A healthy embedder that refuses one text (like a 500 on one input)."""
+
+    def __init__(self, refused: str) -> None:
+        super().__init__()
+        self.refused = refused
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        if self.refused in texts:
+            self.sent.extend(texts)
+            raise RuntimeError("500 Internal Server Error")
+        return super().embed(texts)
+
+
+def test_a_module_whose_chunks_are_all_reused_is_complete(table):
+    """Every chunk reused is a complete embed: the module is not flagged
+    needs_rewrite for a re-embed (it would be re-written every night)."""
+    from src.indexer import parse_health
+
+    table.add("[reuse_mod] a = fields.Char()", [9.0, 9.0, 9.0])
+    with parse_health.track("reuse_mod", "99.0") as health:
+        write_module_embeddings(
+            "reuse_mod", "99.0", [_chunk("a", "[reuse_mod] a = fields.Char()")],
+            _RecordingEmbedder(), profile_name="p", replace=False,
+        )
+
+    assert health.embeddings_incomplete is False
+
+
+def test_a_refused_chunk_beside_reused_ones_still_marks_the_module_incomplete(table):
+    """The reused rows are written, the refused one is not, and the module is
+    retried by the next run (only the refused chunk is sent again then)."""
+    from src.indexer import parse_health
+
+    table.add("[reuse_mod] a = fields.Char()", [9.0, 9.0, 9.0])
+    embedder = _RefusingEmbedder("[reuse_mod] b = fields.Html()")
+    stats: dict = {}
+    with parse_health.track("reuse_mod", "99.0") as health:
+        write_module_embeddings(
+            "reuse_mod", "99.0",
+            [_chunk("a", "[reuse_mod] a = fields.Char()"),
+             _chunk("b", "[reuse_mod] b = fields.Html()")],
+            embedder, profile_name="p", replace=False, stats=stats,
+        )
+
+    assert health.embeddings_incomplete is True
+    assert set(embedder.sent) == {"[reuse_mod] b = fields.Html()"}
+    assert set(_written(table)) == {"a"}
+    assert stats == {"attempted": 1, "embedded": 0, "reused": 1}
+
+
+# ---------------------------------------------------------------------------
+# Opt-out: force a re-embed (--no-embed-reuse)
+# ---------------------------------------------------------------------------
+
+
+def test_reuse_off_sends_every_chunk_to_the_embedder(table):
+    """Stored vectors can be wrong although text and model stamp match (numerics
+    changed under the same model tag, a truncated text before num_ctx grew):
+    ``reuse=False`` re-embeds everything and writes the new vectors."""
+    table.add("[reuse_mod] a = fields.Char()", [9.0, 9.0, 9.0])
+    table.add("[reuse_mod] b = fields.Integer()", [8.0, 8.0, 8.0])
+    embedder = _RecordingEmbedder()
+    stats: dict = {}
+
+    write_module_embeddings(
+        "reuse_mod", "99.0",
+        [_chunk("a", "[reuse_mod] a = fields.Char()"),
+         _chunk("b", "[reuse_mod] b = fields.Integer()")],
+        embedder, profile_name="p", replace=False, stats=stats, reuse=False,
+    )
+
+    assert sorted(embedder.sent) == [
+        "[reuse_mod] a = fields.Char()", "[reuse_mod] b = fields.Integer()",
+    ]
+    assert table.lookups == [], "no stored vector is even looked up"
+    assert _written(table)["a"][0] == [float(len("[reuse_mod] a = fields.Char()")), 0.0, 1.0]
+    assert stats == {"attempted": 2, "embedded": 2}

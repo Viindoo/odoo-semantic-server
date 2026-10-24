@@ -43,7 +43,13 @@ from src.indexer import (  # noqa: F401
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry, build_registry_scan  # noqa: F401
 from src.indexer.resolver import topological_sort  # noqa: F401
-from src.indexer.stop import raise_if_stop_requested, stoppable_executor
+from src.indexer.stop import (
+    close_unless_held,
+    hold_until_exit,
+    raise_if_stop_requested,
+    stop_requested,
+    stoppable_executor,
+)
 from src.indexer.writer_neo4j import Neo4jWriter
 
 _logger = logging.getLogger(__name__)
@@ -84,17 +90,27 @@ def _indexer_lock(pg_conn, profile_name: str):
     Cross-container safe — lock lives in PostgreSQL, not filesystem.
     Each profile gets its own lock id, so parallel indexing of different profiles
     is allowed.
+
+    A stopped run (SIGTERM, ``src.indexer.stop``) leaves the block while its
+    repo workers may still be running: the lock is then NOT released and
+    *pg_conn* is held open (``stop.hold_until_exit``) until the process ends,
+    so no second run of the profile can start beside a worker that still
+    writes.
     """
     from src.db.pg import advisory_lock
     lock_id = _profile_lock_id(profile_name)
-    with advisory_lock(pg_conn, lock_id) as acquired:
+    with advisory_lock(pg_conn, lock_id, keep_if=stop_requested) as acquired:
         if not acquired:
             raise RuntimeError(
                 f"Indexer already running for profile {profile_name!r} "
                 f"(Postgres advisory lock {lock_id} held). "
                 "Wait for it to finish or restart PostgreSQL to release stale lock."
             )
-        yield
+        try:
+            yield
+        finally:
+            if stop_requested():
+                hold_until_exit(pg_conn)
 
 
 def indexer_is_running(pg_conn, profile_name: str) -> bool:
@@ -326,9 +342,15 @@ def _empty_lifecycle() -> dict:
         "fetch_attempted": 0,
         "fetch_failed": [],
         "stale_repos": [],
-        # Chunks sent to the embedder and the vectors it returned.
+        # Chunks sent to the embedder, the vectors it returned, and the chunks
+        # written with their stored vector instead (unchanged text, no embed).
         "embed_attempted": 0,
         "embed_ok": 0,
+        "embed_reused": 0,
+        # The embedder answered the end-of-run probe (_probe_silent_embedder):
+        # it is reachable, so a run without one returned vector refused its
+        # chunks for their content (each module is retried, needs_rewrite).
+        "embedder_answered": False,
         # Run-wide failures derived by _finish_lifecycle (exit 3): every fetch
         # of the run failed, or the embedder returned nothing all run.
         "outages": [],
@@ -383,6 +405,7 @@ def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
             lc["stale_repos"].append(item)
     lc["embed_attempted"] += counters.get("embed_attempted", 0) or 0
     lc["embed_ok"] += counters.get("embed_ok", 0) or 0
+    lc["embed_reused"] += counters.get("embed_reused", 0) or 0
     repo_lc = counters.get("lifecycle")
     if not repo_lc:
         return
@@ -415,8 +438,14 @@ def run_outages(lc: dict) -> list[str]:
     """Run-wide failures that stop OSM reflecting code (exit 3): the pre-scan
     fetch failed for every repo the run fetched (network / DNS outage, a
     revoked credential shared by all repos), or the embedder returned no
-    vector for any chunk the run sent (down for the whole run). Derived from
-    the counts, so a merged summary (``index_all``) is judged as a whole."""
+    vector for any chunk the run sent and did not answer the end-of-run probe
+    either (down for the whole run). Derived from the counts, so a merged
+    summary (``index_all``) is judged as a whole.
+
+    Why the probe: unchanged chunks are not sent (vector reuse), so a quiet
+    night may send only the one chunk a healthy embedder keeps refusing (a
+    module flagged ``needs_rewrite`` for its incomplete embeddings every
+    night); "0 of 1 returned" would then raise this alarm every night."""
     out: list[str] = []
     attempted = lc.get("fetch_attempted", 0) or 0
     failed = len(lc.get("fetch_failed") or [])
@@ -427,13 +456,56 @@ def run_outages(lc: dict) -> list[str]:
             "the on-disk state and does not follow the remote branches"
         )
     sent = lc.get("embed_attempted", 0) or 0
-    if sent and not (lc.get("embed_ok", 0) or 0):
+    if sent and not (lc.get("embed_ok", 0) or 0) and not lc.get("embedder_answered"):
         out.append(
             f"embedder_down: the embedder returned no vector for any of the {sent} "
             "chunk(s) this run sent; the graph was written, the embeddings were not "
             "(existing rows kept)"
         )
     return out
+
+
+# A short text the end-of-run probe embeds (any text works: only "did the
+# embedder return a vector" is read).
+EMBEDDER_PROBE_TEXT = "def ping(self):\n    return True"
+
+
+def _probe_silent_embedder(lc: dict, embedder) -> None:
+    """Ask the embedder for one vector when the run sent chunks and got none.
+
+    Sets ``lc["embedder_answered"]`` when it returns one: the embedder is up
+    and refused this run's chunks for their content, which the per-module
+    retry (``needs_rewrite``, ``lifecycle_attention``) already reports, so
+    :func:`run_outages` raises no ``embedder_down``. A failed probe (or no
+    probe-able embedder) leaves the flag unset: the outage stands. The probe
+    goes through the embedder's short query read timeout when it has one
+    (``_embed_with_timeout``), so a hung embedder costs its retries times
+    ``EMBEDDER_TIMEOUT_READ_QUERY``, not the batch read timeout. Runs once per
+    run: ``index_profile`` when it ends the run, ``index_all`` for the merged
+    run (it calls ``index_profile`` with ``reconcile=False``)."""
+    if embedder is None or lc.get("embedder_answered"):
+        return
+    if not (lc.get("embed_attempted") or 0) or (lc.get("embed_ok") or 0):
+        return
+    from src.constants import TIMEOUT_EMBEDDER_READ_QUERY  # noqa: PLC0415
+    short = getattr(embedder, "_embed_with_timeout", None)
+    try:
+        vecs = (
+            short([EMBEDDER_PROBE_TEXT], TIMEOUT_EMBEDDER_READ_QUERY) if callable(short)
+            else embedder.embed([EMBEDDER_PROBE_TEXT])
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed probe is the outage itself
+        _logger.warning(
+            "embedder probe failed (%s): the embedder returned no vector this run", exc,
+        )
+        return
+    if vecs:
+        lc["embedder_answered"] = True
+        _logger.warning(
+            "embedder answered the end-of-run probe although it returned no vector for "
+            "the %d chunk(s) this run sent: it refused them, it is not down (the "
+            "modules are flagged needs_rewrite and retried)", lc.get("embed_attempted") or 0,
+        )
 
 
 def _finish_lifecycle(lc: dict) -> dict:
@@ -587,6 +659,7 @@ def index_profile(
     allow_mass_retire: bool = False,
     reconcile: bool = True,
     run_started_at=None,
+    embed_reuse: bool = True,
 ) -> dict:
     """Index all repos belonging to *profile_name*.
 
@@ -617,16 +690,22 @@ def index_profile(
                        nothing; no longer shipped modules stay pending.
         allow_mass_retire: emergency bypass: also delete what the git evidence
                        cannot prove gone (never set in a timer; ADR-0057 phase 2).
-        reconcile:     run the per-version lifecycle reconcile at the end of the
-                       profile (default). ``index_all`` passes False and runs it
-                       once per version after every profile worker joined.
+        reconcile:     run the per-version lifecycle reconcile, and the
+                       embedder probe (``_probe_silent_embedder``), at the end
+                       of the profile (default). ``index_all`` passes False and
+                       runs both once, after every profile worker joined.
         run_started_at: start of the enclosing run on the Neo4j clock; defaults
                        to the start of this profile run. Nodes written after it
                        are never deleted by the reconcile.
+        embed_reuse:   False (CLI --no-embed-reuse) embeds every chunk of the
+                       written modules again instead of reusing the stored
+                       vector of an unchanged chunk text
+                       (``writer_pgvector.write_module_embeddings``).
 
     Returns:
-        Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps,
-        lifecycle}; a profile with no repo registered returns it with
+        Summary dict: {modules, views, qweb, embeddings, embeddings_reused
+        (rows written with their stored vector, no embed call), js_patches,
+        owl_comps, lifecycle}; a profile with no repo registered returns it with
         ``no_repos`` True and nothing indexed. ``lifecycle`` = {versions,
         gates_tripped, undecidable, errors, deferred_presence, reports,
         unavailable_repos, needs_attention}; ``needs_attention``
@@ -651,6 +730,7 @@ def index_profile(
             "views": 0,
             "qweb": 0,
             "embeddings": 0,
+            "embeddings_reused": 0,
             "js_patches": 0,
             "owl_comps": 0,
             "lifecycle": _finish_lifecycle(_empty_lifecycle()),
@@ -744,6 +824,7 @@ def index_profile(
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                         _absorb_repo_lifecycle(lifecycle, repo, counters)
                         _elapsed = time.monotonic() - _t0
@@ -805,6 +886,7 @@ def index_profile(
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")
@@ -948,11 +1030,15 @@ def index_profile(
         finally:
             writer.close()
 
+        if reconcile:
+            # End of the run (index_all probes once for the merged run).
+            _probe_silent_embedder(lifecycle, embedder)
         summary = {
             "modules": total_modules,
             "views": total_views,
             "qweb": total_qweb,
             "embeddings": total_embeddings,
+            "embeddings_reused": lifecycle["embed_reused"],
             "js_patches": total_js_patches,
             "owl_comps": total_owl_comps,
             "lifecycle": _finish_lifecycle(lifecycle),
@@ -1263,6 +1349,7 @@ def index_all(
     refresh: bool = True,
     retire: bool = True,
     allow_mass_retire: bool = False,
+    embed_reuse: bool = True,
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
@@ -1296,7 +1383,7 @@ def index_all(
                          Fail-safe (fetch error -> index on-disk state). Set False
                          (CLI --no-fetch) for the old local-only behaviour.
                          Forwarded to each index_profile() call.
-        retire / allow_mass_retire: see index_profile.
+        retire / allow_mass_retire / embed_reuse: see index_profile.
 
     Module lifecycle: each profile run observes its repos (ledger + pending
     names) with its own reconcile turned off; after every profile worker
@@ -1319,7 +1406,10 @@ def index_all(
     finally:
         _clock_writer.close()
 
-    counts = dict.fromkeys(("modules", "views", "qweb", "embeddings", "js_patches", "owl_comps"), 0)
+    counts = dict.fromkeys(
+        ("modules", "views", "qweb", "embeddings", "embeddings_reused", "js_patches",
+         "owl_comps"), 0,
+    )
     profiles_ok = 0
     profiles_failed: list[str] = []
     profiles_empty: list[str] = []
@@ -1333,8 +1423,11 @@ def index_all(
         lifecycle["unavailable_repos"].extend(plc.get("unavailable_repos") or [])
         for key in ("fetch_failed", "stale_repos"):
             lifecycle[key].extend(plc.get(key) or [])
-        for key in ("fetch_attempted", "embed_attempted", "embed_ok"):
+        for key in ("fetch_attempted", "embed_attempted", "embed_ok", "embed_reused"):
             lifecycle[key] += plc.get(key, 0) or 0
+        lifecycle["embedder_answered"] = bool(
+            lifecycle["embedder_answered"] or plc.get("embedder_answered")
+        )
         for key in counts:
             counts[key] += summary.get(key, 0)
 
@@ -1363,6 +1456,7 @@ def index_all(
                     allow_mass_retire=allow_mass_retire,
                     reconcile=False,
                     run_started_at=run_started_at,
+                    embed_reuse=embed_reuse,
                 )
                 _absorb_profile(summary)
                 if summary.get("no_repos"):
@@ -1411,9 +1505,11 @@ def index_all(
                     allow_mass_retire=allow_mass_retire,
                     reconcile=False,
                     run_started_at=run_started_at,
+                    embed_reuse=embed_reuse,
                 )
             finally:
-                pg_conn_thread.close()
+                # A stopped run keeps it open: it holds the profile lock.
+                close_unless_held(pg_conn_thread)
 
         # A SIGTERM must not wait for the running profiles: a profile is hours
         # of work and an embed request can take many minutes (stop.py).
@@ -1466,6 +1562,7 @@ def index_all(
             _gc_writer.close()
     # === End post-all-profiles lifecycle reconcile ===
 
+    _probe_silent_embedder(lifecycle, embedder)
     summary = {
         "profiles_ok": profiles_ok,
         "profiles_failed": profiles_failed,

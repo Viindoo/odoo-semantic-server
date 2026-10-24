@@ -48,6 +48,21 @@ Type=oneshot
 # is infinite). A timed-out attempt counts as a failure: Restart=on-failure and
 # OnFailure= apply as for any other failure.
 TimeoutStartSec=1h
+# Never back up while the nightly reindex runs: Neo4j is exported online, so a
+# backup taken while the run writes holds a graph and a PostgreSQL that disagree.
+# The reindex's After= only waits for a backup start job that exists when the
+# reindex starts; in the RestartSec gap after a failed attempt there is none, so
+# the reindex starts and the restarted backup would run beside it. This check
+# refuses that attempt. Exit 255 (not 1) on purpose: 1-254 would SKIP the unit
+# silently (not failed, no OnFailure=), and a night without a backup must reach
+# the admins. 255 fails the attempt: the journal line below says why, and
+# OnFailure= mails it. Restart=on-failure retries it (StartLimitBurst bounds the
+# retries while the reindex still runs); after the reindex ends, run
+# `sudo systemctl start odoo-semantic-backup.service` (backup-runbook.md).
+# A oneshot that is running is "activating", which `systemctl is-active` does
+# not count as active, hence ActiveState. Only the systemd unit is seen: an
+# index run started from the Web UI is a plain process.
+ExecCondition=/bin/sh -c 'state=$$(systemctl show --property=ActiveState --value odoo-semantic-reindex.service); case "$$state" in activating|active|reloading|deactivating) echo "odoo-semantic-backup: not started, odoo-semantic-reindex.service is $$state (a backup during the run would export a graph and a PostgreSQL that disagree); start the backup again after the reindex" >&2; exit 255;; esac'
 User=odoo-semantic
 Group=odoo-semantic
 WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp

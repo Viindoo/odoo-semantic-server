@@ -64,11 +64,15 @@
 [Unit]
 Description=OSM periodic incremental reindex (index-repo --all)
 # odoo-semantic-backup.service: the backup (23:30) normally ends ~13 min later,
-# well before this run (00:00). When it is still running (a slow night, or a
-# retry after a failed attempt), this start waits for it to finish: Neo4j is
-# exported online, so a run writing during the export leaves a bundle whose graph
-# and PostgreSQL disagree. Ordering only; the run does not need the backup to
-# succeed, and the backup's TimeoutStartSec bounds the wait.
+# well before this run (00:00). Neo4j is exported online, so a run writing
+# during the export leaves a bundle whose graph and PostgreSQL disagree.
+# After= makes this start wait while a backup start job is queued or running
+# when it starts (a slow night, a retry already under way); the backup's
+# TimeoutStartSec bounds that wait. It does NOT wait during the backup's
+# RestartSec gap after a failed attempt (no job exists then): this run starts,
+# and the backup's ExecCondition= refuses the restarted attempt while this run
+# is active (a failed backup, so OnFailure= reports the missed night). Ordering
+# only; the run does not need the backup to succeed.
 After=network-online.target docker.service odoo-semantic-backup.service
 Wants=network-online.target
 Requires=docker.service

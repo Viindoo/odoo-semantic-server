@@ -32,8 +32,19 @@ connections are then closed by the kernel: PostgreSQL rolls back the open
 transactions and releases the advisory locks, Neo4j rolls back its
 transactions.
 
-The MCP server and the pattern seeder import the embedder too but never call
-:func:`request_stop`, so for them the checkpoints are no-ops.
+Until then a worker may still write (an embed read that returns during the
+grace is followed by its pgvector upsert). The profile advisory lock that
+keeps a second run of the same profile out must therefore outlive every
+worker: :func:`hold_until_exit` keeps the lock-holding connection open, and
+unreleased, until the process ends (``pipeline._indexer_lock``, and the
+callers that would close that connection use :func:`close_unless_held`).
+
+Who passes the checkpoints: the index pipeline and the embedder it drives,
+including the pattern seeder's embeds when it runs inside an index run (the
+auto-reseed at the end of ``index_profile``), where a SIGTERM stops them like
+any other. The MCP server, and the pattern seeder run on its own
+(``seed-patterns``), never call :func:`request_stop`: for them the
+checkpoints are no-ops.
 """
 from __future__ import annotations
 
@@ -68,8 +79,45 @@ def stop_requested() -> bool:
 
 
 def reset() -> None:
-    """Clear the request (tests; a run never clears it)."""
+    """Clear the request and forget the held connections (tests; a run never
+    clears it)."""
     _STOP.clear()
+    with _HELD_LOCK:
+        _HELD.clear()
+
+
+# Connections kept open, with their session advisory locks, until the process
+# exits (a stopped run): see hold_until_exit.
+_HELD: list = []
+_HELD_LOCK = threading.Lock()
+
+
+def hold_until_exit(conn) -> None:
+    """Keep *conn* open, and every session lock it holds, until the process ends.
+
+    A stopped multi-worker run returns from its executors while worker
+    threads may still be running (``stoppable_executor``); the profile
+    advisory lock they work under must not be released before they are gone,
+    or a second run of the profile could start and write beside them. The
+    reference kept here also stops a garbage-collected connection object from
+    closing the session early. The kernel closes it when the process exits
+    (``os._exit`` after the grace, or the normal exit once the workers
+    unwound), and PostgreSQL then releases the locks."""
+    with _HELD_LOCK:
+        if not any(c is conn for c in _HELD):
+            _HELD.append(conn)
+
+
+def is_held(conn) -> bool:
+    with _HELD_LOCK:
+        return any(c is conn for c in _HELD)
+
+
+def close_unless_held(conn) -> None:
+    """``conn.close()``, except for a connection :func:`hold_until_exit` keeps."""
+    if conn is None or is_held(conn):
+        return
+    conn.close()
 
 
 def raise_if_stop_requested() -> None:

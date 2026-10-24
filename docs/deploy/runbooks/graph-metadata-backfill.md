@@ -24,6 +24,9 @@ dùng `--no-embed` khi embeddings THỰC SỰ đã đổi sẽ để lại vecto
      chunking (`make_*_chunks`, `_sliding`) không?
    - **KHÔNG chạm** → chunk text byte-identical → embeddings không đổi → `--no-embed` an toàn.
    - **CÓ chạm** → embeddings có thể đổi → **KHÔNG dùng `--no-embed`**; cần re-embed (runbook khác).
+     Lưu ý (ADR-0007 W14 note 3): `--full` chỉ embed lại chunk có text đổi; chunk text không đổi
+     dùng lại vector đã lưu. Nếu diff đổi cách TÍNH vector (`embedder.py`: normalize, truncate,
+     payload) mà text giữ nguyên, thêm `--no-embed-reuse` để embed lại mọi chunk.
 
 2. **Embedding model/dim có đổi không?** (ADR-0045) — query Postgres:
    ```sql

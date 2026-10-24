@@ -156,7 +156,8 @@ network and embedder cases too: the pre-scan fetch failing for **every** repo
 of a run (at least two; a DNS / network outage or a credential they share,
 `outages: fetch_outage`), the same repo's fetch failing in **two consecutive
 runs** (`stale_repos`), and the embedder returning no vector for any chunk the
-run sent (`outages: embedder_down`). One failed fetch that heals by the next
+run sent and not answering the one-text probe at the end of the run either
+(`outages: embedder_down`; ADR-0007 W14 note 3). One failed fetch that heals by the next
 run, a partial embedding failure, and kept data (`lifecycle-audit`
 `parser_gaps` / `unproven_drops`) are a WARNING or a report line, never a mail.
 

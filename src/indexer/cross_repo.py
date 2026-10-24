@@ -18,7 +18,12 @@ pre-ledger fallback: its ``repos.head_sha`` is NULLed (full re-index), for
 the repos of the DIRECT dependents only, as before.
 
 :func:`find_dependent_repos` (repo basenames of the direct dependents) stays
-for the reconcile, which resets the repos depending on retired modules.
+for the reconcile, which resets the repos depending on retired modules, and
+for the fallback when the dependency walk fails.
+
+The caller seeds the propagation with the modules whose graph its run can
+have changed, not with every module it re-wrote
+(``pipeline_repo.propagation_seed``).
 """
 import logging
 from dataclasses import dataclass, field
@@ -123,12 +128,15 @@ class PropagationResult:
 
     ``marked``: ``{repo_id: [module names]}`` flagged ``needs_rewrite``.
     ``reset_repo_ids``: repos whose ``head_sha`` was NULLed (no ledger rows at
-    the version, or the ledger could not be written). ``dependents``: every
-    dependent module found (direct + transitive), before the repo filter.
+    the version, the ledger could not be written, or the dependency walk
+    failed). ``dependents``: every dependent module found (direct +
+    transitive), before the repo filter. ``walk_failed``: the walk raised and
+    the direct dependents' repos were reset instead.
     """
     dependents: int = 0
     marked: dict[int, list[str]] = field(default_factory=dict)
     reset_repo_ids: list[int] = field(default_factory=list)
+    walk_failed: bool = False
 
     @property
     def marked_count(self) -> int:
@@ -162,9 +170,29 @@ def propagate_to_dependents(
 
     Without a ledger: the repos of the direct dependents are reset, as before
     the ledger existed.
+
+    A failed dependency walk (a Neo4j error) logs a WARNING and falls back to
+    that same reset of the direct dependents' repos (``find_dependent_repos``,
+    one query), ledger or not: the walk is what tells which modules to flag.
+    An error of the fallback itself, or of the ``head_sha`` reset, is raised:
+    the caller then keeps its own ``head_sha`` so the next run repeats the
+    propagation (``pipeline_repo._propagate_to_dependents``).
     """
     result = PropagationResult()
-    dependents = find_dependent_modules(driver, odoo_version, changed_module_names)
+    try:
+        dependents = find_dependent_modules(driver, odoo_version, changed_module_names)
+    except Exception as exc:  # noqa: BLE001 - fall back to the one-hop reset
+        _logger.warning(
+            "Cross-repo dep propagation: the dependency walk failed at %s (%s: %s) - "
+            "resetting head_sha of the repos of the direct dependents instead",
+            odoo_version, type(exc).__name__, exc,
+        )
+        result.walk_failed = True
+        result.reset_repo_ids = _reset_direct_dependent_repos(
+            driver, odoo_version, changed_module_names,
+            exclude_basenames=exclude_basenames, repo_store=repo_store,
+        )
+        return result
     result.dependents = len(dependents)
     if not dependents:
         return result
@@ -218,3 +246,27 @@ def propagate_to_dependents(
         if n:
             result.reset_repo_ids = sorted(fallback_ids)
     return result
+
+
+def _reset_direct_dependent_repos(
+    driver,
+    odoo_version: str,
+    changed_module_names: set[str],
+    *,
+    exclude_basenames: set[str],
+    repo_store,
+) -> list[int]:
+    """NULL ``head_sha`` of the repos shipping a DIRECT dependent of
+    *changed_module_names* (the pre-ledger propagation); the reset ids, sorted.
+    Raises on a Neo4j or PostgreSQL error."""
+    basenames = sorted({
+        b for b in find_dependent_repos(driver, odoo_version, changed_module_names)
+        if b not in exclude_basenames
+    })
+    if not basenames:
+        return []
+    ids = repo_store.get_repo_ids_by_local_path_basenames(basenames, odoo_version)
+    if not ids:
+        return []
+    repo_store.reset_head_sha(ids)
+    return sorted(ids)

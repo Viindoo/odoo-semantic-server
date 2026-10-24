@@ -680,15 +680,21 @@ def write_module_embeddings(
     *,
     replace: bool = True,
     stats: dict | None = None,
+    reuse: bool = True,
 ) -> int:
     """Delete-then-insert embeddings for (module, version[, profile_name]) atomically.
 
     *stats* (optional): ``stats["attempted"]`` / ``stats["embedded"]`` are
     increased by the chunks sent to the embedder and the ones it returned a
-    vector for, so the run can tell an embedder that was down for the whole
-    run (zero embedded while chunks were attempted) from a partial failure.
-    ``stats["reused"]`` (set once a chunk was reused) counts the chunks written
-    with a stored vector instead; they are in neither of the other two.
+    vector for; ``stats["reused"]`` (created on the first reused chunk when
+    the caller did not seed it) by the chunks written with a stored vector
+    instead, which are in neither of the other two. The index pipeline sums
+    them per repo (``embed_attempted`` / ``embed_ok`` / ``embed_reused``) and
+    per run (the ``embeddings_reused`` of the run summary). Zero embedded
+    while chunks were attempted is not by itself an outage: the run probes the
+    embedder before it reports ``embedder_down``
+    (``pipeline._probe_silent_embedder``), since with reuse a quiet night may
+    send only a chunk the embedder refuses for its content.
 
     Unchanged chunks are not re-embedded: a chunk whose ``content`` equals the
     content of a row this module already has (same version and profile)
@@ -701,6 +707,14 @@ def write_module_embeddings(
     ``repo_id``) and ``indexed_at`` are refreshed exactly as for an embedded
     one (the shared-module prune reads ``indexed_at``). An embedder without
     ``.model`` / ``.dim`` reuses nothing.
+
+    ``reuse=False`` (CLI ``index-repo --no-embed-reuse``, the Web UI "reset
+    embed" button) skips the lookup and sends every chunk to the embedder. Use
+    it when a stored vector may be wrong although its text and model stamp are
+    unchanged: the embedder's numerics changed under the same model tag (a
+    re-pulled or re-quantised model, another backend or GPU), vectors are
+    suspect (a bad batch, a partial write), or a text was embedded truncated
+    and ``num_ctx`` grew since.
 
     Chunks the embedder refused (``_embed_chunks_resilient``) are not written:
     a new entity has no row, an existing one keeps its older vector (upsert)
@@ -761,7 +775,10 @@ def write_module_embeddings(
     # (the columns are nullable) and skip the dim guard rather than crash.
     emb_model, emb_dim = _embedder_meta(embedder)
 
-    stored = _reusable_vectors(module, version, profile_name, chunks, emb_model, emb_dim)
+    stored = (
+        _reusable_vectors(module, version, profile_name, chunks, emb_model, emb_dim)
+        if reuse else {}
+    )
     reused = [c for c in chunks if c.content in stored]
     to_embed = [c for c in chunks if c.content not in stored]
 

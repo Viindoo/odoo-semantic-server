@@ -88,6 +88,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sub_repo.add_argument(
+        "--no-embed-reuse", action="store_true",
+        help=(
+            "Send every chunk of the written modules to the embedder again instead "
+            "of reusing the stored vector of a chunk whose text, embedding model and "
+            "dimension are unchanged. Use when stored vectors may be wrong although "
+            "their stamp matches: the embedder's numerics changed under the same "
+            "model tag (re-pulled or re-quantised model, another backend or GPU), "
+            "vectors are suspect, or texts were truncated before num_ctx grew. "
+            "Only the modules the run writes are re-embedded: add --full for all."
+        ),
+    )
+    sub_repo.add_argument(
         "--no-fetch", action="store_true",
         help=(
             "Skip the pre-scan `git fetch` + `reset --hard origin/<branch>` "
@@ -525,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         retire = not getattr(args, "no_retire", False)
         allow_mass_retire = getattr(args, "allow_mass_retire", False)
         refresh = not getattr(args, "no_fetch", False)
+        embed_reuse = not getattr(args, "no_embed_reuse", False)
         # The pool first: building the embedder resolves the DB overlay of
         # embedding.timeout_read_seconds once, at construction (#383 item 3).
         pg = open_production_pg()
@@ -560,6 +573,7 @@ def main(argv: list[str] | None = None) -> int:
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                     else:
                         summary = index_profile(
@@ -572,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                 except IndexRunError as exc:
                     failure = exc
@@ -625,7 +640,9 @@ def main(argv: list[str] | None = None) -> int:
                 close = getattr(embedder, "close", None)
                 if callable(close):
                     close()
-            pg.close()
+            # A stopped run keeps it open until the process exits: it holds
+            # the profile lock its workers may still write under.
+            run_stop.close_unless_held(pg)
         return exit_code
 
     elif args.subcommand == "index-core":

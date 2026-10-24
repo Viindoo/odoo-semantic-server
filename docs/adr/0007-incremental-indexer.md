@@ -361,20 +361,66 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
        of the repos depending on RETIRED modules (`reconcile._reset_dependents`)
        stays repo-level, and there is still no delta detection (a body-only
        upstream change still flags its dependents).
+     - *What seeds the propagation* (`pipeline_repo.propagation_seed`). Only
+       the written modules whose parse output can differ from what the graph
+       held when the dependents were written: the git-diff changes of the
+       incremental run, the degraded modules whose failing files changed on
+       disk, the parser-gap records re-evaluated after an indexer-code or
+       module-tree change, and the self-heal `no_node` / `path_drift` modules.
+       NOT the modules re-written only because they were flagged
+       `needs_rewrite` (a dependent flagged by another repo's propagation, an
+       incomplete-embedding or entity-prune retry, a reconcile owner
+       hand-over), the shared-module bootstrap or a `repo_drift` self-heal:
+       they re-parse source the graph already holds, so nothing a dependent
+       resolves against changes. Seeding with every re-written module (the
+       first version of this note) re-flagged whole dependency closures every
+       night (an embedding retry repeats each run it stays incomplete) and
+       made two repos that depend on each other flag each other forever. The
+       transitive closure is walked from the change itself, so a dependent
+       never has to re-propagate.
+     - *Ordering and failure.* The propagation runs BEFORE `repos.head_sha`
+       advances: a stop (SIGTERM) or an error between the two used to lose it
+       for good (the next run saw an unchanged HEAD). The flags and resets are
+       idempotent, so a repeated diff costs only time. A failed dependency
+       walk logs a WARNING and falls back to resetting the repos of the DIRECT
+       dependents (`find_dependent_repos`); when that fails too, or a ledger /
+       repo write raises, a WARNING says the propagation was not recorded and
+       `head_sha` is not advanced, so the next run repeats the diff and its
+       propagation. The repo is not reported failed: its own writes succeeded.
      - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
        longer embeds a chunk whose text equals a row the module already has
        (same version and profile) embedded by the same `embedding_model` and
        `embedding_dim`: the row is upserted with the stored vector (provenance
        and `indexed_at` refreshed as before). This covers every full path:
-       `--full`, a `head_sha` reset (Web UI button, fallback above, force-push),
+       `--full`, a `head_sha` reset (fallback above, force-push),
        `needs_rewrite`, self-heal and bootstrap rewrites. A model switch, an
        unstamped row or an embedder without `.model`/`.dim` reuses nothing.
+       The reused chunks are counted (`stats["reused"]`, per repo
+       `embed_reused` in the `Indexer run:` line, per run `embeddings_reused`
+       in the CLI's `Done:` summary line, which the nightly log captures).
+       Opt-out: `index-repo --no-embed-reuse` (and the Web UI "reset embed"
+       button, which promises a re-embed) sends every chunk of the written
+       modules to the embedder; for when stored vectors may be wrong although
+       text and stamp match (embedder numerics changed under the same model
+       tag, suspect vectors, a text truncated before `num_ctx` grew). Add
+       `--full` to re-embed every module, not only the ones the run writes.
+     - *Outage signal.* With reuse a quiet night may send the embedder only
+       the chunk a healthy embedder keeps refusing (a module flagged for its
+       incomplete embeddings every night): "chunks sent, none returned" is no
+       longer proof the embedder is down. A run in that state probes the
+       embedder once at its end (`pipeline._probe_silent_embedder`, one short
+       text over the short query read timeout; `index_all` probes once for the
+       merged run) and reports `embedder_down` only when the probe fails too.
 
      Tests: `tests/test_cross_repo_propagation_unit.py`,
-     `tests/test_embedding_reuse_unit.py` (no DB) and
-     `tests/test_module_presence_store.py::TestNeedsRewrite` (PostgreSQL, CI).
+     `tests/test_embedding_reuse_unit.py`, `tests/test_embed_reuse_opt_out.py`,
+     `tests/test_embedder_outage_probe.py` (no DB);
+     `tests/test_module_presence_store.py::TestNeedsRewrite`,
+     `tests/test_writer_pgvector.py` reuse round trip (PostgreSQL, CI);
+     `tests/test_cross_repo_dep_propagation.py::TestFindDependentModules`
+     (Neo4j, CI).
 
-- Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this - future tuning may add explicit metrics. (2026-10-24: unchanged chunk texts are not re-embedded, W14 note 3; `stats["reused"]` counts them.)
+- Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this - future tuning may add explicit metrics. (2026-10-24: unchanged chunk texts are not re-embedded, W14 note 3; `stats["reused"]` counts them, surfaced per repo as `embed_reused` and per run as `embeddings_reused`; `--no-embed-reuse` forces the re-embed.)
 
 ## Embedder hang risk (added 2026-05-15)
 

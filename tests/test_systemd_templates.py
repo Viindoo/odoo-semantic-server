@@ -26,6 +26,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent
 
 # Only docs/deploy/ is canonical now; systemd/ (Variant B) has been removed.
@@ -328,6 +330,69 @@ def test_the_nightly_reindex_waits_for_a_running_backup():
         assert not any("odoo-semantic-backup" in v for v in _directive(reindex, key))
     (timeout,) = _directive(backup, "TimeoutStartSec")
     assert timeout not in ("0", "infinity")
+
+
+def _backup_condition_argv() -> list[str]:
+    """The backup unit's ExecCondition= as the argv systemd runs (``$$`` is a
+    literal ``$``; systemd splits the line with shell-like quoting)."""
+    import shlex
+
+    backup = REPO_ROOT / "docs" / "deploy" / "odoo-semantic-backup.service"
+    (condition,) = _directive(backup, "ExecCondition")
+    return [part.replace("$$", "$") for part in shlex.split(condition)]
+
+
+def _run_backup_condition(tmp_path: Path, reindex_state: str) -> subprocess.CompletedProcess:
+    """Run the condition with a ``systemctl`` stub reporting *reindex_state* for
+    odoo-semantic-reindex.service (and failing for any other query)."""
+    import os
+
+    stub = tmp_path / "systemctl"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *"--property=ActiveState --value odoo-semantic-reindex.service"*)'
+        f" echo {reindex_state};;\n"
+        '  *) echo "unexpected systemctl $*" >&2; exit 99;;\n'
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+    return subprocess.run(
+        _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
+    )
+
+
+@pytest.mark.parametrize("state", ["activating", "active", "reloading", "deactivating"])
+def test_a_backup_never_starts_while_the_reindex_runs(tmp_path, state):
+    """After a failed backup attempt the reindex is not held back (no backup job
+    exists during RestartSec), so the restarted backup must refuse to run beside
+    it. The refusal is a FAILURE (ExecCondition exit 255), never a silent skip
+    (1-254): a night without a backup must reach the admins through OnFailure=,
+    and the journal line says why. A running oneshot is ``activating``, which
+    ``systemctl is-active`` does not count."""
+    result = _run_backup_condition(tmp_path, state)
+
+    assert result.returncode == 255, (result.returncode, result.stderr)
+    assert "odoo-semantic-reindex.service is " + state in result.stderr
+
+
+@pytest.mark.parametrize("state", ["inactive", "failed"])
+def test_a_backup_runs_when_the_reindex_is_not_running(tmp_path, state):
+    result = _run_backup_condition(tmp_path, state)
+
+    assert result.returncode == 0, (result.returncode, result.stderr)
+    assert result.stderr == ""
+
+
+def test_the_backup_refusal_is_reported_not_skipped():
+    """The refusal reaches the admins: the unit has OnFailure= and the
+    condition is not ``-``-prefixed (a ``-`` would turn 255 into a pass)."""
+    backup = REPO_ROOT / "docs" / "deploy" / "odoo-semantic-backup.service"
+    (condition,) = _directive(backup, "ExecCondition")
+    assert not condition.startswith(("-", "+", "!", ":", "@")), condition
+    assert _directive(backup, "OnFailure") == ["osm-alert@%n"]
+    assert _backup_condition_argv()[:2] == ["/bin/sh", "-c"]
 
 
 def test_drift_audit_covers_the_alert_hook():

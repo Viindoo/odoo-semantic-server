@@ -625,6 +625,103 @@ def test_write_provenance_columns_populated(clean_pg_embeddings):
     assert row[2] == 9
 
 
+class _ContentEmbedder:
+    """A vector per text (seeded by its hash), the model / dim the other
+    tests' FakeEmbedder stamps (the dim guard compares with stored rows);
+    records every text it was sent."""
+
+    model = "fake"
+    dim = 1024
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        import hashlib
+        import math
+        import random
+
+        self.sent.extend(texts)
+        out = []
+        for text in texts:
+            rng = random.Random(int(hashlib.sha256(text.encode()).hexdigest()[:12], 16))
+            vec = [rng.gauss(0, 1) for _ in range(self.dim)]
+            norm = math.sqrt(sum(x * x for x in vec))
+            out.append([x / norm for x in vec])
+        return out
+
+
+def _stored(conn, entity: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT vec, line_start, content FROM embeddings "
+            "WHERE module = %s AND odoo_version = %s AND entity_name = %s "
+            "AND profile_name = %s",
+            (TEST_MODULE, TEST_VERSION, entity, "reuse_profile"),
+        )
+        return cur.fetchone()
+
+
+@pytest.mark.postgres
+def test_a_rewrite_reuses_the_stored_vector_of_an_unchanged_chunk(clean_pg_embeddings):
+    """Round trip through the real table (pgvector type, register_vector numpy
+    read-back): the second write of an unchanged text sends nothing to the
+    embedder, keeps the stored vector and refreshes the provenance; a changed
+    text is embedded; ``reuse=False`` embeds everything again."""
+    import numpy as np
+
+    def chunks(b_text: str, line: int) -> list[EmbeddingChunk]:
+        return [
+            EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.reuse_a",
+                           "sale.order", "/tmp/sale.py", 0, "def reuse_a(self): pass",
+                           line_start=line),
+            EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.reuse_b",
+                           "sale.order", "/tmp/sale.py", 0, b_text, line_start=line),
+        ]
+
+    first = _ContentEmbedder()
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, chunks("def reuse_b(self): pass", 10),
+                            first, profile_name="reuse_profile", replace=False)
+    assert len(first.sent) == 2
+    vec_a_before = np.asarray(_stored(clean_pg_embeddings, "sale.order.reuse_a")[0])
+
+    second = _ContentEmbedder()
+    stats: dict = {}
+    write_module_embeddings(TEST_MODULE, TEST_VERSION,
+                            chunks("def reuse_b(self): return 1", 20),
+                            second, profile_name="reuse_profile", replace=False, stats=stats)
+
+    assert second.sent == ["def reuse_b(self): return 1"]
+    assert stats == {"attempted": 1, "embedded": 1, "reused": 1}
+    vec_a, line_a, _content = _stored(clean_pg_embeddings, "sale.order.reuse_a")
+    assert np.allclose(np.asarray(vec_a), vec_a_before, atol=1e-6)
+    assert line_a == 20, "the reused row is still upserted with the new provenance"
+    vec_b, _line, content_b = _stored(clean_pg_embeddings, "sale.order.reuse_b")
+    assert content_b == "def reuse_b(self): return 1"
+    expected_b = np.asarray(_ContentEmbedder().embed([content_b])[0])
+    assert np.allclose(np.asarray(vec_b), expected_b, atol=1e-6)
+
+    forced = _ContentEmbedder()
+    write_module_embeddings(TEST_MODULE, TEST_VERSION,
+                            chunks("def reuse_b(self): return 1", 30),
+                            forced, profile_name="reuse_profile", replace=False, reuse=False)
+    assert sorted(forced.sent) == ["def reuse_a(self): pass", "def reuse_b(self): return 1"]
+
+
+@pytest.mark.postgres
+def test_a_stored_vector_of_another_profile_is_not_reused(clean_pg_embeddings):
+    chunk = EmbeddingChunk("method", TEST_MODULE, TEST_VERSION, "sale.order.reuse_p",
+                           "sale.order", "/tmp/sale.py", 0, "def reuse_p(self): pass")
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], _ContentEmbedder(),
+                            profile_name="profile_one", replace=False)
+
+    other = _ContentEmbedder()
+    write_module_embeddings(TEST_MODULE, TEST_VERSION, [chunk], other,
+                            profile_name="profile_two", replace=False)
+
+    assert other.sent == ["def reuse_p(self): pass"]
+
+
 # --- WI-B: token-bounded chunking + resilient embed + embedding_model/dim ---
 
 

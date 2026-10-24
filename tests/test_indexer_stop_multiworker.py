@@ -231,6 +231,123 @@ def test_sigterm_during_a_two_worker_run_does_not_wait_for_the_workers(sigterm_h
     )
 
 
+def _unlocked(conn) -> bool:
+    return any(
+        "pg_advisory_unlock" in str(c.args[0])
+        for c in conn.cursor.return_value.execute.call_args_list
+    )
+
+
+@pytest.mark.parametrize("path", ["profile_workers", "max_workers"])
+def test_a_stopped_run_keeps_the_profile_lock_while_its_workers_may_write(
+    sigterm_handler, path,
+):
+    """The run returns on SIGTERM while workers are still inside their repo
+    (an embed read that returns during the grace is followed by its pgvector
+    write). The profile advisory lock must stay held, and its connection
+    open, until the process ends: released earlier, a second run of the
+    profile could start and write beside the old workers."""
+    release = threading.Event()
+    lock = threading.Lock()
+    started: list[int] = []
+    both_inside = threading.Event()
+    opened: list = []
+
+    def blocked_index_repo(repo, writer, **_kw):
+        with lock:
+            started.append(repo["id"])
+            if len(started) == 2:
+                both_inside.set()
+        release.wait(30)
+        return _counters()
+
+    def open_pg():
+        conn = _mock_conn()
+        opened.append(conn)
+        return conn
+
+    store = MagicMock()
+    if path == "profile_workers":
+        store.list_profiles.return_value = [
+            {"name": f"p{i}", "odoo_version": "99.0"} for i in (1, 2)
+        ]
+        # Two repos per profile: the second one is never started after the stop.
+        store.get_repos_for_profile.side_effect = lambda name: [
+            _repo(int(name[1:])), _repo(10 + int(name[1:])),
+        ]
+    else:
+        store.get_repos_for_profile.return_value = [_repo(i) for i in (1, 2, 3)]
+    store.get_ancestor_profile_names.side_effect = lambda name: [name]
+    main_conn = _mock_conn()
+
+    def send_sigterm():
+        if both_inside.wait(10):
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    safety = threading.Timer(6.0, release.set)
+    safety.start()
+    threads_before = set(threading.enumerate())
+    threading.Thread(target=send_sigterm, daemon=True).start()
+    with (
+        patch("src.indexer.pipeline.repo_store", return_value=store),
+        patch("src.indexer.pipeline.Neo4jWriter", return_value=MagicMock()),
+        patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
+        patch("src.indexer.pipeline._index_repo", side_effect=blocked_index_repo),
+        patch("src.indexer.pipeline.open_production_pg", side_effect=open_pg),
+    ):
+        from src.indexer.pipeline import index_all, index_profile
+
+        try:
+            with pytest.raises(SystemExit):
+                if path == "profile_workers":
+                    index_all(main_conn, profile_workers=2)
+                else:
+                    index_profile(main_conn, profile_name="p", max_workers=2)
+            # The run returned; the two workers are still blocked in their repo.
+            lock_conns = (
+                [c for c in opened if c.cursor.called] if path == "profile_workers"
+                else [main_conn]
+            )
+            unlocked_while_running = [_unlocked(c) for c in lock_conns]
+        finally:
+            release.set()
+            safety.cancel()
+            for thread in set(threading.enumerate()) - threads_before:
+                if not thread.daemon:
+                    thread.join(10)
+    assert both_inside.is_set()
+    assert lock_conns, "precondition: the profile lock was taken"
+    assert unlocked_while_running == [False] * len(lock_conns), (
+        "the profile lock was released while its workers were still running"
+    )
+    # Even after the workers unwound: the lock is left to the process exit.
+    for conn in lock_conns:
+        assert not _unlocked(conn)
+        assert run_stop.is_held(conn)
+        conn.close.assert_not_called()
+
+
+def test_a_run_that_is_not_stopped_still_releases_the_profile_lock():
+    store = MagicMock()
+    store.get_repos_for_profile.return_value = [_repo(i) for i in (1, 2)]
+    store.get_ancestor_profile_names.return_value = ["p"]
+    conn = _mock_conn()
+    with (
+        patch("src.indexer.pipeline.repo_store", return_value=store),
+        patch("src.indexer.pipeline.Neo4jWriter", return_value=MagicMock()),
+        patch("src.indexer.pipeline._neo4j_creds", return_value=("bolt://x", "u", "p")),
+        patch("src.indexer.pipeline._index_repo", return_value=_counters()),
+        patch("src.indexer.pipeline.open_production_pg", side_effect=_mock_conn),
+        patch("src.indexer.seed_patterns.run", return_value={"skipped": True}),
+    ):
+        from src.indexer.pipeline import index_profile
+
+        index_profile(conn, profile_name="p", max_workers=2)
+
+    assert _unlocked(conn)
+    assert not run_stop.is_held(conn)
+
+
 # ---------------------------------------------------------------------------
 # The real process entry (python -m src.indexer), in a child process
 # ---------------------------------------------------------------------------

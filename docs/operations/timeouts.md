@@ -27,6 +27,7 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 | Env var | Default | Was | File:line | Reasoning |
 |---------|---------|-----|-----------|-----------|
 | `EMBEDDER_TIMEOUT` | 1200s | 600s | `src/constants.py` | A 50-text batch on qwen3-embedding-q5km takes ~22s on fast hardware, but can exceed 90s on CPU-only servers when the Ollama queue is busy (e.g., parallel profile workers). 1200s (20 min) gives ample headroom. |
+| `EMBEDDER_TIMEOUT_READ_QUERY` | 30s | 30s | `src/constants.py` | Read timeout of a single query embed (MCP search path). The indexer's end-of-run embedder probe uses it too (`pipeline._probe_silent_embedder`, sent only when a run got no vector for any chunk it sent), so a hung embedder costs its retries times 30s there, not the batch timeout. |
 | `EMBEDDER_MAX_BATCH` | 50 | 50 | `src/constants.py` | Unchanged — 50 keeps each batch under 30s on fast hardware, well within any reverse-proxy `proxy_read_timeout`. Increase only on fast local Ollama. |
 | `EMBEDDER_RETRY_BACKOFF_BASE` | 2.0s | 2.0s | `src/constants.py` | Base delay for `Qwen3Embedder._embed_one` exponential backoff (delay = min(base * 2**i, max)). Lower on fast local Ollama (e.g. 0.5) to fail fast; raise on flaky LAN to avoid hammering. |
 | `EMBEDDER_RETRY_BACKOFF_MAX` | 30.0s | 30.0s | `src/constants.py` | Cap on a single retry sleep so a slow Ollama box doesn't stall the indexer for minutes between attempts. Raise on chronically overloaded GPU hosts. |
@@ -157,7 +158,7 @@ The oneshot units have their own limits:
 | Unit | `TimeoutStartSec` | `TimeoutStopSec` | Reasoning |
 |------|-------------------|------------------|-----------|
 | `odoo-semantic-reindex.service` | `0` (none) | `60` | A run can take hours; never kill it. SIGTERM ends a run within ~20s, multi-worker runs included (`src/indexer/stop.py`). |
-| `odoo-semantic-backup.service` | `1h` | default | A backup takes ~13 min; the bound keeps a hung export from holding back the reindex, which is ordered `After=` it. |
+| `odoo-semantic-backup.service` | `1h` | default | A backup takes ~13 min; the bound keeps a hung export from holding back the reindex, which is ordered `After=` it. `After=` only holds the reindex while a backup start job exists (queued or running); in the 30s `RestartSec` gap after a failed attempt none does, so the reindex starts, and the backup's `ExecCondition=` then fails (exit 255, mailed through `OnFailure=`) any attempt made while the reindex runs. |
 | `odoo-semantic-lifecycle-audit.service` | `2h` | default | Dry-run audit, bounded. |
 | `osm-alert@.service` | `180` | default | Alert mail delivery. |
 

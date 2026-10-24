@@ -8,7 +8,11 @@ Hướng dẫn vận hành backup tự động và thủ công cho OSM.
 
 ## Install Systemd Timer
 
-Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00). Nếu tới 00:00 backup vẫn chạy (đêm chậm, hoặc đang thử lại sau một lần lỗi), reindex đợi backup xong rồi mới chạy (`After=odoo-semantic-backup.service`); mỗi lần backup bị giới hạn `TimeoutStartSec=1h` nên reindex không phải đợi vô hạn.
+Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00). Backup và reindex không bao giờ chạy cùng lúc (Neo4j được export online, backup trong lúc reindex ghi sẽ có graph và PostgreSQL lệch nhau):
+
+- Nếu tới 00:00 một lần chạy backup vẫn đang chạy hoặc đang chờ chạy (đêm chậm, hoặc một lần thử lại đã bắt đầu), reindex đợi nó xong rồi mới chạy (`After=odoo-semantic-backup.service`); mỗi lần backup bị giới hạn `TimeoutStartSec=1h` nên reindex không phải đợi vô hạn.
+- `After=` chỉ đợi một job backup đang tồn tại lúc reindex bắt đầu. Trong 30 giây `RestartSec` sau một lần backup lỗi thì không có job nào, nên reindex vẫn bắt đầu. Lần backup chạy lại sau đó bị `ExecCondition=` của `odoo-semantic-backup.service` từ chối khi reindex đang chạy (`activating`/`active`/`deactivating`): lần đó tính là lỗi (exit 255, không phải bỏ qua im lặng), journal ghi lý do (`odoo-semantic-backup: not started, odoo-semantic-reindex.service is ...`) và `OnFailure=` gửi mail cho admin. Đêm đó không có backup: khi reindex xong, chạy tay `sudo systemctl start odoo-semantic-backup.service` (xem "Manual Backup Run" bên dưới).
+- Chỉ unit systemd của reindex được kiểm tra: một lần index chạy từ Web UI là process riêng, không bị chặn.
 
 ```bash
 # Copy unit files

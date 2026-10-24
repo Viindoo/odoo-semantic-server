@@ -284,7 +284,11 @@ async def index_repo(
 async def reset_embed(
     request: Request, repo_id: int, _user_id: int = Depends(require_admin)
 ):
-    """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile."""
+    """Reset head_sha to NULL and spawn index-repo (with embeddings) for the repo's profile.
+
+    The run passes ``--no-embed-reuse``: the button promises to re-embed the
+    repo's chunks, which the vector reuse of a full re-index (ADR-0007 W14
+    note 3) would otherwise skip for every unchanged chunk text."""
     try:
         from src.db.pg import get_pool, repo_store
         from src.indexer.pipeline import indexer_is_running
@@ -312,7 +316,7 @@ async def reset_embed(
         # Wipe head_sha → forces full re-scan
         repo_store().reset_repo_head_sha(repo_id)
 
-        argv = ["index-repo", "--profile", profile_name]
+        argv = ["index-repo", "--profile", profile_name, "--no-embed-reuse"]
         job_id = spawn_indexer_subcommand(argv, job_label=profile_name)
 
         return JSONResponse(_json_safe({
