@@ -17,11 +17,15 @@ untrusted checkout (G-A), a total wipe that is not in the branch history
 present modules (``embedding_sweep:graph_unhealthy``), an undecidable name, a
 reconcile error, a registered repo it could not clone (``unavailable_repos``),
 the same repo's pre-scan fetch failing in two consecutive runs
-(``stale_repos``), the fetch failing for every repo of the run (at least two:
-a DNS / network outage or a shared credential, ``outages: fetch_outage``) and
+(``stale_repos``), the same repo's cross-repo dependency propagation not
+recorded in two consecutive runs (``stale_propagation``), the fetch failing
+for every repo of the run (at least two: a DNS / network outage or a shared
+credential, ``outages: fetch_outage``) and
 the embedder returning no vector for any chunk the run sent (``outages:
-embedder_down``). Not alerts: one fetch failure that heals by the next run, a
-partial embedding failure, and data kept because git cannot prove it gone
+embedder_down``; a quiet-night run of retried chunks is exempt when the
+embedder answers its end-of-run probe). Not alerts: one
+fetch failure that heals by the next run, a partial embedding failure, and
+data kept because git cannot prove it gone
 (``lifecycle-audit`` ``parser_gaps`` / ``unproven_drops``). Precedent: from 2026-08-25 to
 2026-09-25 the nightly reindex failed 32 nights out of 32 and nobody noticed,
 because this hook only wrote a journal line; on 2026-10-18/19 a DNS failure

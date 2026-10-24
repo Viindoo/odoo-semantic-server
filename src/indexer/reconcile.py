@@ -518,6 +518,7 @@ class _Reconciler:
         # as synced by the sweep exactly like the executed mark_presence_synced.
         self._assumed_synced: set[int] = set()
         self._heads: dict[int, str | None] | None = None
+        self.observed_heads: dict[int, str] = {}
         # Raw HEAD-tree module names per checkout (orphan / embedding evidence).
         self._shipped: dict[int | None, set[str] | None] = {}
         self.assume_written = set(assume_written)
@@ -566,9 +567,17 @@ class _Reconciler:
             self.store.mark_retire_blocked(ids, reason, conn=self.conn)
 
     def _repo_head(self, repo_id: int | None) -> str | None:
-        """The registered repo's current HEAD (``repos.head_sha``), None when gone."""
+        """The registered repo's current HEAD (``repos.head_sha``), None when gone.
+
+        A repo whose run kept ``head_sha`` back (an unrecorded cross-repo
+        propagation, ADR-0007 W14 note 3) reports the HEAD that run observed
+        instead (*observed_heads* of :func:`reconcile_version`): the commit at
+        which a pending name was seen absent, not an older one that still
+        shipped it."""
         if repo_id is None:
             return None
+        if repo_id in self.observed_heads:
+            return self.observed_heads[repo_id]
         if self._heads is None:
             self._heads = {
                 r["repo_id"]: r.get("head_sha")
@@ -1902,6 +1911,7 @@ def reconcile_version(
     dry_run: bool = False,
     conn=None,
     assume_written: Iterable[str] = (),
+    observed_heads: Mapping[int, str] | None = None,
 ) -> ReconcileReport:
     """Decide and execute every pending module retirement at *odoo_version*.
 
@@ -1942,6 +1952,10 @@ def reconcile_version(
                            counted as orphans, and repos in *advance_presence*
                            whose pending names would all be resolved count as
                            synced for the sweep (``lifecycle-audit``).
+        observed_heads:    ``{repo_id: head}`` of repos whose run observed
+                           *head* but kept ``repos.head_sha`` back (an
+                           unrecorded cross-repo propagation): the
+                           ``state_changed_sha`` of a name they retire.
         assume_written:    module names the caller's runs write before this
                            reconcile although their nodes do not exist yet
                            (the dry-run audit, which writes nothing); the
@@ -1972,6 +1986,7 @@ def reconcile_version(
             allow_mass_retire=allow_mass_retire, dry_run=dry_run, report=report,
             assume_written=assume_written,
         )
+        rec.observed_heads = dict(observed_heads or {})
         rec.pending()
         rec.drop_excluded_owners()
         rec.advance_presence(advance_presence or {})

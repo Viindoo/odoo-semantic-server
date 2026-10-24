@@ -4,7 +4,9 @@
 
 Covers:
 - repo with head_sha set → POST → head_sha IS NULL + job spawned + 200 ok JSON
-- argv for spawned subprocess: index-repo --profile X (no --no-embed, no --full)
+- argv for spawned subprocess: index-repo --profile X --no-embed-reuse (no
+  --no-embed, no --full): the button promises a re-embed, which the vector
+  reuse of unchanged chunk texts would otherwise skip
 - repo with head_sha IS NULL → POST still works (NULL → NULL, spawns index)
 - indexer running → 409 error JSON, head_sha unchanged, no Popen
 - non-existent repo_id → 404 JSON
@@ -128,6 +130,8 @@ class TestResetEmbed:
         # Must NOT have --no-embed or --full
         assert "--no-embed" not in argv
         assert "--full" not in argv
+        # Re-embeds every chunk of the re-indexed repo (no vector reuse).
+        assert "--no-embed-reuse" in argv
 
         # Must have --job-id (appended by spawn_indexer_subcommand)
         assert "--job-id" in argv

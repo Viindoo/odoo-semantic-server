@@ -1231,8 +1231,10 @@ class RepoStore:
         """Bulk-reset head_sha to NULL for given repo IDs.
 
         Forces those repos to be fully re-indexed on the next indexer run.
-        Used by cross-repo dependency propagation (M7 W14): when upstream modules
-        change, downstream repos' head_sha is NULLed so they are not skipped.
+        Used by the reconcile (repos depending on retired modules) and, as the
+        fallback for a dependent repo without lifecycle-ledger rows, by
+        cross-repo dependency propagation (ADR-0007 W14 note 3: a repo WITH a
+        ledger gets only its dependent modules flagged ``needs_rewrite``).
 
         Returns:
             Number of rows updated (may be less than len(repo_ids) if some IDs

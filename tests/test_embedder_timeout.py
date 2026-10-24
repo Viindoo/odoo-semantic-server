@@ -19,7 +19,7 @@ from src.indexer.embedder import Qwen3Embedder
 def no_retry_sleep():
     """No-op the retry backoff sleep — these tests assert the retry/raise OUTCOME,
     not wall time. Opt-in (NOT autouse) so it cannot mask a timing bug elsewhere."""
-    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+    with patch("src.indexer.stop.sleep_or_stop") as mock_sleep:
         yield mock_sleep
 
 

@@ -293,8 +293,9 @@ async def entity_lookup(
             filters reports that run on this business model.
         field: Required for kind='field'.
         method_name: Required for kind='method'.
-        xmlid: Required for kind='view'. For kind='report' it is an alias for
-            name (a specific report xmlid).
+        xmlid: Required for kind='view': a view or QWeb template xmlid (a
+            record-form QWeb view matches by its record id or its website key).
+            For kind='report' it is an alias for name (a specific report xmlid).
         name: Required for kind in {module, pattern}. For kind='report' it is an
             optional xmlid/title substring filter (pass model and/or name).
         from_module: Optional module filter - restrict results to rows declared

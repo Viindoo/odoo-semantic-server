@@ -5,7 +5,7 @@ Business rule: ``python -m src.db.migrate`` runs while the old Web UI is still
 serving. An idle-in-transaction connection holding even ACCESS SHARE on
 ``indexer_jobs`` / ``module_presence`` would make the ALTER (ACCESS EXCLUSIVE)
 wait forever and queue every later query on that table behind it (job pages
-hang). Migrations 0004 and 0006 (and their rollbacks) therefore set a
+hang). Migrations 0004, 0006 and 0007 (and their rollbacks) therefore set a
 transaction-scoped ``lock_timeout`` first: the migration is refused within
 seconds, nothing is applied, and the operator re-runs it.
 """
@@ -23,6 +23,8 @@ _ALTERING = (
     "0004_indexer_jobs_proc_identity.rollback.sql",
     "0006_module_presence_successor_merge.sql",
     "0006_module_presence_successor_merge.rollback.sql",
+    "0007_module_presence_needs_rewrite_at.sql",
+    "0007_module_presence_needs_rewrite_at.rollback.sql",
 )
 
 
@@ -48,6 +50,7 @@ def test_lock_timeout_is_set_before_any_lock_taking_statement(name):
     [
         ("0004_indexer_jobs_proc_identity.sql", "indexer_jobs"),
         ("0006_module_presence_successor_merge.sql", "module_presence"),
+        ("0007_module_presence_needs_rewrite_at.sql", "module_presence"),
     ],
 )
 def test_migration_gives_up_behind_an_idle_lock_holder(clean_pg, name, table):

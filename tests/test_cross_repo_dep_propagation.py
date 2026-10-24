@@ -154,6 +154,78 @@ class TestFindDependentRepos:
 
 
 # ---------------------------------------------------------------------------
+# find_dependent_modules: the transitive DEPENDS_ON walk (ADR-0007 W14 note 3)
+# ---------------------------------------------------------------------------
+
+class TestFindDependentModules:
+    """The real Cypher of ``cross_repo.find_dependent_modules`` (one flat query
+    per hop): every module depending on a changed module, directly or through
+    other modules, in any repo, at the same version; a cycle ends."""
+
+    def test_a_transitive_chain_across_three_repos_is_found_with_its_depth(
+        self, clean_neo4j,
+    ):
+        from src.indexer.cross_repo import find_dependent_modules
+
+        driver = clean_neo4j
+        _create_module_with_dep(driver, "chain_base", repo="repo_a", depends_on=None)
+        _create_module_with_dep(driver, "chain_mid", repo="repo_b", depends_on="chain_base")
+        _create_module_with_dep(driver, "chain_top", repo="repo_c", depends_on="chain_mid")
+        _create_module_with_dep(driver, "chain_other", repo="repo_c", depends_on=None)
+
+        found = find_dependent_modules(driver, TEST_VERSION, {"chain_base"})
+
+        assert found == {
+            "chain_mid": ("repo_b", 1),
+            "chain_top": ("repo_c", 2),
+        }
+
+    def test_a_dependency_cycle_ends_and_a_changed_module_is_not_its_own_dependent(
+        self, clean_neo4j,
+    ):
+        from src.indexer.cross_repo import find_dependent_modules
+
+        driver = clean_neo4j
+        _create_module_with_dep(driver, "cyc_a", repo="repo_a", depends_on=None)
+        _create_module_with_dep(driver, "cyc_b", repo="repo_b", depends_on="cyc_a")
+        _create_module_with_dep(driver, "cyc_c", repo="repo_c", depends_on="cyc_b")
+        # Close the cycle: cyc_a depends on cyc_c.
+        _create_module_with_dep(driver, "cyc_a", repo="repo_a", depends_on="cyc_c")
+
+        found = find_dependent_modules(driver, TEST_VERSION, {"cyc_a"})
+
+        assert found == {"cyc_b": ("repo_b", 1), "cyc_c": ("repo_c", 2)}
+
+    def test_a_dependent_at_another_version_is_not_found(self, clean_neo4j):
+        from src.indexer.cross_repo import find_dependent_modules
+
+        driver = clean_neo4j
+        other = "98.0"
+        _create_module_with_dep(driver, "ver_base", repo="repo_a", depends_on=None)
+        try:
+            with driver.session() as session:
+                session.run(
+                    """
+                    MERGE (b:Module {name: 'ver_base', odoo_version: $other})
+                    MERGE (d:Module {name: 'ver_dependent', odoo_version: $other})
+                    SET d.repo = 'repo_b'
+                    MERGE (d)-[:DEPENDS_ON]->(b)
+                    """,
+                    other=other,
+                )
+            found = find_dependent_modules(driver, TEST_VERSION, {"ver_base"})
+        finally:
+            with driver.session() as session:
+                session.run(
+                    "MATCH (m:Module {odoo_version: $other}) "
+                    "WHERE m.name IN ['ver_base', 'ver_dependent'] DETACH DELETE m",
+                    other=other,
+                )
+
+        assert found == {}
+
+
+# ---------------------------------------------------------------------------
 # Tests for reset_head_sha + get_repo_ids_by_local_path_basenames (PG only)
 # ---------------------------------------------------------------------------
 
@@ -674,7 +746,10 @@ class TestDepPropagationEndToEnd:
     def test_full_reindex_skips_propagation(
         self, clean_neo4j, pg_conn, tmp_path
     ):
-        """full_reindex=True skips cross-repo propagation (no head_sha reset)."""
+        """A full run without a usable baseline and without a ledger does not
+        propagate (no head_sha reset): it cannot tell a first index from a
+        reset (ADR-0007 W14 note 3). 'deadbeef' is no commit of the checkout,
+        and the ledger is stubbed out."""
         from src.db.migrate import run_migrations
         from src.db.pg import repo_store
         from src.indexer.pipeline import _index_repo

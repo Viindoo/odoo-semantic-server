@@ -27,6 +27,7 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 | Env var | Default | Was | File:line | Reasoning |
 |---------|---------|-----|-----------|-----------|
 | `EMBEDDER_TIMEOUT` | 1200s | 600s | `src/constants.py` | A 50-text batch on qwen3-embedding-q5km takes ~22s on fast hardware, but can exceed 90s on CPU-only servers when the Ollama queue is busy (e.g., parallel profile workers). 1200s (20 min) gives ample headroom. |
+| `EMBEDDER_TIMEOUT_READ_QUERY` | 30s | 30s | `src/constants.py` | Read timeout of a single query embed (MCP search path). The indexer's end-of-run embedder probe uses it too (`pipeline._probe_silent_embedder` through `embed_short`, sent only by a quiet-night run: no vector for the at most `EMBEDDER_MAX_BATCH` retried chunks it sent), so an embedder that accepts and never answers (the realistic hung case) costs it about 96s (3 x 30s read + 2s + 4s backoff), with an upper bound of 216s when every attempt also spends its full 10s connect and 30s write timeouts; never the batch timeout. |
 | `EMBEDDER_MAX_BATCH` | 50 | 50 | `src/constants.py` | Unchanged — 50 keeps each batch under 30s on fast hardware, well within any reverse-proxy `proxy_read_timeout`. Increase only on fast local Ollama. |
 | `EMBEDDER_RETRY_BACKOFF_BASE` | 2.0s | 2.0s | `src/constants.py` | Base delay for `Qwen3Embedder._embed_one` exponential backoff (delay = min(base * 2**i, max)). Lower on fast local Ollama (e.g. 0.5) to fail fast; raise on flaky LAN to avoid hammering. |
 | `EMBEDDER_RETRY_BACKOFF_MAX` | 30.0s | 30.0s | `src/constants.py` | Cap on a single retry sleep so a slow Ollama box doesn't stall the indexer for minutes between attempts. Raise on chronically overloaded GPU hosts. |
@@ -35,7 +36,7 @@ All defaults are defined in `src/constants.py` and read via `os.getenv()`.
 
 | Env var | Default | Was | File:line | Reasoning |
 |---------|---------|-----|-----------|-----------|
-| `RETIRE_LOCK_WAIT_SECONDS` | 900s | - | `src/constants.py` | How long an indexer ledger write waits for the per-version `retire:<version>` lock a reconcile holds across its deletes. After it the repo (or the version's reconcile) fails with `LifecycleLockTimeout` and the next run retries. |
+| `RETIRE_LOCK_WAIT_SECONDS` | 900s | - | `src/constants.py` | How long an indexer ledger write waits for the per-version `retire:<version>` lock a reconcile holds across its deletes. After it the repo (or the version's reconcile) fails with `LifecycleLockTimeout` and the next run retries. Since migration 0007 a repo run that has `needs_rewrite` flags also takes the lock at its start, to read them (`needs_rewrite_snapshot`); a run without flags (most) reads the clock without it and waits only at its ledger commit, as before. The lock is polled (`pg_try_advisory_lock`), so PostgreSQL detects no deadlock: two writers that took the locks of several versions in opposite order would stall until this wait expires. Every writer acquires them sorted (`_hold_versions`), and prod has no repo with ledger rows at more than one version (2026-10-24). |
 | `OSM_SHARED_PARSE_BOOTSTRAP_PER_RUN` | 60 modules | - | `src/constants.py` | Budget, per repo per index run, of re-parses (no source change) of a repo's copy of a module another repo also ships that has no complete-parse record yet (after the ADR-0056 deploy). Measured on CE 17.0 (606 modules): ~1.2 s per module parse + graph write before embeddings, so ~75 s extra per repo per run; a CE clone converges in 11 daily runs. 0 disables it (shared-module residue then waits for the modules to change). |
 | `LIFECYCLE_AUDIT_QUERY_TIMEOUT_SECONDS` | 120s | - | `src/constants.py` | Per-query server-side timeout (`neo4j.Query(timeout=)`) of every graph read `lifecycle-audit` makes. The audit reads whole versions (orphan Modules, module-less children, profile-less Modules), so the bound is wider than the MCP `NEO4J_QUERY_TIMEOUT_SECONDS` and below the 600s `db.transaction.timeout` backstop. The index run and its reconcile set no per-query timeout. |
 | `WEBUI_LIFECYCLE_LOCK_WAIT_SECONDS` | 20s | - | `src/constants.py` | How long a Web UI repo/profile delete or profile rename waits for each per-repo git lock (ADR-0035) and each `retire:<version>` ledger lock (the profile's indexer lock is tried once, not waited for). Kept well under nginx's default 60s `proxy_read_timeout` so the request answers instead of hanging behind an index run's reconcile. On timeout: HTTP 409 with `Retry-After`, nothing changed. |
@@ -147,21 +148,21 @@ NEO4J_WRITE_BATCH_SIZE=250   # 250/tx — if Neo4j GC pauses exceed 30s
 
 ## Systemd unit timeouts
 
-The service templates in `docs/deploy/` include:
+The long-running service templates in `docs/deploy/` (MCP, Web UI, Astro) include:
 
-- `TimeoutStartSec=60` — services start quickly; 60s is generous.
-- `TimeoutStopSec=30` — allow in-flight requests to drain before force-kill.
+- `TimeoutStartSec=60` - services start quickly; 60s is generous.
+- `TimeoutStopSec=30` - allow in-flight requests to drain before force-kill.
 
-The indexer runs as a **detached subprocess** (spawned by the Web UI via `spawn_indexer_subcommand`), not as its own systemd unit. It is not subject to systemd timeouts — it runs until completion (or until the OS kills the PID).
+The oneshot units have their own limits:
 
-If you run the indexer manually via a systemd one-shot unit, add:
+| Unit | `TimeoutStartSec` | `TimeoutStopSec` | Reasoning |
+|------|-------------------|------------------|-----------|
+| `odoo-semantic-reindex.service` | `0` (none) | `60` | A run can take hours; never kill it. SIGTERM ends a run within ~20s, multi-worker runs included (`src/indexer/stop.py`). |
+| `odoo-semantic-backup.service` | `1h` | default | A backup takes ~13 min; the bound keeps a hung export from holding back the reindex, which is ordered `After=` it. `After=` only holds the reindex while a backup start job exists (queued or running); in the 30s `RestartSec` gap after a failed attempt none does, so the reindex starts, and the backup's `ExecCondition=` then fails (exit 255, mailed through `OnFailure=`) any attempt made while the reindex unit, or any `python -m src.indexer` writing process of the unit's user (a Web UI job), runs, and also when it cannot tell (fail-closed). After 3 refused attempts the unit is `start-limit-hit`: `systemctl reset-failed` before a manual start. |
+| `odoo-semantic-lifecycle-audit.service` | `2h` | default | Dry-run audit, bounded. |
+| `osm-alert@.service` | `180` | default | Alert mail delivery. |
 
-```ini
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity   # no timeout for long reindex jobs
-RemainAfterExit=no
-```
+An index run started from the Web UI is a **detached subprocess** (`spawn_indexer_subcommand`), not a systemd unit, so no systemd timeout applies to it; it runs until completion or until the PID is signalled.
 
 ---
 

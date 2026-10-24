@@ -26,6 +26,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent
 
 # Only docs/deploy/ is canonical now; systemd/ (Variant B) has been removed.
@@ -212,9 +214,14 @@ def test_service_files_pass_systemd_analyze_verify():
 # ---------------------------------------------------------------------------
 
 def _directive(path: Path, key: str) -> list[str]:
+    """The values of *key*, as systemd reads them: a line ending in a
+    backslash is joined with the next one (the backslash becomes a space)."""
+    import re
+
+    text = re.sub(r"\\\n", " ", path.read_text(encoding="utf-8"))
     return [
         line.split("=", 1)[1].strip()
-        for line in path.read_text(encoding="utf-8").splitlines()
+        for line in text.splitlines()
         if line.strip().startswith(f"{key}=") and line.split("=", 1)[1].strip()
     ]
 
@@ -311,6 +318,185 @@ def test_the_nightly_reindex_keeps_the_alert_admin_cache_fresh():
     assert cmd.startswith("-"), "a failed refresh must not fail the nightly run"
     assert f"OSM_ALERT_STATE_DIR=/var/lib/{state_dir}" in cmd
     assert "-m src.ops.alert_notify --refresh-admins" in cmd
+
+
+def test_the_nightly_reindex_waits_for_a_running_backup():
+    """A backup still running at 00:00 (slow night, or a retry) must finish before
+    the reindex writes: Neo4j is exported online, so a run during the export
+    leaves a bundle whose graph and PostgreSQL disagree. The wait is bounded by
+    a finite backup start timeout (a oneshot's default is infinite)."""
+    deploy = REPO_ROOT / "docs" / "deploy"
+    reindex = deploy / "odoo-semantic-reindex.service"
+    backup = deploy / "odoo-semantic-backup.service"
+    after = " ".join(_directive(reindex, "After")).split()
+    assert "odoo-semantic-backup.service" in after
+    # Ordering only: a failed backup must not stop the nightly run.
+    for key in ("Requires", "Requisite", "BindsTo"):
+        assert not any("odoo-semantic-backup" in v for v in _directive(reindex, key))
+    (timeout,) = _directive(backup, "TimeoutStartSec")
+    assert timeout not in ("0", "infinity")
+
+
+def _backup_condition_argv() -> list[str]:
+    """The backup unit's ExecCondition= as the argv systemd runs (``$$`` is a
+    literal ``$``; systemd splits the line with shell-like quoting)."""
+    import shlex
+
+    backup = REPO_ROOT / "docs" / "deploy" / "odoo-semantic-backup.service"
+    (condition,) = _directive(backup, "ExecCondition")
+    return [part.replace("$$", "$") for part in shlex.split(condition)]
+
+
+def _run_backup_condition(
+    tmp_path: Path, reindex_state: str | None, *, pgrep: tuple[int, str] = (1, ""),
+) -> subprocess.CompletedProcess:
+    """Run the condition with stubs: ``systemctl`` reports *reindex_state* for
+    odoo-semantic-reindex.service (None: systemctl fails), ``pgrep`` exits
+    ``pgrep[0]`` printing ``pgrep[1]`` and records its arguments."""
+    import os
+
+    stub = tmp_path / "systemctl"
+    answer = "exit 1" if reindex_state is None else f"echo {reindex_state}"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *"--property=ActiveState --value odoo-semantic-reindex.service"*)'
+        f" {answer};;\n"
+        '  *) echo "unexpected systemctl $*" >&2; exit 99;;\n'
+        "esac\n"
+    )
+    stub.chmod(0o755)
+    code, out = pgrep
+    pgrep_stub = tmp_path / "pgrep"
+    pgrep_stub.write_text(
+        "#!/bin/sh\n"
+        f'for a in "$@"; do printf "%s\\n" "$a"; done > "{tmp_path}/pgrep.args"\n'
+        + (f"echo {out}\n" if out else "")
+        + f"exit {code}\n"
+    )
+    pgrep_stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+    return subprocess.run(
+        _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
+    )
+
+
+@pytest.mark.parametrize(
+    "state", ["activating", "active", "reloading", "deactivating"],
+)
+def test_a_backup_never_starts_while_the_reindex_runs(tmp_path, state):
+    """After a failed backup attempt the reindex is not held back (no backup job
+    exists during RestartSec), so the restarted backup must refuse to run beside
+    it. The refusal is a FAILURE (ExecCondition exit 255), never a silent skip
+    (1-254): a night without a backup must reach the admins through OnFailure=,
+    and the journal line says why. A running oneshot is ``activating``, which
+    ``systemctl is-active`` does not count."""
+    result = _run_backup_condition(tmp_path, state)
+
+    assert result.returncode == 255, (result.returncode, result.stderr)
+    assert "odoo-semantic-reindex.service is " + state in result.stderr
+
+
+@pytest.mark.parametrize("state", ["inactive", "failed"])
+def test_a_backup_runs_when_no_index_run_is_running(tmp_path, state):
+    result = _run_backup_condition(tmp_path, state, pgrep=(1, ""))
+
+    assert result.returncode == 0, (result.returncode, result.stderr)
+    assert result.stderr == ""
+
+
+def test_a_backup_never_starts_while_a_web_ui_index_run_runs(tmp_path):
+    """A Web UI index job is a plain process (``python -m src.indexer
+    index-repo ... --job-id N``), invisible to the unit state check."""
+    result = _run_backup_condition(tmp_path, "inactive", pgrep=(0, "4242"))
+
+    assert result.returncode == 255, (result.returncode, result.stderr)
+    assert "an index run is running (pid 4242" in result.stderr
+    args = (tmp_path / "pgrep.args").read_text().splitlines()
+    assert args[:1] == ["-u"] and "-f" in args
+    pattern = args[-1]
+    import re
+    assert re.search(pattern, "/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m "
+                     "src.indexer index-repo --profile p --job-id 7")
+    assert re.search(pattern, "/usr/bin/python3.12 -m src.indexer reembed-stubs --profile p")
+    assert not re.search(pattern, "/usr/bin/python3 -m src.indexer lifecycle-audit --all")
+    # The guard's own shell command line holds the pattern text: never itself.
+    assert not re.search(pattern, " ".join(_backup_condition_argv()))
+
+
+@pytest.mark.parametrize(
+    ("state", "pgrep", "says"),
+    [(None, (1, ""), "systemctl could not read"), ("inactive", (2, ""), "pgrep failed")],
+    ids=["systemctl-fails", "pgrep-fails"],
+)
+def test_the_guard_fails_closed_when_it_cannot_tell(tmp_path, state, pgrep, says):
+    """A guard that cannot tell refuses the backup: a missed backup is mailed,
+    an inconsistent bundle is silent."""
+    result = _run_backup_condition(tmp_path, state, pgrep=pgrep)
+
+    assert result.returncode == 255, (result.returncode, result.stderr)
+    assert says in result.stderr
+
+
+def test_the_guard_sees_a_real_index_process_and_not_itself(tmp_path):
+    """Real pgrep, real regex: a process whose command line is a Web UI index
+    job is refused; with none running the guard (whose own command line holds
+    the pattern) lets the backup run.
+
+    Repeatable on a box where the same user runs an indexer: ``pgrep`` is
+    wrapped to the real binary restricted to this test's children
+    (``-P <pytest pid>``), so only the fake job and the guard's own shell can
+    match; the fake job also carries a unique marker."""
+    import os
+    import uuid
+
+    real_pgrep = shutil.which("pgrep")
+    if not real_pgrep:
+        pytest.skip("pgrep not available")
+    stub = tmp_path / "systemctl"
+    stub.write_text("#!/bin/sh\necho inactive\n")
+    stub.chmod(0o755)
+    wrapper = tmp_path / "pgrep"
+    wrapper.write_text(f'#!/bin/sh\nexec {real_pgrep} -P {os.getpid()} "$@"\n')
+    wrapper.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
+    clean = subprocess.run(
+        _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
+    )
+    marker = f"osm-guard-test-{uuid.uuid4().hex}"
+    fake = subprocess.Popen([
+        "bash", "-c",
+        f'exec -a "{tmp_path}/bin/python -m src.indexer index-repo --profile {marker} '
+        '--job-id 9" sleep 30',
+    ])
+    try:
+        import time
+        deadline = time.monotonic() + 5
+        while marker not in Path(f"/proc/{fake.pid}/cmdline").read_bytes().decode(
+            errors="replace",
+        ):
+            assert time.monotonic() < deadline, "the fake index job never started"
+            time.sleep(0.05)
+        busy = subprocess.run(
+            _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
+        )
+    finally:
+        fake.kill()
+        fake.wait()
+
+    assert clean.returncode == 0, clean.stderr
+    assert busy.returncode == 255, busy.stderr
+    assert f"pid {fake.pid}" in busy.stderr
+
+
+def test_the_backup_refusal_is_reported_not_skipped():
+    """The refusal reaches the admins: the unit has OnFailure= and the
+    condition is not ``-``-prefixed (a ``-`` would turn 255 into a pass)."""
+    backup = REPO_ROOT / "docs" / "deploy" / "odoo-semantic-backup.service"
+    (condition,) = _directive(backup, "ExecCondition")
+    assert not condition.startswith(("-", "+", "!", ":", "@")), condition
+    assert _directive(backup, "OnFailure") == ["osm-alert@%n"]
+    assert _backup_condition_argv()[:2] == ["/bin/sh", "-c"]
 
 
 def test_drift_audit_covers_the_alert_hook():

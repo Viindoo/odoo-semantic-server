@@ -8,7 +8,21 @@ Hướng dẫn vận hành backup tự động và thủ công cho OSM.
 
 ## Install Systemd Timer
 
-Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00).
+Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00). Backup và một lần index đang ghi không bao giờ chạy cùng lúc (Neo4j được export online, backup trong lúc index ghi sẽ có graph và PostgreSQL lệch nhau):
+
+- Nếu tới 00:00 một lần chạy backup vẫn đang chạy hoặc đang chờ chạy (đêm chậm, hoặc một lần thử lại đã bắt đầu), reindex đợi nó xong rồi mới chạy (`After=odoo-semantic-backup.service`); mỗi lần backup bị giới hạn `TimeoutStartSec=1h` nên reindex không phải đợi vô hạn.
+- `After=` chỉ đợi một job backup đang tồn tại lúc reindex bắt đầu. Trong 30 giây `RestartSec` sau một lần backup lỗi thì không có job nào, nên reindex vẫn bắt đầu. Vì vậy `ExecCondition=` của `odoo-semantic-backup.service` từ chối mọi lần backup khi:
+  - `odoo-semantic-reindex.service` đang `activating`, `active`, `reloading` hoặc `deactivating`; hoặc
+  - một process của user `odoo-semantic` đang chạy `python -m src.indexer index-repo|index-core|reembed-stubs|seed-patterns` (job chạy từ Web UI không phải unit systemd, nên được nhận ra qua `pgrep`); hoặc
+  - không xác định được (lệnh `systemctl` hoặc `pgrep` lỗi): fail-closed, vì một bundle lệch nhau thì không ai biết, còn một đêm mất backup thì có mail.
+- Lần bị từ chối tính là lỗi (exit 255, không phải bỏ qua im lặng): journal ghi lý do (`odoo-semantic-backup: not started, ...`) và `OnFailure=` gửi mail cho admin. `Restart=on-failure` thử lại sau 30 giây; nếu index vẫn chạy, sau 3 lần thử (`StartLimitBurst=3` trong `StartLimitIntervalSec=1800`, trong khoảng 2 phút) unit vào `start-limit-hit` và từ chối cả lệnh start bằng tay. Đêm đó không có backup: khi index xong, chạy:
+
+  ```bash
+  sudo systemctl reset-failed odoo-semantic-backup.service
+  sudo systemctl start odoo-semantic-backup.service
+  ```
+
+  (xem "Manual Backup Run" bên dưới).
 
 ```bash
 # Copy unit files

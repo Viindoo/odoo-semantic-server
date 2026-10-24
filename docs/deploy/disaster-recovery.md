@@ -325,9 +325,12 @@ psql -U odoo_semantic -c "UPDATE repos SET head_sha = NULL;"
 # → Next cron run does full reindex per-repo automatically.
 ```
 
-**Cross-repo propagation:** W14 dep-tracking also reset dependent repos' head_sha
-during reindex. After restore, this propagation re-runs correctly on the next
-incremental cycle — graph consistency is guaranteed across repos.
+**Cross-repo propagation:** W14 dep-tracking flags the dependent modules of other
+repos `needs_rewrite` in the `module_presence` ledger during reindex (a repo without
+ledger rows gets its head_sha reset instead; ADR-0007 W14 note 3). After restore,
+this propagation re-runs on the next incremental cycle. A full reindex re-embeds only
+the chunks whose text changed: unchanged chunks reuse the vector the restored
+`embeddings` table already holds for the same text and embedding model.
 
 ---
 

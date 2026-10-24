@@ -228,7 +228,7 @@ class TestProfileWorkersFullReindex:
         def fake_index_profile(
             pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
             gc=False, refresh=True, retire=True, allow_mass_retire=False, reconcile=True,
-            run_started_at=None,
+            run_started_at=None, embed_reuse=True,
         ):
             seen_full_reindex.append(full_reindex)
             seen_lifecycle.append({
@@ -281,7 +281,7 @@ class TestSequentialFallback:
         def fake_index_profile(
             pg_conn, *, profile_name, embedder, progress, max_workers, full_reindex=False,
             gc=False, refresh=True, retire=True, allow_mass_retire=False, reconcile=True,
-            run_started_at=None,
+            run_started_at=None, embed_reuse=True,
         ):
             assert reconcile is False, "index_all reconciles once, after all profiles"
             call_order.append(profile_name)

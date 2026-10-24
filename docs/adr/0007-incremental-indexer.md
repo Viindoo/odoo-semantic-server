@@ -270,14 +270,17 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
   `src/indexer/cross_repo.py::find_dependent_repos` +
   `src/db/repo_registry.py::reset_head_sha` +
   `src/db/repo_registry.py::get_repo_ids_by_local_path_basenames` +
-  post-write hook in `src/indexer/pipeline.py::_index_repo`.
+  post-write hook in `src/indexer/pipeline_repo.py::_index_repo`.
   Tests: `tests/test_cross_repo_dep_propagation.py`.
+  (Superseded for repos with a lifecycle ledger by note 3 below: the
+  propagation now flags the dependent MODULES, it no longer resets the repo.)
 
   **W14 trade-off notes (M7 closeout):**
 
   1. *Over-eager re-index* — `pipeline._index_repo` resets ALL downstream repos
      whenever any module changes, even if the change was cosmetic (whitespace,
-     comment).  Content-level delta detection (diff Module node properties before
+     comment). (2026-10-24: narrowed from whole repos to dependent modules, and
+     the re-embed of unchanged chunks removed - see note 3.)  Content-level delta detection (diff Module node properties before
      and after write) would reduce unnecessary re-indexes but adds complexity.
      Over-eager reset is the safe default: graph consistency is guaranteed at the
      cost of extra re-index work.  M8 may add Module-node delta detection.
@@ -292,7 +295,8 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
      `Module.repo` instead of only the basename — that is a schema change deferred
      to M8 (requires reindex of all repos after migration).  A log WARNING is emitted
      when `reset_head_sha` is called for more than 1 repo matching the same basename
-     (see pipeline.py cross-repo dep propagation block).
+     (`src/indexer/cross_repo.py::propagate_to_dependents`, the no-ledger
+     fallback path since note 3).
 
   > **#357 amendment (2026-07-02) - basename collision narrowed to same-version only.**
   > `get_repo_ids_by_local_path_basenames` now takes the in-scope `odoo_version` and
@@ -317,7 +321,275 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
   > `tests/test_cross_repo_dep_propagation.py`) +
   > `tests/test_cross_repo_version_scope_unit.py`.
 
-- Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this — future tuning may add explicit metrics.
+  3. *Module-level propagation + no re-embed of unchanged chunks (2026-10-24).*
+     Observed on prod (2026-10-24 nightly): tvtmaaddons 17.0 changed ONE module
+     (`to_git`); one saas-infrastructure module depends on it, yet the reset sent
+     all 37 saas-infrastructure modules through a full re-index. tvtmaaddons
+     19.0 changed 31 modules -> erponline-enterprise 19.0 (51 modules, 17
+     dependent) fully re-indexed; tvtmaaddons 18.0 changed 3 -> erponline 18.0
+     (182 modules, 8 dependent) fully re-indexed, 20,076 chunks re-embedded in
+     79 min of which 99.8% came from source files the run did not change. Two
+     root causes, two fixes:
+
+     - *What a dependent needs.* A dependent module's chunk texts are a
+       function of its OWN source only (`writer_pgvector.make_chunks`), so an
+       upstream change never changes its embeddings. What can go stale are its
+       graph edges resolved against upstream nodes at its own write time
+       (`USES_FIELD`, `DEPENDS_ON_FIELD`, `TARGETS_MODEL`, `INHERITS_VIEW`, ...)
+       when the upstream module gains or moves an entity; an upstream rewrite
+       MERGEs its nodes in place, so edges to unchanged entities survive, and
+       the placeholder-backed ones (`INHERITS`, `DELEGATES_TO`, `EXTENDS_TMPL`)
+       are relinked version-wide by `relink_unresolved_placeholders` on every
+       run. Only modules in the `DEPENDS_ON` closure of the changed module can
+       hold such edges, so the propagation now walks that closure (direct AND
+       transitive, any repo, one flat query per hop:
+       `cross_repo.find_dependent_modules`) and flags every `present` ledger row
+       of those modules in the OTHER repos `needs_rewrite`
+       (`ModulePresenceStore.mark_dependents_needs_rewrite`, one statement under
+       the version's ledger lock). Their repo's next run re-writes just them (the
+       ADR-0056 sync path when its HEAD did not move). The old repo reset was
+       both too wide (every module of the dependent repo) and too narrow (a
+       transitive dependent in a third repo was never re-written). A dependent
+       repo with no ledger row at the version, a run without a ledger, or a
+       failed flag write keep the old `head_sha` reset, now for the repos of
+       EVERY dependent found, direct or transitive
+       (`cross_repo.propagate_to_dependents`; a one-hop reset left a repo
+       holding only depth-2 dependents with stale edges while the propagation
+       counted as recorded). The flag also survives a
+       concurrent run of the dependent repo, which the reset did not (that run
+       re-stamped `head_sha` at its end). The propagation line is a WARNING
+       (the nightly log is WARNING-level; the INFO line was invisible there).
+       Unchanged: the indexing repo's own dependents are not flagged (its
+       unchanged modules are not re-written, as before), the reconcile's reset
+       of the repos depending on RETIRED modules (`reconcile._reset_dependents`)
+       stays repo-level, and there is still no delta detection (a body-only
+       upstream change still flags its dependents).
+     - *What seeds the propagation* (`pipeline_repo.propagation_seed`). Only
+       the written modules whose parse output can differ from what the graph
+       held when the dependents were written: the git-diff changes of the
+       incremental run, the degraded modules whose failing files changed on
+       disk, the parser-gap records re-evaluated after an indexer-code or
+       module-tree change, and the self-heal `no_node` / `path_drift` modules.
+       NOT the modules re-written only because they were flagged
+       `needs_rewrite` (a dependent flagged by another repo's propagation, an
+       incomplete-embedding or entity-prune retry, a reconcile owner
+       hand-over), the shared-module bootstrap or a `repo_drift` self-heal:
+       they re-parse source the graph already holds, so nothing a dependent
+       resolves against changes. Seeding with every re-written module (the
+       first version of this note) re-flagged whole dependency closures every
+       night (an embedding retry repeats each run it stays incomplete) and
+       made two repos that depend on each other flag each other forever. The
+       transitive closure is walked from the change itself, so a dependent
+       never has to re-propagate.
+     - *Every run mode* (`pipeline_repo.source_changed_names`). The sync path
+       (unchanged HEAD) propagates its one-shot seeds; it used to never
+       propagate, so a degraded / parser-gap / self-heal seed there was lost.
+       Its git part is empty, so the ping-pong guard above holds. A full run
+       (force-push, a `head_sha` reset, manual `--full`) used to never
+       propagate although its source may have moved; it now seeds the modules
+       changed since its baseline: `repos.head_sha` when the checkout still
+       has that commit (manual `--full`, a force-pushed old head), else the
+       ledger's `presence_head_sha`, which a `head_sha` reset leaves in place
+       (`full_run_changed_names`). With no baseline left: every module when
+       the run updates the ledger (`lifecycle_on`: a first index; other
+       repos' modules were written against its absence), none otherwise. That
+       last rule is the ping-pong guard for full runs. It keys on
+       `lifecycle_on`, not on "a ledger store exists": a repo without a
+       registered branch or git HEAD never gets a presence head, so a reset
+       would leave it without baseline forever, and seeding every module after
+       each reset would bounce full re-indexes between two such repos (or two
+       ledger-less ones) that depend on each other. With the lifecycle on the
+       loop cannot start: a full run caused only by a propagation fallback
+       reset diffs against `presence_head_sha`, finds no source change and
+       seeds nothing new. Module-level flags plus vector reuse keep what a
+       full-run propagation sets off cheap.
+       One-time cost: the sync path now seeds re-evaluated parser-gap records,
+       and a gap record is re-evaluated when the indexer code its fingerprint
+       hashes changes (`prune_evidence.prune_code_token`, which covers `pipeline_repo.py`
+       among others). So the first nightly after a deploy that touches those
+       files (this change included) re-evaluates every parser-gap record and
+       flags the dependents of those modules once: a heavier nightly, once.
+     - *Ordering and failure.* The propagation runs BEFORE the repo's ledger
+       commit and its `repos.head_sha` advance: a stop (SIGTERM) or an error
+       in between used to lose it for good (the next run saw an unchanged
+       HEAD). The flags and resets are idempotent, so a repeated diff costs
+       only time. A failed dependency walk logs a WARNING, resets the repos of
+       the DIRECT dependents at once (`find_dependent_repos`, best effort) and
+       leaves the propagation incomplete: the transitive dependents are
+       unknown. That, or a ledger / repo write that raises, is "not recorded":
+       - `head_sha` is kept, and the ledger's `presence_head_sha` neither
+         advances nor is handed to the reconcile (`_commit_lifecycle`
+         `hold_presence`, no `presence_deferred_head`). The presence head is
+         the ADR-0056 "the index reflects this HEAD" claim that the skip
+         decision and a later full run's baseline read; other repos' graphs
+         do not reflect this HEAD yet. What the reconcile then sees: in the
+         common case (synced at X before the run) both heads stay X, so
+         `repo_sync_state` / `potential_owners_unsynced` still count the repo
+         as synced; the shared-module prune of the modules it co-owns is
+         deferred for the run because its checkout HEAD is not its presence
+         head (`_owner_checkout_untrusted`); after a `head_sha` reset or on a
+         first index the repo is not synced, and with no presence head at all
+         it also holds the orphan sweep, as any never-synced repo does.
+         Retirement stays correct: the observed rows are still committed (they
+         describe the HEAD tree) and absent names are judged by those rows and
+         the checkouts' HEAD trees. A name the reconcile retires is stamped
+         (`state_changed_sha`, "the sha at which the state was entered") with
+         the HEAD the run observed (`presence_held_head` -> the reconcile's
+         `observed_heads`), not the kept `head_sha`, which still shipped it.
+       - A `lifecycle_attention` line carries `PROPAGATION_UNRECORDED_MARK`
+         ("cross-repo propagation not recorded ... head_sha kept at <sha> and
+         the ledger presence head not advanced"); the CLI prints a
+         `propagation_unrecorded` line on stderr. It is stored right after the
+         propagation failed, before the ledger commit, so a commit that raises
+         or a stop after that point does not lose it. Writers that replace
+         the attention without having run the propagation (an unavailable
+         checkout, the unchanged skip) keep the mark's segment
+         (`carry_propagation_mark`); only a run that records the propagation
+         clears it.
+       - The mark carries what the next run cannot rediscover: the seed's
+         one-shot names (degraded, parser-gap, self-heal) as `[reseed: a,b]`,
+         or `[reseed: all]` past `PROPAGATION_RESEED_NAMES_MAX` (50) names.
+         The git part needs no carrying: the kept `head_sha` repeats an
+         incremental diff and the held presence head repeats a full run's.
+         The next run reads the mark back (`propagation_retry`), is never
+         skipped, and adds exactly those names (every present module for
+         `all`). A failed retry's line names the original failure ("all
+         present modules (re-seeded after an unrecorded propagation at HEAD
+         <sha>)"), not the inflated seed, and carries the names on.
+       - Once is exit 0, like one failed fetch: the retry is automatic. The
+         same repo not recorded in the next run as well is
+         `stale_propagation` (printed once, under that key), exit 3 and an
+         alert: the retry does not heal it and its dependents keep stale
+         edges. The repo is never reported failed: its own writes succeeded.
+       - Without a ledger (no `_presence_store`) the attention is only logged:
+         no mark is stored, so there is no forced retry and no exit 3. The
+         kept `head_sha` still makes the next incremental run repeat its diff
+         and propagation; a ledger-less full or sync run has nothing to retry
+         with.
+       - Cost of a walk that keeps failing (e.g. a query that times out on a
+         huge closure): every night `head_sha` and the presence head stay, so
+         an incremental L..HEAD re-parse grows with every new commit; the
+         repos of the direct dependents of the seed are reset every night (a
+         nightly full re-index of each, cheap in embed calls thanks to vector
+         reuse but not in parse and graph writes) - after an `[reseed: all]`
+         mark that is the direct dependents of ALL present modules of the
+         repo; the alert fires from night 2 (`stale_propagation`). Fix the
+         walk; the backlog clears in one run.
+     - *Flags set during a run, and modules without a ledger row* (migration
+       0007). Two holes the ledger had, both closed:
+       1. `clear_needs_rewrite` cleared by name the flags the run read at its
+          start and re-wrote. A module flagged AGAIN by another repo's
+          propagation while the run was in progress (`--profile-workers`
+          above 1, or a second process) lost the new flag, although its parse
+          may predate the upstream change. Now every writer of the flag
+          (`ModulePresenceStore.mark_needs_rewrite` - incomplete-embedding and
+          entity-prune retries, `reembed-stubs`, the reconcile's owner
+          hand-overs, excluded-owner drops, deferred and shared prune
+          rewrites - and `flag_dependents`, the propagation)
+          stamps `needs_rewrite_at = clock_timestamp()`; the run reads its
+          flags with `needs_rewrite_snapshot`, which returns the clock of the
+          read; and the ledger commit clears only the flags stamped at or
+          before it (and drops their stamp). A run with flags reads them again
+          under the version ledger lock that every flag writer takes and
+          commits under, so a flag is either visible to the read and stamped
+          before it, or stamped after it: no window. A run without flags (most
+          runs) takes no lock for the read: the clear touches only names in
+          the read set, and the pending application below needs only the
+          clock, so it never waits (up to `RETIRE_LOCK_WAIT_SECONDS`, then
+          `LifecycleLockTimeout`) for a reconcile at its start. (`updated_at`
+          could not serve: `commit_observed` and the full-parse records stamp
+          it too.) The ledger locks are polled advisory locks
+          (`pg_try_advisory_lock`): PostgreSQL detects no deadlock, so two
+          writers taking several versions' locks in opposite order would stall
+          until the wait expires; every writer acquires them sorted
+          (`_hold_versions`), and prod has no repo with ledger rows at more
+          than one version (2026-10-24).
+       2. A module of repo S that had no ledger row when repo R walked (S
+          wrote it to the graph, its ledger commit was still to come: a run
+          in progress or a new module) was never flagged:
+          `mark_dependents_needs_rewrite` touches existing `present` rows
+          only. R now also records, for every dependent of another repo, an
+          entry `(odoo_version, repo_id, name)` in
+          `module_presence_pending_rewrite`, for every repo with ledger rows
+          at the version whose `module_presence.repo_basename` is the Module
+          node's repo (all the walk knows), skipped where that repo already
+          has a `present` row of the name (flagged directly). The direct
+          flags and the entries are one transaction under one ledger lock
+          hold (`flag_dependents`): S's `commit_observed` takes the same lock,
+          and between two transactions it could create the row the first step
+          could not flag and the second then skips. S's ledger commit, after
+          its rows exist, applies its own entries for the names it commits
+          present (`apply_pending_rewrites`): `needs_rewrite` when the entry is
+          newer than S's flag read (S's parse may predate R's change) or S did
+          not re-write the module this run, otherwise S's parse already
+          followed the change; its matched entries are deleted, entries nobody
+          consumes are purged after 30 days, and a deleted repo's go with it.
+          Two same-basename repos at a version each get and consume their
+          own entry (over-eager for the one that does not ship the module;
+          prod has no basename collision at a version, 2026-10-24). A repo
+          with no ledger row at all at the version gets no entry: the
+          no-ledger-rows reset above covers it. Smallest design that keeps
+          ADR-0056's states: the entry is not a ledger row and claims nothing
+          about what S ships, so no retirement gate, sync verdict or orphan
+          rule sees it. A failed `flag_dependents` falls back to the reset and
+          leaves the propagation unrecorded (head_sha kept, retried): a reset
+          alone is lost when the dependent repo's run is in progress.
+       Before 0007 is applied the store behaves as before (stamps nothing,
+       clears by name, records no entry) and logs one WARNING per store, i.e.
+       per repo run (`_rewrite_stamps_ok`), so a deploy that pulls before migrating does not
+       break the nightly.
+     - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
+       longer embeds a chunk whose text equals a row the module already has
+       (same version and profile) embedded by the same `embedding_model` and
+       `embedding_dim`: the row is upserted with the stored vector (provenance
+       and `indexed_at` refreshed as before). This covers every full path:
+       `--full`, a `head_sha` reset (fallback above, force-push),
+       `needs_rewrite`, self-heal and bootstrap rewrites. A model switch, an
+       unstamped row or an embedder without `.model`/`.dim` reuses nothing.
+       The reused chunks are counted (`stats["reused"]`, per repo
+       `embed_reused` in the `Indexer run:` line, per run `embeddings_reused`
+       in the CLI's `Done:` summary line, which the nightly log captures).
+       Opt-out: `index-repo --no-embed-reuse` (and the Web UI "reset embed"
+       button, which promises a re-embed) sends every chunk of the written
+       modules to the embedder; for when stored vectors may be wrong although
+       text and stamp match (embedder numerics changed under the same model
+       tag, suspect vectors, a text truncated before `num_ctx` grew). Add
+       `--full` to re-embed every module, not only the ones the run writes.
+     - *Outage signal.* With reuse a quiet night may send the embedder only
+       the chunk a healthy embedder keeps refusing (a module flagged for its
+       incomplete embeddings every night): "chunks sent, none returned" is no
+       longer proof the embedder is down. But a probe alone proves too little
+       the other way: an embedder that fails every batch all night (504
+       model-swap thrash, a busy GPU) can answer one short text at the end,
+       and exonerating that run would let changed code go unembedded with no
+       alert. So only the quiet-night shape is exonerated
+       (`pipeline._quiet_night_shape`): every chunk the run sent belongs to a
+       module re-written only as a retry (`needs_rewrite` or bootstrap; counted
+       per module, `embed_attempted_fresh` is the rest) AND they fit in one
+       batch (`QUIET_NIGHT_MAX_CHUNKS` = `EMBEDDER_MAX_BATCH`). Such a run
+       probes the embedder once at its end (`pipeline._probe_silent_embedder`
+       through `embed_short`, the short query read timeout: about 96s on an
+       embedder that accepts and never answers, 216s at most; `index_all`
+       probes once for the merged run) and is no outage when it answers. Any
+       other "sent N, got 0" is `embedder_down` without a probe. Deliberate
+       trade-off: a git-changed or self-healed module whose only new chunk a
+       healthy embedder refuses is `embedder_down` (exit 3, alert) that night;
+       the module is a retry the next night, so the shape is a quiet night
+       then and it clears. One false alert beats a silent outage. A chunk sent
+       for a retry-only module is by construction one with no stored vector
+       for unchanged text, i.e. one refused before; the batch cap bounds the
+       case where an indexer change altered every chunk text of retried
+       modules on a failing night.
+
+     Tests: `tests/test_cross_repo_propagation_unit.py`,
+     `tests/test_embedding_reuse_unit.py`, `tests/test_embed_reuse_opt_out.py`,
+     `tests/test_embedder_outage_probe.py` (no DB);
+     `tests/test_module_presence_store.py::TestNeedsRewrite`,
+     `tests/test_writer_pgvector.py` reuse round trip (PostgreSQL, CI);
+     `tests/test_cross_repo_dep_propagation.py::TestFindDependentModules`
+     (Neo4j, CI).
+
+- Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this - future tuning may add explicit metrics. (2026-10-24: unchanged chunk texts are not re-embedded, W14 note 3; `stats["reused"]` counts them, surfaced per repo as `embed_reused` and per run as `embeddings_reused`; `--no-embed-reuse` forces the re-embed.)
 
 ## Embedder hang risk (added 2026-05-15)
 

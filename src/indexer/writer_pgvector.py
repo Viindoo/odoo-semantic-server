@@ -615,6 +615,62 @@ def make_pattern_chunks(patterns: list[PatternExample]) -> list[EmbeddingChunk]:
     return chunks
 
 
+_REUSABLE_VECTORS_SQL = (
+    "SELECT content, vec FROM embeddings "
+    "WHERE module = %s AND odoo_version = %s AND profile_name = %s "
+    "AND embedding_model = %s AND embedding_dim = %s AND content = ANY(%s)"
+)
+
+
+def _reusable_vectors(
+    module: str,
+    version: str,
+    profile_name: str,
+    chunks: list[EmbeddingChunk],
+    emb_model: str | None,
+    emb_dim: int | None,
+) -> dict[str, list[float]]:
+    """Stored vectors of *module* keyed by content, for the contents in *chunks*.
+
+    Only rows of the same (module, version, profile) whose ``embedding_model``
+    and ``embedding_dim`` equal the embedder's: a vector of another model, or
+    of a row without the stamp (pre-ADR-0045), is never reused. Matching is on
+    the full content text, so a chunk whose text changed in any way (source,
+    prefix, model name) is embedded again. Read with the unrestricted RLS
+    scope (:func:`_write_scope`), like every indexer-side statement.
+
+    Best effort: a failed read logs a WARNING and returns ``{}``, so the
+    module is embedded in full as before. Returns ``{}`` without a query when
+    the embedder exposes no model or dim, or there is no chunk.
+    """
+    if not chunks or not emb_model or not emb_dim:
+        return {}
+    contents = sorted({c.content for c in chunks})
+    from src.db.pg import get_pool  # noqa: PLC0415
+    try:
+        with get_pool().checkout_vec() as conn:
+            with _write_scope(conn), conn.cursor() as cur:
+                cur.execute(
+                    _REUSABLE_VECTORS_SQL,
+                    (module, version, profile_name, emb_model, emb_dim, contents),
+                )
+                rows = cur.fetchall()
+    except Exception as exc:  # noqa: BLE001 - reuse is an optimisation only
+        _logger.warning(
+            "embedding reuse lookup failed for module=%s version=%s (%s) - "
+            "embedding every chunk", module, version, exc,
+        )
+        return {}
+    stored: dict[str, list[float]] = {}
+    for content, vec in rows:
+        if vec is None or content in stored:
+            continue
+        vec = vec.tolist() if hasattr(vec, "tolist") else list(vec)
+        if len(vec) == emb_dim:
+            stored[content] = vec
+    return stored
+
+
 def write_module_embeddings(
     module: str,
     version: str,
@@ -624,13 +680,43 @@ def write_module_embeddings(
     *,
     replace: bool = True,
     stats: dict | None = None,
+    reuse: bool = True,
 ) -> int:
     """Delete-then-insert embeddings for (module, version[, profile_name]) atomically.
 
     *stats* (optional): ``stats["attempted"]`` / ``stats["embedded"]`` are
     increased by the chunks sent to the embedder and the ones it returned a
-    vector for, so the run can tell an embedder that was down for the whole
-    run (zero embedded while chunks were attempted) from a partial failure.
+    vector for; ``stats["reused"]`` (created on the first reused chunk when
+    the caller did not seed it) by the chunks written with a stored vector
+    instead, which are in neither of the other two. The index pipeline sums
+    them per repo (``embed_attempted`` / ``embed_ok`` / ``embed_reused``) and
+    per run (the ``embeddings_reused`` of the run summary); the pipeline also
+    counts, per module, the chunks sent for modules not re-written as a retry
+    (``embed_attempted_fresh``). Zero embedded while chunks were attempted is
+    ``embedder_down``, except on a quiet night (at most one batch, all of
+    retried modules) whose embedder answers an end-of-run probe
+    (``pipeline._quiet_night_shape``): with reuse such a night may send only a
+    chunk the embedder refuses for its content.
+
+    Unchanged chunks are not re-embedded: a chunk whose ``content`` equals the
+    content of a row this module already has (same version and profile)
+    embedded by the SAME ``embedding_model`` and ``embedding_dim`` as
+    *embedder* is written with that row's vector (:func:`_reusable_vectors`).
+    The vector is a function of the content and the model only, so a re-parse
+    of an unchanged module (``--full``, a full re-index after a ``head_sha``
+    reset, a ``needs_rewrite`` or self-heal rewrite) costs no embed call. Every
+    chunk is still upserted, so its provenance (``line_start``, ``repo``,
+    ``repo_id``) and ``indexed_at`` are refreshed exactly as for an embedded
+    one (the shared-module prune reads ``indexed_at``). An embedder without
+    ``.model`` / ``.dim`` reuses nothing.
+
+    ``reuse=False`` (CLI ``index-repo --no-embed-reuse``, the Web UI "reset
+    embed" button) skips the lookup and sends every chunk to the embedder. Use
+    it when a stored vector may be wrong although its text and model stamp are
+    unchanged: the embedder's numerics changed under the same model tag (a
+    re-pulled or re-quantised model, another backend or GPU), vectors are
+    suspect (a bad batch, a partial write), or a text was embedded truncated
+    and ``num_ctx`` grew since.
 
     Chunks the embedder refused (``_embed_chunks_resilient``) are not written:
     a new entity has no row, an existing one keeps its older vector (upsert)
@@ -686,12 +772,28 @@ def write_module_embeddings(
         seen[(c.chunk_type, c.entity_name, c.file_path, c.chunk_idx)] = c
     chunks = list(seen.values())
 
-    live_chunks, vecs, embed_calls = _embed_chunks_resilient(embedder, chunks)
+    # Embedders that pre-date the provider-abstraction (ADR-0045) - and some test
+    # doubles - may not expose .model/.dim. Tolerate their absence: stamp NULL
+    # (the columns are nullable) and skip the dim guard rather than crash.
+    emb_model, emb_dim = _embedder_meta(embedder)
+
+    stored = (
+        _reusable_vectors(module, version, profile_name, chunks, emb_model, emb_dim)
+        if reuse else {}
+    )
+    reused = [c for c in chunks if c.content in stored]
+    to_embed = [c for c in chunks if c.content not in stored]
+
+    embedded_chunks, embedded_vecs, embed_calls = _embed_chunks_resilient(embedder, to_embed)
     if stats is not None:
-        stats["attempted"] = stats.get("attempted", 0) + len(chunks)
-        stats["embedded"] = stats.get("embedded", 0) + len(live_chunks)
-    if len(live_chunks) < len(chunks):
+        stats["attempted"] = stats.get("attempted", 0) + len(to_embed)
+        stats["embedded"] = stats.get("embedded", 0) + len(embedded_chunks)
+        if reused:
+            stats["reused"] = stats.get("reused", 0) + len(reused)
+    if len(embedded_chunks) < len(to_embed):
         parse_health.note_embeddings_incomplete()
+    live_chunks = reused + embedded_chunks
+    vecs = [stored[c.content] for c in reused] + embedded_vecs
 
     # Guard: if all chunks failed embedding (total failure), do NOT delete existing
     # rows and insert nothing — that would silently wipe the module's embeddings.
@@ -703,11 +805,6 @@ def write_module_embeddings(
             module, version,
         )
         return embed_calls
-
-    # Embedders that pre-date the provider-abstraction (ADR-0045) — and some test
-    # doubles — may not expose .model/.dim. Tolerate their absence: stamp NULL
-    # (the columns are nullable) and skip the dim guard rather than crash.
-    emb_model, emb_dim = _embedder_meta(embedder)
 
     from src.db.pg import get_pool  # noqa: PLC0415
     with get_pool().checkout_vec() as conn:

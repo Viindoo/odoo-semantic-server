@@ -350,3 +350,188 @@ def list_reports(
             " — narrow with model=<model_name> and/or name=<xmlid_or_title>"
         )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# entity_lookup(kind='view') / odoo://{version}/view/{xmlid} - QWeb templates
+# ---------------------------------------------------------------------------
+#
+# Every QWeb template is a :QWebTmpl node, never a :View (parser_qweb owns both
+# the <template> element and the <record model="ir.ui.view"> type=qweb form, and
+# parser_xml._parse_record skips the latter so it is classified once). The two
+# labels share one xmlid namespace per version (writer_neo4j_ui EXTENDS_TMPL
+# matches either), so a view lookup that misses :View falls through to here.
+# A record-form template is keyed by its website `key` and keeps the record id
+# as `record_xmlid`; `inherit_id ref=` and ir.model.data name the record id, so
+# the lookup also matches it (website_forum.default_faq has key
+# website_forum.faq_accordion). Lives here, not in server.py, because server.py
+# is at its god-file ceiling (test_no_god_file).
+
+_QWEB_TMPL_BY_XMLID = """
+    MATCH (t:QWebTmpl {{xmlid: $xmlid, odoo_version: $ver}})
+    WHERE {scope}
+      AND NOT coalesce(t.unresolved, false)
+      AND t.module <> '__unresolved__'
+    OPTIONAL MATCH (t)-[:DEFINED_IN]->(mod:Module)
+    RETURN t, mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
+    ORDER BY t.xmlid ASC
+    LIMIT 1
+"""
+
+# Tried only after the xmlid match failed, so a node whose own xmlid is the
+# requested one always wins (same precedence as the EXTENDS_TMPL resolver).
+_QWEB_TMPL_BY_RECORD_XMLID = """
+    MATCH (t:QWebTmpl {{record_xmlid: $xmlid, odoo_version: $ver}})
+    WHERE {scope}
+      AND NOT coalesce(t.unresolved, false)
+      AND t.module <> '__unresolved__'
+    OPTIONAL MATCH (t)-[:DEFINED_IN]->(mod:Module)
+    RETURN t, mod.name AS module_name, coalesce(mod.repo_url, mod.repo) AS repo
+    ORDER BY t.xmlid ASC
+    LIMIT 1
+"""
+
+
+def resolve_view_or_qweb_template(
+    session, xmlid: str, odoo_version: str, profile_name: str | None = None,
+) -> str:
+    """Render the QWeb template *xmlid* names, or the view not-found line.
+
+    Called by ``server._resolve_view`` when no :View matches *xmlid*. Matches a
+    :QWebTmpl by its node ``xmlid`` (the ``<template id>`` or the record-form
+    website ``key``), then by ``record_xmlid`` (the record-form record id). Every
+    returned node passes the tenant choke-point predicate (ADR-0034). Reads go
+    through ``srv._single_bounded`` / ``srv._data_bounded``, so a tx-timeout
+    raises ``OrmQueryTimeout`` to the owning handler exactly like the View path.
+    """
+    from src.constants import LIST_PREVIEW_MAX_ITEMS, REL_USES_TEMPLATE
+    from src.mcp import server as srv
+    from src.mcp.hints import format_next_step
+
+    scope = srv._scope(profile_name)
+    label = f"QWeb template detail for '{xmlid}' (Odoo {odoo_version})"
+    rec = None
+    for text in (_QWEB_TMPL_BY_XMLID, _QWEB_TMPL_BY_RECORD_XMLID):
+        rec = srv._single_bounded(
+            session, text.format(scope=srv._scope_pred("t")), label,
+            xmlid=xmlid, ver=odoo_version, **scope,
+        )
+        if rec:
+            break
+    if not rec:
+        return f"View '{xmlid}' not found in Odoo {odoo_version}."
+
+    t = rec["t"]
+    node_xmlid = t.get("xmlid") or xmlid
+    params = {"txmlid": node_xmlid, "ver": odoo_version, "cap": LIST_PREVIEW_MAX_ITEMS,
+              **scope}
+
+    # The base this template extends: a QWebTmpl, or a plain :View (cross-type
+    # EXTENDS_TMPL). The returned node is gated, not only the child (WG-3t).
+    parent = srv._single_bounded(
+        session,
+        f"""
+        MATCH (t:QWebTmpl {{xmlid: $txmlid, odoo_version: $ver}})
+              -[:EXTENDS_TMPL]->(base {{odoo_version: $ver}})
+        WHERE (base:QWebTmpl OR base:View)
+          AND NOT coalesce(base.unresolved, false)
+          AND base.module <> '__unresolved__'
+          AND {srv._scope_pred("base")}
+        RETURN base.xmlid AS parent_xmlid
+        ORDER BY base.xmlid ASC
+        LIMIT 1
+        """,
+        f"parent template for '{node_xmlid}' (Odoo {odoo_version})",
+        **params,
+    )
+
+    ext = srv._single_bounded(
+        session,
+        f"""
+        MATCH (ext:QWebTmpl {{odoo_version: $ver}})-[:EXTENDS_TMPL]->
+              (t:QWebTmpl {{xmlid: $txmlid, odoo_version: $ver}})
+        WHERE NOT coalesce(ext.unresolved, false)
+          AND {srv._scope_pred("ext")}
+        OPTIONAL MATCH (ext)-[:DEFINED_IN]->(mod:Module)
+        WITH ext, mod ORDER BY ext.xmlid ASC
+        RETURN count(ext) AS total,
+               collect({{xmlid: ext.xmlid, module: mod.name,
+                         repo: coalesce(mod.repo_url, mod.repo)}})[..$cap] AS rows
+        """,
+        f"template extension chain for '{node_xmlid}' (Odoo {odoo_version})",
+        **params,
+    )
+
+    reports = srv._single_bounded(
+        session,
+        f"""
+        MATCH (rp:Report {{odoo_version: $ver}})-[:{REL_USES_TEMPLATE}]->
+              (t:QWebTmpl {{xmlid: $txmlid, odoo_version: $ver}})
+        WHERE rp.module <> '__unresolved__'
+          AND {srv._scope_pred("rp")}
+        WITH rp ORDER BY rp.xmlid ASC
+        RETURN count(rp) AS total, collect(rp.xmlid)[..$cap] AS rows
+        """,
+        f"reports using template '{node_xmlid}' (Odoo {odoo_version})",
+        **params,
+    )
+
+    root = TreeNode(f"{xmlid} (Odoo {odoo_version})", is_root=True)
+    root.add("Type:   qweb")
+    if node_xmlid != xmlid:
+        # Looked up by the record id: name the template t-call / website use.
+        root.add(f"Template key: {node_xmlid} (the name t-call uses)")
+    key = t.get("key")
+    if key and key != node_xmlid:
+        root.add(f"Key:    {key}")
+    record_xmlid = t.get("record_xmlid")
+    if record_xmlid and record_xmlid != xmlid:
+        root.add(f"Record xmlid: {record_xmlid} (the name inherit_id ref= uses)")
+    module_name = rec.get("module_name") or t.get("module") or "?"
+    repo_str = f"[{rec['repo']}] " if rec.get("repo") else ""
+    mode_str = f" ({t['mode']})" if t.get("mode") else ""
+    root.add(f"Module: {repo_str}{module_name}{mode_str}")
+    if parent and parent.get("parent_xmlid"):
+        root.add(f"Inherits from: {parent['parent_xmlid']}")
+
+    ext_total = (ext or {}).get("total") or 0
+    if ext_total:
+        node = root.add(f"Extended by ({ext_total}):")
+        for row in srv._render_capped(
+            (ext or {}).get("rows") or [],
+            lambda r: (
+                f"{r['xmlid']}  →  "
+                f"{'[' + r['repo'] + '] ' if r.get('repo') else ''}{r.get('module') or '?'}"
+            ),
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            total=ext_total,
+            more_hint=(
+                f"find_examples(query='{node_xmlid} inherit_id'"
+                f", odoo_version='{odoo_version}') for the rest"
+            ),
+        ):
+            node.add(row)
+
+    rep_total = (reports or {}).get("total") or 0
+    if rep_total:
+        node = root.add(f"Used by reports ({rep_total}):")
+        for row in srv._render_capped(
+            (reports or {}).get("rows") or [],
+            str,
+            cap=LIST_PREVIEW_MAX_ITEMS,
+            total=rep_total,
+            more_hint=(
+                f"entity_lookup(kind='report', name='{module_name}'"
+                f", odoo_version='{odoo_version}')"
+            ),
+        ):
+            node.add(row)
+
+    # format_next_step owns the footer text; TreeNode supplies the connector.
+    root.add(format_next_step([
+        f"module_inspect(name='{module_name}', method='qweb'"
+        f", odoo_version='{odoo_version}') for sibling templates",
+        f"find_examples(query='{node_xmlid} t-call', odoo_version='{odoo_version}')"
+        " for usages",
+    ]).removeprefix("└─ "))
+    return root.render()

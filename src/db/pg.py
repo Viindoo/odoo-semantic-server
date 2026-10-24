@@ -19,7 +19,7 @@ import hashlib
 import logging
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -315,6 +315,7 @@ def advisory_lock_id(key: str) -> int:
 @contextmanager
 def advisory_lock(
     conn: PgConn, lock_id: int, *, wait_seconds: float = 0.0,
+    keep_if: Callable[[], bool] | None = None,
 ) -> Generator[bool, None, None]:
     """Attempt pg_try_advisory_lock(lock_id). Yields True if acquired, False if not.
 
@@ -325,7 +326,10 @@ def advisory_lock(
 
     The lock is session-level and re-entrant within one session: a nested
     call on the SAME connection succeeds immediately and releases only its
-    own hold. Always releases the lock on exit (only if it was acquired).
+    own hold. Releases the lock on exit (only if it was acquired), unless
+    *keep_if* is given and returns True then: the hold is left to the session,
+    which the caller keeps open until the process ends (a stopped index run
+    whose worker threads may still write, ``src.indexer.stop``).
     """
     deadline = time.monotonic() + max(wait_seconds, 0.0)
     delay = 0.05
@@ -341,6 +345,6 @@ def advisory_lock(
     try:
         yield acquired
     finally:
-        if acquired:
+        if acquired and not (keep_if is not None and keep_if()):
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))

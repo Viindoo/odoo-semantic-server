@@ -17,7 +17,7 @@ def no_retry_sleep():
     time — the real exponential backoff (base=2.0 → 2s + 4s) only adds dead time.
     This fixture is opt-in (NOT autouse) so it never hides a timing bug elsewhere.
     """
-    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+    with patch("src.indexer.stop.sleep_or_stop") as mock_sleep:
         yield mock_sleep
 
 
