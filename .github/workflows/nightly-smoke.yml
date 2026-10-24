@@ -544,7 +544,7 @@ jobs:
 
       - name: Register profile + repo for Odoo 8
         run: |
-          python -m src.manager add-profile odoo8 --version 8.0
+          python -m src.manager add-profile odoo8 --version 8.0 --shared
           python -m src.manager add-repo \
             --profile odoo8 \
             --url https://github.com/odoo/odoo \

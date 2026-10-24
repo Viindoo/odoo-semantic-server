@@ -8,7 +8,7 @@ Hướng dẫn vận hành backup tự động và thủ công cho OSM.
 
 ## Install Systemd Timer
 
-Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00).
+Cài timer để backup chạy tự động mỗi đêm lúc 23:30 (30 phút trước reindex 00:00). Nếu tới 00:00 backup vẫn chạy (đêm chậm, hoặc đang thử lại sau một lần lỗi), reindex đợi backup xong rồi mới chạy (`After=odoo-semantic-backup.service`); mỗi lần backup bị giới hạn `TimeoutStartSec=1h` nên reindex không phải đợi vô hạn.
 
 ```bash
 # Copy unit files

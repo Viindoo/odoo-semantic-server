@@ -492,15 +492,17 @@ sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
     PY=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
 
-    $PY -m src.manager add-profile viindoo_17 --version 17.0
+    # Bắt buộc khai chủ sở hữu: --shared cho profile gốc Odoo CE/EE (mọi key đều
+    # thấy), --tenant <id> cho profile riêng, hoặc --parent <profile riêng>.
+    $PY -m src.manager add-profile odoo_17 --version 17.0 --shared
     $PY -m src.manager add-repo \
-        --profile viindoo_17 \
+        --profile odoo_17 \
         --url github.com/odoo/odoo --branch 17.0 \
         --local-path /srv/odoo-repos/odoo_17.0
     $PY -m src.manager list   # verify
 
     # Lần đầu: index Neo4j graph only (đủ M1+M2+M4) — chưa cần Ollama
-    $PY -m src.indexer index-repo --profile viindoo_17 --no-embed
+    $PY -m src.indexer index-repo --profile odoo_17 --no-embed
     # Hoặc tất cả profiles:
     # $PY -m src.indexer index-repo --all --no-embed
 '
@@ -515,7 +517,7 @@ Khi đã setup embedder (xem `docs/deploy/embedder-setup.md`), re-index
 sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
-        -m src.indexer index-repo --profile viindoo_17
+        -m src.indexer index-repo --profile odoo_17
 '
 ```
 
@@ -528,7 +530,7 @@ sudo -u odoo-semantic -H bash -c '
 > sudo -u odoo-semantic -H setsid nohup bash -c '
 >     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
 >     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
->         -m src.indexer index-repo --profile viindoo_17 --verbose
+>         -m src.indexer index-repo --profile odoo_17 --verbose
 > ' > /var/log/odoo-semantic-index.log 2>&1 &
 > # Theo dõi tiến độ:
 > sudo tail -f /var/log/odoo-semantic-index.log

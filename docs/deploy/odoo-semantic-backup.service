@@ -42,6 +42,12 @@ OnFailure=osm-alert@%n
 
 [Service]
 Type=oneshot
+# A backup takes ~13 min (2026-10). Bound one attempt so a hung export cannot
+# hold back odoo-semantic-reindex.service, which is ordered After= this unit and
+# would otherwise wait for it without limit (a oneshot's default start timeout
+# is infinite). A timed-out attempt counts as a failure: Restart=on-failure and
+# OnFailure= apply as for any other failure.
+TimeoutStartSec=1h
 User=odoo-semantic
 Group=odoo-semantic
 WorkingDirectory=/home/odoo-semantic/odoo-semantic-mcp

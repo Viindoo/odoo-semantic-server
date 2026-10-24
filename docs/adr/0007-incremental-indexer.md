@@ -270,14 +270,17 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
   `src/indexer/cross_repo.py::find_dependent_repos` +
   `src/db/repo_registry.py::reset_head_sha` +
   `src/db/repo_registry.py::get_repo_ids_by_local_path_basenames` +
-  post-write hook in `src/indexer/pipeline.py::_index_repo`.
+  post-write hook in `src/indexer/pipeline_repo.py::_index_repo`.
   Tests: `tests/test_cross_repo_dep_propagation.py`.
+  (Superseded for repos with a lifecycle ledger by note 3 below: the
+  propagation now flags the dependent MODULES, it no longer resets the repo.)
 
   **W14 trade-off notes (M7 closeout):**
 
   1. *Over-eager re-index* — `pipeline._index_repo` resets ALL downstream repos
      whenever any module changes, even if the change was cosmetic (whitespace,
-     comment).  Content-level delta detection (diff Module node properties before
+     comment). (2026-10-24: narrowed from whole repos to dependent modules, and
+     the re-embed of unchanged chunks removed - see note 3.)  Content-level delta detection (diff Module node properties before
      and after write) would reduce unnecessary re-indexes but adds complexity.
      Over-eager reset is the safe default: graph consistency is guaranteed at the
      cost of extra re-index work.  M8 may add Module-node delta detection.
@@ -292,7 +295,8 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
      `Module.repo` instead of only the basename — that is a schema change deferred
      to M8 (requires reindex of all repos after migration).  A log WARNING is emitted
      when `reset_head_sha` is called for more than 1 repo matching the same basename
-     (see pipeline.py cross-repo dep propagation block).
+     (`src/indexer/cross_repo.py::propagate_to_dependents`, the no-ledger
+     fallback path since note 3).
 
   > **#357 amendment (2026-07-02) - basename collision narrowed to same-version only.**
   > `get_repo_ids_by_local_path_basenames` now takes the in-scope `odoo_version` and
@@ -317,7 +321,60 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
   > `tests/test_cross_repo_dep_propagation.py`) +
   > `tests/test_cross_repo_version_scope_unit.py`.
 
-- Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this — future tuning may add explicit metrics.
+  3. *Module-level propagation + no re-embed of unchanged chunks (2026-10-24).*
+     Observed on prod (2026-10-24 nightly): tvtmaaddons 17.0 changed ONE module
+     (`to_git`); one saas-infrastructure module depends on it, yet the reset sent
+     all 37 saas-infrastructure modules through a full re-index. tvtmaaddons
+     19.0 changed 31 modules -> erponline-enterprise 19.0 (51 modules, 17
+     dependent) fully re-indexed; tvtmaaddons 18.0 changed 3 -> erponline 18.0
+     (182 modules, 8 dependent) fully re-indexed, 20,076 chunks re-embedded in
+     79 min of which 99.8% came from source files the run did not change. Two
+     root causes, two fixes:
+
+     - *What a dependent needs.* A dependent module's chunk texts are a
+       function of its OWN source only (`writer_pgvector.make_chunks`), so an
+       upstream change never changes its embeddings. What can go stale are its
+       graph edges resolved against upstream nodes at its own write time
+       (`USES_FIELD`, `DEPENDS_ON_FIELD`, `TARGETS_MODEL`, `INHERITS_VIEW`, ...)
+       when the upstream module gains or moves an entity; an upstream rewrite
+       MERGEs its nodes in place, so edges to unchanged entities survive, and
+       the placeholder-backed ones (`INHERITS`, `DELEGATES_TO`, `EXTENDS_TMPL`)
+       are relinked version-wide by `relink_unresolved_placeholders` on every
+       run. Only modules in the `DEPENDS_ON` closure of the changed module can
+       hold such edges, so the propagation now walks that closure (direct AND
+       transitive, any repo, one flat query per hop:
+       `cross_repo.find_dependent_modules`) and flags every `present` ledger row
+       of those modules in the OTHER repos `needs_rewrite`
+       (`ModulePresenceStore.mark_dependents_needs_rewrite`, one statement under
+       the version's ledger lock). Their repo's next run re-writes just them (the
+       ADR-0056 sync path when its HEAD did not move). The old repo reset was
+       both too wide (every module of the dependent repo) and too narrow (a
+       transitive dependent in a third repo was never re-written). A dependent
+       repo with no ledger row at the version, a run without a ledger, or a
+       failed flag write keep the old reset of the DIRECT dependents' repos
+       (`cross_repo.propagate_to_dependents`). The flag also survives a
+       concurrent run of the dependent repo, which the reset did not (that run
+       re-stamped `head_sha` at its end). The propagation line is a WARNING
+       (the nightly log is WARNING-level; the INFO line was invisible there).
+       Unchanged: the indexing repo's own dependents are not flagged (its
+       unchanged modules are not re-written, as before), the reconcile's reset
+       of the repos depending on RETIRED modules (`reconcile._reset_dependents`)
+       stays repo-level, and there is still no delta detection (a body-only
+       upstream change still flags its dependents).
+     - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
+       longer embeds a chunk whose text equals a row the module already has
+       (same version and profile) embedded by the same `embedding_model` and
+       `embedding_dim`: the row is upserted with the stored vector (provenance
+       and `indexed_at` refreshed as before). This covers every full path:
+       `--full`, a `head_sha` reset (Web UI button, fallback above, force-push),
+       `needs_rewrite`, self-heal and bootstrap rewrites. A model switch, an
+       unstamped row or an embedder without `.model`/`.dim` reuses nothing.
+
+     Tests: `tests/test_cross_repo_propagation_unit.py`,
+     `tests/test_embedding_reuse_unit.py` (no DB) and
+     `tests/test_module_presence_store.py::TestNeedsRewrite` (PostgreSQL, CI).
+
+- Embedding cost analysis: per-module embedding incremental is implicit via `delete_embeddings_for_module` primitive; ADR-0007 doesn't formalize this - future tuning may add explicit metrics. (2026-10-24: unchanged chunk texts are not re-embedded, W14 note 3; `stats["reused"]` counts them.)
 
 ## Embedder hang risk (added 2026-05-15)
 

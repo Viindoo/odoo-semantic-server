@@ -63,6 +63,7 @@ from src.indexer.models import (
     ViewParseResult,
 )
 from src.indexer.protocols import IndexWriterProtocol
+from src.indexer.stop import raise_if_stop_requested
 from src.indexer.version_registry import less_active, scss_active
 
 # Log under the parent "src.indexer.pipeline" name (NOT __name__) so every
@@ -928,6 +929,8 @@ def _parse_and_write(
             iterable = _tqdm(sorted_names, desc=f"[{version}]", unit="mod", leave=True)
 
         for mod_name in iterable:
+            # A stopped run (SIGTERM, multi-worker) parses no further module.
+            raise_if_stop_requested()
             # Parse completeness (ADR-0056 B14): parsers report every file they
             # could not read or parse into this module's health record.
             with parse_health.track(mod_name, version) as health:
@@ -2519,12 +2522,14 @@ def _index_repo(
         _pipeline.repo_store().update_repo_head_sha(repo["id"], current_head)
     # =====================================================================
 
-    # === Cross-repo dep propagation (M7 W14) ===
-    # Only on incremental runs (diff-based): query Neo4j for modules in OTHER
-    # repos that DEPENDS_ON the re-written modules and NULL their
-    # repos.head_sha so they are re-indexed on the next run. Full reindex skips
-    # this - it already re-evaluates everything. Dependents of RETIRED modules
-    # are reset by the reconcile, before the delete removes the edges.
+    # === Cross-repo dep propagation (M7 W14, narrowed: ADR-0007 W14 note 3) ===
+    # Only on incremental runs (diff-based): the modules of OTHER repos that
+    # depend (directly or transitively) on the re-written modules are flagged
+    # ``needs_rewrite`` in the ledger, so their repo's next run re-writes just
+    # them; a dependent repo without ledger rows gets its repos.head_sha NULLed
+    # (full re-index) as before. Full reindex skips this - it already
+    # re-evaluates everything. Dependents of RETIRED modules are reset by the
+    # reconcile, before the delete removes the edges.
     _is_incremental = diff_base is not None and not sync_only
     if _is_incremental and pg_conn is not None:
         changed_module_names: set[str] = {
@@ -2533,41 +2538,30 @@ def _index_repo(
             for mod_name in mods
         }
         if changed_module_names:
-            from src.indexer.cross_repo import find_dependent_repos
-            dep_repo_basenames = find_dependent_repos(
+            from src.indexer.cross_repo import propagate_to_dependents
+            propagation = propagate_to_dependents(
                 writer.driver, odoo_version, changed_module_names,
+                exclude_repo_id=repo.get("id"), exclude_basenames={repo_root_name},
+                presence=presence, repo_store=_pipeline.repo_store(),
             )
-            # Exclude the repo we just indexed (its head_sha was just updated).
-            dep_repo_basenames = [b for b in dep_repo_basenames if b != repo_root_name]
-            if dep_repo_basenames:
-                dep_repo_ids = _pipeline.repo_store().get_repo_ids_by_local_path_basenames(
-                    dep_repo_basenames,
-                    odoo_version,
+            if propagation.marked or propagation.reset_repo_ids:
+                # WARNING, not INFO: the nightly log is WARNING-level, and this
+                # line is what explains the extra modules (or the full
+                # re-index) of the dependent repos' next run.
+                _logger.warning(
+                    "Repo %s: cross-repo dep propagation from %d changed module(s) "
+                    "(%s): %d dependent module(s) flagged needs_rewrite in %d repo(s) "
+                    "(%s); head_sha reset on %d repo(s) without ledger rows (%s)",
+                    url, len(changed_module_names),
+                    ", ".join(sorted(changed_module_names)[:10]),
+                    propagation.marked_count, len(propagation.marked),
+                    ", ".join(
+                        f"repo {rid}: {len(names)}"
+                        for rid, names in sorted(propagation.marked.items())
+                    ) or "-",
+                    len(propagation.reset_repo_ids),
+                    ", ".join(str(i) for i in propagation.reset_repo_ids) or "-",
                 )
-                # Warn if more IDs than basenames: two repos share a basename
-                # AT THE SAME odoo_version (e.g. /srv/odoo and /home/a/odoo both
-                # basename 'odoo' in the same version's profiles). Both get reset
-                # - over-eager but safe. The cross-VERSION leak (same basename at
-                # a different version) is now filtered out by the odoo_version
-                # predicate. See ADR-0007 W14 note.
-                if len(dep_repo_ids) > len(dep_repo_basenames):
-                    _logger.warning(
-                        "Cross-repo dep propagation: basename collision detected — "
-                        "%d repo IDs returned for %d basenames (%s). "
-                        "All matching repos will be reset (safe, over-eager). "
-                        "See ADR-0007 W14 for fix path.",
-                        len(dep_repo_ids),
-                        len(dep_repo_basenames),
-                        ", ".join(sorted(dep_repo_basenames)),
-                    )
-                if dep_repo_ids:
-                    n_reset = _pipeline.repo_store().reset_head_sha(dep_repo_ids)
-                    _logger.info(
-                        "Cross-repo dep propagation: reset head_sha on %d dependent repo(s) "
-                        "(changed modules: %s)",
-                        n_reset,
-                        ", ".join(sorted(changed_module_names)),
-                    )
     # === End cross-repo dep propagation ===
 
     if lifecycle_counters is not None:

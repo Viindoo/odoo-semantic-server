@@ -147,21 +147,21 @@ NEO4J_WRITE_BATCH_SIZE=250   # 250/tx — if Neo4j GC pauses exceed 30s
 
 ## Systemd unit timeouts
 
-The service templates in `docs/deploy/` include:
+The long-running service templates in `docs/deploy/` (MCP, Web UI, Astro) include:
 
-- `TimeoutStartSec=60` — services start quickly; 60s is generous.
-- `TimeoutStopSec=30` — allow in-flight requests to drain before force-kill.
+- `TimeoutStartSec=60` - services start quickly; 60s is generous.
+- `TimeoutStopSec=30` - allow in-flight requests to drain before force-kill.
 
-The indexer runs as a **detached subprocess** (spawned by the Web UI via `spawn_indexer_subcommand`), not as its own systemd unit. It is not subject to systemd timeouts — it runs until completion (or until the OS kills the PID).
+The oneshot units have their own limits:
 
-If you run the indexer manually via a systemd one-shot unit, add:
+| Unit | `TimeoutStartSec` | `TimeoutStopSec` | Reasoning |
+|------|-------------------|------------------|-----------|
+| `odoo-semantic-reindex.service` | `0` (none) | `60` | A run can take hours; never kill it. SIGTERM ends a run within ~20s, multi-worker runs included (`src/indexer/stop.py`). |
+| `odoo-semantic-backup.service` | `1h` | default | A backup takes ~13 min; the bound keeps a hung export from holding back the reindex, which is ordered `After=` it. |
+| `odoo-semantic-lifecycle-audit.service` | `2h` | default | Dry-run audit, bounded. |
+| `osm-alert@.service` | `180` | default | Alert mail delivery. |
 
-```ini
-[Service]
-Type=oneshot
-TimeoutStartSec=infinity   # no timeout for long reindex jobs
-RemainAfterExit=no
-```
+An index run started from the Web UI is a **detached subprocess** (`spawn_indexer_subcommand`), not a systemd unit, so no systemd timeout applies to it; it runs until completion or until the PID is signalled.
 
 ---
 

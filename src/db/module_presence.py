@@ -1319,6 +1319,57 @@ class ModulePresenceStore:
                     )
                     return cur.rowcount > 0
 
+    def mark_dependents_needs_rewrite(
+        self,
+        odoo_version: str,
+        names: Iterable[str],
+        *,
+        exclude_repo_ids: Iterable[int] = (),
+        conn: PgConn | None = None,
+    ) -> list[tuple[int, str]]:
+        """Flag ``needs_rewrite`` on every ``present`` row of *names* at *odoo_version*.
+
+        Cross-repo dependency propagation (ADR-0007 W14): the modules of other
+        repos that depend on a re-written module are re-written by their own
+        repo's next run. One statement under the version's ledger lock; the
+        repos in *exclude_repo_ids* (the repo that just wrote) are skipped.
+        Returns the flagged ``(repo_id, name)`` pairs, sorted (an already
+        flagged row is included).
+        """
+        wanted = sorted(set(names))
+        if not wanted:
+            return []
+        excluded = sorted({int(i) for i in exclude_repo_ids})
+        with self._conn(conn) as c:
+            with self._write(c, [odoo_version]):
+                with c.cursor(cursor_factory=RealDictCursor) as cur:
+                    cur.execute(
+                        "UPDATE module_presence SET needs_rewrite = TRUE, updated_at = now() "
+                        "WHERE odoo_version = %s AND name = ANY(%s) AND state = 'present' "
+                        "AND repo_id IS NOT NULL AND NOT (repo_id = ANY(%s)) "
+                        "RETURNING repo_id, name",
+                        (odoo_version, wanted, excluded),
+                    )
+                    rows = cur.fetchall()
+        return sorted((int(r["repo_id"]), r["name"]) for r in rows)
+
+    def repo_ids_without_rows(
+        self, repo_ids: Iterable[int], odoo_version: str, *, conn: PgConn | None = None,
+    ) -> list[int]:
+        """The ids of *repo_ids* that have no ledger row at *odoo_version* (sorted)."""
+        wanted = sorted({int(i) for i in repo_ids})
+        if not wanted:
+            return []
+        with self._conn(conn) as c:
+            rows = self._fetch_all(
+                c,
+                "SELECT DISTINCT repo_id FROM module_presence "
+                "WHERE repo_id = ANY(%s) AND odoo_version = %s",
+                (wanted, odoo_version),
+            )
+        have = {int(r["repo_id"]) for r in rows}
+        return [i for i in wanted if i not in have]
+
     def needs_rewrite_names(
         self, repo_id: int, *, conn: PgConn | None = None,
     ) -> list[str]:

@@ -313,6 +313,23 @@ def test_the_nightly_reindex_keeps_the_alert_admin_cache_fresh():
     assert "-m src.ops.alert_notify --refresh-admins" in cmd
 
 
+def test_the_nightly_reindex_waits_for_a_running_backup():
+    """A backup still running at 00:00 (slow night, or a retry) must finish before
+    the reindex writes: Neo4j is exported online, so a run during the export
+    leaves a bundle whose graph and PostgreSQL disagree. The wait is bounded by
+    a finite backup start timeout (a oneshot's default is infinite)."""
+    deploy = REPO_ROOT / "docs" / "deploy"
+    reindex = deploy / "odoo-semantic-reindex.service"
+    backup = deploy / "odoo-semantic-backup.service"
+    after = " ".join(_directive(reindex, "After")).split()
+    assert "odoo-semantic-backup.service" in after
+    # Ordering only: a failed backup must not stop the nightly run.
+    for key in ("Requires", "Requisite", "BindsTo"):
+        assert not any("odoo-semantic-backup" in v for v in _directive(reindex, key))
+    (timeout,) = _directive(backup, "TimeoutStartSec")
+    assert timeout not in ("0", "infinity")
+
+
 def test_drift_audit_covers_the_alert_hook():
     script = (REPO_ROOT / "scripts" / "check-systemd-overrides.sh").read_text()
     assert '"osm-alert@.service"' in script

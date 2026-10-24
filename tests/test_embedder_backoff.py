@@ -48,7 +48,7 @@ def _always_fail():
 # ---------------------------------------------------------------------------
 
 def test_backoff_sleep_called_between_attempts():
-    """Two failures then success: time.sleep called exactly 2 times."""
+    """Two failures then success: the backoff sleep (stop.sleep_or_stop) runs exactly 2 times."""
     transport = _fail_then_succeed(fail_count=2, embeddings=[[0.5, 0.5]])
     embedder = _make_embedder(
         retries=3,
@@ -57,7 +57,7 @@ def test_backoff_sleep_called_between_attempts():
         transport=transport,
     )
 
-    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+    with patch("src.indexer.stop.sleep_or_stop") as mock_sleep:
         result = embedder.embed(["x"])
 
     assert len(result) == 1
@@ -81,7 +81,7 @@ def test_backoff_no_sleep_after_final_failure():
         transport=_always_fail(),
     )
 
-    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+    with patch("src.indexer.stop.sleep_or_stop") as mock_sleep:
         with pytest.raises(RuntimeError, match="failed after 3 attempts"):
             embedder.embed(["x"])
 
@@ -104,7 +104,7 @@ def test_backoff_respects_max_cap():
         transport=transport,
     )
 
-    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+    with patch("src.indexer.stop.sleep_or_stop") as mock_sleep:
         embedder.embed(["y"])
 
     delays = [call.args[0] for call in mock_sleep.call_args_list]
@@ -125,7 +125,7 @@ def test_backoff_no_sleep_when_retries_one():
         transport=_always_fail(),
     )
 
-    with patch("src.indexer.embedder.time.sleep") as mock_sleep:
+    with patch("src.indexer.stop.sleep_or_stop") as mock_sleep:
         with pytest.raises(RuntimeError, match="failed after 1 attempts"):
             embedder.embed(["z"])
 

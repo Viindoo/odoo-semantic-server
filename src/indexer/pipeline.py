@@ -43,6 +43,7 @@ from src.indexer import (  # noqa: F401
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry, build_registry_scan  # noqa: F401
 from src.indexer.resolver import topological_sort  # noqa: F401
+from src.indexer.stop import raise_if_stop_requested, stoppable_executor
 from src.indexer.writer_neo4j import Neo4jWriter
 
 _logger = logging.getLogger(__name__)
@@ -731,6 +732,7 @@ def index_profile(
                 # --- Sequential path (original behaviour, unchanged) ----------
                 failed_repos: list[tuple[int, str]] = []
                 for repo in repos:
+                    raise_if_stop_requested()
                     repo_id: int = repo["id"]
                     _t0 = time.monotonic()
                     try:
@@ -787,6 +789,7 @@ def index_profile(
 
                 def _worker(repo: dict) -> dict:
                     """Per-repo worker: own pg_conn + shared writer."""
+                    raise_if_stop_requested()
                     repo_id: int = repo["id"]
                     pg_conn_local = open_production_pg()
                     _t0 = time.monotonic()
@@ -820,6 +823,9 @@ def index_profile(
                     except RepoCheckoutUnavailable:
                         raise  # reported by the collecting loop, no traceback
                     except Exception as e:
+                        # A stopped run (SIGTERM) closes the shared writer
+                        # under the running repos: not a repo failure.
+                        raise_if_stop_requested()
                         _elapsed = time.monotonic() - _t0
                         _logger.exception(
                             "Failed to index repo id=%d after %.1fs — continuing",
@@ -835,9 +841,8 @@ def index_profile(
                     finally:
                         pg_conn_local.close()
 
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=max_workers
-                ) as executor:
+                # A SIGTERM must not wait for the running repos (stop.py).
+                with stoppable_executor(max_workers) as executor:
                     futures = {executor.submit(_worker, repo): repo for repo in repos}
                     first_exc: BaseException | None = None
                     failed_repo_ids: list[tuple[int, str]] = []
@@ -1391,6 +1396,7 @@ def index_all(
 
         def _run_one_profile(profile_name: str) -> dict:
             """Per-profile worker: own pg_conn, own advisory lock."""
+            raise_if_stop_requested()
             pg_conn_thread = open_production_pg()
             try:
                 return index_profile(
@@ -1409,7 +1415,9 @@ def index_all(
             finally:
                 pg_conn_thread.close()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=profile_workers) as executor:
+        # A SIGTERM must not wait for the running profiles: a profile is hours
+        # of work and an embed request can take many minutes (stop.py).
+        with stoppable_executor(profile_workers) as executor:
             future_to_name = {
                 executor.submit(_run_one_profile, name): name
                 for name in profile_names

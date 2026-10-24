@@ -44,6 +44,7 @@ from src.constants import (
     normalize_embedder_model_name,
 )
 from src.embedding.instructions import INSTRUCT_NL_TO_CODE
+from src.indexer import stop as _stop
 from src.metrics import embedder_batch_duration_seconds
 
 _logger = logging.getLogger(__name__)
@@ -428,6 +429,9 @@ class _BaseHttpEmbedder:
         payload = self._build_payload(texts)
         last_err: Exception | None = None
         for i in range(self._retries):
+            # An index run asked to stop (SIGTERM) sends no new request: one
+            # slow-embedder request can take many minutes.
+            _stop.raise_if_stop_requested()
             try:
                 resp = http.post(self._url, json=payload)
                 resp.raise_for_status()
@@ -448,7 +452,7 @@ class _BaseHttpEmbedder:
                         "embed attempt %d/%d failed (%s) — retrying in %.1fs",
                         i + 1, self._retries, last_err, delay,
                     )
-                    time.sleep(delay)
+                    _stop.sleep_or_stop(delay)
         raise RuntimeError(
             f"{type(self).__name__} failed after {self._retries} attempts: {last_err}"
         )

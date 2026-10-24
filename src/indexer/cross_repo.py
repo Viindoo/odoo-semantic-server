@@ -1,14 +1,27 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # src/indexer/cross_repo.py
-"""Cross-repo dependency change propagation (M7 W14).
+"""Cross-repo dependency change propagation (M7 W14, narrowed 2026-10-24).
 
-When an incremental indexer run detects changed modules in repo A, any other
-repos whose modules have DEPENDS_ON edges into those changed modules must be
-re-indexed on the next run — their API surface may have silently changed.
+When an incremental indexer run re-writes modules of repo A, the modules of
+OTHER repos that depend on them may hold graph edges resolved against the old
+state of A's modules at their own write time (a ``USES_FIELD`` to a field A
+just added, an ``INHERITS_VIEW`` to a view A just moved, ...). Those modules
+are re-written on their repo's next run.
 
-This module provides the Neo4j query that finds such dependent repos.
+:func:`propagate_to_dependents` decides which: the modules that depend on a
+changed module directly or transitively (``DEPENDS_ON`` closure at the same
+version), flagged ``needs_rewrite`` in the ``module_presence`` ledger of
+every other repo that ships them. That repo's next run re-writes just those
+modules (sync path when its HEAD did not move), instead of a full re-index of
+the whole repo. A dependent repo without ledger rows at the version keeps the
+pre-ledger fallback: its ``repos.head_sha`` is NULLed (full re-index), for
+the repos of the DIRECT dependents only, as before.
+
+:func:`find_dependent_repos` (repo basenames of the direct dependents) stays
+for the reconcile, which resets the repos depending on retired modules.
 """
 import logging
+from dataclasses import dataclass, field
 
 _logger = logging.getLogger(__name__)
 
@@ -53,3 +66,155 @@ def find_dependent_repos(
             changed_names=list(changed_module_names),
         )
         return [row["repo"] for row in result.data() if row["repo"] is not None]
+
+
+_CYPHER_DIRECT_DEPENDENT_MODULES = """
+MATCH (dependent:Module {odoo_version: $version})-[r]->(changed:Module)
+WHERE type(r) = 'DEPENDS_ON' AND changed.odoo_version = $version
+  AND changed.name IN $frontier AND NOT dependent.name IN $seen
+RETURN DISTINCT dependent.name AS name, dependent.repo AS repo
+"""
+
+
+def find_dependent_modules(
+    driver,
+    odoo_version: str,
+    changed_module_names: set[str],
+) -> dict[str, tuple[str | None, int]]:
+    """Modules depending on *changed_module_names*, directly or transitively.
+
+    Breadth-first over ``DEPENDS_ON`` at *odoo_version*, one flat query per
+    hop (no variable-length pattern). A changed module is never its own
+    dependent; a dependency cycle terminates because a name is visited once.
+
+    Returns ``{name: (repo, depth)}``: ``repo`` is the Module node's ``repo``
+    property (the checkout basename, None on a stub), ``depth`` 1 for a
+    direct dependent, 2 for a dependent of a direct dependent, and so on.
+    """
+    if not changed_module_names:
+        return {}
+    found: dict[str, tuple[str | None, int]] = {}
+    seen: set[str] = set(changed_module_names)
+    frontier: set[str] = set(changed_module_names)
+    depth = 0
+    with driver.session() as session:
+        while frontier:
+            depth += 1
+            rows = session.run(
+                _CYPHER_DIRECT_DEPENDENT_MODULES,
+                version=odoo_version,
+                frontier=sorted(frontier),
+                seen=sorted(seen),
+            ).data()
+            frontier = set()
+            for row in rows:
+                name = row["name"]
+                if name in seen:
+                    continue
+                seen.add(name)
+                frontier.add(name)
+                found[name] = (row["repo"], depth)
+    return found
+
+
+@dataclass
+class PropagationResult:
+    """What one propagation did, for the run log and the tests.
+
+    ``marked``: ``{repo_id: [module names]}`` flagged ``needs_rewrite``.
+    ``reset_repo_ids``: repos whose ``head_sha`` was NULLed (no ledger rows at
+    the version, or the ledger could not be written). ``dependents``: every
+    dependent module found (direct + transitive), before the repo filter.
+    """
+    dependents: int = 0
+    marked: dict[int, list[str]] = field(default_factory=dict)
+    reset_repo_ids: list[int] = field(default_factory=list)
+
+    @property
+    def marked_count(self) -> int:
+        return sum(len(names) for names in self.marked.values())
+
+
+def propagate_to_dependents(
+    driver,
+    odoo_version: str,
+    changed_module_names: set[str],
+    *,
+    exclude_repo_id: int | None,
+    exclude_basenames: set[str],
+    presence,
+    repo_store,
+) -> PropagationResult:
+    """Flag the dependents of *changed_module_names* for a rewrite.
+
+    *presence* is the ledger store (``ModulePresenceStore``-like, or None
+    when the run has no ledger); *repo_store* the ``RepoStore``. The repo
+    being indexed is excluded by id from the ledger flags and by basename
+    from the fallback reset (it just wrote its own modules).
+
+    With a ledger: every ``present`` row of a dependent module at the version
+    in another repo is flagged ``needs_rewrite`` (one statement). Then the
+    repos of the direct dependents that have no ledger row at the version are
+    reset (``head_sha`` NULL), the only way to get them re-written. When the
+    flag write fails (lock timeout, connection error) the propagation falls
+    back to the reset for every such repo and logs a WARNING: a missed
+    propagation would leave stale edges, an extra full re-index costs time.
+
+    Without a ledger: the repos of the direct dependents are reset, as before
+    the ledger existed.
+    """
+    result = PropagationResult()
+    dependents = find_dependent_modules(driver, odoo_version, changed_module_names)
+    result.dependents = len(dependents)
+    if not dependents:
+        return result
+
+    direct_basenames = sorted({
+        repo for repo, depth in dependents.values()
+        if depth == 1 and repo is not None and repo not in exclude_basenames
+    })
+    fallback_ids: list[int] = (
+        repo_store.get_repo_ids_by_local_path_basenames(direct_basenames, odoo_version)
+        if direct_basenames else []
+    )
+    if len(fallback_ids) > len(direct_basenames):
+        # Two repos share a basename AT THE SAME odoo_version: both are
+        # candidates for the reset - over-eager but safe (ADR-0007 W14 note 2).
+        _logger.warning(
+            "Cross-repo dep propagation: basename collision detected - "
+            "%d repo IDs returned for %d basenames (%s). "
+            "All matching repos are reset candidates (safe, over-eager). "
+            "See ADR-0007 W14 for fix path.",
+            len(fallback_ids), len(direct_basenames), ", ".join(direct_basenames),
+        )
+
+    if presence is not None:
+        try:
+            pairs = presence.mark_dependents_needs_rewrite(
+                odoo_version, sorted(dependents),
+                exclude_repo_ids=[exclude_repo_id] if exclude_repo_id is not None else [],
+            )
+        except Exception as exc:  # noqa: BLE001 - fall back to the safe reset
+            _logger.warning(
+                "Cross-repo dep propagation: could not flag %d dependent module(s) "
+                "needs_rewrite at %s (%s) - resetting head_sha of their repos instead",
+                len(dependents), odoo_version, exc,
+            )
+            pairs = None
+        if pairs is not None:
+            for repo_id, name in pairs:
+                result.marked.setdefault(repo_id, []).append(name)
+            if fallback_ids:
+                try:
+                    fallback_ids = presence.repo_ids_without_rows(fallback_ids, odoo_version)
+                except Exception as exc:  # noqa: BLE001 - reset them all (safe)
+                    _logger.warning(
+                        "Cross-repo dep propagation: could not read which dependent "
+                        "repos have ledger rows at %s (%s) - resetting head_sha of all %d",
+                        odoo_version, exc, len(fallback_ids),
+                    )
+    if fallback_ids:
+        n = repo_store.reset_head_sha(fallback_ids)
+        if n:
+            result.reset_repo_ids = sorted(fallback_ids)
+    return result

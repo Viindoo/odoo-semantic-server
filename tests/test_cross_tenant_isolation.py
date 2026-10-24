@@ -627,6 +627,29 @@ def test_module_inspect_qweb_parent_no_cross_tenant_leak(world):
     assert f"{_PFX}globex_ptmpl" not in str(out), f"CROSS-TENANT QWEB PARENT LEAK: {out!r}"
 
 
+def test_view_lookup_of_a_qweb_template_no_cross_tenant_leak(world):
+    """entity_lookup(kind='view') falls through to QWeb templates: a tenant sees
+    its own template but never the other tenant's base, its template, or the
+    other tenant's extender of a template it can read."""
+    from src.mcp.server import _resolve_view
+    with as_tenant(world["acme"]):
+        own = _resolve_view(f"{_PFX}acme_tmpl", V)
+        foreign = _resolve_view(f"{_PFX}globex_ptmpl", V)
+    assert "not found" not in own, own
+    assert f"{_PFX}globex_ptmpl" not in own, f"CROSS-TENANT QWEB VIEW PARENT LEAK: {own!r}"
+    assert "not found" in foreign, f"CROSS-TENANT QWEB VIEW LEAK: {foreign!r}"
+    with as_tenant(world["globex"]):
+        theirs = _resolve_view(f"{_PFX}globex_ptmpl", V)
+    assert f"{_PFX}acme_tmpl" not in theirs, f"CROSS-TENANT QWEB EXTENDER LEAK: {theirs!r}"
+
+
+def test_view_lookup_of_a_qweb_template_admin_sees_parent(world):
+    from src.mcp.server import _resolve_view
+    with as_tenant(None):
+        out = _resolve_view(f"{_PFX}acme_tmpl", V)
+    assert f"Inherits from: {_PFX}globex_ptmpl" in out, out
+
+
 
 # ---------------------------------------------------------------------------
 # lane-mcpfix defect 6 - an admin narrowing by profile_name sees what a tenant

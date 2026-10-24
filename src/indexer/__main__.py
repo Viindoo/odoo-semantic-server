@@ -15,15 +15,19 @@ Subcommands:
                      retire, orphans, and rollout checks. Writes nothing.
 """
 import argparse
+import contextlib
 import logging
 import os
 import signal
 import sys
+import threading
+import time
 from datetime import UTC, datetime
 
 from src import config
 from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
+from src.indexer import stop as run_stop
 from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS, INFORMATIONAL_FINDING_KEYS
 from src.indexer.pipeline import (
     IndexRunError,
@@ -355,11 +359,16 @@ def _mark_job_terminated(job_id: int) -> None:
 
 
 def _install_sigterm_handler(job_id: int | None) -> None:
-    """On SIGTERM: record the error on the Web UI job (if any), then exit 1
-    through ``SystemExit`` so the run's ``finally`` blocks close its
-    connections."""
+    """On SIGTERM: ask the worker threads to stop (``src.indexer.stop``),
+    record the error on the Web UI job (if any), then exit 1 through
+    ``SystemExit`` so the run's ``finally`` blocks close its connections.
+
+    The handler runs in the main thread only. A worker thread of
+    ``--profile-workers`` / ``--max-workers`` stops at its next checkpoint;
+    one still blocked after the grace is ended by :func:`run_as_process`."""
 
     def _sigterm_handler(signum, frame):
+        run_stop.request_stop()
         if job_id is not None:
             _mark_job_terminated(job_id)
         sys.exit(1)
@@ -728,5 +737,62 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _exit_stopped_run(code) -> None:
+    """Exit a run that was asked to stop without waiting for blocked workers.
+
+    ``sys.exit`` would join every non-daemon thread (the executors' workers)
+    at interpreter exit, and a worker inside a slow embed request blocks for
+    up to the embedder read timeout. Wait up to ``stop.STOP_GRACE_S`` for them to
+    unwind at their checkpoints; any still running is abandoned with
+    ``os._exit``: the kernel closes the connections, PostgreSQL rolls back
+    the open transactions and releases the advisory locks."""
+    grace = run_stop.STOP_GRACE_S
+    deadline = time.monotonic() + grace
+    for thread in threading.enumerate():
+        if thread is threading.current_thread() or thread.daemon:
+            continue
+        thread.join(max(0.0, deadline - time.monotonic()))
+    stuck = [
+        t.name for t in threading.enumerate()
+        if t is not threading.current_thread() and not t.daemon and t.is_alive()
+    ]
+    if not stuck:
+        sys.exit(code)
+    exit_code = code if isinstance(code, int) and code != 0 else 1
+    logging.getLogger(__name__).warning(
+        "index run stopped: %d worker thread(s) still busy after %.0fs (%s), "
+        "exiting %d without waiting for them",
+        len(stuck), grace, ", ".join(stuck), exit_code,
+    )
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):  # the process is ending anyway
+            stream.flush()
+    os._exit(exit_code)
+
+
+def run_as_process(argv: list[str] | None = None) -> None:
+    """The ``python -m src.indexer`` entry: :func:`main`, then exit.
+
+    A run that was asked to stop (SIGTERM, Ctrl-C during a multi-worker run)
+    ends within ``stop.STOP_GRACE_S`` even when a worker thread is blocked (see
+    :func:`_exit_stopped_run`); any other run exits as ``sys.exit(main())``."""
+    try:
+        code = main(argv)
+    except SystemExit as exc:
+        if not run_stop.stop_requested():
+            raise
+        code = exc.code
+    except BaseException as exc:
+        if not run_stop.stop_requested():
+            raise
+        logging.getLogger(__name__).warning(
+            "index run stopped: %s: %s", type(exc).__name__, exc,
+        )
+        code = 1
+    if run_stop.stop_requested():
+        _exit_stopped_run(code)
+    sys.exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    run_as_process()

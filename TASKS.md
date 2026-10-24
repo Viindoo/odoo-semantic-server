@@ -670,7 +670,7 @@ Two prod CLI bugs surfaced when Group B operations ran against the deployed code
 
 - [ ] **OBS-3 internal profile 19.0 — not yet creatable**
   - Source: B-phase ops 2026-05-18 — all required internal repos only have `17.0`/`18.0`/`master` branches; none has `19.0`.
-  - Acceptance: when at least one required internal repo has `19.0` branch cut, create the profile via `python -m src.manager add-profile <internal_profile_19> --version 19.0`, then register repos by DB insert + cloner.
+  - Acceptance: when at least one required internal repo has `19.0` branch cut, create the profile via `python -m src.manager add-profile <internal_profile_19> --version 19.0 --parent standard_viindoo_19`, then register repos by DB insert + cloner.
   - Dependency: upstream branch cuts (external).
 
 ---
