@@ -93,6 +93,7 @@ from src.indexer.pipeline_repo import (
     modules_needing_rewrite,
     observe_lifecycle,
     plan_repo_run,
+    propagation_retry,
     regular_write_names,
     self_heal_rewrites,
     shared_parse_backlog,
@@ -384,6 +385,7 @@ def _audit_repo(repo: dict, *, conn, store, writer: ReadOnlyWriter) -> tuple[dic
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=False, ledger=True,
         degraded_changed=bool(degraded_changed or gap_changed),
+        retry_propagation=propagation_retry(repo, ledger=True),
     )
     entry["next_run"] = plan.mode
 

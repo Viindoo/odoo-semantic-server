@@ -416,7 +416,11 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
         code = EXIT_LIFECYCLE_ATTENTION
     else:
         code = 0
+    # A persistent item is printed once, under stale_propagation below.
+    stale = set(lifecycle.get("stale_propagation") or [])
     for item in lifecycle.get("propagation_unrecorded") or []:
+        if item in stale:
+            continue
         print(
             f"Cross-repo propagation not recorded, retried by the next run: {item}",
             file=sys.stderr,

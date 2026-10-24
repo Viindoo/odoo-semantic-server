@@ -379,7 +379,8 @@ def test_a_failed_walk_and_fallback_report_an_incomplete_propagation():
 
 def _run_index_repo(
     tmp_path, *, walk=None, bootstrap=(), meta_only=False, stack_extra=None, store=None,
-    attention=None, stored_head="a", full_reindex=False,
+    attention=None, stored_head="a", full_reindex=False, ledger_store=False,
+    presence_head=None,
 ):
     """``_index_repo`` on a real two-commit git repo (in-memory parsers, no DB).
 
@@ -392,8 +393,11 @@ def _run_index_repo(
     it after a raising run. *attention* is the repo row's
     ``lifecycle_attention`` from the previous run. *stored_head*: the
     ``repos.head_sha`` the store reports, ``"a"`` (commit A), ``"b"`` (HEAD:
-    nothing moved) or None (reset). Returns ``(fake_store, walk_mock,
-    parsed_module_names, counters)``.
+    nothing moved) or None (reset). *ledger_store*: ``_presence_store``
+    returns a fake ledger whose ``presence_head_sha`` is *presence_head*
+    (same labels) while this repo's lifecycle is off (no ledger commit), so
+    the attention is stored and read back like with a ledger. Returns
+    ``(fake_store, walk_mock, parsed_module_names, counters)``.
     """
     import contextlib
     from unittest.mock import MagicMock, patch
@@ -452,6 +456,10 @@ def _run_index_repo(
         stack.enter_context(
             patch.object(_pr, "shared_parse_bootstrap", return_value=list(bootstrap))
         )
+        if ledger_store:
+            _install_ledger_store_without_lifecycle(
+                stack, {"a": sha_a, "b": _head(repo), None: None}[presence_head],
+            )
         if stack_extra is not None:
             stack_extra(stack)
         counters = _index_repo(
@@ -775,4 +783,223 @@ def test_once_is_a_warning_twice_in_a_row_is_an_alert(capsys):
     twice = summary(True)
     assert twice["needs_attention"] is True
     assert _lifecycle_exit_code(twice) == EXIT_LIFECYCLE_ATTENTION
-    assert "stale_propagation: repo id=7" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "stale_propagation: repo id=7" in err
+    # Printed once, and never as "retried by the next run": it was not.
+    assert err.count("repo id=7 (file://up)") == 1
+    assert "retried by the next run" not in err
+
+
+# ---------------------------------------------------------------------------
+# An unrecorded propagation is retried in every run mode (round 3, MAJOR 1)
+# ---------------------------------------------------------------------------
+
+
+def _with_stored_attention(stack):
+    """The harness has no ledger store; the retry mark is read back from the
+    repo's ``lifecycle_attention`` as with one."""
+    from unittest.mock import patch
+
+    import src.indexer.pipeline_repo as _pr
+    real = _pr.propagation_retry
+    stack.enter_context(patch.object(
+        _pr, "propagation_retry", side_effect=lambda repo, ledger: real(repo, ledger=True),
+    ))
+
+
+def _stacked(*extras):
+    def apply(stack):
+        for extra in extras:
+            extra(stack)
+    return apply
+
+
+def _degraded(name):
+    def apply(stack):
+        from unittest.mock import patch
+
+        import src.indexer.pipeline_repo as _pr
+        stack.enter_context(patch.object(_pr, "_degraded_state", return_value=({}, {name})))
+    return apply
+
+
+def _two_runs(tmp_path, *, first: dict, second: dict, second_fails: bool):
+    """Run 1 fails to record its propagation; run 2 starts from run 1's
+    attention. Returns run 2's ``(store, walk, parsed, counters)``."""
+    _s1, _w1, _p1, c1 = _run_index_repo(
+        tmp_path / "run1", walk=RuntimeError("Neo4j TransientError"),
+        stack_extra=_stacked(_walk_and_fallback_fail, *first.pop("extra", ())), **first,
+    )
+    line = c1["propagation"]["unrecorded"]
+    assert line and c1["propagation"]["persistent"] is False
+    walk2 = RuntimeError("Neo4j TransientError") if second_fails else {
+        "dep_mod": ("downstream_repo", 1),
+    }
+    extras = [_with_stored_attention, *second.pop("extra", ())]
+    if second_fails:
+        extras.append(_walk_and_fallback_fail)
+    return _run_index_repo(
+        tmp_path / "run2", walk=walk2, attention=line, stack_extra=_stacked(*extras),
+        **second,
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        # Full run after a head_sha reset, diffed against the ledger's presence
+        # head: in run 2 that baseline holds nothing (presence at HEAD).
+        ({"stored_head": None, "ledger_store": True, "presence_head": "a"},
+         {"stored_head": None, "ledger_store": True, "presence_head": "b"}),
+        # Sync path at an unchanged HEAD: the degraded one-shot seed is gone in
+        # run 2, which would skip.
+        ({"stored_head": "b", "extra": (_degraded("mod_old"),)}, {"stored_head": "b"}),
+        # Incremental run whose only seed was one-shot (a degraded module; the
+        # diff touched no module): run 2 repeats the diff but not the seed.
+        ({"meta_only": True, "extra": (_degraded("mod_old"),)}, {"meta_only": True}),
+    ],
+    ids=["full", "sync", "incremental-one-shot"],
+)
+def test_the_next_run_retries_an_unrecorded_propagation(tmp_path, first, second):
+    _store, walk, _parsed, counters = _two_runs(
+        tmp_path, first=dict(first), second=dict(second), second_fails=False,
+    )
+
+    walk.assert_called_once()
+    assert "mod_old" in walk.call_args.args[2], "the retry re-seeds every present module"
+    assert counters["propagation"] == {}, "recorded this time: no attention line"
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ({"stored_head": None, "ledger_store": True, "presence_head": "a"},
+         {"stored_head": None, "ledger_store": True, "presence_head": "b"}),
+        ({"stored_head": "b", "extra": (_degraded("mod_old"),)}, {"stored_head": "b"}),
+        ({"meta_only": True, "extra": (_degraded("mod_old"),)}, {"meta_only": True}),
+    ],
+    ids=["full", "sync", "incremental-one-shot"],
+)
+def test_a_second_unrecorded_run_is_exit_3_in_every_mode(tmp_path, first, second):
+    from src.indexer import pipeline as pipeline_mod
+    from src.indexer.__main__ import EXIT_LIFECYCLE_ATTENTION, _lifecycle_exit_code
+
+    store, _walk, _parsed, counters = _two_runs(
+        tmp_path, first=dict(first), second=dict(second), second_fails=True,
+    )
+
+    assert counters["propagation"]["persistent"] is True
+    store.update_repo_head_sha.assert_not_called()
+    lc = pipeline_mod._empty_lifecycle()
+    pipeline_mod._absorb_repo_lifecycle(lc, {"id": 7, "url": "file://upstream"}, counters)
+    assert _lifecycle_exit_code(pipeline_mod._finish_lifecycle(lc)) == EXIT_LIFECYCLE_ATTENTION
+
+
+def test_a_retry_mark_forces_a_run_at_an_unchanged_head():
+    from pathlib import Path
+
+    from src.indexer import pipeline_repo as pr
+
+    skip = pr.plan_repo_run(Path("/x"), "h", "h", "h", [], full_reindex=False, ledger=True)
+    retry = pr.plan_repo_run(
+        Path("/x"), "h", "h", "h", [], full_reindex=False, ledger=True,
+        retry_propagation=True,
+    )
+
+    assert skip.mode == pr.RUN_SKIP
+    assert retry.mode == pr.RUN_SYNC
+
+
+def test_the_retry_mark_needs_a_ledger_and_the_previous_runs_line():
+    from src.indexer.pipeline_repo import PROPAGATION_UNRECORDED_MARK, propagation_retry
+
+    marked = {"lifecycle_attention": f"x; {PROPAGATION_UNRECORDED_MARK} for 2 module(s)"}
+    assert propagation_retry(marked, ledger=True) is True
+    assert propagation_retry(marked, ledger=False) is False
+    assert propagation_retry({"lifecycle_attention": "pre-scan fetch failed"}, ledger=True) is False
+    assert propagation_retry({}, ledger=True) is False
+
+
+def _commit(tmp_path, *, hold_presence: bool, pending: bool = False):
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from src.indexer.pipeline_repo import _commit_lifecycle
+    from src.indexer.registry import build_registry_scan
+    from tests.test_pipeline_refresh import _add_module, _head, _make_repo
+
+    repo = _make_repo(tmp_path / "addons", branch="17.0")
+    _add_module(repo, "mod_a")
+    head = _head(repo)
+    scan = build_registry_scan(str(repo), "17.0", branch="17.0")
+    presence = MagicMock()
+    presence.present_owner_basenames.return_value = {}
+    presence.mark_retire_pending.return_value = ["gone_mod"] if pending else []
+    writer = MagicMock()
+    writer.stamp_module_presence.return_value = len(scan.present_names())
+    gates = SimpleNamespace(kept_names=set(), retire_allowed=True, tripped=[])
+    transitions = SimpleNamespace(
+        retired=(SimpleNamespace(name="gone_mod", path="gone_mod"),) if pending else (),
+    )
+    counters = _commit_lifecycle(
+        presence, writer, {"id": 7, "local_path": str(repo), "url": "file://addons"},
+        scan=scan, rows=[], transitions=transitions, gates=gates, current_head=head,
+        diff_base=None, owning_profile="p", retire=True, written=set(), rewrite_names=[],
+        attention=[], hold_presence=hold_presence,
+    )
+    return presence, counters
+
+
+def test_an_unrecorded_propagation_holds_the_ledger_presence_head(tmp_path):
+    """The presence head is the "index reflects HEAD" claim the next run's skip
+    and a full run's baseline read: it must not advance (nor be handed to the
+    reconcile) while other repos' dependents were not flagged."""
+    presence, counters = _commit(tmp_path, hold_presence=True)
+
+    presence.mark_presence_synced.assert_not_called()
+    assert counters["presence_synced"] is False
+    assert counters["presence_deferred_head"] is None
+    presence.commit_observed.assert_called_once()  # the rows themselves are committed
+
+
+def test_a_recorded_propagation_still_syncs_the_ledger(tmp_path):
+    presence, counters = _commit(tmp_path, hold_presence=False)
+
+    presence.mark_presence_synced.assert_called_once()
+    assert counters["presence_synced"] is True
+
+
+def test_a_repo_whose_lifecycle_is_off_never_seeds_every_module_on_a_reset(tmp_path):
+    """MINOR 1: a ledger store exists but this repo's lifecycle is off (no git
+    HEAD / branch), so it never gets a presence head: a reset must not seed
+    every module, or two such repos depending on each other bounce."""
+    store, walk, _parsed, _c = _run_index_repo(
+        tmp_path, walk={"dep_mod": ("downstream_repo", 1)}, stored_head=None,
+        ledger_store=True,
+    )
+
+    walk.assert_not_called()
+    store.update_repo_head_sha.assert_called_once()
+
+
+def _install_ledger_store_without_lifecycle(stack, presence_head):
+    """``_presence_store`` returns a store, but observe_lifecycle reports the
+    lifecycle off for this repo (as for a checkout without a branch)."""
+    from dataclasses import replace
+    from unittest.mock import MagicMock, patch
+
+    import src.indexer.pipeline as _pipeline
+    import src.indexer.pipeline_repo as _pr
+
+    fake = MagicMock()
+    fake.presence_head_sha.return_value = presence_head
+    fake.needs_rewrite_names.return_value = []
+    fake.mark_dependents_needs_rewrite.return_value = []
+    fake.repo_ids_without_rows.return_value = []
+    stack.enter_context(patch.object(_pipeline, "_presence_store", return_value=fake))
+    real = _pr.observe_lifecycle
+
+    def off(repo, scan, presence, current_head, **kw):
+        return replace(real(repo, scan, None, current_head, **kw), lifecycle_on=False)
+
+    stack.enter_context(patch.object(_pr, "observe_lifecycle", side_effect=off))

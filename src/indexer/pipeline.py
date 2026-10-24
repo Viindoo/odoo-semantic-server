@@ -525,13 +525,13 @@ def _probe_silent_embedder(lc: dict, embedder) -> None:
     whatever one short text would get. A failed probe leaves the flag unset.
 
     The probe goes through the embedder's short query client when it has one
-    (``embed_short``), so a hung embedder costs at most its retries
-    (``retries``, 3) times one attempt's connect + write + read timeouts
-    (``EMBEDDER_TIMEOUT_CONNECT`` 10s + ``EMBEDDER_TIMEOUT_WRITE`` 30s +
-    ``EMBEDDER_TIMEOUT_READ_QUERY`` 30s) plus the backoff between attempts
-    (``EMBEDDER_RETRY_BACKOFF_BASE`` 2s, then 4s): 3 x 70 + 6 = 216s (about
-    3.6 min) with the defaults, about 96s for an embedder that accepts and
-    never answers. Not the 1200s batch read timeout. Runs once per run:
+    (``embed_short``), not the 1200s batch read timeout. With the defaults an
+    embedder that accepts the connection and never answers - the realistic
+    hung case - costs 3 attempts x ``EMBEDDER_TIMEOUT_READ_QUERY`` 30s plus
+    the 2s and 4s backoff (``EMBEDDER_RETRY_BACKOFF_BASE``): about 96s. The
+    upper bound, every attempt also spending its full connect
+    (``EMBEDDER_TIMEOUT_CONNECT`` 10s) and write (``EMBEDDER_TIMEOUT_WRITE``
+    30s) timeouts, is 3 x 70 + 6 = 216s (about 3.6 min). Runs once per run:
     ``index_profile`` when it ends the run, ``index_all`` for the merged run
     (it calls ``index_profile`` with ``reconcile=False``)."""
     if embedder is None or lc.get("embedder_answered"):

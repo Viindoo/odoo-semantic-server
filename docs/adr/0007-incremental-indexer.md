@@ -391,31 +391,67 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
        has that commit (manual `--full`, a force-pushed old head), else the
        ledger's `presence_head_sha`, which a `head_sha` reset leaves in place
        (`full_run_changed_names`). With no baseline left: every module when
-       the repo has a ledger (a first index; other repos' modules were written
-       against its absence), none without one. That last rule is the
-       ping-pong guard for full runs: a ledger-less repo cannot tell a first
-       index from a reset, and seeding every module after each reset would
-       bounce full re-indexes between ledger-less repos that depend on each
-       other. With a ledger the loop cannot start: a full run caused only by a
-       propagation fallback reset diffs against `presence_head_sha`, finds no
-       source change and seeds nothing new. Module-level flags plus vector
-       reuse keep what a full-run propagation sets off cheap.
-     - *Ordering and failure.* The propagation runs BEFORE `repos.head_sha`
-       advances: a stop (SIGTERM) or an error between the two used to lose it
-       for good (the next run saw an unchanged HEAD). The flags and resets are
-       idempotent, so a repeated diff costs only time. A failed dependency
-       walk logs a WARNING, resets the repos of the DIRECT dependents at once
-       (`find_dependent_repos`, best effort) and leaves the propagation
-       incomplete: the transitive dependents are unknown. That, or a ledger /
-       repo write that raises, keeps `head_sha` so the next run repeats the
-       diff and its propagation; the repo is not reported failed (its own
-       writes succeeded). It is visible: a WARNING, a `lifecycle_attention`
-       line ("cross-repo propagation not recorded ... head_sha kept at
-       <sha>") and a `propagation_unrecorded` line on the CLI's stderr. Once
-       is exit 0, like one failed fetch: the retry is automatic. The same repo
-       not recorded in two consecutive runs (the marker is read back from its
-       previous attention) is `stale_propagation`, exit 3 and an alert: the
-       retry does not heal it and its dependents keep stale edges.
+       the run updates the ledger (`lifecycle_on`: a first index; other
+       repos' modules were written against its absence), none otherwise. That
+       last rule is the ping-pong guard for full runs. It keys on
+       `lifecycle_on`, not on "a ledger store exists": a repo without a
+       registered branch or git HEAD never gets a presence head, so a reset
+       would leave it without baseline forever, and seeding every module after
+       each reset would bounce full re-indexes between two such repos (or two
+       ledger-less ones) that depend on each other. With the lifecycle on the
+       loop cannot start: a full run caused only by a propagation fallback
+       reset diffs against `presence_head_sha`, finds no source change and
+       seeds nothing new. Module-level flags plus vector reuse keep what a
+       full-run propagation sets off cheap.
+       One-time cost: the sync path now seeds re-evaluated parser-gap records,
+       and a gap record is re-evaluated when the indexer code its fingerprint
+       hashes changes (`prune_evidence.prune_code_token`, which covers `pipeline_repo.py`
+       among others). So the first nightly after a deploy that touches those
+       files (this change included) re-evaluates every parser-gap record and
+       flags the dependents of those modules once: a heavier nightly, once.
+     - *Ordering and failure.* The propagation runs BEFORE the repo's ledger
+       commit and its `repos.head_sha` advance: a stop (SIGTERM) or an error
+       in between used to lose it for good (the next run saw an unchanged
+       HEAD). The flags and resets are idempotent, so a repeated diff costs
+       only time. A failed dependency walk logs a WARNING, resets the repos of
+       the DIRECT dependents at once (`find_dependent_repos`, best effort) and
+       leaves the propagation incomplete: the transitive dependents are
+       unknown. That, or a ledger / repo write that raises, is "not recorded":
+       - `head_sha` is kept, and the ledger's `presence_head_sha` neither
+         advances nor is handed to the reconcile (`_commit_lifecycle`
+         `hold_presence`, like a stamp shortfall). The presence head is the
+         ADR-0056 "the index reflects this HEAD" claim that the skip decision
+         and a later full run's baseline read; other repos' graphs do not
+         reflect this HEAD yet. The observed rows are still committed (they
+         describe the HEAD tree), so retirement decisions stay right; the
+         reconcile sees the repo as not synced and holds what an unsynced
+         repo holds, for one run or until the alert.
+       - A `lifecycle_attention` line carries `PROPAGATION_UNRECORDED_MARK`
+         ("cross-repo propagation not recorded ... head_sha kept at <sha> and
+         the ledger presence head not advanced"); the CLI prints a
+         `propagation_unrecorded` line on stderr.
+       - The next run reads the mark back (`propagation_retry`): it is never
+         skipped and re-seeds every present module of the repo, in every run
+         mode. Without that a full run's diff baseline, or a sync run's
+         one-shot seed, may not show again and the retry would be silently
+         empty. Over-eager but rare.
+       - Once is exit 0, like one failed fetch: the retry is automatic. The
+         same repo not recorded in the next run as well is
+         `stale_propagation` (printed once, under that key), exit 3 and an
+         alert: the retry does not heal it and its dependents keep stale
+         edges. The repo is never reported failed: its own writes succeeded.
+       - Without a ledger (no `_presence_store`) the attention is only logged:
+         no mark is stored, so there is no forced retry and no exit 3. The
+         kept `head_sha` still makes the next incremental run repeat its diff
+         and propagation; a ledger-less full or sync run has nothing to retry
+         with.
+       - Cost of a walk that keeps failing in incremental mode (e.g. a query
+         that times out on a huge closure): every night `head_sha` stays, so
+         the L..HEAD re-parse grows with every new commit, the direct
+         dependents' repos are reset every night (a nightly full re-index of
+         each, cheap in embed calls thanks to vector reuse but not in parse
+         and graph writes), and the alert fires from night 2
+         (`stale_propagation`). Fix the walk; the backlog clears in one run.
      - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
        longer embeds a chunk whose text equals a row the module already has
        (same version and profile) embedded by the same `embedding_model` and
@@ -446,9 +482,14 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
        per module, `embed_attempted_fresh` is the rest) AND they fit in one
        batch (`QUIET_NIGHT_MAX_CHUNKS` = `EMBEDDER_MAX_BATCH`). Such a run
        probes the embedder once at its end (`pipeline._probe_silent_embedder`
-       through `embed_short`, the short query read timeout; `index_all`
+       through `embed_short`, the short query read timeout: about 96s on an
+       embedder that accepts and never answers, 216s at most; `index_all`
        probes once for the merged run) and is no outage when it answers. Any
-       other "sent N, got 0" is `embedder_down` without a probe. A chunk sent
+       other "sent N, got 0" is `embedder_down` without a probe. Deliberate
+       trade-off: a git-changed or self-healed module whose only new chunk a
+       healthy embedder refuses is `embedder_down` (exit 3, alert) that night;
+       the module is a retry the next night, so the shape is a quiet night
+       then and it clears. One false alert beats a silent outage. A chunk sent
        for a retry-only module is by construction one with no stored vector
        for unchanged text, i.e. one refused before; the batch cap bounds the
        case where an indexer change altered every chunk text of retried

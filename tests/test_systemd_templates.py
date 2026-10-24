@@ -439,28 +439,44 @@ def test_the_guard_fails_closed_when_it_cannot_tell(tmp_path, state, pgrep, says
 
 
 def test_the_guard_sees_a_real_index_process_and_not_itself(tmp_path):
-    """Real pgrep: a process whose command line is a Web UI index job is
-    refused; with none running the guard (whose own command line holds the
-    pattern) lets the backup run."""
-    import os
+    """Real pgrep, real regex: a process whose command line is a Web UI index
+    job is refused; with none running the guard (whose own command line holds
+    the pattern) lets the backup run.
 
+    Repeatable on a box where the same user runs an indexer: ``pgrep`` is
+    wrapped to the real binary restricted to this test's children
+    (``-P <pytest pid>``), so only the fake job and the guard's own shell can
+    match; the fake job also carries a unique marker."""
+    import os
+    import uuid
+
+    real_pgrep = shutil.which("pgrep")
+    if not real_pgrep:
+        pytest.skip("pgrep not available")
     stub = tmp_path / "systemctl"
     stub.write_text("#!/bin/sh\necho inactive\n")
     stub.chmod(0o755)
+    wrapper = tmp_path / "pgrep"
+    wrapper.write_text(f'#!/bin/sh\nexec {real_pgrep} -P {os.getpid()} "$@"\n')
+    wrapper.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ.get('PATH', '/usr/bin:/bin')}"}
-    if not shutil.which("pgrep"):
-        pytest.skip("pgrep not available")
     clean = subprocess.run(
         _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
     )
+    marker = f"osm-guard-test-{uuid.uuid4().hex}"
     fake = subprocess.Popen([
         "bash", "-c",
-        f'exec -a "{tmp_path}/bin/python -m src.indexer index-repo --profile p --job-id 9" '
-        "sleep 30",
+        f'exec -a "{tmp_path}/bin/python -m src.indexer index-repo --profile {marker} '
+        '--job-id 9" sleep 30',
     ])
     try:
         import time
-        time.sleep(0.3)
+        deadline = time.monotonic() + 5
+        while marker not in Path(f"/proc/{fake.pid}/cmdline").read_bytes().decode(
+            errors="replace",
+        ):
+            assert time.monotonic() < deadline, "the fake index job never started"
+            time.sleep(0.05)
         busy = subprocess.run(
             _backup_condition_argv(), capture_output=True, text=True, env=env, timeout=10,
         )
