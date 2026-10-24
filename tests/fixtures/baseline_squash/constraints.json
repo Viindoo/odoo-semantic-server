@@ -312,6 +312,18 @@
     "def": "UNIQUE (repo_id, name)"
   },
   {
+    "table_name": "module_presence_pending_rewrite",
+    "conname": "module_presence_pending_rewrite_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (odoo_version, repo_id, name)"
+  },
+  {
+    "table_name": "module_presence_pending_rewrite",
+    "conname": "module_presence_pending_rewrite_repo_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (repo_id) REFERENCES repos(id) ON DELETE CASCADE"
+  },
+  {
     "table_name": "pattern_feedback",
     "conname": "pattern_feedback_api_key_id_fkey",
     "contype": "f",
