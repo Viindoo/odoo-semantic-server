@@ -167,16 +167,19 @@ def propagate_to_dependents(
     from the fallback reset (it just wrote its own modules).
 
     With a ledger: every ``present`` row of a dependent module at the version
-    in another repo is flagged ``needs_rewrite`` (one statement); a dependent
-    whose repo has no ``present`` row of it yet (it wrote the module to the
-    graph, its ledger commit is still to come) gets a pending entry that
-    repo's ledger commit applies (``record_pending_rewrites``). Then the
+    in another repo is flagged ``needs_rewrite``; a dependent whose repo has
+    no ``present`` row of it yet (it wrote the module to the graph, its
+    ledger commit is still to come) gets a pending entry that repo's ledger
+    commit applies - both in one transaction and one ledger lock hold
+    (``flag_dependents``). Then the
     repos shipping a dependent (any depth) that have no ledger row at the
     version are reset (``head_sha`` NULL), the only way to get them
     re-written. When the flag write fails (lock timeout, connection error)
     the propagation falls back to the reset of the repos of EVERY dependent
-    found, direct or transitive, and logs a WARNING: a missed propagation
-    would leave stale edges, an extra full re-index costs time.
+    found, direct or transitive, logs a WARNING and returns
+    ``complete=False`` (a reset is lost when the dependent repo's run is in
+    progress, and no pending entry was written): a missed propagation would
+    leave stale edges, an extra full re-index costs time.
 
     Without a ledger: the repos of every dependent found are reset. (Before
     the transitive walk only the direct dependents' repos were; a full
@@ -237,40 +240,35 @@ def propagate_to_dependents(
         )
 
     if presence is not None:
+        # The direct flags and, for a dependent its repo wrote to the graph
+        # without a ledger row yet (a run in progress, a new module), a pending
+        # entry that repo's ledger commit applies (migration 0007): one
+        # transaction under one ledger lock hold (flag_dependents), so that
+        # repo's ledger commit cannot slip in between and lose the module.
+        pending = sorted({
+            (repo, name) for name, (repo, _depth) in dependents.items()
+            if repo is not None and repo not in exclude_basenames
+        })
         try:
-            pairs = presence.mark_dependents_needs_rewrite(
-                odoo_version, sorted(dependents),
+            pairs, result.pending = presence.flag_dependents(
+                odoo_version, sorted(dependents), pending=pending,
                 exclude_repo_ids=[exclude_repo_id] if exclude_repo_id is not None else [],
             )
-        except Exception as exc:  # noqa: BLE001 - fall back to the safe reset
+        except Exception as exc:  # noqa: BLE001 - reset, and retried next run
             _logger.warning(
                 "Cross-repo dep propagation: could not flag %d dependent module(s) "
                 "needs_rewrite at %s (%s) - resetting head_sha of the %d repo(s) "
-                "shipping them instead",
+                "shipping them; the propagation is retried by the next run",
                 len(dependents), odoo_version, exc, len(fallback_ids),
             )
             pairs = None
+            # A reset is lost when the dependent repo's run is in progress (it
+            # re-stamps head_sha at its end), and no pending entry was
+            # written: not recorded, so the caller keeps its head_sha.
+            result.complete = False
         if pairs is not None:
             for repo_id, name in pairs:
                 result.marked.setdefault(repo_id, []).append(name)
-            # A dependent its repo wrote to the graph without a ledger row yet
-            # (a run in progress, a new module): a pending entry that repo's
-            # ledger commit applies (migration 0007). A failure leaves the
-            # propagation incomplete, so the caller keeps its head_sha.
-            pending = sorted({
-                (repo, name) for name, (repo, _depth) in dependents.items()
-                if repo is not None and repo not in exclude_basenames
-            })
-            if pending:
-                try:
-                    result.pending = presence.record_pending_rewrites(odoo_version, pending)
-                except Exception as exc:  # noqa: BLE001 - retried with the propagation
-                    _logger.warning(
-                        "Cross-repo dep propagation: could not record pending flags for "
-                        "%d dependent module(s) at %s (%s); the propagation is retried",
-                        len(pending), odoo_version, exc,
-                    )
-                    result.complete = False
             if fallback_ids:
                 try:
                     fallback_ids = presence.repo_ids_without_rows(fallback_ids, odoo_version)

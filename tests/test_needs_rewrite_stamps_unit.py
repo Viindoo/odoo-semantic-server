@@ -43,6 +43,7 @@ class _Cursor:
             self._rows = [(self.conn.migrated, self.conn.migrated)]
         elif "pg_try_advisory_lock" in sql:
             self.conn.locked = True
+            self.conn.lock_taken = True
             self._rows = [(True,)]
         elif "pg_advisory_unlock" in sql:
             self.conn.locked = False
@@ -50,11 +51,15 @@ class _Cursor:
         elif "SELECT DISTINCT odoo_version" in sql:
             self._rows = [{"odoo_version": "17.0"}]
         elif "SELECT name FROM module_presence" in sql:
-            self.conn.read_under_lock = self.conn.locked
-            self._rows = [{"name": "mod_a"}]
+            self.conn.read_under_lock = self.conn.read_under_lock or self.conn.locked
+            self._rows = [{"name": n} for n in self.conn.flagged]
         elif "clock_timestamp() AS t" in sql:
             self._rows = [{"t": T0}]
         else:
+            # A write: record whether it ran under the lock and in which
+            # transaction (commits so far).
+            self.conn.writes.append((" ".join(sql.split()), self.conn.locked,
+                                     self.conn.commits, self.conn.autocommit))
             self._rows = []
             self.rowcount = 1
 
@@ -68,17 +73,21 @@ class _Cursor:
 class _Conn:
     autocommit = True
 
-    def __init__(self, *, migrated: bool) -> None:
+    def __init__(self, *, migrated: bool, flagged=("mod_a",)) -> None:
         self.migrated = migrated
+        self.flagged = list(flagged)
         self.log: list = []
+        self.writes: list = []
         self.locked = False
+        self.lock_taken = False
         self.read_under_lock = False
+        self.commits = 0
 
     def cursor(self, cursor_factory=None):
         return _Cursor(self)
 
     def commit(self) -> None:
-        return None
+        self.commits += 1
 
     def rollback(self) -> None:
         return None
@@ -130,7 +139,75 @@ def test_a_clear_without_a_read_is_by_name():
     _store().clear_needs_rewrite(7, ["mod_a"], conn=conn)
 
     (sql, params), = conn.updates()
-    assert "needs_rewrite_at" not in sql and params == (7, ["mod_a"])
+    assert "needs_rewrite_at <=" not in sql and params == (7, ["mod_a"])
+
+
+def test_a_cleared_flag_drops_its_stamp():
+    conn = _Conn(migrated=True)
+
+    _store().clear_needs_rewrite(7, ["mod_a"], read_at=T0, conn=conn)
+
+    (sql, _params), = conn.updates()
+    assert "needs_rewrite = FALSE" in sql and "needs_rewrite_at = NULL" in sql
+
+
+def test_a_run_without_flags_reads_the_clock_without_waiting_for_the_lock():
+    """Most runs have no flag: they must not wait (up to 900s, then fail) for
+    a reconcile holding the ledger lock. The clear only touches names in the
+    read set, and the pending application needs only the clock."""
+    conn = _Conn(migrated=True, flagged=())
+
+    names, read_at = _store().needs_rewrite_snapshot(7, ["17.0"], conn=conn)
+
+    assert (names, read_at) == ([], T0)
+    assert conn.lock_taken is False
+
+
+def test_the_direct_flags_and_the_pending_entries_share_one_lock_and_transaction():
+    """A dependent repo's commit_observed takes the same lock: between two
+    transactions it could create the row step 1 could not flag and step 2
+    then skips. One hold, one commit."""
+    conn = _Conn(migrated=True)
+
+    _store().flag_dependents(
+        "17.0", ["mod_a"], pending=[("dep_repo", "new_mod")], exclude_repo_ids=[3], conn=conn,
+    )
+
+    flag = [w for w in conn.writes if w[0].startswith("UPDATE module_presence")]
+    insert = [w for w in conn.writes if w[0].startswith("INSERT INTO module_presence_pending")]
+    assert flag and insert
+    (_s1, locked1, tx1, auto1), = flag
+    (_s2, locked2, tx2, auto2), = insert
+    assert locked1 and locked2, "both under the ledger lock"
+    assert tx1 == tx2 and not auto1 and not auto2, "in one transaction"
+    assert conn.commits == tx1 + 1, "committed once, after both"
+
+
+def test_pending_entries_are_keyed_by_repo_and_found_by_the_ledgers_basename():
+    """Each same-basename repo gets its own entry (none consumes another's),
+    resolved from module_presence.repo_basename, not a regex over the path."""
+    conn = _Conn(migrated=True)
+
+    _store().record_pending_rewrites("17.0", [("dep_repo", "new_mod")], conn=conn)
+    _store().apply_pending_rewrites(7, "17.0", ["new_mod"], written=set(), read_at=T0,
+                                    conn=conn)
+
+    insert = next(w[0] for w in conn.writes if w[0].startswith("INSERT"))
+    apply = next(w[0] for w in conn.writes if w[0].startswith("WITH hit"))
+    assert "owner.repo_basename = u.b" in insert and "regexp_replace" not in insert
+    assert "(odoo_version, repo_id, name)" in insert
+    assert "p.repo_id = %s" in apply
+    assert "GREATEST(mp.needs_rewrite_at, hit.flagged_at)" in apply
+
+
+def test_the_migration_probe_follows_the_search_path():
+    conn = _Conn(migrated=True)
+
+    _store().needs_rewrite_snapshot(7, ["17.0"], conn=conn)
+
+    probe = next(sql for sql, _ in conn.log if "information_schema.columns" in sql)
+    assert "table_schema = current_schema()" in probe
+    assert "to_regclass('module_presence_pending_rewrite')" in probe
 
 
 def test_before_the_migration_the_store_works_as_before(caplog):

@@ -101,13 +101,13 @@ def test_a_dependent_without_a_ledger_row_is_flagged_when_its_row_is_written(mig
     time.sleep(0.01)
     # ... upstream changes base_mod and walks: known_dep has a row (flagged
     # directly), new_dep and fresh_dep do not (written to the graph only).
-    store.mark_dependents_needs_rewrite(V, ["known_dep", "new_dep", "fresh_dep"],
-                                        exclude_repo_ids=[upstream], conn=migrated)
-    written = store.record_pending_rewrites(
-        V, [("dep_repo", "known_dep"), ("dep_repo", "new_dep"), ("dep_repo", "fresh_dep")],
-        conn=migrated,
+    pairs, written = store.flag_dependents(
+        V, ["known_dep", "new_dep", "fresh_dep"],
+        pending=[("dep_repo", "known_dep"), ("dep_repo", "new_dep"), ("dep_repo", "fresh_dep")],
+        exclude_repo_ids=[upstream], conn=migrated,
     )
-    assert written == 2, "known_dep has a present row: no pending entry"
+    assert pairs == [(dep, "known_dep")]
+    assert written == 2, "known_dep has a present row: flagged directly, no pending entry"
 
     # The dependent's ledger commit creates the rows, then applies the entries.
     _observe(store, migrated, dep, ["known_dep", "new_dep", "fresh_dep"])
@@ -126,11 +126,13 @@ def test_a_pending_flag_older_than_the_runs_read_is_dropped_for_a_rewritten_modu
     One it did not re-write keeps the flag."""
     store = _store()
     dep = _repo(migrated, "dep_repo")
-    store.record_pending_rewrites(V, [("dep_repo", "parsed_after"), ("dep_repo", "untouched")],
-                                  conn=migrated)
+    _observe(store, migrated, dep, ["older_mod"])  # the repo has ledger rows at V
+    assert store.record_pending_rewrites(
+        V, [("dep_repo", "parsed_after"), ("dep_repo", "untouched")], conn=migrated,
+    ) == 2
     time.sleep(0.01)
     _names, read_at = store.needs_rewrite_snapshot(dep, [V], conn=migrated)
-    _observe(store, migrated, dep, ["parsed_after", "untouched"])
+    _observe(store, migrated, dep, ["older_mod", "parsed_after", "untouched"])
 
     applied = store.apply_pending_rewrites(
         dep, V, ["parsed_after", "untouched"], written={"parsed_after"}, read_at=read_at,
@@ -185,3 +187,28 @@ def test_rollback_falls_back_to_the_clear_by_name_then_reapply(migrated):
     assert store.mark_needs_rewrite(rid, "flagged", conn=migrated)
     assert _one(migrated, "SELECT needs_rewrite_at IS NOT NULL FROM module_presence "
                           "WHERE repo_id = %s", (rid,))[0] is True
+
+
+def test_same_basename_repos_each_get_and_consume_their_own_entry(migrated):
+    """Two checkouts named dep_repo at the version (/srv/a/dep_repo and
+    /srv/b/dep_repo): the walk only knows the basename, so both get an entry;
+    the first one's ledger commit must not consume the other's."""
+    store = _store()
+    pid = _one(migrated, "INSERT INTO profiles (name, odoo_version) VALUES ('p_two', %s) "
+                         "RETURNING id", (V,))[0]
+    first, second = (
+        _one(migrated, "INSERT INTO repos (profile_id, url, branch, local_path) "
+                       "VALUES (%s, %s, %s, %s) RETURNING id",
+             (pid, f"file:///x/{tag}.git", V, f"/srv/{tag}/dep_repo"))[0]
+        for tag in ("a", "b")
+    )
+    _observe(store, migrated, first, ["seen_a"])
+    _observe(store, migrated, second, ["seen_b"])
+
+    assert store.record_pending_rewrites(V, [("dep_repo", "new_mod")], conn=migrated) == 2
+
+    _observe(store, migrated, first, ["seen_a", "new_mod"])
+    assert store.apply_pending_rewrites(first, V, ["seen_a", "new_mod"], written=set(),
+                                        read_at=_one(migrated, "SELECT clock_timestamp()")[0],
+                                        conn=migrated) == ["new_mod"]
+    assert _one(migrated, "SELECT repo_id FROM module_presence_pending_rewrite")[0] == second

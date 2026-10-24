@@ -102,9 +102,14 @@ class _Ledger:
         have = {rid for rid, _name, _state in self.rows}
         return [i for i in sorted(repo_ids) if i not in have]
 
-    def record_pending_rewrites(self, odoo_version, dependents):
-        self.pending = sorted(dependents)
-        return len(self.pending)
+    def flag_dependents(self, odoo_version, names, *, pending=(), exclude_repo_ids=()):
+        """The combined store call: direct flags + pending entries, one hold."""
+        self.calls = getattr(self, "calls", 0) + 1
+        hit = self.mark_dependents_needs_rewrite(
+            odoo_version, names, exclude_repo_ids=exclude_repo_ids,
+        )
+        self.pending = sorted(pending)
+        return hit, len(self.pending)
 
 
 class _Repos:
@@ -214,7 +219,9 @@ def test_a_failed_flag_write_resets_the_repos_of_every_dependent_transitive_incl
     assert repos.reset == [32, 42]
     assert result.reset_repo_ids == [32, 42]
     assert result.marked == {}
-    assert result.complete is True
+    # A reset is lost when the dependent repo's run is in progress, and no
+    # pending entry was written: retried by the next run.
+    assert result.complete is False
     assert "could not flag" in caplog.text
 
 
@@ -823,6 +830,7 @@ class _StatefulLedger:
         self.store.needs_rewrite_snapshot.return_value = ([], None)
         self.store.apply_pending_rewrites.return_value = []
         self.store.mark_dependents_needs_rewrite.return_value = []
+        self.store.flag_dependents.return_value = ([], 0)
         self.store.repo_ids_without_rows.return_value = []
         self.store.present_owner_basenames.return_value = {}
         self.store.mark_retire_pending.return_value = []
@@ -1116,6 +1124,7 @@ def _install_ledger_store_without_lifecycle(stack, presence_head):
     fake.needs_rewrite_names.return_value = []
     fake.needs_rewrite_snapshot.return_value = ([], None)
     fake.mark_dependents_needs_rewrite.return_value = []
+    fake.flag_dependents.return_value = ([], 0)
     fake.repo_ids_without_rows.return_value = []
     stack.enter_context(patch.object(_pipeline, "_presence_store", return_value=fake))
     real = _pr.observe_lifecycle
@@ -1318,12 +1327,13 @@ def test_every_dependent_of_another_repo_is_offered_as_a_pending_flag():
     assert result.pending == 3 and result.complete is True
 
 
-def test_a_failed_pending_write_leaves_the_propagation_incomplete():
-    class _PendingFails(_Ledger):
-        def record_pending_rewrites(self, odoo_version, dependents):
-            raise RuntimeError("relation module_presence_pending_rewrite: lock timeout")
+def test_the_direct_flags_and_the_pending_entries_are_one_store_call():
+    """One transaction and one ledger lock hold (flag_dependents): two calls
+    would let the dependent repo's ledger commit slip in between, turning a
+    module the first call could not flag (no row) into one the second skips
+    (a row now exists)."""
+    ledger = _Ledger(LEDGER_ROWS)
 
-    result, _repos = _propagate({"to_git"}, ledger=_PendingFails(LEDGER_ROWS))
+    _propagate({"to_git"}, ledger=ledger)
 
-    assert result.complete is False, "the caller keeps head_sha and retries"
-    assert result.marked, "the direct flags were still written"
+    assert ledger.calls == 1

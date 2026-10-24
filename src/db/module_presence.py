@@ -353,9 +353,10 @@ class ModulePresenceStore:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = 'module_presence' "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'module_presence' "
                     "AND column_name = 'needs_rewrite_at'), "
-                    "to_regclass('public.module_presence_pending_rewrite') IS NOT NULL"
+                    "to_regclass('module_presence_pending_rewrite') IS NOT NULL"
                 )
                 column_ok, table_ok = cur.fetchone()
             self._stamps_ok = bool(column_ok and table_ok)
@@ -400,7 +401,10 @@ class ModulePresenceStore:
     def _hold_versions(
         self, conn: PgConn, versions: Iterable[str],
     ) -> Generator[None, None, None]:
-        # Sorted acquisition keeps two multi-version writers deadlock-free.
+        # Sorted acquisition keeps two multi-version writers deadlock-free. The
+        # locks are polled (pg_try_advisory_lock), so PostgreSQL would detect
+        # no deadlock: an unsorted acquirer could stall a cycle for the whole
+        # wait budget (RETIRE_LOCK_WAIT_SECONDS) instead of failing at once.
         with ExitStack() as stack:
             for version in sorted(set(versions)):
                 acquired = stack.enter_context(advisory_lock(
@@ -1345,6 +1349,32 @@ class ModulePresenceStore:
                     )
                     return cur.rowcount > 0
 
+    _FLAG_DEPENDENTS_SQL = (
+        "UPDATE module_presence SET needs_rewrite = TRUE, updated_at = now(){stamp} "
+        "WHERE odoo_version = %s AND name = ANY(%s) AND state = 'present' "
+        "AND repo_id IS NOT NULL AND NOT (repo_id = ANY(%s)) "
+        "RETURNING repo_id, name"
+    )
+
+    # One entry per repo the walk's basename resolves to (module_presence.
+    # repo_basename of a repo with rows at the version), skipped where that
+    # repo already has a present row of the name (the UPDATE flagged it).
+    _PENDING_INSERT_SQL = """
+        INSERT INTO module_presence_pending_rewrite (odoo_version, repo_id, name, flagged_at)
+        SELECT DISTINCT %s, owner.repo_id, u.n, clock_timestamp()
+          FROM unnest(%s::text[], %s::text[]) AS u(b, n)
+          JOIN module_presence owner
+            ON owner.odoo_version = %s AND owner.repo_basename = u.b
+           AND owner.repo_id IS NOT NULL
+         WHERE NOT (owner.repo_id = ANY(%s))
+           AND NOT EXISTS (
+               SELECT 1 FROM module_presence mp
+                WHERE mp.repo_id = owner.repo_id AND mp.name = u.n
+                  AND mp.state = 'present')
+        ON CONFLICT (odoo_version, repo_id, name)
+        DO UPDATE SET flagged_at = EXCLUDED.flagged_at
+    """
+
     def mark_dependents_needs_rewrite(
         self,
         odoo_version: str,
@@ -1355,31 +1385,75 @@ class ModulePresenceStore:
     ) -> list[tuple[int, str]]:
         """Flag ``needs_rewrite`` on every ``present`` row of *names* at *odoo_version*.
 
-        Cross-repo dependency propagation (ADR-0007 W14): the modules of other
-        repos that depend on a re-written module are re-written by their own
-        repo's next run. One statement under the version's ledger lock; the
-        repos in *exclude_repo_ids* (the repo that just wrote) are skipped.
-        Returns the flagged ``(repo_id, name)`` pairs, sorted (an already
-        flagged row is included). Stamps ``needs_rewrite_at`` (migration 0007).
+        The direct flags of :meth:`flag_dependents` without pending entries
+        (one statement under the version's ledger lock; the repos in
+        *exclude_repo_ids* are skipped). Returns the flagged ``(repo_id,
+        name)`` pairs, sorted (an already flagged row is included)."""
+        pairs, _pending = self.flag_dependents(
+            odoo_version, names, exclude_repo_ids=exclude_repo_ids, conn=conn,
+        )
+        return pairs
+
+    def flag_dependents(
+        self,
+        odoo_version: str,
+        names: Iterable[str],
+        *,
+        pending: Iterable[tuple[str, str]] = (),
+        exclude_repo_ids: Iterable[int] = (),
+        conn: PgConn | None = None,
+    ) -> tuple[list[tuple[int, str]], int]:
+        """Cross-repo dependency propagation (ADR-0007 W14 note 3), in ONE
+        transaction and ONE hold of the version's ledger lock.
+
+        1. Every ``present`` row of *names* at *odoo_version* outside
+           *exclude_repo_ids* (the repo that just wrote) gets ``needs_rewrite``
+           and ``needs_rewrite_at = clock_timestamp()`` (migration 0007).
+        2. *pending*: ``(repo_basename, name)`` pairs of the walk (the Module
+           node's ``repo``). Each repo with ledger rows at the version under
+           that basename and no ``present`` row of the name - it wrote the
+           module to the graph, its ledger commit is still to come - gets a
+           pending entry its ledger commit applies
+           (:meth:`apply_pending_rewrites`). Entries older than 30 days are
+           purged.
+
+        One hold matters: another repo's ``commit_observed`` (which takes the
+        same lock) cannot slip between the two steps, where it would turn a
+        module that step 1 could not flag (no row yet) into one step 2 skips
+        (a row now exists). Returns ``(flagged pairs sorted, entries
+        written)``; before migration 0007 only step 1 runs, without the stamp.
         """
         wanted = sorted(set(names))
-        if not wanted:
-            return []
+        pairs_in = sorted({(b, n) for b, n in pending if b and n})
+        if not wanted and not pairs_in:
+            return [], 0
         excluded = sorted({int(i) for i in exclude_repo_ids})
         with self._conn(conn) as c:
-            stamp = ", needs_rewrite_at = clock_timestamp()" if self._rewrite_stamps_ok(c) else ""
+            stamps = self._rewrite_stamps_ok(c)
+            stamp = ", needs_rewrite_at = clock_timestamp()" if stamps else ""
+            written = 0
             with self._write(c, [odoo_version]):
-                with c.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(
-                        "UPDATE module_presence SET needs_rewrite = TRUE, updated_at = now()"
-                        + stamp + " "
-                        "WHERE odoo_version = %s AND name = ANY(%s) AND state = 'present' "
-                        "AND repo_id IS NOT NULL AND NOT (repo_id = ANY(%s)) "
-                        "RETURNING repo_id, name",
-                        (odoo_version, wanted, excluded),
-                    )
-                    rows = cur.fetchall()
-        return sorted((int(r["repo_id"]), r["name"]) for r in rows)
+                rows: list = []
+                if wanted:
+                    with c.cursor(cursor_factory=RealDictCursor) as cur:
+                        cur.execute(
+                            self._FLAG_DEPENDENTS_SQL.format(stamp=stamp),
+                            (odoo_version, wanted, excluded),
+                        )
+                        rows = cur.fetchall()
+                if stamps and pairs_in:
+                    with c.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM module_presence_pending_rewrite "
+                            "WHERE flagged_at < now() - interval '30 days'"
+                        )
+                        cur.execute(
+                            self._PENDING_INSERT_SQL,
+                            (odoo_version, [b for b, _ in pairs_in],
+                             [n for _, n in pairs_in], odoo_version, excluded),
+                        )
+                        written = cur.rowcount
+        return sorted((int(r["repo_id"]), r["name"]) for r in rows), written
 
     def repo_ids_without_rows(
         self, repo_ids: Iterable[int], odoo_version: str, *, conn: PgConn | None = None,
@@ -1420,25 +1494,31 @@ class ModulePresenceStore:
         An index run reads its flags with this at its start and hands
         *read_at* to :meth:`clear_needs_rewrite` and
         :meth:`apply_pending_rewrites` at its ledger commit, so a flag set
-        while it ran is not cleared (ADR-0007 W14 note 3). The read runs under
-        the ledger lock of every version the repo has rows at plus
-        *odoo_versions* (the scan's): every flag writer takes that lock and
-        commits before releasing it, so a flag is either visible here and
-        stamped before *read_at*, or stamped after it. Before migration 0007:
-        no lock, ``read_at`` None (clear by name, as before)."""
+        while it ran is not cleared (ADR-0007 W14 note 3).
+
+        The ledger lock is taken only when the repo has flagged names: the
+        clear touches only names in the read set, so with none there is
+        nothing a concurrent writer could make it clear wrongly, and the
+        pending application needs only the clock (an entry stamped before it
+        was written after its repo's graph write, so a re-write that follows
+        the read parsed the new state). With names, they are read again
+        under the lock of every version the repo has rows at plus
+        *odoo_versions*: every flag writer takes that lock and commits before
+        releasing it, so a flag is either visible here and stamped before
+        *read_at*, or stamped after it. Most runs (no flag) therefore never
+        wait for a reconcile holding the lock. Before migration 0007: no
+        lock, ``read_at`` None (clear by name, as before)."""
         with self._conn(conn) as c:
+            names = self.needs_rewrite_names(repo_id, conn=c)
             if not self._rewrite_stamps_ok(c):
-                return self.needs_rewrite_names(repo_id, conn=c), None
+                return names, None
+            if not names:
+                return [], self._fetch_one(c, "SELECT clock_timestamp() AS t")["t"]
             versions = set(self._repo_versions(c, repo_id)) | set(odoo_versions)
             with self._write(c, versions):
-                rows = self._fetch_all(
-                    c,
-                    "SELECT name FROM module_presence "
-                    "WHERE repo_id = %s AND needs_rewrite ORDER BY name",
-                    (repo_id,),
-                )
+                names = self.needs_rewrite_names(repo_id, conn=c)
                 read_at = self._fetch_one(c, "SELECT clock_timestamp() AS t")["t"]
-        return [r["name"] for r in rows], read_at
+        return names, read_at
 
     def clear_needs_rewrite(
         self, repo_id: int, names: Iterable[str], *, read_at=None,
@@ -1455,12 +1535,14 @@ class ModulePresenceStore:
         if not wanted:
             return 0
         with self._conn(conn) as c:
-            stamped = read_at is not None and self._rewrite_stamps_ok(c)
+            stamps = self._rewrite_stamps_ok(c)
+            stamped = read_at is not None and stamps
             with self._write(c, self._repo_versions(c, repo_id)):
                 with c.cursor() as cur:
                     cur.execute(
-                        "UPDATE module_presence SET needs_rewrite = FALSE, updated_at = now() "
-                        "WHERE repo_id = %s AND name = ANY(%s) AND needs_rewrite"
+                        "UPDATE module_presence SET needs_rewrite = FALSE, updated_at = now()"
+                        + (", needs_rewrite_at = NULL" if stamps else "")
+                        + " WHERE repo_id = %s AND name = ANY(%s) AND needs_rewrite"
                         + (
                             " AND (needs_rewrite_at IS NULL OR needs_rewrite_at <= %s)"
                             if stamped else ""
@@ -1471,66 +1553,31 @@ class ModulePresenceStore:
 
     def record_pending_rewrites(
         self, odoo_version: str, dependents: Iterable[tuple[str, str]], *,
-        conn: PgConn | None = None,
+        exclude_repo_ids: Iterable[int] = (), conn: PgConn | None = None,
     ) -> int:
-        """Remember a ``needs_rewrite`` for dependents with no ``present`` row.
-
-        *dependents*: ``(repo_basename, name)`` pairs a cross-repo propagation
-        walk found (the Module node's ``repo``). A pair whose repo (by
-        checkout basename) already has a ``present`` row of the name is
-        skipped: :meth:`mark_dependents_needs_rewrite` flagged it. The rest - a
-        module whose repo wrote it to the graph but has not committed its
-        ledger row yet - get an entry (``flagged_at`` = clock, refreshed on a
-        repeat) that the repo's ledger commit applies
-        (:meth:`apply_pending_rewrites`). Entries older than 30 days are
-        purged here. One statement set under the version's ledger lock.
+        """Only step 2 of :meth:`flag_dependents` (pending entries for the
+        ``(repo_basename, name)`` *dependents* without a ``present`` row).
         Returns the entries written; 0 before migration 0007."""
-        pairs = sorted({(b, n) for b, n in dependents if b and n})
-        if not pairs:
-            return 0
-        with self._conn(conn) as c:
-            if not self._rewrite_stamps_ok(c):
-                return 0
-            with self._write(c, [odoo_version]):
-                with c.cursor() as cur:
-                    cur.execute(
-                        "DELETE FROM module_presence_pending_rewrite "
-                        "WHERE flagged_at < now() - interval '30 days'"
-                    )
-                    cur.execute(
-                        """
-                        INSERT INTO module_presence_pending_rewrite
-                               (odoo_version, repo_basename, name, flagged_at)
-                        SELECT %s, u.b, u.n, clock_timestamp()
-                          FROM unnest(%s::text[], %s::text[]) AS u(b, n)
-                         WHERE NOT EXISTS (
-                               SELECT 1 FROM module_presence mp JOIN repos r ON r.id = mp.repo_id
-                                WHERE mp.odoo_version = %s AND mp.name = u.n
-                                  AND mp.state = 'present'
-                                  AND regexp_replace(regexp_replace(r.local_path, '/+$', ''),
-                                                     '^.*/', '') = u.b)
-                        ON CONFLICT (odoo_version, repo_basename, name)
-                        DO UPDATE SET flagged_at = EXCLUDED.flagged_at
-                        """,
-                        (odoo_version, [b for b, _ in pairs], [n for _, n in pairs],
-                         odoo_version),
-                    )
-                    return cur.rowcount
+        return self.flag_dependents(
+            odoo_version, (), pending=dependents, exclude_repo_ids=exclude_repo_ids,
+            conn=conn,
+        )[1]
 
     def apply_pending_rewrites(
         self, repo_id: int, odoo_version: str, names: Iterable[str], *,
         written: Iterable[str], read_at, conn: PgConn | None = None,
     ) -> list[str]:
-        """Turn the pending entries of *repo_id*'s modules into flags.
+        """Turn *repo_id*'s pending entries into flags.
 
         Called by the repo's ledger commit after its rows of *names* (the
-        modules it commits ``present``) exist. An entry (keyed by the repo's
-        checkout basename) becomes ``needs_rewrite`` on the row when the flag
-        was set after this run read its flags (*read_at*: the run's parse may
-        predate the upstream change) or the run did not re-write the module
-        (*written*); otherwise this run's parse already followed the change.
-        Every matched entry is deleted. Returns the names flagged; [] before
-        migration 0007 or without *read_at*."""
+        modules it commits ``present``) exist. An entry becomes
+        ``needs_rewrite`` on the row when the flag was set after this run read
+        its flags (*read_at*: the run's parse may predate the upstream change)
+        or the run did not re-write the module (*written*); otherwise this
+        run's parse already followed the change. The row keeps the later of
+        its own stamp and the entry's. Every matched entry of this repo is
+        deleted (a same-basename repo has its own). Returns the names
+        flagged; [] before migration 0007 or without *read_at*."""
         wanted = sorted(set(names))
         if not wanted or read_at is None:
             return []
@@ -1538,19 +1585,19 @@ class ModulePresenceStore:
         with self._conn(conn) as c:
             if not self._rewrite_stamps_ok(c):
                 return []
-            basename = self._repo_row(c, repo_id)["basename"]
             with self._write(c, [odoo_version]):
                 with c.cursor() as cur:
                     cur.execute(
                         """
                         WITH hit AS (
                             DELETE FROM module_presence_pending_rewrite p
-                             WHERE p.odoo_version = %s AND p.repo_basename = %s
+                             WHERE p.odoo_version = %s AND p.repo_id = %s
                                AND p.name = ANY(%s)
                             RETURNING p.name, p.flagged_at
                         )
                         UPDATE module_presence mp
-                           SET needs_rewrite = TRUE, needs_rewrite_at = hit.flagged_at,
+                           SET needs_rewrite = TRUE,
+                               needs_rewrite_at = GREATEST(mp.needs_rewrite_at, hit.flagged_at),
                                updated_at = now()
                           FROM hit
                          WHERE mp.repo_id = %s AND mp.odoo_version = %s
@@ -1558,7 +1605,7 @@ class ModulePresenceStore:
                            AND (hit.flagged_at > %s OR NOT (hit.name = ANY(%s)))
                         RETURNING mp.name
                         """,
-                        (odoo_version, basename, wanted, repo_id, odoo_version, read_at,
+                        (odoo_version, repo_id, wanted, repo_id, odoo_version, read_at,
                          rewritten),
                     )
                     return sorted(r[0] for r in cur.fetchall())

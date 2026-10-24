@@ -955,7 +955,7 @@ reindex (không chạy giữa 23:30 và lúc lượt nightly xong). Nó thêm c�
 `module_presence_pending_rewrite` (chỉ indexer đọc/ghi, không grant cho `osm_reader`); bỏ cuộc
 sau `lock_timeout` 5 s nếu có holder idle-in-transaction: chạy lại cùng lệnh. Code pull trước khi
 migrate vẫn chạy như cũ (clear needs_rewrite theo tên, không ghi pending) kèm một WARNING
-`apply migration 0007`. Rollback: `0007_module_presence_needs_rewrite_at.rollback.sql` (yoyo
+`apply migration 0007` mỗi lượt repo. Rollback: `0007_module_presence_needs_rewrite_at.rollback.sql` (yoyo
 rollback) - code vẫn chạy, chỉ mất thời điểm của các flag hiện có và các entry pending.
 
 **Env của vòng đời** (default + lý do: [`docs/operations/timeouts.md`](operations/timeouts.md)

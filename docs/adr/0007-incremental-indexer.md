@@ -485,39 +485,58 @@ Prefixed with `_` to denote internal/operational metadata, distinct from domain 
           (`ModulePresenceStore.mark_needs_rewrite` - incomplete-embedding and
           entity-prune retries, `reembed-stubs`, the reconcile's owner
           hand-overs, excluded-owner drops, deferred and shared prune
-          rewrites - and `mark_dependents_needs_rewrite`, the propagation)
+          rewrites - and `flag_dependents`, the propagation)
           stamps `needs_rewrite_at = clock_timestamp()`; the run reads its
           flags with `needs_rewrite_snapshot`, which returns the clock of the
           read; and the ledger commit clears only the flags stamped at or
-          before it. The read runs under the version ledger lock that every
-          flag writer takes and commits under, so a flag is either visible to
-          the read and stamped before it, or stamped after it: no window.
-          (`updated_at` could not serve: `commit_observed` and the full-parse
-          records stamp it too.)
+          before it (and drops their stamp). A run with flags reads them again
+          under the version ledger lock that every flag writer takes and
+          commits under, so a flag is either visible to the read and stamped
+          before it, or stamped after it: no window. A run without flags (most
+          runs) takes no lock for the read: the clear touches only names in
+          the read set, and the pending application below needs only the
+          clock, so it never waits (up to `RETIRE_LOCK_WAIT_SECONDS`, then
+          `LifecycleLockTimeout`) for a reconcile at its start. (`updated_at`
+          could not serve: `commit_observed` and the full-parse records stamp
+          it too.) The ledger locks are polled advisory locks
+          (`pg_try_advisory_lock`): PostgreSQL detects no deadlock, so two
+          writers taking several versions' locks in opposite order would stall
+          until the wait expires; every writer acquires them sorted
+          (`_hold_versions`), and prod has no repo with ledger rows at more
+          than one version (2026-10-24).
        2. A module of repo S that had no ledger row when repo R walked (S
           wrote it to the graph, its ledger commit was still to come: a run
           in progress or a new module) was never flagged:
           `mark_dependents_needs_rewrite` touches existing `present` rows
-          only. R now also records, for every dependent of another repo,
-          `(odoo_version, repo basename, name)` in
-          `module_presence_pending_rewrite` - skipped when that repo already
-          has a `present` row of the name (flagged directly). S's ledger
-          commit, after its rows exist, applies the entries for the names it
-          commits present (`apply_pending_rewrites`): `needs_rewrite` when the
-          entry is newer than S's flag read (S's parse may predate R's change)
-          or S did not re-write the module this run, otherwise S's parse
-          already followed the change; every matched entry is deleted, and
-          entries nobody consumes are purged after 30 days. Smallest design
-          that keeps ADR-0056's states: the entry is not a ledger row and
-          claims nothing about what S ships, so no retirement gate, sync
-          verdict or orphan rule sees it; it is keyed by the Module node's
-          repo basename because that is all the walk knows (two repos with
-          the same basename at a version both apply it: over-eager, safe).
-          A failed entry write leaves the propagation unrecorded (head_sha
-          kept, retried).
+          only. R now also records, for every dependent of another repo, an
+          entry `(odoo_version, repo_id, name)` in
+          `module_presence_pending_rewrite`, for every repo with ledger rows
+          at the version whose `module_presence.repo_basename` is the Module
+          node's repo (all the walk knows), skipped where that repo already
+          has a `present` row of the name (flagged directly). The direct
+          flags and the entries are one transaction under one ledger lock
+          hold (`flag_dependents`): S's `commit_observed` takes the same lock,
+          and between two transactions it could create the row the first step
+          could not flag and the second then skips. S's ledger commit, after
+          its rows exist, applies its own entries for the names it commits
+          present (`apply_pending_rewrites`): `needs_rewrite` when the entry is
+          newer than S's flag read (S's parse may predate R's change) or S did
+          not re-write the module this run, otherwise S's parse already
+          followed the change; its matched entries are deleted, entries nobody
+          consumes are purged after 30 days, and a deleted repo's go with it.
+          Two same-basename repos at a version each get and consume their
+          own entry (over-eager for the one that does not ship the module;
+          prod has no basename collision at a version, 2026-10-24). A repo
+          with no ledger row at all at the version gets no entry: the
+          no-ledger-rows reset above covers it. Smallest design that keeps
+          ADR-0056's states: the entry is not a ledger row and claims nothing
+          about what S ships, so no retirement gate, sync verdict or orphan
+          rule sees it. A failed `flag_dependents` falls back to the reset and
+          leaves the propagation unrecorded (head_sha kept, retried): a reset
+          alone is lost when the dependent repo's run is in progress.
        Before 0007 is applied the store behaves as before (stamps nothing,
-       clears by name, records no entry) and logs one WARNING per store
-       (`_rewrite_stamps_ok`), so a deploy that pulls before migrating does not
+       clears by name, records no entry) and logs one WARNING per store, i.e.
+       per repo run (`_rewrite_stamps_ok`), so a deploy that pulls before migrating does not
        break the nightly.
      - *What a re-write costs.* `writer_pgvector.write_module_embeddings` no
        longer embeds a chunk whose text equals a row the module already has

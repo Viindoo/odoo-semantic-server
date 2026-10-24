@@ -16,13 +16,17 @@
 -- module_presence_pending_rewrite: a flag for a module of repo S that has no
 -- module_presence row yet when another repo's propagation walks (S wrote the
 -- module to the graph but has not committed its ledger: a run in progress, or
--- the module is new). Keyed by (odoo_version, repo basename, name) - the walk
--- knows the Module node's repo basename, not a repo id. S's ledger commit
--- applies the entries for the names it commits present (needs_rewrite TRUE
+-- the module is new). One entry per (odoo_version, repo_id, name): the walk
+-- knows the Module node's repo basename, resolved to every repo with ledger
+-- rows at the version under that basename (module_presence.repo_basename), so
+-- two same-basename repos each get their own entry. Written in the same
+-- transaction and ledger lock hold as the direct flags. S's ledger commit
+-- applies its entries for the names it commits present (needs_rewrite TRUE
 -- when the flag was set after S read its flags, or S did not re-write the
 -- module this run) and deletes them; entries nobody consumes are purged after
--- 30 days. No ledger state is added: a pending entry never claims that S
--- ships the module, so the retirement gates are untouched (ADR-0056).
+-- 30 days, and deleting the repo deletes its entries. No ledger state is
+-- added: a pending entry never claims that S ships the module, so the
+-- retirement gates are untouched (ADR-0056).
 --
 -- Backfill: a row already flagged gets needs_rewrite_at = updated_at (the
 -- flag set it, or something later did; either way at or before any read that
@@ -60,11 +64,11 @@ UPDATE module_presence
 
 CREATE TABLE IF NOT EXISTS module_presence_pending_rewrite (
     odoo_version  TEXT        NOT NULL,
-    repo_basename TEXT        NOT NULL,
+    repo_id       INTEGER     NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
     name          TEXT        NOT NULL,
     flagged_at    TIMESTAMPTZ NOT NULL,
     CONSTRAINT module_presence_pending_rewrite_pkey
-        PRIMARY KEY (odoo_version, repo_basename, name)
+        PRIMARY KEY (odoo_version, repo_id, name)
 );
 CREATE INDEX IF NOT EXISTS ix_module_presence_pending_rewrite_flagged
     ON module_presence_pending_rewrite (flagged_at);
