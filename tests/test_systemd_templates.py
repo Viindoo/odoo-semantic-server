@@ -21,6 +21,7 @@ units, causing ``systemd-analyze verify`` to report
 
 Reference: systemd.exec(5) — prefix ``-`` means "ignore if file missing".
 """
+import re
 import shutil
 import subprocess
 import tempfile
@@ -497,6 +498,28 @@ def test_the_backup_refusal_is_reported_not_skipped():
     assert not condition.startswith(("-", "+", "!", ":", "@")), condition
     assert _directive(backup, "OnFailure") == ["osm-alert@%n"]
     assert _backup_condition_argv()[:2] == ["/bin/sh", "-c"]
+
+
+def test_the_reindex_log_rotates_without_moving_the_open_file():
+    """The reindex unit opens its log once (StandardOutput=append:) and runs at
+    00:00, inside logrotate's daily window. A rename-and-compress rotation left
+    the run writing to a deleted file (2026-10-25: every line after 00:37 lost)
+    and osm-alert@ reading an empty log, so the stanza that covers that path
+    must copy and truncate in place."""
+    import fnmatch
+
+    reindex = REPO_ROOT / "docs" / "deploy" / "odoo-semantic-reindex.service"
+    (target,) = {v.split(":", 1)[1] for v in _directive(reindex, "StandardOutput")
+                 if v.startswith("append:")}
+    text = (REPO_ROOT / "docs" / "deploy" / "logrotate.d" / "odoo-semantic").read_text(
+        encoding="utf-8")
+    stanzas = re.findall(r"^([^#\n{]+)\{([^}]*)\}", text, flags=re.M)
+    covering = [body for head, body in stanzas
+                if any(fnmatch.fnmatch(target, pat) for pat in head.split())]
+    assert len(covering) == 1, covering
+    directives = {line.split()[0] for line in covering[0].splitlines() if line.strip()}
+    assert "copytruncate" in directives
+    assert "create" not in directives
 
 
 def test_drift_audit_covers_the_alert_hook():
