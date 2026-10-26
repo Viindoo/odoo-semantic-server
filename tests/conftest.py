@@ -1060,6 +1060,8 @@ _PG_TEST_TABLES = [
         # rows would leak into the next test (and the migration's guarded FK
         # re-add then fails on their dangling repo_ids). Drop BEFORE repos.
         "module_presence",
+        # 0007 (ADR-0007 W14 note 3) - no FK; standalone leakable table.
+        "module_presence_pending_rewrite",
         "repos",
         # api_keys.plan_id FK→plans → api_keys must drop BEFORE plans (m13_006).
         "api_keys",

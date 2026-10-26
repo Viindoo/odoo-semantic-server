@@ -774,6 +774,42 @@ class TestNeedsRewrite:
         assert store.clear_needs_rewrite(repo, ["sale_a"]) == 1
         assert store.needs_rewrite_names(repo) == ["sale_b"]
 
+    def test_dependents_are_flagged_in_every_other_repo_that_ships_them_present(
+            self, store, mp, repo, db):
+        """Cross-repo propagation (ADR-0007 W14 note 3): the dependent modules of
+        the OTHER repos at the version are flagged; the repo that just wrote,
+        excluded rows, other modules and other versions are not."""
+        pid = _profile(db, "mp_down")
+        down = _repo(db, pid, "saas-infrastructure")
+        pid_other = _profile(db, "mp_old", version=V_OTHER)
+        old = _repo(db, pid_other, "saas-infrastructure", branch=V_OTHER)
+        _observe(store, mp, repo, "h1", ["to_git", "to_git_ui"])
+        _observe(store, mp, down, "d1", [
+            "to_server_ssh_git", "to_dns",
+            _om(mp, "to_git_ui", state="excluded", exclusion_reason="installable_false"),
+        ], profile="mp_down")
+        _observe(store, mp, old, "o1", ["to_server_ssh_git"], profile="mp_old",
+                 version=V_OTHER)
+
+        flagged = store.mark_dependents_needs_rewrite(
+            V, ["to_server_ssh_git", "to_git_ui"], exclude_repo_ids=[repo],
+        )
+
+        assert flagged == [(down, "to_server_ssh_git")]
+        assert store.needs_rewrite_names(down) == ["to_server_ssh_git"]
+        assert store.needs_rewrite_names(repo) == []
+        assert store.needs_rewrite_names(old) == []
+
+    def test_repo_ids_without_rows_names_the_repos_the_ledger_cannot_flag(
+            self, store, mp, repo, db):
+        pid = _profile(db, "mp_bare")
+        bare = _repo(db, pid, "no_ledger_repo")
+        _observe(store, mp, repo, "h1", ["to_git"])
+
+        assert store.repo_ids_without_rows([repo, bare], V) == [bare]
+        assert store.repo_ids_without_rows([repo], V_OTHER) == [repo]
+        assert store.repo_ids_without_rows([], V) == []
+
 
 # ---------------------------------------------------------------------------
 # Rule 11 - repos lifecycle columns (H1, H4)

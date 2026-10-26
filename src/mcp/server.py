@@ -83,7 +83,7 @@ from src.mcp.orm_validators import (
 )
 from src.mcp.resources import register_resources
 from src.mcp.tool_log_middleware import UsageLogMiddleware as _UsageLogMiddleware
-from src.mcp.tree_builder import render_list_block
+from src.mcp.tree_builder import render_list_block, resolve_view_or_qweb_template
 
 logger = logging.getLogger(__name__)
 
@@ -2829,10 +2829,10 @@ def _resolve_view(
     *,
     _reraise_timeout: bool = False,
 ) -> str:
-    # The three view queries are routed through `_single_bounded`/`_data_bounded`
-    # so a tx-timeout becomes OrmQueryTimeout (clean English, no Cypher leaked).
-    # No internal catch: the raise propagates to the owning entity_lookup handler
-    # (@offload_neo4j) / view resource handler. `_reraise_timeout` is parity-only.
+    # Every query is routed through `_single_bounded`/`_data_bounded` so a timeout
+    # becomes OrmQueryTimeout and propagates to the entity_lookup / view resource
+    # handler. A miss on :View falls through to the QWeb templates (:QWebTmpl, by
+    # xmlid or record-form record id). `_reraise_timeout` is parity-only.
     _ = _reraise_timeout  # parity-only; the timeout always propagates here.
     with _get_driver().session() as session:
         odoo_version = _resolve_version(odoo_version, session)
@@ -2853,7 +2853,7 @@ def _resolve_view(
         )
 
         if not view_rec:
-            return f"View '{xmlid}' not found in Odoo {odoo_version}."
+            return resolve_view_or_qweb_template(session, xmlid, odoo_version, profile_name)
 
         # WG-3t WRONG-TARGET fix: this returns parent.xmlid, so the tenant
         # predicate must gate the RETURNED node (parent), not just the child v.

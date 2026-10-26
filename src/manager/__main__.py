@@ -158,7 +158,10 @@ def _cmd_add_repo(args, conn) -> int:
 def _cmd_list(_args, conn) -> int:
     profiles = repo_store().list_profiles()
     if not profiles:
-        print("(no profiles yet — run: python -m src.manager add-profile <name> --version <ver>)")
+        print(
+            "(no profiles yet - run: python -m src.manager add-profile <name> "
+            "--version <ver> (--shared | --tenant <id> | --parent <name>))"
+        )
         return 0
     for p in profiles:
         print(f"[{p['name']}] odoo_version={p['odoo_version']}")

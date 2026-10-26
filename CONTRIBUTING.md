@@ -643,7 +643,9 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 git clone --depth=1 -b 17.0 https://github.com/odoo/odoo ~/git/odoo_17.0
 
 # Đăng ký + attach repo + index
-~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile odoo17 --version 17.0
+# --shared: profile gốc Odoo CE thấy được từ mọi key (profile riêng dùng
+# --tenant <id> hoặc --parent <profile riêng>)
+~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-profile odoo17 --version 17.0 --shared
 ~/.venv/odoo-semantic-mcp/bin/python -m src.manager add-repo \
   --profile odoo17 --url file://local --branch 17.0 --local-path ~/git/odoo_17.0
 ~/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --profile odoo17 --no-embed

@@ -63,6 +63,7 @@ from src.indexer.models import (
     ViewParseResult,
 )
 from src.indexer.protocols import IndexWriterProtocol
+from src.indexer.stop import raise_if_stop_requested
 from src.indexer.version_registry import less_active, scss_active
 
 # Log under the parent "src.indexer.pipeline" name (NOT __name__) so every
@@ -327,6 +328,125 @@ def _fetch_attention(repo: dict, cause: str) -> tuple[str, bool]:
     return line, consecutive
 
 
+PROPAGATION_UNRECORDED_MARK = "cross-repo propagation not recorded"
+
+# The one-shot seed names a failed propagation carries in its mark, so the
+# retry re-seeds exactly them; more than this many and the retry re-seeds
+# every present module instead (``[reseed: all]``).
+PROPAGATION_RESEED_NAMES_MAX = 50
+_RESEED_RE = re.compile(r"\[reseed: ([^\]]*)\]")
+_FAILED_AT_RE = re.compile(r" at HEAD ([0-9a-f]+|none)")
+
+
+@dataclass(frozen=True)
+class PropagationRetry:
+    """What the previous, unrecorded propagation of a repo leaves this run.
+
+    ``reseed``: the one-shot seed names it had (degraded, parser-gap,
+    self-heal), which may not show again. ``reseed_all``: there were more than
+    :data:`PROPAGATION_RESEED_NAMES_MAX`, so every present module is re-seeded.
+    The git part of the seed needs no carrying: the kept ``head_sha`` repeats
+    an incremental diff and the held presence head repeats a full run's.
+    ``failed_at``: the HEAD of the failed run (short sha), for the log line.
+    """
+    reseed: frozenset[str]
+    reseed_all: bool
+    failed_at: str | None
+
+
+def _mark_segments(text: str | None) -> list[str]:
+    return [p for p in (text or "").split("; ") if PROPAGATION_UNRECORDED_MARK in p]
+
+
+def carry_propagation_mark(previous: str | None, parts: list[str]) -> list[str]:
+    """*parts* plus every segment of *previous* that carries
+    :data:`PROPAGATION_UNRECORDED_MARK`, for a writer that REPLACES
+    ``lifecycle_attention`` without having run the propagation (an unavailable
+    checkout, the unchanged skip): the retry mark must survive until a run
+    records the propagation, which alone clears it."""
+    out = list(parts)
+    for segment in _mark_segments(previous):
+        if segment not in out:
+            out.append(segment)
+    return out
+
+
+def propagation_retry(repo: dict, *, ledger: bool) -> PropagationRetry | None:
+    """The retry the previous run of *repo* left, or None.
+
+    Set when its ``lifecycle_attention`` (read at the start of this run)
+    carries :data:`PROPAGATION_UNRECORDED_MARK`. Such a run is never skipped
+    (``plan_repo_run(retry_propagation=)``) and adds the mark's one-shot seed
+    names, or every present module for ``[reseed: all]``, to its own seed
+    (``_index_repo``). Only with a ledger: without one the attention is never
+    stored."""
+    segments = _mark_segments(repo.get("lifecycle_attention")) if ledger else []
+    if not segments:
+        return None
+    reseed: set[str] = set()
+    reseed_all = False
+    failed_at: str | None = None
+    for segment in segments:
+        found = _RESEED_RE.search(segment)
+        if found:
+            if found.group(1).strip() == "all":
+                reseed_all = True
+            else:
+                reseed |= {n for n in found.group(1).split(",") if n}
+        at = _FAILED_AT_RE.search(segment)
+        if at and failed_at is None:
+            failed_at = at.group(1)
+    return PropagationRetry(frozenset(reseed), reseed_all, failed_at)
+
+
+def _propagation_attention(
+    repo: dict, seed: set[str], *, kept_head: str | None, head: str | None,
+    one_shot: set[str] | None = None, retry: PropagationRetry | None = None,
+) -> tuple[str, bool]:
+    """The attention line of a propagation this run could not record, and
+    whether the previous run's could not be recorded either (its
+    ``lifecycle_attention`` carries :data:`PROPAGATION_UNRECORDED_MARK`).
+
+    Once is a WARNING and an attention line, no exit 3: head_sha stays at
+    *kept_head* and the ledger's presence head is not advanced, so the next
+    run is not skipped and repeats the propagation by itself
+    (:func:`propagation_retry`), like one failed fetch. Twice in a row is
+    ``stale_propagation`` (exit 3, an alert): the retry does not heal it, and
+    the dependents in other repos keep edges resolved against the old state
+    of *seed*.
+
+    *one_shot*: the seed names the next run cannot rediscover from git; they
+    are carried as ``[reseed: a,b]`` (``[reseed: all]`` past
+    :data:`PROPAGATION_RESEED_NAMES_MAX`). *retry*: this run was itself a
+    retry that re-seeded every present module; the line then names that
+    instead of the inflated seed."""
+    previous = repo.get("lifecycle_attention") or ""
+    consecutive = PROPAGATION_UNRECORDED_MARK in previous
+    if retry is not None and retry.reseed_all:
+        what = (
+            "all present modules (re-seeded after an unrecorded propagation at HEAD "
+            f"{retry.failed_at or 'none'})"
+        )
+    else:
+        names = ", ".join(sorted(seed)[:10])
+        if len(seed) > 10:
+            names += f", ... {len(seed) - 10} more"
+        what = f"{len(seed)} module(s) ({names})"
+    stuck = (kept_head or "none")[:12]
+    line = (
+        f"{PROPAGATION_UNRECORDED_MARK}"
+        f"{' in two consecutive runs' if consecutive else ''} for {what} "
+        f"at HEAD {(head or 'none')[:12]}: head_sha kept at {stuck} and the "
+        "ledger presence head not advanced, so the next run repeats the propagation"
+    )
+    carried = sorted(one_shot or ())
+    if (retry is not None and retry.reseed_all) or len(carried) > PROPAGATION_RESEED_NAMES_MAX:
+        line += " [reseed: all]"
+    elif carried:
+        line += f" [reseed: {','.join(carried)}]"
+    return line, consecutive
+
+
 class RepoCheckoutUnavailable(FileNotFoundError):
     """A registered repo has no checkout on disk and this run could not create it.
 
@@ -547,6 +667,7 @@ def plan_repo_run(
     full_reindex: bool,
     ledger: bool,
     degraded_changed: bool = False,
+    retry_propagation: bool = False,
 ) -> RunPlan:
     """Decide skip / sync / incremental / full for one repo (ADR-0007 + ADR-0056).
 
@@ -554,9 +675,13 @@ def plan_repo_run(
     to ``repos.head_sha`` skips. *degraded_changed* (B14, ``_degraded_state``):
     the failing files of a degraded module changed on disk, so the repo is
     not skipped even at an unchanged HEAD (the sync path re-parses them).
+    *retry_propagation*: the previous run could not record its cross-repo
+    propagation (``propagation_retry``), so the repo is not skipped either:
+    this run repeats it.
     """
     head_unchanged = bool(current_head) and current_head == last_head
-    if not full_reindex and head_unchanged and not degraded_changed and (
+    if (not full_reindex and head_unchanged and not degraded_changed
+            and not retry_propagation) and (
         not ledger or (presence_head == current_head and not rewrite_names)
     ):
         return RunPlan(RUN_SKIP, last_head, True, False)
@@ -834,9 +959,13 @@ def regular_write_names(repo_path: Path, scan, plan: RunPlan, current_head: str 
         return set()
     if plan.diff_base is None:
         return set(scan.present_names())
-    changed_rel_paths = _incremental.compute_changed_module_paths(
-        repo_path, plan.diff_base, current_head,
-    )
+    return _modules_changed_between(repo_path, scan, plan.diff_base, current_head)
+
+
+def _modules_changed_between(repo_path: Path, scan, base: str, head: str | None) -> set[str]:
+    """The scan's modules whose directory changed between *base* and *head*
+    (git diff; empty on a git error, see ``compute_changed_module_paths``)."""
+    changed_rel_paths = _incremental.compute_changed_module_paths(repo_path, base, head)
     # convert relative paths to absolute to match ModuleInfo.path
     changed_abs_paths = {str(repo_path / rel) for rel in changed_rel_paths}
     return {
@@ -844,6 +973,72 @@ def regular_write_names(repo_path: Path, scan, plan: RunPlan, current_head: str 
         for mods in scan.modules.values()
         for name in _incremental.filter_modules_by_changed(mods, changed_abs_paths)
     }
+
+
+def _commit_exists(repo_path: Path, sha: str | None) -> bool:
+    """True when *sha* names a commit the checkout still has (read-only)."""
+    if not sha:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True, timeout=_constants.TIMEOUT_GIT_SCAN,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    return result.returncode == 0
+
+
+def source_changed_names(
+    mode: str, regular_names: set[str], *, ledger: bool, since: set[str] | None,
+) -> set[str]:
+    """The written modules whose source changed this run: the git part of
+    the cross-repo propagation seed (ADR-0007 W14 note 3).
+
+    Incremental: the diff (*regular_names*). Sync: none (HEAD did not move).
+    Full: *since*, the diff since the last state the index reflects
+    (:func:`full_run_changed_names`). With no baseline left (*since* None):
+    every module when the repo has a ledger, since that is a first index and
+    other repos' modules were written against this repo's absence; none
+    without a ledger, which keeps the pre-ledger rule: a ledger-less repo
+    cannot tell a first index from a ``head_sha`` reset, and seeding every
+    module after each reset would bounce full re-indexes between ledger-less
+    repos that depend on each other (each reset re-seeding the other). With a
+    ledger that loop cannot happen: a reset leaves ``presence_head_sha`` as
+    the baseline, so a full run caused only by a propagation fallback finds no
+    source change and seeds nothing new.
+    """
+    if mode == RUN_INCREMENTAL:
+        return set(regular_names)
+    if mode == RUN_FULL:
+        if since is not None:
+            return set(since)
+        return set(regular_names) if ledger else set()
+    return set()
+
+
+def full_run_changed_names(
+    repo_path: Path, scan, current_head: str | None, baselines: list[str | None],
+) -> set[str] | None:
+    """The modules whose source changed since the last state the index
+    reflects, for a full run (``RUN_FULL``), or None when no baseline is left.
+
+    A full run re-writes every module, but only the ones whose source moved
+    can change what other repos' modules resolve against. The baseline is the
+    first of *baselines* the checkout still has: ``repos.head_sha`` (a manual
+    ``--full``, or a force-push whose old head is still in the object store),
+    then the ledger's ``presence_head_sha``, which a ``head_sha`` reset leaves
+    in place (Web UI button, the propagation fallback, the reconcile, DR). A
+    baseline equal to HEAD means no source change: an empty set.
+    """
+    for base in baselines:
+        if not base:
+            continue
+        if base == current_head:
+            return set()
+        if _commit_exists(repo_path, base):
+            return _modules_changed_between(repo_path, scan, base, current_head)
+    return None
 
 
 def _parse_and_write(
@@ -859,10 +1054,17 @@ def _parse_and_write(
     profiles_arr: list[str],
     owning_profile: str,
     module_health: dict | None = None,
+    embed_reuse: bool = True,
+    retry_only_names: frozenset[str] = frozenset(),
 ) -> tuple[dict, list]:
     """Parse the given modules and write every node + embedding they produce.
 
     Returns ``(counters, test_results)``; ``test_results`` feeds the test-node GC.
+    *embed_reuse* False sends every chunk to the embedder (CLI
+    ``--no-embed-reuse``; ``write_module_embeddings(reuse=)``).
+    *retry_only_names*: the modules re-written only as a retry (ledger
+    ``needs_rewrite``, bootstrap); the chunks sent for every OTHER module are
+    counted in ``embed_attempted_fresh`` (``pipeline._quiet_night_shape``).
     *module_health*, when given, receives one
     :class:`~src.indexer.parse_health.ModuleParseHealth` per parsed module,
     keyed ``(version, name)`` - the input of the intra-module entity prune.
@@ -893,8 +1095,10 @@ def _parse_and_write(
     total_stylesheets = 0
     total_embed_calls = 0
     # Chunks sent to the embedder / vectors it returned (an embedder down for
-    # the whole run is a lifecycle attention, ``pipeline._finish_lifecycle``).
-    embed_stats: dict[str, int] = {"attempted": 0, "embedded": 0}
+    # the whole run is a lifecycle attention, ``pipeline._finish_lifecycle``),
+    # and chunks written with their stored vector (unchanged text, no embed).
+    embed_stats: dict[str, int] = {"attempted": 0, "embedded": 0, "reused": 0}
+    embed_attempted_fresh = 0
     total_js_test_suites = 0
 
     # Pre-flight (once, not per module): the embeddings table is usable
@@ -928,6 +1132,8 @@ def _parse_and_write(
             iterable = _tqdm(sorted_names, desc=f"[{version}]", unit="mod", leave=True)
 
         for mod_name in iterable:
+            # A stopped run (SIGTERM, multi-worker) parses no further module.
+            raise_if_stop_requested()
             # Parse completeness (ADR-0056 B14): parsers report every file they
             # could not read or parse into this module's health record.
             with parse_health.track(mod_name, version) as health:
@@ -1048,11 +1254,14 @@ def _parse_and_write(
                         for c in chunks
                     }
                     if embed_enabled:
+                        sent_before = embed_stats["attempted"]
                         embed_calls = write_module_embeddings(
                             mod_name, version, chunks, embedder,
                             profile_name=owning_profile, replace=False,
-                            stats=embed_stats,
+                            stats=embed_stats, reuse=embed_reuse,
                         )
+                        if mod_name not in retry_only_names:
+                            embed_attempted_fresh += embed_stats["attempted"] - sent_before
                         health.embeddings_written = True
                         total_embeddings += len(chunks)
                         total_embed_calls += embed_calls
@@ -1111,6 +1320,8 @@ def _parse_and_write(
         "embed_calls": total_embed_calls,
         "embed_attempted": embed_stats["attempted"],
         "embed_ok": embed_stats["embedded"],
+        "embed_reused": embed_stats["reused"],
+        "embed_attempted_fresh": embed_attempted_fresh,
         "js_patches": total_js_patches,
         "owl_comps": total_owl_comps,
         "stylesheets": total_stylesheets,
@@ -2080,6 +2291,7 @@ def _index_repo(
     *,
     retire: bool = True,
     allow_mass_retire: bool = False,
+    embed_reuse: bool = True,
 ) -> dict:
     """Index a single repo dict (from get_repos_for_profile) and observe its
     module lifecycle (ADR-0056).
@@ -2151,6 +2363,25 @@ def _index_repo(
       such run and re-parsed + re-embedded by the next one; the flag clears
       after a complete embed (``_embedding_retry_names``). One WARNING line
       per repo and a ``lifecycle_attention`` line name them; never an exit 3.
+    - Cross-repo propagation (every run mode, ADR-0007 W14 note 3): the
+      modules of other repos that depend on the modules whose graph this run
+      can have changed (``propagation_seed``, ``source_changed_names``) are
+      flagged ``needs_rewrite``, BEFORE ``head_sha`` advances: a run stopped
+      or failing before the flags are written keeps ``head_sha``, so the next
+      run repeats the diff and the propagation. It runs before the ledger
+      commit. A propagation not recorded in full (failed walk, failed ledger /
+      reset write) keeps ``head_sha`` and the ledger's presence head (not
+      advanced, not deferred), with a WARNING, a ``lifecycle_attention`` line
+      carrying ``PROPAGATION_UNRECORDED_MARK`` and the ``propagation``
+      counters; the mark is stored at once and carries the seed's one-shot
+      names (``[reseed: ...]``); the next run is never skipped and re-seeds
+      exactly them (``propagation_retry``), in every run mode, and reports
+      ``stale_propagation`` (exit 3) when it fails again. Without a ledger
+      the attention is only logged: no retry mark, no exit 3. It never fails
+      the repo.
+    - ``embed_reuse`` False (CLI ``--no-embed-reuse``) sends every chunk of a
+      written module to the embedder instead of reusing the stored vector of
+      an unchanged chunk text (``write_module_embeddings(reuse=)``).
     - Signals the operator must see (version rule, gate trips, git refusing
       the repo, missing ``origin/<branch>`` ref, stamp shortfall, a
       degraded or deferred entity prune) replace ``repos.lifecycle_attention``;
@@ -2255,11 +2486,16 @@ def _index_repo(
     last_head: str | None = None
     presence_head: str | None = None
     rewrite_names: list[str] = []
+    # PostgreSQL clock of the needs_rewrite read: the ledger commit clears only
+    # the flags set at or before it (migration 0007; None before it).
+    rewrite_read_at = None
     if pg_conn is not None:
         last_head = _pipeline.repo_store().get_repo_head_sha(repo["id"])
     if presence is not None:
         presence_head = presence.presence_head_sha(repo["id"])
-        rewrite_names = presence.needs_rewrite_names(repo["id"])
+        rewrite_names, rewrite_read_at = presence.needs_rewrite_snapshot(
+            repo["id"], [odoo_version],
+        )
 
     # Degraded-parse records (B14): a module whose failing files changed on
     # disk since its degraded parse (edited, deleted, permission fixed) is
@@ -2286,10 +2522,14 @@ def _index_repo(
         )
         rewrite_names = sorted(set(rewrite_names) | set(bootstrap))
 
+    # The previous run could not record its cross-repo propagation: never
+    # skip, and re-seed its one-shot names (``propagation_retry``).
+    retry = propagation_retry(repo, ledger=presence is not None)
     plan = plan_repo_run(
         repo_path, current_head, last_head, presence_head, rewrite_names,
         full_reindex=full_reindex, ledger=presence is not None,
         degraded_changed=bool(degraded_changed or gap_changed),
+        retry_propagation=retry is not None,
     )
     if plan.mode == RUN_SKIP:
         _logger.info(
@@ -2299,6 +2539,7 @@ def _index_repo(
             standing = _standing_attention(repo, repo_path, degraded_records)
             if fetch_line:
                 standing.append(fetch_line)
+            standing = carry_propagation_mark(repo.get("lifecycle_attention"), standing)
             _write_attention(presence, repo, standing, url)
         return {**_EMPTY_COUNTERS, "fetch": fetch_counters}
 
@@ -2379,6 +2620,21 @@ def _index_repo(
     # === Write set ===
     total_before = sum(len(mods) for mods in scan.modules.values())
     write_names = regular_write_names(repo_path, scan, plan, current_head)
+    regular_names: set[str] = set(write_names)
+    # The modules whose source changed: the git part of the cross-repo
+    # propagation seed (``propagation_seed``, ``source_changed_names``).
+    # ``ledger`` = this run updates the ledger (lifecycle_on), not merely "a
+    # ledger store exists": a repo without a registered branch or git HEAD
+    # never gets a presence head, so a reset would leave it without baseline
+    # forever, and seeding every module after each reset would bounce full
+    # re-indexes between two such repos that depend on each other.
+    diff_names = source_changed_names(
+        plan.mode, regular_names, ledger=lifecycle_on,
+        since=(
+            full_run_changed_names(repo_path, scan, current_head, [last_head, presence_head])
+            if plan.mode == RUN_FULL else None
+        ),
+    )
     if plan.mode == RUN_INCREMENTAL:
         _logger.info(
             "Repo %s: incremental - %d/%d modules changed",
@@ -2392,6 +2648,12 @@ def _index_repo(
         for ver, mods in scan.modules.items()
     }
     modules_by_version = {v: m for v, m in modules_by_version.items() if m}
+    written_names: set[str] = {n for mods in modules_by_version.values() for n in mods}
+    # Re-written only as a retry (needs_rewrite, bootstrap): what a chunk sent
+    # for these is, a chunk refused before (``pipeline._quiet_night_shape``).
+    retry_only_names = frozenset(
+        written_names - (regular_names | heal_names | degraded_changed | gap_changed)
+    )
     if not modules_by_version and diff_base is not None:
         _logger.info(
             "Repo %s: no module dirs changed (only meta files) - head_sha will "
@@ -2411,7 +2673,8 @@ def _index_repo(
             writer=writer, repo=repo, repo_path=repo_path, rng_root=rng_root,
             pg_conn=pg_conn, embedder=embedder, progress=progress,
             profiles_arr=_profiles_arr, owning_profile=owning_profile,
-            module_health=module_health,
+            module_health=module_health, embed_reuse=embed_reuse,
+            retry_only_names=retry_only_names,
         )
         # Intra-module entity prune (B14): children the re-parse no longer
         # produced, judged against the HEAD source (ADR-0057). Before the
@@ -2459,6 +2722,53 @@ def _index_repo(
     if _LIFECYCLE_TEST_BARRIER is not None:
         _LIFECYCLE_TEST_BARRIER(repo)
 
+    # === Cross-repo dep propagation (M7 W14, narrowed: ADR-0007 W14 note 3) ===
+    # The modules of OTHER repos that depend (directly or transitively) on the
+    # modules whose graph this run can have changed (``propagation_seed``) are
+    # flagged ``needs_rewrite`` in the ledger, so their repo's next run
+    # re-writes just them; a dependent repo without ledger rows gets its
+    # repos.head_sha NULLed (full re-index) as before. Every run mode: the
+    # incremental diff, the sync path's one-shot seeds (degraded, parser gap,
+    # self-heal), and a full run's changes since its baseline. Dependents of
+    # RETIRED modules are reset by the reconcile, before the delete removes
+    # the edges. Runs BEFORE the ledger commit and the head_sha advance: a stop
+    # or a failure in between must not lose it (the flags and the resets are
+    # idempotent, so a repeated diff costs only time). Not recorded: head_sha
+    # is kept, the ledger's presence head is not advanced (``_commit_lifecycle``
+    # ``hold_presence``), an attention line marks it (stored at once, carrying
+    # the seed's one-shot names), and the next run is not skipped and re-seeds
+    # those names (``propagation_retry``): the kept heads reproduce the git
+    # part, so the retry and the twice-in-a-row alert work in every run mode.
+    propagation_recorded = True
+    propagation_counters: dict = {}
+    if pg_conn is not None:
+        seed = propagation_seed(
+            diff_names, heal=heal, degraded_changed=degraded_changed,
+            gap_changed=gap_changed, written=written_names,
+        )
+        if retry is not None:
+            seed |= present_names if retry.reseed_all else (retry.reseed & present_names)
+        if seed:
+            propagation_recorded = _propagate_to_dependents(
+                writer, repo, odoo_version, seed, presence=presence,
+                repo_root_name=repo_root_name, url=url,
+            )
+        if not propagation_recorded:
+            # The names the next run cannot rediscover from git (the kept
+            # head_sha / held presence head repeat the diff part).
+            line, consecutive = _propagation_attention(
+                repo, seed, kept_head=last_head, head=current_head,
+                one_shot=seed - diff_names, retry=retry,
+            )
+            attention.append(line)
+            propagation_counters = {"unrecorded": line, "persistent": consecutive}
+            if presence is not None:
+                # Now, not only at the end: a failing ledger commit or a stop
+                # after this point must not lose the retry mark.
+                _write_attention(presence, repo, attention, url)
+                repo = {**repo, "lifecycle_attention": "; ".join(attention)}
+    # === End cross-repo dep propagation ===
+
     # === Lifecycle post-write: ledger, pending, stamp (ADR-0056, C1/H1/H2) ===
     lifecycle_counters: dict | None = None
     if lifecycle_on:
@@ -2468,7 +2778,8 @@ def _index_repo(
             current_head=current_head, diff_base=diff_base,
             owning_profile=owning_profile, retire=retire,
             written=write_names - ledger_retry, rewrite_names=rewrite_names,
-            attention=attention,
+            attention=attention, hold_presence=not propagation_recorded,
+            rewrite_read_at=rewrite_read_at,
         )
         for name in sorted(ledger_retry & present_names):
             presence.mark_needs_rewrite(repo["id"], name)
@@ -2506,74 +2817,138 @@ def _index_repo(
 
     # Observability summary log (M7 C5) - one line per repo, readable by admins.
     _logger.info(
-        "Indexer run: %d modules, %d embed calls, %d rows written",
+        "Indexer run: %d modules, %d embed calls, %d rows written (%d chunk(s) "
+        "embedded, %d reused unchanged)",
         counters["modules"],
         counters.get("embed_calls", 0),
         counters["embeddings"],
+        counters.get("embed_ok", 0),
+        counters.get("embed_reused", 0),
     )
+
 
     # === On full success (W2-4): advance head_sha AFTER all writes ===
     # Any exception above prevents this, preserving last_head so the next run
-    # retries the same diff (or full reindex).
-    if current_head and pg_conn is not None:
+    # retries the same diff (or full reindex). So does a propagation that could
+    # not be recorded (it is repeated with the diff).
+    if current_head and pg_conn is not None and propagation_recorded:
         _pipeline.repo_store().update_repo_head_sha(repo["id"], current_head)
     # =====================================================================
-
-    # === Cross-repo dep propagation (M7 W14) ===
-    # Only on incremental runs (diff-based): query Neo4j for modules in OTHER
-    # repos that DEPENDS_ON the re-written modules and NULL their
-    # repos.head_sha so they are re-indexed on the next run. Full reindex skips
-    # this - it already re-evaluates everything. Dependents of RETIRED modules
-    # are reset by the reconcile, before the delete removes the edges.
-    _is_incremental = diff_base is not None and not sync_only
-    if _is_incremental and pg_conn is not None:
-        changed_module_names: set[str] = {
-            mod_name
-            for mods in modules_by_version.values()
-            for mod_name in mods
-        }
-        if changed_module_names:
-            from src.indexer.cross_repo import find_dependent_repos
-            dep_repo_basenames = find_dependent_repos(
-                writer.driver, odoo_version, changed_module_names,
-            )
-            # Exclude the repo we just indexed (its head_sha was just updated).
-            dep_repo_basenames = [b for b in dep_repo_basenames if b != repo_root_name]
-            if dep_repo_basenames:
-                dep_repo_ids = _pipeline.repo_store().get_repo_ids_by_local_path_basenames(
-                    dep_repo_basenames,
-                    odoo_version,
-                )
-                # Warn if more IDs than basenames: two repos share a basename
-                # AT THE SAME odoo_version (e.g. /srv/odoo and /home/a/odoo both
-                # basename 'odoo' in the same version's profiles). Both get reset
-                # - over-eager but safe. The cross-VERSION leak (same basename at
-                # a different version) is now filtered out by the odoo_version
-                # predicate. See ADR-0007 W14 note.
-                if len(dep_repo_ids) > len(dep_repo_basenames):
-                    _logger.warning(
-                        "Cross-repo dep propagation: basename collision detected — "
-                        "%d repo IDs returned for %d basenames (%s). "
-                        "All matching repos will be reset (safe, over-eager). "
-                        "See ADR-0007 W14 for fix path.",
-                        len(dep_repo_ids),
-                        len(dep_repo_basenames),
-                        ", ".join(sorted(dep_repo_basenames)),
-                    )
-                if dep_repo_ids:
-                    n_reset = _pipeline.repo_store().reset_head_sha(dep_repo_ids)
-                    _logger.info(
-                        "Cross-repo dep propagation: reset head_sha on %d dependent repo(s) "
-                        "(changed modules: %s)",
-                        n_reset,
-                        ", ".join(sorted(changed_module_names)),
-                    )
-    # === End cross-repo dep propagation ===
 
     if lifecycle_counters is not None:
         counters["lifecycle"] = lifecycle_counters
     counters["fetch"] = fetch_counters
+    counters["propagation"] = propagation_counters
     return counters
+
+
+def propagation_seed(
+    diff_names: set[str],
+    *,
+    heal: dict,
+    degraded_changed: set[str],
+    gap_changed: set[str],
+    written: set[str],
+) -> set[str]:
+    """The written modules whose graph this run can have changed: the seed of
+    the cross-repo propagation (ADR-0007 W14 note 3).
+
+    A dependent module's stale edges come only from an upstream module whose
+    parse output changed: its source changed in git (*diff_names*), its
+    failing files changed on disk (*degraded_changed*), the indexer code or
+    the module tree its parser-gap record was taken against changed
+    (*gap_changed*), or its node was missing (self-heal ``no_node``) or
+    written from another directory (``path_drift``). Each of these is one-shot:
+    the next run finds nothing to change. They seed in every run mode, the
+    sync path included (an unchanged HEAD with a degraded or parser-gap module
+    to redo); *diff_names* comes from :func:`source_changed_names`.
+
+    Left out, on purpose: the ``needs_rewrite`` names (the dependents flagged
+    by another repo's propagation, the incomplete-embedding and prune
+    retries, the reconcile's owner hand-overs), the shared-module bootstrap
+    and the ``repo_drift`` self-heal. They re-parse source the graph already
+    holds, so they cannot change what a dependent resolves against; seeding
+    with them re-flagged whole dependency closures every night (an
+    embedding retry repeats every run it stays incomplete) and made two repos
+    depending on each other flag each other forever. The dependents of a
+    changed module are reached transitively from the change itself
+    (``cross_repo.find_dependent_modules``), not by re-propagating from each
+    re-written dependent.
+    """
+    healed = {
+        name for name, detail in heal.items()
+        if detail.get("reason") in (REWRITE_NO_NODE, REWRITE_PATH_DRIFT)
+    }
+    return (set(diff_names) | healed | set(degraded_changed) | set(gap_changed)) & written
+
+
+def _propagate_to_dependents(
+    writer: IndexWriterProtocol,
+    repo: dict,
+    odoo_version: str,
+    seed: set[str],
+    *,
+    presence,
+    repo_root_name: str,
+    url,
+) -> bool:
+    """Run the cross-repo propagation of *seed*; True when it was recorded.
+
+    One WARNING line names what was flagged or reset (the nightly log is
+    WARNING-level, and this line explains the extra modules, or the full
+    re-index, of the dependent repos' next run). False when it was not
+    recorded in full: the dependency walk failed (only the direct
+    dependents' repos were reset, best effort, inside
+    ``cross_repo.propagate_to_dependents``), or a ledger / repo write raised.
+    The caller then keeps ``head_sha`` so the next run repeats the diff and
+    this propagation, and names it in ``lifecycle_attention``
+    (``_propagation_attention``). Never raises an ``Exception``: the repo's
+    own writes succeeded, so the repo is not reported failed. A stop
+    (``IndexRunStopped``, a BaseException) passes through.
+    """
+    from src.indexer import pipeline as _pipeline
+    from src.indexer.cross_repo import propagate_to_dependents
+
+    try:
+        propagation = propagate_to_dependents(
+            writer.driver, odoo_version, seed,
+            exclude_repo_id=repo.get("id"), exclude_basenames={repo_root_name},
+            presence=presence, repo_store=_pipeline.repo_store(),
+        )
+    except Exception as exc:  # noqa: BLE001 - kept head_sha repeats it
+        _logger.warning(
+            "Repo %s: cross-repo dep propagation from %d changed module(s) (%s) could "
+            "not be recorded (%s: %s); head_sha is not advanced, so the next run "
+            "repeats this diff and its propagation",
+            url, len(seed), ", ".join(sorted(seed)[:10]), type(exc).__name__, exc,
+        )
+        return False
+    if propagation.marked or propagation.reset_repo_ids:
+        _logger.warning(
+            "Repo %s: cross-repo dep propagation from %d changed module(s) "
+            "(%s): %d dependent module(s) flagged needs_rewrite in %d repo(s) "
+            "(%s); head_sha reset on %d repo(s)%s (%s)",
+            url, len(seed),
+            ", ".join(sorted(seed)[:10]),
+            propagation.marked_count, len(propagation.marked),
+            ", ".join(
+                f"repo {rid}: {len(names)}"
+                for rid, names in sorted(propagation.marked.items())
+            ) or "-",
+            len(propagation.reset_repo_ids),
+            " (dependency walk failed: direct dependents' repos)"
+            if propagation.walk_failed else " without ledger rows",
+            ", ".join(str(i) for i in propagation.reset_repo_ids) or "-",
+        )
+    if not propagation.complete:
+        _logger.warning(
+            "Repo %s: cross-repo dep propagation from %d changed module(s) (%s) is "
+            "incomplete (the dependency walk failed); head_sha is not advanced, so the "
+            "next run repeats this diff and its propagation",
+            url, len(seed), ", ".join(sorted(seed)[:10]),
+        )
+        return False
+    return True
 
 
 def _commit_lifecycle(
@@ -2592,6 +2967,8 @@ def _commit_lifecycle(
     written: set[str],
     rewrite_names: list[str],
     attention: list[str],
+    hold_presence: bool = False,
+    rewrite_read_at=None,
 ) -> dict:
     """Ledger half of ``_index_repo`` (after the graph writes succeeded).
 
@@ -2599,6 +2976,33 @@ def _commit_lifecycle(
     stamps the Module nodes, and decides whether ``presence_head_sha`` may
     advance. Appends operator messages to *attention*. Returns the
     ``lifecycle`` counters.
+
+    *hold_presence* (this run's cross-repo propagation was not recorded):
+    ``presence_head_sha`` neither advances nor is handed to the reconcile
+    (no ``presence_deferred_head``). The presence head is the "the index
+    reflects this HEAD" claim (ADR-0056) that the skip decision and a later
+    full run's baseline read, and other repos' graphs do not reflect this
+    HEAD yet. What the reconcile then sees, with ``repos.head_sha`` kept too:
+
+    - the common case, synced at X before this run: both heads stay X, so
+      ``repo_sync_state`` / ``potential_owners_unsynced`` still count the
+      repo as synced (no unsynced-repo hold); the shared-module prune of the
+      modules it co-owns is deferred for the run, because its checkout HEAD
+      is not its presence head (``_owner_checkout_untrusted``);
+    - a ``head_sha`` reset or a first index (presence or head NULL): the repo
+      is not synced, and a never-synced one (presence NULL) also holds the
+      orphan sweep, as for any such repo.
+
+    *rewrite_read_at* (``needs_rewrite_snapshot``): the done rewrites are
+    cleared only where the flag was set at or before that read, and the
+    pending flags other repos' propagations left for this repo's modules are
+    applied (``apply_pending_rewrites``), after the rows exist.
+
+    Retirement stays correct either way: the observed rows are committed as
+    usual (they describe the HEAD tree), the reconcile judges absent names
+    by those rows and the checkouts' HEAD trees, and a name it retires is
+    stamped with the HEAD this run observed (``presence_held_head``, the
+    reconcile's ``observed_heads``), not the kept ``head_sha``.
     """
     from src.db.module_presence import RetireEvidence
     from src.db.module_presence import Successor as LedgerSuccessor
@@ -2618,7 +3022,19 @@ def _commit_lifecycle(
     )
     done_rewrites = sorted(set(rewrite_names) & written)
     if done_rewrites:
-        presence.clear_needs_rewrite(repo_id, done_rewrites)
+        presence.clear_needs_rewrite(repo_id, done_rewrites, read_at=rewrite_read_at)
+    # Only with the run's read clock (migration 0007 applied, an index run;
+    # the dry-run audit has none): the rule needs it.
+    applied = presence.apply_pending_rewrites(
+        repo_id, scan_version, sorted(scan.present_names()),
+        written=written, read_at=rewrite_read_at,
+    ) if rewrite_read_at is not None else []
+    if applied:
+        _logger.warning(
+            "Repo %s: %d module(s) flagged needs_rewrite by another repo's dependency "
+            "propagation before their ledger row existed (re-written next run): %s",
+            repo.get("url", local_path), len(applied), ", ".join(applied[:10]),
+        )
 
     # Absent names git proves gone (ADR-0057 phase 2). An unproven one (its
     # manifest is still in the HEAD tree) is not flagged: its row stays
@@ -2689,7 +3105,10 @@ def _commit_lifecycle(
                 "re-writes them"
             )
 
-    held = (not gates.retire_allowed) or stamp_short or (bool(pending) and not retire)
+    held = (
+        (not gates.retire_allowed) or stamp_short or (bool(pending) and not retire)
+        or hold_presence
+    )
     synced = False
     deferred_head: str | None = None
     if not held and not pending:
@@ -2704,4 +3123,7 @@ def _commit_lifecycle(
         "attention": list(attention),
         "presence_synced": synced,
         "presence_deferred_head": deferred_head,
+        # Held for an unrecorded propagation: the HEAD this run observed (the
+        # reconcile stamps it as state_changed_sha, repos.head_sha is older).
+        "presence_held_head": current_head if hold_presence else None,
     }

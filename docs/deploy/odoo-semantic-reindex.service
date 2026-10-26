@@ -63,7 +63,18 @@
 
 [Unit]
 Description=OSM periodic incremental reindex (index-repo --all)
-After=network-online.target docker.service
+# odoo-semantic-backup.service: the backup (23:30) normally ends ~13 min later,
+# well before this run (00:00). Neo4j is exported online, so a run writing
+# during the export leaves a bundle whose graph and PostgreSQL disagree.
+# After= makes this start wait while a backup start job is queued or running
+# when it starts (a slow night, a retry already under way); the backup's
+# TimeoutStartSec bounds that wait. It does NOT wait during the backup's
+# RestartSec gap after a failed attempt (no job exists then): this run starts,
+# and the backup's ExecCondition= refuses the restarted attempt while this run
+# (or any index process, e.g. a Web UI job) is active: a failed backup, so
+# OnFailure= reports the missed night. Ordering only; the run does not need the
+# backup to succeed.
+After=network-online.target docker.service odoo-semantic-backup.service
 Wants=network-online.target
 Requires=docker.service
 StartLimitBurst=3
@@ -101,6 +112,10 @@ ExecStartPre=-/usr/bin/env OSM_ALERT_STATE_DIR=/var/lib/osm-alert /home/odoo-sem
 ExecStart=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python -m src.indexer index-repo --all --profile-workers 2
 # Incremental is usually fast, but a first/large run can be long — never kill it.
 TimeoutStartSec=0
+# `systemctl stop` sends SIGTERM: the run stops its workers at their next
+# checkpoint and exits 1 within ~20s (15s grace for a worker stuck in an embed
+# read, see src/indexer/stop.py). 60s leaves margin before systemd SIGKILLs it.
+TimeoutStopSec=60
 # Append to the relocated reindex log (logrotate stanza covers /var/log/odoo-semantic/*.log).
 StandardOutput=append:/var/log/odoo-semantic/odoo-semantic-reindex.log
 StandardError=append:/var/log/odoo-semantic/odoo-semantic-reindex.log

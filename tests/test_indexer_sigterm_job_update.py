@@ -15,6 +15,7 @@ import time
 import pytest
 
 import src.indexer.__main__ as main_mod
+from src.indexer import stop as run_stop
 
 _DURABLE: list[dict] = []
 _CONNECTS: list[dict] = []
@@ -94,6 +95,9 @@ def run(monkeypatch):
     signal.signal(signal.SIGTERM, _no_cli_handler)
     yield opened
     signal.signal(signal.SIGTERM, previous)
+    # The handler asks the run's workers to stop (process-wide); later tests
+    # of this pytest process must start with no stop request.
+    run_stop.reset()
 
 
 def _sigterm_inside_a_write_transaction(opened):

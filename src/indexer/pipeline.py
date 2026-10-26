@@ -23,6 +23,7 @@ from neo4j import GraphDatabase, NotificationMinimumSeverity
 
 from src import clone_ops as _clone_ops
 from src import config
+from src.constants import EMBEDDER_MAX_BATCH
 from src.db.pg import repo_store
 
 # --- Collaborators kept on THIS module namespace for the moved _index_repo ---
@@ -43,6 +44,13 @@ from src.indexer import (  # noqa: F401
 from src.indexer.protocols import IndexWriterProtocol
 from src.indexer.registry import build_registry, build_registry_scan  # noqa: F401
 from src.indexer.resolver import topological_sort  # noqa: F401
+from src.indexer.stop import (
+    close_unless_held,
+    hold_until_exit,
+    raise_if_stop_requested,
+    stop_requested,
+    stoppable_executor,
+)
 from src.indexer.writer_neo4j import Neo4jWriter
 
 _logger = logging.getLogger(__name__)
@@ -83,17 +91,27 @@ def _indexer_lock(pg_conn, profile_name: str):
     Cross-container safe — lock lives in PostgreSQL, not filesystem.
     Each profile gets its own lock id, so parallel indexing of different profiles
     is allowed.
+
+    A stopped run (SIGTERM, ``src.indexer.stop``) leaves the block while its
+    repo workers may still be running: the lock is then NOT released and
+    *pg_conn* is held open (``stop.hold_until_exit``) until the process ends,
+    so no second run of the profile can start beside a worker that still
+    writes.
     """
     from src.db.pg import advisory_lock
     lock_id = _profile_lock_id(profile_name)
-    with advisory_lock(pg_conn, lock_id) as acquired:
+    with advisory_lock(pg_conn, lock_id, keep_if=stop_requested) as acquired:
         if not acquired:
             raise RuntimeError(
                 f"Indexer already running for profile {profile_name!r} "
                 f"(Postgres advisory lock {lock_id} held). "
                 "Wait for it to finish or restart PostgreSQL to release stale lock."
             )
-        yield
+        try:
+            yield
+        finally:
+            if stop_requested():
+                hold_until_exit(pg_conn)
 
 
 def indexer_is_running(pg_conn, profile_name: str) -> bool:
@@ -314,6 +332,10 @@ def _empty_lifecycle() -> dict:
         "undecidable": [],
         "errors": [],
         "deferred_presence": {},
+        # Repos whose run kept head_sha / presence head back (unrecorded
+        # cross-repo propagation): {repo_id: {head, odoo_version}} of the HEAD
+        # they observed, for the reconcile's state_changed_sha.
+        "held_heads": {},
         "reports": [],
         # Registered repos with no checkout this run could create (#383 item 2):
         # "repo id=<id> (<url>): <cause>". Exit 3, no traceback.
@@ -325,9 +347,24 @@ def _empty_lifecycle() -> dict:
         "fetch_attempted": 0,
         "fetch_failed": [],
         "stale_repos": [],
-        # Chunks sent to the embedder and the vectors it returned.
+        # Chunks sent to the embedder, the vectors it returned, and the chunks
+        # written with their stored vector instead (unchanged text, no embed).
         "embed_attempted": 0,
         "embed_ok": 0,
+        "embed_reused": 0,
+        # Chunks sent for modules re-written for another reason than a retry
+        # (changed source, full run, self-heal, ...): see _quiet_night_shape.
+        "embed_attempted_fresh": 0,
+        # The embedder answered the end-of-run probe (_probe_silent_embedder)
+        # of a quiet-night run: it is reachable, so it refused the few retried
+        # chunks for their content (each module is retried, needs_rewrite).
+        "embedder_answered": False,
+        # Cross-repo propagations this run could not record: the repo keeps its
+        # head_sha and the next run repeats them (WARNING + lifecycle_attention,
+        # no exit 3); ``stale_propagation``: the same repo's propagation was not
+        # recorded in the previous run either (exit 3).
+        "propagation_unrecorded": [],
+        "stale_propagation": [],
         # Run-wide failures derived by _finish_lifecycle (exit 3): every fetch
         # of the run failed, or the embedder returned nothing all run.
         "outages": [],
@@ -361,9 +398,14 @@ def _report_unavailable_repo(lc: dict, repo: dict, exc) -> None:
     store = _presence_store()
     if store is not None and repo_id is not None:
         try:
-            store.set_lifecycle_attention(
-                repo_id, f"checkout unavailable: {exc.cause}; the next index run retries",
-            )
+            from src.indexer.pipeline_repo import carry_propagation_mark  # noqa: PLC0415
+
+            # A cross-repo propagation retry mark survives: only a run that
+            # records the propagation clears it.
+            store.set_lifecycle_attention(repo_id, "; ".join(carry_propagation_mark(
+                repo.get("lifecycle_attention"),
+                [f"checkout unavailable: {exc.cause}; the next index run retries"],
+            )))
         except Exception:  # noqa: BLE001
             _logger.warning(
                 "could not write lifecycle_attention of repo id=%s", repo_id, exc_info=True,
@@ -382,6 +424,18 @@ def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
             lc["stale_repos"].append(item)
     lc["embed_attempted"] += counters.get("embed_attempted", 0) or 0
     lc["embed_ok"] += counters.get("embed_ok", 0) or 0
+    lc["embed_reused"] += counters.get("embed_reused", 0) or 0
+    # Conservative default: counters without the split count every sent chunk
+    # as fresh, so they can never exonerate a silent embedder.
+    lc["embed_attempted_fresh"] += counters.get(
+        "embed_attempted_fresh", counters.get("embed_attempted", 0),
+    ) or 0
+    propagation = counters.get("propagation") or {}
+    if propagation.get("unrecorded"):
+        item = f"repo id={repo['id']} ({repo.get('url')}): {propagation['unrecorded']}"
+        lc["propagation_unrecorded"].append(item)
+        if propagation.get("persistent"):
+            lc["stale_propagation"].append(item)
     repo_lc = counters.get("lifecycle")
     if not repo_lc:
         return
@@ -393,6 +447,9 @@ def _absorb_repo_lifecycle(lc: dict, repo: dict, counters: dict) -> None:
     head = repo_lc.get("presence_deferred_head")
     if head and version:
         lc["deferred_presence"][repo["id"]] = {"head": head, "odoo_version": version}
+    held = repo_lc.get("presence_held_head")
+    if held and version:
+        lc["held_heads"][repo["id"]] = {"head": held, "odoo_version": version}
 
 
 def _absorb_report(lc: dict, report) -> None:
@@ -415,7 +472,17 @@ def run_outages(lc: dict) -> list[str]:
     fetch failed for every repo the run fetched (network / DNS outage, a
     revoked credential shared by all repos), or the embedder returned no
     vector for any chunk the run sent (down for the whole run). Derived from
-    the counts, so a merged summary (``index_all``) is judged as a whole."""
+    the counts, so a merged summary (``index_all``) is judged as a whole.
+
+    One exception, the quiet night (:func:`_quiet_night_shape`): unchanged
+    chunks are not sent (vector reuse), so a run may send only the few chunks
+    a healthy embedder keeps refusing (modules re-written as an
+    incomplete-embedding retry); "0 of 2 returned" would then raise this
+    alarm every night. Such a run is not an outage when the embedder answered
+    the end-of-run probe. Any other "sent N, got 0" stays ``embedder_down``
+    whatever a probe says: an embedder that fails every batch all night (504
+    model-swap thrash, a busy GPU) can still answer one short text, and the
+    changed code it never embedded must not pass silently."""
     out: list[str] = []
     attempted = lc.get("fetch_attempted", 0) or 0
     failed = len(lc.get("fetch_failed") or [])
@@ -426,7 +493,8 @@ def run_outages(lc: dict) -> list[str]:
             "the on-disk state and does not follow the remote branches"
         )
     sent = lc.get("embed_attempted", 0) or 0
-    if sent and not (lc.get("embed_ok", 0) or 0):
+    exonerated = _quiet_night_shape(lc) and bool(lc.get("embedder_answered"))
+    if sent and not (lc.get("embed_ok", 0) or 0) and not exonerated:
         out.append(
             f"embedder_down: the embedder returned no vector for any of the {sent} "
             "chunk(s) this run sent; the graph was written, the embeddings were not "
@@ -435,12 +503,81 @@ def run_outages(lc: dict) -> list[str]:
     return out
 
 
+# A short text the end-of-run probe embeds (any text works: only "did the
+# embedder return a vector" is read).
+EMBEDDER_PROBE_TEXT = "def ping(self):\n    return True"
+
+# The most chunks a quiet-night run may send and still be exonerated by the
+# probe: one embed request's worth (EMBEDDER_MAX_BATCH). A retry night sends
+# the few chunks refused the night before; more than one batch of them all
+# failing is no longer "one chunk the embedder dislikes" but a failing
+# embedder, and is reported as such.
+QUIET_NIGHT_MAX_CHUNKS = EMBEDDER_MAX_BATCH
+
+
+def _quiet_night_shape(lc: dict) -> bool:
+    """True when every chunk the run sent belongs to a module re-written only
+    as a retry (``embed_attempted_fresh`` 0: no changed source, no full run,
+    no self-heal sent anything) and they fit in one batch
+    (:data:`QUIET_NIGHT_MAX_CHUNKS`). The only shape in which "sent N, got 0"
+    may come from content a healthy embedder refuses."""
+    sent = lc.get("embed_attempted") or 0
+    fresh = lc.get("embed_attempted_fresh", sent) or 0
+    return 0 < sent <= QUIET_NIGHT_MAX_CHUNKS and fresh == 0
+
+
+def _probe_silent_embedder(lc: dict, embedder) -> None:
+    """Ask the embedder for one vector when a quiet-night run got none.
+
+    Only for the :func:`_quiet_night_shape` (a few retried chunks, all
+    refused): sets ``lc["embedder_answered"]`` when the embedder returns a
+    vector, so :func:`run_outages` raises no ``embedder_down`` for chunks the
+    per-module retry (``needs_rewrite``, ``lifecycle_attention``) already
+    reports. Any other run that got no vector is not probed: it is an outage
+    whatever one short text would get. A failed probe leaves the flag unset.
+
+    The probe goes through the embedder's short query client when it has one
+    (``embed_short``), not the 1200s batch read timeout. With the defaults an
+    embedder that accepts the connection and never answers - the realistic
+    hung case - costs 3 attempts x ``EMBEDDER_TIMEOUT_READ_QUERY`` 30s plus
+    the 2s and 4s backoff (``EMBEDDER_RETRY_BACKOFF_BASE``): about 96s. The
+    upper bound, every attempt also spending its full connect
+    (``EMBEDDER_TIMEOUT_CONNECT`` 10s) and write (``EMBEDDER_TIMEOUT_WRITE``
+    30s) timeouts, is 3 x 70 + 6 = 216s (about 3.6 min). Runs once per run:
+    ``index_profile`` when it ends the run, ``index_all`` for the merged run
+    (it calls ``index_profile`` with ``reconcile=False``)."""
+    if embedder is None or lc.get("embedder_answered"):
+        return
+    if (lc.get("embed_ok") or 0) or not _quiet_night_shape(lc):
+        return
+    short = getattr(embedder, "embed_short", None)
+    try:
+        vecs = (
+            short([EMBEDDER_PROBE_TEXT]) if callable(short)
+            else embedder.embed([EMBEDDER_PROBE_TEXT])
+        )
+    except Exception as exc:  # noqa: BLE001 - a failed probe is the outage itself
+        _logger.warning(
+            "embedder probe failed (%s): the embedder returned no vector this run", exc,
+        )
+        return
+    if vecs:
+        lc["embedder_answered"] = True
+        _logger.warning(
+            "embedder answered the end-of-run probe although it returned no vector for "
+            "the %d retried chunk(s) this run sent: it refused them, it is not down "
+            "(the modules stay flagged needs_rewrite and are retried)",
+            lc.get("embed_attempted") or 0,
+        )
+
+
 def _finish_lifecycle(lc: dict) -> dict:
     lc["versions"] = sorted(set(lc["versions"]))
     lc["outages"] = run_outages(lc)
     lc["needs_attention"] = bool(
         lc["gates_tripped"] or lc["undecidable"] or lc["errors"]
         or lc.get("unavailable_repos") or lc.get("stale_repos") or lc["outages"]
+        or lc.get("stale_propagation")
     )
     return lc
 
@@ -553,6 +690,10 @@ def run_lifecycle_reconcile(
         advance = {
             rid: d["head"] for rid, d in deferred.items() if d["odoo_version"] == version
         }
+        observed = {
+            rid: d["head"] for rid, d in (lifecycle.get("held_heads") or {}).items()
+            if d["odoo_version"] == version
+        }
         try:
             report = reconcile_version(
                 version,
@@ -561,6 +702,7 @@ def run_lifecycle_reconcile(
                 retire=retire,
                 allow_mass_retire=allow_mass_retire,
                 advance_presence=advance,
+                observed_heads=observed,
                 global_gc=global_gc,
                 sweep=allow_mass_retire or version in scanned,
                 conn=conn if getattr(conn, "autocommit", None) is True else None,
@@ -586,6 +728,7 @@ def index_profile(
     allow_mass_retire: bool = False,
     reconcile: bool = True,
     run_started_at=None,
+    embed_reuse: bool = True,
 ) -> dict:
     """Index all repos belonging to *profile_name*.
 
@@ -616,16 +759,22 @@ def index_profile(
                        nothing; no longer shipped modules stay pending.
         allow_mass_retire: emergency bypass: also delete what the git evidence
                        cannot prove gone (never set in a timer; ADR-0057 phase 2).
-        reconcile:     run the per-version lifecycle reconcile at the end of the
-                       profile (default). ``index_all`` passes False and runs it
-                       once per version after every profile worker joined.
+        reconcile:     run the per-version lifecycle reconcile, and the
+                       embedder probe (``_probe_silent_embedder``), at the end
+                       of the profile (default). ``index_all`` passes False and
+                       runs both once, after every profile worker joined.
         run_started_at: start of the enclosing run on the Neo4j clock; defaults
                        to the start of this profile run. Nodes written after it
                        are never deleted by the reconcile.
+        embed_reuse:   False (CLI --no-embed-reuse) embeds every chunk of the
+                       written modules again instead of reusing the stored
+                       vector of an unchanged chunk text
+                       (``writer_pgvector.write_module_embeddings``).
 
     Returns:
-        Summary dict: {modules, views, qweb, embeddings, js_patches, owl_comps,
-        lifecycle}; a profile with no repo registered returns it with
+        Summary dict: {modules, views, qweb, embeddings, embeddings_reused
+        (rows written with their stored vector, no embed call), js_patches,
+        owl_comps, lifecycle}; a profile with no repo registered returns it with
         ``no_repos`` True and nothing indexed. ``lifecycle`` = {versions,
         gates_tripped, undecidable, errors, deferred_presence, reports,
         unavailable_repos, needs_attention}; ``needs_attention``
@@ -650,6 +799,7 @@ def index_profile(
             "views": 0,
             "qweb": 0,
             "embeddings": 0,
+            "embeddings_reused": 0,
             "js_patches": 0,
             "owl_comps": 0,
             "lifecycle": _finish_lifecycle(_empty_lifecycle()),
@@ -731,6 +881,7 @@ def index_profile(
                 # --- Sequential path (original behaviour, unchanged) ----------
                 failed_repos: list[tuple[int, str]] = []
                 for repo in repos:
+                    raise_if_stop_requested()
                     repo_id: int = repo["id"]
                     _t0 = time.monotonic()
                     try:
@@ -742,6 +893,7 @@ def index_profile(
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                         _absorb_repo_lifecycle(lifecycle, repo, counters)
                         _elapsed = time.monotonic() - _t0
@@ -787,6 +939,7 @@ def index_profile(
 
                 def _worker(repo: dict) -> dict:
                     """Per-repo worker: own pg_conn + shared writer."""
+                    raise_if_stop_requested()
                     repo_id: int = repo["id"]
                     pg_conn_local = open_production_pg()
                     _t0 = time.monotonic()
@@ -802,6 +955,7 @@ def index_profile(
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                         _elapsed = time.monotonic() - _t0
                         repo_store().update_repo_status(repo_id, "indexed")
@@ -820,6 +974,9 @@ def index_profile(
                     except RepoCheckoutUnavailable:
                         raise  # reported by the collecting loop, no traceback
                     except Exception as e:
+                        # A stopped run (SIGTERM) closes the shared writer
+                        # under the running repos: not a repo failure.
+                        raise_if_stop_requested()
                         _elapsed = time.monotonic() - _t0
                         _logger.exception(
                             "Failed to index repo id=%d after %.1fs — continuing",
@@ -835,9 +992,8 @@ def index_profile(
                     finally:
                         pg_conn_local.close()
 
-                with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=max_workers
-                ) as executor:
+                # A SIGTERM must not wait for the running repos (stop.py).
+                with stoppable_executor(max_workers) as executor:
                     futures = {executor.submit(_worker, repo): repo for repo in repos}
                     first_exc: BaseException | None = None
                     failed_repo_ids: list[tuple[int, str]] = []
@@ -943,11 +1099,15 @@ def index_profile(
         finally:
             writer.close()
 
+        if reconcile:
+            # End of the run (index_all probes once for the merged run).
+            _probe_silent_embedder(lifecycle, embedder)
         summary = {
             "modules": total_modules,
             "views": total_views,
             "qweb": total_qweb,
             "embeddings": total_embeddings,
+            "embeddings_reused": lifecycle["embed_reused"],
             "js_patches": total_js_patches,
             "owl_comps": total_owl_comps,
             "lifecycle": _finish_lifecycle(lifecycle),
@@ -1258,6 +1418,7 @@ def index_all(
     refresh: bool = True,
     retire: bool = True,
     allow_mass_retire: bool = False,
+    embed_reuse: bool = True,
 ) -> dict:
     """Index every profile registered in PostgreSQL.
 
@@ -1291,7 +1452,7 @@ def index_all(
                          Fail-safe (fetch error -> index on-disk state). Set False
                          (CLI --no-fetch) for the old local-only behaviour.
                          Forwarded to each index_profile() call.
-        retire / allow_mass_retire: see index_profile.
+        retire / allow_mass_retire / embed_reuse: see index_profile.
 
     Module lifecycle: each profile run observes its repos (ledger + pending
     names) with its own reconcile turned off; after every profile worker
@@ -1314,7 +1475,10 @@ def index_all(
     finally:
         _clock_writer.close()
 
-    counts = dict.fromkeys(("modules", "views", "qweb", "embeddings", "js_patches", "owl_comps"), 0)
+    counts = dict.fromkeys(
+        ("modules", "views", "qweb", "embeddings", "embeddings_reused", "js_patches",
+         "owl_comps"), 0,
+    )
     profiles_ok = 0
     profiles_failed: list[str] = []
     profiles_empty: list[str] = []
@@ -1325,11 +1489,20 @@ def index_all(
         lifecycle["versions"].extend(plc.get("versions") or [])
         lifecycle["gates_tripped"].extend(plc.get("gates_tripped") or [])
         lifecycle["deferred_presence"].update(plc.get("deferred_presence") or {})
+        lifecycle["held_heads"].update(plc.get("held_heads") or {})
         lifecycle["unavailable_repos"].extend(plc.get("unavailable_repos") or [])
         for key in ("fetch_failed", "stale_repos"):
             lifecycle[key].extend(plc.get(key) or [])
-        for key in ("fetch_attempted", "embed_attempted", "embed_ok"):
+        for key in ("fetch_attempted", "embed_attempted", "embed_ok", "embed_reused"):
             lifecycle[key] += plc.get(key, 0) or 0
+        lifecycle["embed_attempted_fresh"] += plc.get(
+            "embed_attempted_fresh", plc.get("embed_attempted", 0),
+        ) or 0
+        for key in ("propagation_unrecorded", "stale_propagation"):
+            lifecycle[key].extend(plc.get(key) or [])
+        lifecycle["embedder_answered"] = bool(
+            lifecycle["embedder_answered"] or plc.get("embedder_answered")
+        )
         for key in counts:
             counts[key] += summary.get(key, 0)
 
@@ -1358,6 +1531,7 @@ def index_all(
                     allow_mass_retire=allow_mass_retire,
                     reconcile=False,
                     run_started_at=run_started_at,
+                    embed_reuse=embed_reuse,
                 )
                 _absorb_profile(summary)
                 if summary.get("no_repos"):
@@ -1391,6 +1565,7 @@ def index_all(
 
         def _run_one_profile(profile_name: str) -> dict:
             """Per-profile worker: own pg_conn, own advisory lock."""
+            raise_if_stop_requested()
             pg_conn_thread = open_production_pg()
             try:
                 return index_profile(
@@ -1405,11 +1580,15 @@ def index_all(
                     allow_mass_retire=allow_mass_retire,
                     reconcile=False,
                     run_started_at=run_started_at,
+                    embed_reuse=embed_reuse,
                 )
             finally:
-                pg_conn_thread.close()
+                # A stopped run keeps it open: it holds the profile lock.
+                close_unless_held(pg_conn_thread)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=profile_workers) as executor:
+        # A SIGTERM must not wait for the running profiles: a profile is hours
+        # of work and an embed request can take many minutes (stop.py).
+        with stoppable_executor(profile_workers) as executor:
             future_to_name = {
                 executor.submit(_run_one_profile, name): name
                 for name in profile_names
@@ -1458,6 +1637,7 @@ def index_all(
             _gc_writer.close()
     # === End post-all-profiles lifecycle reconcile ===
 
+    _probe_silent_embedder(lifecycle, embedder)
     summary = {
         "profiles_ok": profiles_ok,
         "profiles_failed": profiles_failed,

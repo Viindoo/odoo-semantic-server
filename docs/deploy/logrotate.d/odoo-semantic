@@ -14,10 +14,21 @@
 # Relocating the reindex log into /var/log/odoo-semantic/ sidesteps the problem —
 # create the dir once: `sudo install -d -o odoo-semantic -g odoo-semantic /var/log/odoo-semantic`.
 
+# copytruncate: logrotate.timer fires daily around 00:00 (randomized delay), inside
+# the nightly reindex (00:00). The reindex unit opens its log once with
+# StandardOutput=append:, so a rename-and-compress rotation left the running
+# process writing to the renamed, then gzip-deleted file: on 2026-10-25 every
+# line after the 00:37 rotation was lost, and osm-alert@ (which reads the lines
+# after the run-start marker in this path) would have read an empty log.
+# copytruncate keeps the path and the open file; the writer uses O_APPEND, so it
+# continues at the new end of the truncated file. delaycompress keeps the newest
+# rotated copy uncompressed for one cycle.
 /var/log/odoo-semantic/*.log /var/backups/odoo-semantic/*.log {
     daily
     rotate 14
+    copytruncate
     compress
+    delaycompress
     missingok
     notifempty
 }

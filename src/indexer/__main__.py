@@ -15,15 +15,19 @@ Subcommands:
                      retire, orphans, and rollout checks. Writes nothing.
 """
 import argparse
+import contextlib
 import logging
 import os
 import signal
 import sys
+import threading
+import time
 from datetime import UTC, datetime
 
 from src import config
 from src.constants import DEFAULT_EMBEDDER_MODEL
 from src.db import job_registry
+from src.indexer import stop as run_stop
 from src.indexer.lifecycle_audit import AUDIT_SCHEMA, FINDING_KEYS, INFORMATIONAL_FINDING_KEYS
 from src.indexer.pipeline import (
     IndexRunError,
@@ -81,6 +85,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Compute no new embeddings (Neo4j only). Rows of entities the run's entity "
             "prune removes are still deleted. Default: embed using [embedder] config."
+        ),
+    )
+    sub_repo.add_argument(
+        "--no-embed-reuse", action="store_true",
+        help=(
+            "Send every chunk of the written modules to the embedder again instead "
+            "of reusing the stored vector of a chunk whose text, embedding model and "
+            "dimension are unchanged. Use when stored vectors may be wrong although "
+            "their stamp matches: the embedder's numerics changed under the same "
+            "model tag (re-pulled or re-quantised model, another backend or GPU), "
+            "vectors are suspect, or texts were truncated before num_ctx grew. "
+            "Only the modules the run writes are re-embedded: add --full for all."
         ),
     )
     sub_repo.add_argument(
@@ -355,11 +371,16 @@ def _mark_job_terminated(job_id: int) -> None:
 
 
 def _install_sigterm_handler(job_id: int | None) -> None:
-    """On SIGTERM: record the error on the Web UI job (if any), then exit 1
-    through ``SystemExit`` so the run's ``finally`` blocks close its
-    connections."""
+    """On SIGTERM: ask the worker threads to stop (``src.indexer.stop``),
+    record the error on the Web UI job (if any), then exit 1 through
+    ``SystemExit`` so the run's ``finally`` blocks close its connections.
+
+    The handler runs in the main thread only. A worker thread of
+    ``--profile-workers`` / ``--max-workers`` stops at its next checkpoint;
+    one still blocked after the grace is ended by :func:`run_as_process`."""
 
     def _sigterm_handler(signum, frame):
+        run_stop.request_stop()
         if job_id is not None:
             _mark_job_terminated(job_id)
         sys.exit(1)
@@ -380,8 +401,12 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
     clone (``unavailable_repos``, #383 item 2: the other repos were indexed,
     this one cannot be), a repo's pre-scan fetch failed in two consecutive
     runs (``stale_repos``), or a run-wide outage (``outages``: every fetch of
-    the run failed, or the embedder returned no vector all run). The details
-    go to stderr; the per-repo text is in ``repos.lifecycle_attention``.
+    the run failed, or the embedder returned no vector all run), or a repo's
+    cross-repo propagation could not be recorded in two consecutive runs
+    (``stale_propagation``). The details go to stderr; the per-repo text is in
+    ``repos.lifecycle_attention``. A propagation not recorded once
+    (``propagation_unrecorded``: the repo keeps its head_sha and the next run
+    repeats it) is printed to stderr without changing the exit code.
 
     *run_failed*: a repo or profile failed to index. The run exits 1, which
     outranks 3, but the lifecycle details are printed all the same."""
@@ -391,11 +416,20 @@ def _lifecycle_exit_code(lifecycle: dict, *, run_failed: bool = False) -> int:
         code = EXIT_LIFECYCLE_ATTENTION
     else:
         code = 0
+    # A persistent item is printed once, under stale_propagation below.
+    stale = set(lifecycle.get("stale_propagation") or [])
+    for item in lifecycle.get("propagation_unrecorded") or []:
+        if item in stale:
+            continue
+        print(
+            f"Cross-repo propagation not recorded, retried by the next run: {item}",
+            file=sys.stderr,
+        )
     if not lifecycle.get("needs_attention"):
         return code
     print(f"Lifecycle needs attention (exit {code}):", file=sys.stderr)
     for key in ("gates_tripped", "undecidable", "errors", "unavailable_repos",
-                "stale_repos", "outages"):
+                "stale_repos", "stale_propagation", "outages"):
         for item in lifecycle.get(key) or []:
             print(f"  {key}: {item}", file=sys.stderr)
     # The embedding gate id names no profile; say which ones it holds (#381 F3).
@@ -516,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         retire = not getattr(args, "no_retire", False)
         allow_mass_retire = getattr(args, "allow_mass_retire", False)
         refresh = not getattr(args, "no_fetch", False)
+        embed_reuse = not getattr(args, "no_embed_reuse", False)
         # The pool first: building the embedder resolves the DB overlay of
         # embedding.timeout_read_seconds once, at construction (#383 item 3).
         pg = open_production_pg()
@@ -551,6 +586,7 @@ def main(argv: list[str] | None = None) -> int:
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                     else:
                         summary = index_profile(
@@ -563,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
                             refresh=refresh,
                             retire=retire,
                             allow_mass_retire=allow_mass_retire,
+                            embed_reuse=embed_reuse,
                         )
                 except IndexRunError as exc:
                     failure = exc
@@ -616,7 +653,9 @@ def main(argv: list[str] | None = None) -> int:
                 close = getattr(embedder, "close", None)
                 if callable(close):
                     close()
-            pg.close()
+            # A stopped run keeps it open until the process exits: it holds
+            # the profile lock its workers may still write under.
+            run_stop.close_unless_held(pg)
         return exit_code
 
     elif args.subcommand == "index-core":
@@ -728,5 +767,62 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _exit_stopped_run(code) -> None:
+    """Exit a run that was asked to stop without waiting for blocked workers.
+
+    ``sys.exit`` would join every non-daemon thread (the executors' workers)
+    at interpreter exit, and a worker inside a slow embed request blocks for
+    up to the embedder read timeout. Wait up to ``stop.STOP_GRACE_S`` for them to
+    unwind at their checkpoints; any still running is abandoned with
+    ``os._exit``: the kernel closes the connections, PostgreSQL rolls back
+    the open transactions and releases the advisory locks."""
+    grace = run_stop.STOP_GRACE_S
+    deadline = time.monotonic() + grace
+    for thread in threading.enumerate():
+        if thread is threading.current_thread() or thread.daemon:
+            continue
+        thread.join(max(0.0, deadline - time.monotonic()))
+    stuck = [
+        t.name for t in threading.enumerate()
+        if t is not threading.current_thread() and not t.daemon and t.is_alive()
+    ]
+    if not stuck:
+        sys.exit(code)
+    exit_code = code if isinstance(code, int) and code != 0 else 1
+    logging.getLogger(__name__).warning(
+        "index run stopped: %d worker thread(s) still busy after %.0fs (%s), "
+        "exiting %d without waiting for them",
+        len(stuck), grace, ", ".join(stuck), exit_code,
+    )
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):  # the process is ending anyway
+            stream.flush()
+    os._exit(exit_code)
+
+
+def run_as_process(argv: list[str] | None = None) -> None:
+    """The ``python -m src.indexer`` entry: :func:`main`, then exit.
+
+    A run that was asked to stop (SIGTERM, Ctrl-C during a multi-worker run)
+    ends within ``stop.STOP_GRACE_S`` even when a worker thread is blocked (see
+    :func:`_exit_stopped_run`); any other run exits as ``sys.exit(main())``."""
+    try:
+        code = main(argv)
+    except SystemExit as exc:
+        if not run_stop.stop_requested():
+            raise
+        code = exc.code
+    except BaseException as exc:
+        if not run_stop.stop_requested():
+            raise
+        logging.getLogger(__name__).warning(
+            "index run stopped: %s: %s", type(exc).__name__, exc,
+        )
+        code = 1
+    if run_stop.stop_requested():
+        _exit_stopped_run(code)
+    sys.exit(code)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    run_as_process()

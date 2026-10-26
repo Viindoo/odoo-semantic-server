@@ -492,15 +492,17 @@ sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
     PY=/home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python
 
-    $PY -m src.manager add-profile viindoo_17 --version 17.0
+    # Bắt buộc khai chủ sở hữu: --shared cho profile gốc Odoo CE/EE (mọi key đều
+    # thấy), --tenant <id> cho profile riêng, hoặc --parent <profile riêng>.
+    $PY -m src.manager add-profile odoo_17 --version 17.0 --shared
     $PY -m src.manager add-repo \
-        --profile viindoo_17 \
+        --profile odoo_17 \
         --url github.com/odoo/odoo --branch 17.0 \
         --local-path /srv/odoo-repos/odoo_17.0
     $PY -m src.manager list   # verify
 
     # Lần đầu: index Neo4j graph only (đủ M1+M2+M4) — chưa cần Ollama
-    $PY -m src.indexer index-repo --profile viindoo_17 --no-embed
+    $PY -m src.indexer index-repo --profile odoo_17 --no-embed
     # Hoặc tất cả profiles:
     # $PY -m src.indexer index-repo --all --no-embed
 '
@@ -515,7 +517,7 @@ Khi đã setup embedder (xem `docs/deploy/embedder-setup.md`), re-index
 sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
-        -m src.indexer index-repo --profile viindoo_17
+        -m src.indexer index-repo --profile odoo_17
 '
 ```
 
@@ -528,7 +530,7 @@ sudo -u odoo-semantic -H bash -c '
 > sudo -u odoo-semantic -H setsid nohup bash -c '
 >     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
 >     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
->         -m src.indexer index-repo --profile viindoo_17 --verbose
+>         -m src.indexer index-repo --profile odoo_17 --verbose
 > ' > /var/log/odoo-semantic-index.log 2>&1 &
 > # Theo dõi tiến độ:
 > sudo tail -f /var/log/odoo-semantic-index.log
@@ -889,7 +891,7 @@ psql "$PG_DSN" -c "SELECT id, url, branch, lifecycle_attention_at, lifecycle_att
 | `unavailable_repos: repo id=<id> (<url>): ...` (attention `checkout unavailable: ...`) | repo đăng ký không có checkout và lượt chạy không clone được (vd branch chưa tồn tại trên remote, SSH key sai); hoặc `clone_status` là `cloned` nhưng thư mục đã mất; hoặc `manual` với `local_path` do người đăng ký trỏ tới (vd `apply-preset --base-dir`, không phải thư mục clone OSM quản lý) mà thư mục không có - hai trường hợp này không tự clone lại (disk chưa mount không bị thay bằng clone mới); hoặc thư mục clone OSM quản lý đang chứa clone của origin KHÁC (hai repo cùng slug URL trong một profile) | sửa nguyên nhân trong dòng (tạo branch, sửa key / url) - lượt chạy kế tự clone lại (`clone_status` pending / error, hoặc manual tại thư mục clone OSM quản lý); thư mục `cloned` / `manual` bị mất: kiểm disk / mount rồi clone lại từ Web UI, hoặc gỡ đăng ký repo; trùng slug: đăng ký một trong hai repo ở profile khác hoặc xóa thư mục cũ |
 | `stale_repos: repo id=<id> (<url>): <cause>` (attention `pre-scan fetch failed in two consecutive runs (...)`) | `git fetch` của repo lỗi hai lượt liên tiếp (key bị thu hồi, host / repo không còn, DNS): OSM index trạng thái fetch cuối và không còn theo branch remote | sửa nguyên nhân trong dòng (key, url, mạng); lượt chạy kế fetch được thì tự hết |
 | `outages: fetch_outage: the pre-scan fetch failed for all N repos ...` | fetch lỗi cho mọi repo của lượt chạy (ít nhất hai): sự cố DNS / mạng hoặc credential dùng chung | kiểm DNS / mạng / key từ máy chủ (`git -C <local_path> fetch origin` bằng user odoo-semantic); dữ liệu không cần sửa, lượt kế tự fetch |
-| `outages: embedder_down: the embedder returned no vector for any of the N chunk(s) ...` | embedder down cả lượt: graph đã ghi, embedding thì không (row cũ được giữ) | khởi động lại embedder (`EMBEDDER_URL`), rồi chạy lại `index-repo --profile <p> --full` cho profile đã ghi lượt đó (hoặc chờ lượt kế re-parse module) |
+| `outages: embedder_down: the embedder returned no vector for any of the N chunk(s) ...` | embedder down cả lượt: graph đã ghi, embedding thì không (row cũ được giữ). Ngoại lệ duy nhất: lượt "đêm yên" (mọi chunk gửi đi đều thuộc module chỉ được ghi lại để thử lại, tối đa một batch `EMBEDDER_MAX_BATCH`) hỏi thử embedder một lần cuối lượt; nếu embedder trả lời thì lượt đó không báo outage (chunk bị từ chối được ghi theo module và thử lại lượt sau). Mọi lượt khác gửi chunk mà không nhận vector nào đều là outage, dù embedder có trả lời một text ngắn | khởi động lại embedder (`EMBEDDER_URL`), rồi chạy lại `index-repo --profile <p> --full` cho profile đã ghi lượt đó (hoặc chờ lượt kế re-parse module) |
 | `undecidable: <module>@<v> kept: repo(s) ... not synced` | một repo có thể vẫn ship module chưa được index lại | index profile của repo đó (hoặc gỡ đăng ký repo không còn dùng); reconcile kế tiếp tự quyết |
 | `entity prune of M@v skipped: parse degraded` | file của M không đọc/parse được | sửa file; module được re-parse khi file đổi (lỗi đọc tạm thời: tự thử lại một lần) |
 | `errors: ...` (vd `LifecycleLockTimeout`) | reconcile không lấy được lock `retire:<v>` trong `RETIRE_LOCK_WAIT_SECONDS` hoặc lỗi Neo4j/PG | xem traceback trong log; lượt chạy kế tự làm lại, tên vẫn `retire_pending` |
@@ -945,6 +947,16 @@ của row ledger. Row git không có bằng chứng vẫn không có successor, 
 để tới các row phía sau (không có cursor thì luôn đọc lại cùng trang đầu). Không có 0006
 thì merge successor bị bỏ qua kèm WARNING (indexer cũng vậy - không lượt retire nào fail).
 Rollback 0006 xóa đúng các successor `git_merge` (row lịch sử giữ nguyên).
+
+**Migration 0007 (needs_rewrite_at + module_presence_pending_rewrite, ADR-0007 W14 note 3):**
+áp dụng bằng `python -m src.db.migrate` (owner DSN, như mọi migration), ngoài khung backup /
+reindex (không chạy giữa 23:30 và lúc lượt nightly xong). Nó thêm cột `needs_rewrite_at`
+(`ADD COLUMN IF NOT EXISTS`, backfill các row đang `needs_rewrite`), tạo bảng
+`module_presence_pending_rewrite` (chỉ indexer đọc/ghi, không grant cho `osm_reader`); bỏ cuộc
+sau `lock_timeout` 5 s nếu có holder idle-in-transaction: chạy lại cùng lệnh. Code pull trước khi
+migrate vẫn chạy như cũ (clear needs_rewrite theo tên, không ghi pending) kèm một WARNING
+`apply migration 0007` mỗi lượt repo. Rollback: `0007_module_presence_needs_rewrite_at.rollback.sql` (yoyo
+rollback) - code vẫn chạy, chỉ mất thời điểm của các flag hiện có và các entry pending.
 
 **Env của vòng đời** (default + lý do: [`docs/operations/timeouts.md`](operations/timeouts.md)
 mục "Module lifecycle ledger"): `RETIRE_LOCK_WAIT_SECONDS` (900s, chờ lock `retire:<v>`),

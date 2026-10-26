@@ -242,7 +242,9 @@ def reembed_stubs_for_profile(
                             "not flagged in the lifecycle ledger: re-run index-repo --full "
                             "for it",
                         )
-                    if not stats.get("embedded", 0):
+                    # A reused stored vector is written like an embedded one
+                    # (none exists for a zero-row module, but stay consistent).
+                    if not (stats.get("embedded", 0) + stats.get("reused", 0)):
                         continue
                     modules_reembedded += 1
                     _logger.info(

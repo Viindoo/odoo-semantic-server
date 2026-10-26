@@ -212,7 +212,7 @@ def test_refresh_picks_up_upstream_advance(tmp_path):
         )
         # cross_repo import happens inside _index_repo on the incremental path.
         stack.enter_context(
-            patch("src.indexer.cross_repo.find_dependent_repos", return_value=[])
+            patch("src.indexer.cross_repo.find_dependent_modules", return_value={})
         )
 
         # Registry is built AFTER refresh, so it must reflect BOTH modules on disk.

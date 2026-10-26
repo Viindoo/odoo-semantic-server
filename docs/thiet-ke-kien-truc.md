@@ -273,6 +273,8 @@ module_presence (1 dòng / (repo_id, name))
   retire_reason     absent | repo_removed | orphan_sweep
   retire_pending    đã quyết retire nhưng chưa xóa (gate, --no-retire, crash)
   needs_rewrite     run kế tiếp của repo phải re-parse module này
+  needs_rewrite_at  giờ PostgreSQL lúc flag được set (0007): run chỉ clear flag set trước lúc nó đọc
+                    (bảng module_presence_pending_rewrite: flag chờ cho module chưa có row, ADR-0007 W14 note 3)
   first/last_seen_*, state_changed_*, removing_commit_*, successor_names/source,
   resurrection_count, shadowed_paths, version_raw/version_mismatch,
   last_full_parse_*  (bản parse đầy đủ gần nhất của bản copy này - shared prune)

@@ -315,6 +315,16 @@
     "indexdef": "CREATE UNIQUE INDEX module_presence_repo_name_key ON public.module_presence USING btree (repo_id, name)"
   },
   {
+    "tablename": "module_presence_pending_rewrite",
+    "indexname": "ix_module_presence_pending_rewrite_flagged",
+    "indexdef": "CREATE INDEX ix_module_presence_pending_rewrite_flagged ON public.module_presence_pending_rewrite USING btree (flagged_at)"
+  },
+  {
+    "tablename": "module_presence_pending_rewrite",
+    "indexname": "module_presence_pending_rewrite_pkey",
+    "indexdef": "CREATE UNIQUE INDEX module_presence_pending_rewrite_pkey ON public.module_presence_pending_rewrite USING btree (odoo_version, repo_id, name)"
+  },
+  {
     "tablename": "pattern_feedback",
     "indexname": "idx_pattern_feedback_node",
     "indexdef": "CREATE INDEX idx_pattern_feedback_node ON public.pattern_feedback USING btree (pattern_node_id)"
