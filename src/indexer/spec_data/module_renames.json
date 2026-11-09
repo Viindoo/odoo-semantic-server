@@ -1,7 +1,7 @@
 {
   "_description": "Cross-version module renames and merges, one block per OpenUpgrade branch N.0: renamed_modules / merged_modules of that branch's apriori.py (old name at N-1 -> new name at N). GENERATED - do not edit by hand: python scripts/sync_module_renames.py --write (weekly workflow module-renames-resync.yml opens a PR on drift).",
   "_oracle": "ADR-0055 provenance + oracle. Provenance: each branch block records repo, branch, commit and path of the apriori.py it was parsed from (ast.literal_eval, never executed). Oracle: the read side (src/indexer/module_renames.resolve_chain) shows an edge only when the caller's index has old at N-1 and not from N to the asked version, and new at N; chains are composed hop by hop under the same rule.",
-  "generated_at": "2026-10-20",
+  "generated_at": "2026-11-09",
   "branches": {
     "8.0": {
       "repo": "OCA/OpenUpgrade",
@@ -973,10 +973,12 @@
     "20.0": {
       "repo": "OCA/OpenUpgrade",
       "branch": "20.0",
-      "commit": "c1935fb19483ac0cd022aa5d18d9fd1b05298ba7",
-      "path": null,
+      "commit": "18b96f6093af95ff3929fd4ca92b7766a2809245",
+      "path": "openupgrade_scripts/apriori.py",
       "renamed_modules": {},
-      "merged_modules": {}
+      "merged_modules": {
+        "stock_move_quantity_product_uom": "stock"
+      }
     }
   }
 }
