@@ -573,7 +573,9 @@ CoreSymbol đã có, và pattern chỉ nối tới CoreSymbol của `odoo_versio
 4. `index-repo --profile <mọi profile của <N>.0> --full` - chạy SAU bước 3: profile đã index
    trước khi có CoreSymbol của version đó sẽ thiếu cạnh `USES_CORE_SYMBOL`
    (`find_deprecated_usage` rỗng) cho tới khi chạy lại `--full`.
-5. `seed_patterns` (tự re-seed khi `patterns.json` đổi; `--force` nếu không đổi).
+5. `ops/backfill_patterns.py` (đồng bộ `src/data/patterns.json` vào bảng `patterns` - nguồn mà
+   mọi lần seed đọc, không phải file), rồi `seed_patterns` (seed lại khi nội dung bảng đổi;
+   `--force` nếu không đổi).
 
 Kiểm: `cli_help(odoo_version='<N>.0')` liệt kê lệnh; `lookup_core_api('safe_eval', '<N>.0')`
 trả chữ ký; một tra cứu trên version chưa chạy `index-core` trả `Status: not_indexed`
@@ -588,9 +590,15 @@ giữa version index trước và sau.
 One-shot, idempotent. Cần cho `suggest_pattern`, `check_module_exists`,
 `find_override_point`.
 
+Seed đọc bảng `patterns` (Postgres), không đọc `src/data/patterns.json`: mỗi lần deploy có
+đổi `patterns.json`, chạy `ops/backfill_patterns.py` trước để đồng bộ file vào bảng; nếu bỏ
+bước này, seed báo "Patterns unchanged" và catalogue cũ vẫn được phục vụ.
+
 ```bash
 sudo -u odoo-semantic -H bash -c '
     export ODOO_SEMANTIC_CONF=/etc/odoo-semantic/odoo-semantic.conf
+    cd /home/odoo-semantic/odoo-semantic-mcp
+    /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python ops/backfill_patterns.py
     /home/odoo-semantic/.venv/odoo-semantic-mcp/bin/python \
         -m src.indexer.seed_patterns
     # --no-embed nếu chưa setup Ollama (Neo4j nodes vẫn có,
@@ -2112,9 +2120,11 @@ run the pattern backfill script:
 ~/.venv/odoo-semantic-mcp/bin/python ops/backfill_patterns.py
 ```
 
-This migrates 115 curated patterns from `src/data/patterns.json` → the new
-`patterns` table. The script is idempotent (ON CONFLICT DO NOTHING); safe to
-re-run.
+This syncs the curated patterns of `src/data/patterns.json` into the `patterns`
+table, the source every reseed reads: it upserts the curated rows that changed and
+soft-deletes curated rows removed from the file; rows an admin created or edited
+(`updated_by` set) are never touched. Idempotent; run it after every deploy that
+changes `patterns.json` (section 3.4.2).
 
 `app_settings` system rows (15 Tier-1 keys) are auto-populated on process
 start via the bootstrap hook in `src/web_ui/app.py` lifespan. No manual seed
