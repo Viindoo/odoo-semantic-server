@@ -47,7 +47,8 @@ def _row(job_id, status, *, pid=None, age_s=0.0):
 def _sweep(rows):
     store = JobStore(_FakePool(rows))
     updates: list[dict] = []
-    store.update_job = lambda job_id, **kw: updates.append({"id": job_id, **kw})
+    # The store's update_job returns True when it wrote the (still unfinished) row.
+    store.update_job = lambda job_id, **kw: updates.append({"id": job_id, **kw}) or True
     count = store.mark_dead_jobs()
     return count, {u["id"]: u for u in updates}
 

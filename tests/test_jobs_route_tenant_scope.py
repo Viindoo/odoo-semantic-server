@@ -518,6 +518,8 @@ class TestSensitiveGetRouteAllowlist:
 
     SCOPE_REVIEWED_ROUTES: list[tuple[str, str]] = [
         # --- jobs router (/api/jobs) ---
+        # Job history with raw error text, every tenant's jobs: Depends(require_admin).
+        ("/api/jobs",                                      "admin_only"),
         ("/api/jobs/{job_id}/status",                      "tenant_scope"),
 
         # --- repos router (/api/repos) ---

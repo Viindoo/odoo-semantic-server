@@ -136,14 +136,13 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
     });
     setIndexingId(null);
     if (r.ok) {
-      const jobId = (r.data as { job_id?: number }).job_id;
-      if (typeof jobId === 'number') {
+      // Started, or already covered by the profile's running index run (#403):
+      // the server's message says which.
+      const data = r.data as { job_id?: number | null; message?: string };
+      flash(data.message ?? 'Index started.');
+      if (typeof data.job_id === 'number') {
         setIndexJobStatus(prev => ({ ...prev, [repoId]: 'running' }));
-        flash('Index started.');
-        pollIndexJob(repoId, jobId);
-      } else {
-        // No job id returned — still acknowledge the trigger.
-        flash('Index triggered successfully.');
+        pollIndexJob(repoId, data.job_id);
       }
     } else {
       flash(r.error!, { error: true });
@@ -366,9 +365,10 @@ export default function ReposIsland({ initialProfiles, initialTenants, isAdmin }
                               indexJobStatus[repo.id] === 'queued'
                             }
                             data-testid={`index-repo-button-${repo.id}`}
-                            className="text-xs bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 px-3 py-1.5 rounded-lg transition-colors"
+                            title={`Index every repository of profile ${(repo as unknown as { profileName: string }).profileName} (one job for the whole profile)`}
+                            className="text-xs bg-blue-50 hover:bg-blue-100 disabled:opacity-50 text-blue-700 px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap"
                           >
-                            {indexingId === repo.id ? 'Indexing…' : 'Index'}
+                            {indexingId === repo.id ? 'Indexing…' : 'Index profile'}
                           </button>
                           <button
                             type="button"

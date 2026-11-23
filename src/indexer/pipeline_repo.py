@@ -2431,6 +2431,12 @@ def _index_repo(
     local_path: str = repo["local_path"]
     odoo_version: str = repo["odoo_version"]
     url = repo.get("url", local_path)
+    # The first line a repo writes to the run's log: a Web UI job log tail ends
+    # here while the checkout or the fetch of this repo is still in progress.
+    _logger.info(
+        "Repo %s (id=%s, branch %s): indexing started%s", url, repo.get("id"),
+        repo.get("branch"), " (fetch first)" if refresh else "",
+    )
 
     # A repo whose first clone failed (or never ran) is cloned here, once per
     # run; one that still has no checkout raises RepoCheckoutUnavailable,

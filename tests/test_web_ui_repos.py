@@ -211,30 +211,31 @@ class TestProfilesEndpoint:
 
     @pytest.mark.asyncio
     async def test_index_repo_dedup_blocked(self, migrated_pg):
-        """M5.5 Section E: when indexer is running, returns 409, Popen NOT called."""
+        """M5.5 Section E + #403: a run of the profile that started before the
+        repo was added does not index it -> 409 naming the run, Popen NOT called."""
         from src.db.pg import repo_store
+        from tests._profile_lock import profile_lock_session
 
         pid = repo_store().add_profile(name="p_dedup", odoo_version="17.0", shared=True)
-        rid = repo_store().add_repo(
-            profile_id=pid,
-            url="file://local",
-            branch="17.0",
-            local_path="/tmp/odoo_dedup",
-        )
-
         app = create_app()
-        with mock.patch(
-            "src.indexer.pipeline.indexer_is_running", return_value=True
-        ), mock.patch("subprocess.Popen") as mock_popen:
-            async with _async_client(app) as client:
-                resp = await client.post(
-                    f"/api/repos/repos/{rid}/index", json={}
-                )
+        with profile_lock_session() as lock:  # the run's session starts here
+            rid = repo_store().add_repo(
+                profile_id=pid,
+                url="file://local",
+                branch="17.0",
+                local_path="/tmp/odoo_dedup",
+            )
+            lock("p_dedup")
+            with mock.patch("subprocess.Popen") as mock_popen:
+                async with _async_client(app) as client:
+                    resp = await client.post(
+                        f"/api/repos/repos/{rid}/index", json={}
+                    )
 
         assert resp.status_code == 409
-        body = resp.json()
-        err = body.get("error", "").lower()
-        assert "already" in err or "running" in err
+        err = resp.json().get("error", "")
+        assert "p_dedup" in err and "outside the Web UI" in err
+        assert "before this repository was added" in err
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio
@@ -530,8 +531,10 @@ class TestJobIntegration:
 
     @pytest.mark.asyncio
     async def test_index_repo_dedup_blocks_no_job_created(self, migrated_pg):
-        """Khi indexer_is_running True → KHÔNG tạo job, KHÔNG Popen, 409 response."""
+        """#403: the profile's running index run already covers the repo ->
+        200 informational (already_running), NO job row, NO Popen."""
         from src.db.pg import repo_store
+        from tests._profile_lock import hold_profile_lock
 
         pid = repo_store().add_profile(name="p_dedup2", odoo_version="17.0", shared=True)
         rid = repo_store().add_repo(
@@ -542,17 +545,17 @@ class TestJobIntegration:
         )
 
         app = create_app()
-        with mock.patch(
-            "src.indexer.pipeline.indexer_is_running", return_value=True
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with hold_profile_lock("p_dedup2"), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     f"/api/repos/repos/{rid}/index", json={}
                 )
 
-        assert resp.status_code == 409
+        assert resp.status_code == 200
         body = resp.json()
-        assert "error" in body
+        assert body["already_running"] is True
+        assert body["job_id"] is None  # started outside the Web UI: no job row
+        assert "this repository is included" in body["message"]
         mock_popen.assert_not_called()
 
         # No job row created
@@ -614,7 +617,9 @@ class TestStatusBadge:
 
     @pytest.mark.asyncio
     async def test_profiles_endpoint_includes_last_job(self, migrated_pg):
-        """GET /api/repos/profiles includes last_job data when job exists."""
+        """#403: GET /api/repos/profiles attaches to each repo the run indexing
+        its profile now (index_run), here a queued Web UI job that has not read
+        the repository list yet, so it covers the repo."""
         from src.db.pg import job_store, repo_store
 
         pid = repo_store().add_profile(name="badge_profile", odoo_version="17.0", shared=True)
@@ -624,7 +629,6 @@ class TestStatusBadge:
             branch="17.0",
             local_path="/tmp/odoo_badge",
         )
-        # Create a job for the profile
         job_id = job_store().create_job("badge_profile")
 
         app = create_app()
@@ -632,25 +636,24 @@ class TestStatusBadge:
             resp = await client.get("/api/repos/profiles")
 
         assert resp.status_code == 200
-        body = resp.json()
-        profiles = body.get("profiles", [])
-        # Migration 0004 seeds 5 root profiles; filter to the one we created.
+        profiles = resp.json().get("profiles", [])
+        # Migrations seed root profiles; filter to the one we created.
         badge_profiles = [p for p in profiles if p["name"] == "badge_profile"]
         assert len(badge_profiles) == 1
-        # Profile should contain repos
-        profile = badge_profiles[0]
-        repos = profile.get("repos", [])
+        repos = badge_profiles[0].get("repos", [])
         assert len(repos) == 1
-        # last_job should be attached
-        last_job = repos[0].get("last_job")
-        assert last_job is not None
-        assert last_job["id"] == job_id
-        assert last_job["status"] == "queued"
+        run = repos[0]["index_run"]
+        assert run["job_id"] == job_id
+        assert run["job_label"] == "badge_profile"
+        assert run["covers_repo"] is True
+        assert "last_job" not in repos[0]
 
     @pytest.mark.asyncio
     async def test_profiles_endpoint_no_job_when_no_jobs(self, migrated_pg):
-        """GET /api/repos/profiles has null last_job when no job exists."""
-        from src.db.pg import repo_store
+        """GET /api/repos/profiles has a null index_run when nothing indexes the
+        profile - even when its last job ended (a finished job is history, not
+        the repo's state)."""
+        from src.db.pg import job_store, repo_store
 
         pid = repo_store().add_profile(name="nobadge_profile", odoo_version="17.0", shared=True)
         repo_store().add_repo(
@@ -659,6 +662,8 @@ class TestStatusBadge:
             branch="17.0",
             local_path="/tmp/odoo_nobadge",
         )
+        old = job_store().create_job("nobadge_profile")
+        job_store().update_job(old, status="error", error_msg="boom")
 
         app = create_app()
         async with _async_client(app) as client:
@@ -666,13 +671,11 @@ class TestStatusBadge:
 
         body = resp.json()
         profiles = body.get("profiles", [])
-        # Migration 0004 seeds 5 root profiles; filter to the one we created.
         nobadge_profiles = [p for p in profiles if p["name"] == "nobadge_profile"]
         assert len(nobadge_profiles) == 1
         repos = nobadge_profiles[0].get("repos", [])
         assert len(repos) == 1
-        last_job = repos[0].get("last_job")
-        assert last_job is None
+        assert repos[0]["index_run"] is None
 
 
 # ---------------------------------------------------------------------------

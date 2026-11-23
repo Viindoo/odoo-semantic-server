@@ -115,18 +115,16 @@ def _indexer_lock(pg_conn, profile_name: str):
 
 
 def indexer_is_running(pg_conn, profile_name: str) -> bool:
-    """Non-destructive advisory lock peek — True if the indexer is currently running
-    for the given profile.
+    """True while an index run of *profile_name* holds its lock (the lock id
+    ``_indexer_lock`` takes), whoever started it.
 
-    Acquire-then-release pattern: avoids pg_locks table scan, stays consistent
-    with the same lock id that _indexer_lock uses. Caller's connection must be
-    autocommit (Web UI _get_conn already sets autocommit=True).
+    Read from ``pg_locks`` (``src.db.pg.advisory_lock_holders``): the peek takes
+    no lock, so a run starting at the same moment never finds its lock busy and
+    fails. A lock held by *pg_conn*'s own session counts as running.
     """
-    from src.db.pg import advisory_lock
+    from src.db.pg import advisory_lock_holders
     lock_id = _profile_lock_id(profile_name)
-    with advisory_lock(pg_conn, lock_id) as acquired:
-        pass  # advisory_lock releases on exit if acquired
-    return not acquired
+    return lock_id in advisory_lock_holders(pg_conn, [lock_id])
 
 
 # ---------------------------------------------------------------------------

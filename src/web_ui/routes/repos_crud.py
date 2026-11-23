@@ -5,9 +5,9 @@
 Mounted by ``repos.py`` under the shared ``/api/repos`` prefix via
 ``include_router`` — path strings stay byte-identical to the pre-split routes.
 
-``subprocess`` is imported at module level so the SSH-clone spawn path in
-``add_repo`` keeps working; note the test patch surface
-``src.web_ui.routes.repos.subprocess.Popen`` still reaches this module because
+The SSH-clone spawn in ``add_repo`` goes through
+``helpers.subprocess_runner.spawn_cloner``; the test patch surface
+``src.web_ui.routes.repos.subprocess.Popen`` still reaches it because
 ``subprocess`` is a shared module singleton (patching ``Popen`` on it is global).
 
 The ledger-first removal helper used by ``delete_repo`` and the Neo4j writer
@@ -16,9 +16,6 @@ namespace at call time (``repos._*``) so the test patch surface
 ``src.web_ui.routes.repos._*`` keeps working.
 """
 import logging
-import subprocess
-import sys
-import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -155,14 +152,9 @@ async def add_repo(
             _logger.warning("Add SSH repo failed: %s", e)
 
         if repo_id is not None:
-            with open(f"/tmp/osm-clone-{repo_id}.log", "wb") as _clone_log:
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
-                    start_new_session=True,
-                    stdout=_clone_log,
-                    stderr=_clone_log,
-                )
-            threading.Thread(target=proc.wait, daemon=True).start()
+            from src.web_ui.helpers.subprocess_runner import spawn_cloner
+
+            spawn_cloner(repo_id)
             return JSONResponse(_json_safe({
                 "ok": True,
                 "repo_id": repo_id,

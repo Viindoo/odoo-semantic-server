@@ -149,22 +149,22 @@ class TestIndexOptionsFlags:
 
     @pytest.mark.asyncio
     async def test_indexer_running_guard_still_works(self, migrated_pg):
-        """When indexer_is_running is True → 409 JSON, no Popen (guard preserved)."""
+        """A run of the profile is in progress (its lock is held) -> no second
+        run, whatever the options (guard preserved); the repo existed before the
+        run started, so the answer is informational (#403)."""
+        from tests._profile_lock import hold_profile_lock
+
         _, rid = _setup_profile_and_repo(migrated_pg, "opts_profile_6")
         app = create_app()
-        with mock.patch(
-            "src.indexer.pipeline.indexer_is_running", return_value=True
-        ), mock.patch("subprocess.Popen") as mock_popen:
+        with hold_profile_lock("opts_profile_6"), mock.patch("subprocess.Popen") as mock_popen:
             async with _async_client(app) as client:
                 resp = await client.post(
                     f"/api/repos/repos/{rid}/index",
                     json={"full": "on", "max_workers": "2"},
                 )
 
-        assert resp.status_code == 409
-        body = resp.json()
-        assert "error" in body
-        assert "running" in body["error"].lower() or "already" in body["error"].lower()
+        assert resp.status_code == 200
+        assert resp.json()["already_running"] is True
         mock_popen.assert_not_called()
 
     @pytest.mark.asyncio

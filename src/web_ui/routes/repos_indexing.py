@@ -5,13 +5,10 @@
 Mounted by ``repos.py`` under the shared ``/api/repos`` prefix via
 ``include_router`` — path strings stay byte-identical to the pre-split routes.
 
-``subprocess`` is imported at module level so the ``src.cloner`` spawn path in
-``clone_all_pending`` keeps working (mirrors ``repos_crud.add_repo``).
+``clone_all_pending`` spawns the cloner through
+``helpers.subprocess_runner.spawn_cloner`` (shared with ``repos_crud.add_repo``).
 """
 import logging
-import subprocess
-import sys
-import threading
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -49,6 +46,8 @@ async def clone_all_pending(
     """
     from pathlib import Path
     from urllib.parse import urlparse
+
+    from src.web_ui.helpers.subprocess_runner import spawn_cloner
 
     # F22: distinguish 404 (profile does not exist) from 200 (profile exists,
     # no repos pending). Check profile existence before listing repos.
@@ -102,16 +101,9 @@ async def clone_all_pending(
                         )
                     continue
 
-            # Spawn cloner subprocess (detached, logged to /tmp)
+            # Spawn the cloner (detached, logged to the repo's clone log)
             try:
-                with open(f"/tmp/osm-clone-{repo_id}.log", "wb") as _clone_log:
-                    proc = subprocess.Popen(
-                        [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
-                        start_new_session=True,
-                        stdout=_clone_log,
-                        stderr=_clone_log,
-                    )
-                threading.Thread(target=proc.wait, daemon=True).start()
+                spawn_cloner(repo_id)
                 spawned += 1
             except Exception as e:
                 _logger.warning(
@@ -143,6 +135,11 @@ async def clone_status(request: Request, repo_id: int):
     Also the repo's module lifecycle view (``head_sha`` vs ``presence_head_sha``,
     ``lifecycle_attention[_at]``, ``lifecycle_counts``); the attention text is
     redacted for non-admin by the shared ``repos._redact_repo_rows``.
+
+    ``log`` (admin only, null for anyone else): the last clone's log,
+    ``{"path", "tail", "truncated"}`` (``helpers.job_logs``; ``tail`` null when
+    there is no log file). Like ``clone_error_msg`` it carries git/SSH output
+    and server paths.
     """
     try:
         from src.db.pg import repo_store
@@ -163,6 +160,11 @@ async def clone_status(request: Request, repo_id: int):
     lifecycle = repos_module._redact_repo_rows(
         repos_module._attach_lifecycle([dict(repo)]), is_admin=is_admin,
     )[0]
+    log = None
+    if is_admin:
+        from src.web_ui.helpers.job_logs import read_clone_log_tail
+
+        log = read_clone_log_tail(repo["id"])
     return JSONResponse(_json_safe({
         "id": repo["id"],
         "clone_status": repo.get("clone_status", "manual"),
@@ -172,6 +174,7 @@ async def clone_status(request: Request, repo_id: int):
         "lifecycle_attention": lifecycle["lifecycle_attention"],
         "lifecycle_attention_at": lifecycle["lifecycle_attention_at"],
         "lifecycle_counts": lifecycle["lifecycle_counts"],
+        "log": log,
     }))
 
 
@@ -190,7 +193,20 @@ async def index_repo(
     body: IndexRepoBody,
     _user_id: int = Depends(require_authenticated),
 ):
-    """Trigger indexer for a specific repo's profile (non-blocking subprocess).
+    """Index the repo's PROFILE: every repository of it (one ``index-repo
+    --profile`` job; the profile is the unit the indexer locks and runs).
+
+    When the profile is already being indexed (its lock is held, or a live job
+    of the profile or of ``all`` exists; see ``helpers.index_runs``):
+
+    * the run covers this repo (the repo existed when the run read its
+      repository list) -> 200 ``{"ok": true, "already_running": true,
+      "job_id": N | null, "message": ...}``, nothing is spawned;
+    * it does not (the repo was added after the run started, or the run's
+      start cannot be read) -> 409 naming the run: index again when it ends.
+
+    ``job_id`` is null for a run started outside the Web UI, and for a
+    non-admin when the run is an ``all`` job (admin-only).
 
     W2: open to authenticated non-admin users within their tenant scope.
     Non-admin may only trigger index for repos in their tenant (shared/null is admin-only).
@@ -218,15 +234,16 @@ async def index_repo(
         )
 
     try:
-        from src.db.pg import get_pool, repo_store
-        from src.indexer.pipeline import indexer_is_running
+        from src.db.pg import repo_store
+        from src.web_ui.helpers.index_runs import ALL_PROFILES_LABEL, current_profile_runs
         from src.web_ui.helpers.subprocess_runner import spawn_indexer_subcommand
 
         repos = repo_store().list_repos()
         repo = next((r for r in repos if r["id"] == repo_id), None)
         if repo is None:
             return JSONResponse(_json_safe({"error": "Repo not found."}), status_code=404)
-        if not repo.get("profile_name"):
+        profile_name = repo.get("profile_name")
+        if not profile_name:
             return JSONResponse(
                 _json_safe({"error": "Repo is not attached to a profile."}),
                 status_code=400,
@@ -240,20 +257,41 @@ async def index_repo(
                 detail="Write access denied: outside your tenant scope",
             )
 
-        with get_pool().checkout() as conn:
-            running = indexer_is_running(conn, repo["profile_name"])
-        if running:
+        runs, created = current_profile_runs(
+            [profile_name], [repo_id], found="when a repository index was requested",
+        )
+        run = runs.get(profile_name)
+        if run is not None:
+            is_admin, _scope = resolve_read_scope(request)
+            show_job = is_admin or run.job_label != ALL_PROFILES_LABEL
+            what = run.describe(show_job=show_job)
+            if run.covers(created.get(repo_id)):
+                return JSONResponse(_json_safe({
+                    "ok": True,
+                    "already_running": True,
+                    "job_id": run.job_id if show_job else None,
+                    "message": (
+                        f"Profile {profile_name} is already being indexed by {what}; "
+                        "this repository is included."
+                    ),
+                }))
+            why = (
+                "which started before this repository was added"
+                if run.repos_listed_by is not None
+                else "and its start time cannot be read, so it may not include this repository"
+            )
             return JSONResponse(
                 _json_safe({
                     "error": (
-                        f"Indexer already running for profile "
-                        f"{repo['profile_name']}. Wait for it to finish."
-                    )
+                        f"Profile {profile_name} is being indexed by {what}, {why}. "
+                        "Index again when it finishes."
+                    ),
+                    "job_id": run.job_id if show_job else None,
                 }),
                 status_code=409,
             )
 
-        argv = ["index-repo", "--profile", repo["profile_name"]]
+        argv = ["index-repo", "--profile", profile_name]
         if body.no_embed:
             argv += ["--no-embed"]
         if body.full:
@@ -270,8 +308,13 @@ async def index_repo(
         if max_workers_int != 1:
             argv += ["--max-workers", str(max_workers_int)]
 
-        job_id = spawn_indexer_subcommand(argv, job_label=repo["profile_name"])
-        return JSONResponse(_json_safe({"ok": True, "job_id": job_id}))
+        job_id = spawn_indexer_subcommand(argv, job_label=profile_name)
+        return JSONResponse(_json_safe({
+            "ok": True,
+            "job_id": job_id,
+            "message": f"Job #{job_id} started: indexing every repository of profile "
+                       f"{profile_name}.",
+        }))
     except HTTPException:
         raise  # W2: re-raise 403 scope denials before generic catch
     except Exception as e:

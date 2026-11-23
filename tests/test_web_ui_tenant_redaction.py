@@ -164,8 +164,7 @@ async def test_a_tenant_member_gets_error_categories_not_raw_indexer_or_clone_te
     repo = _t1_repo(resp.json(), world["r1"])
     assert repo["error_msg"] == AUTH_CATEGORY
     assert repo["clone_error_msg"] is None
-    if repo.get("last_job") is not None:
-        assert repo["last_job"]["error_msg"] in CATEGORIES
+    assert "last_job" not in repo  # a job's error reaches admins only, via /api/jobs
 
 
 @pytest.mark.asyncio
@@ -216,8 +215,11 @@ async def test_an_admin_still_sees_every_profile_and_the_raw_detail(world, path)
     assert repo["clone_error_msg"] == T1_CLONE_ERROR
     assert repo["local_path"].endswith("/t1_profile_99/t1_secret_addons")
     if path == "/api/repos/profiles":
-        assert repo["last_job"]["error_msg"] == T1_JOB_ERROR
         assert repo["lifecycle_attention"] == T1_ATTENTION
+        # The job's raw error is in the admin job history (#403).
+        async with _client(app, cookies) as c:
+            jobs = (await c.get("/api/jobs")).json()["jobs"]
+        assert T1_JOB_ERROR in {j["error_msg"] for j in jobs}
 
 
 @pytest.mark.asyncio

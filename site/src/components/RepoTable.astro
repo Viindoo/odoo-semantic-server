@@ -1,5 +1,7 @@
 ---
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { formatTimestamp, repoIndexState, type IndexRun } from '../lib/jobs';
+
 export interface Repo {
   id: number;
   url: string;
@@ -8,10 +10,11 @@ export interface Repo {
   odoo_version?: string;
   clone_status?: string;
   clone_error_msg?: string | null;
+  status?: string | null;
   error_msg?: string | null;
   last_indexed_at?: string | null;
   head_sha?: string | null;
-  last_job?: { id: number; status: string; error_msg?: string } | null;
+  index_run?: IndexRun | null;
 }
 
 export interface Profile {
@@ -45,22 +48,12 @@ const cloneStatusColor: Record<string, string> = {
   error:   'bg-red-100 text-red-700',
 };
 
-// Helper to format ISO timestamp to "YYYY-MM-DD HH:mm"
-function formatTimestamp(isoString: string | null | undefined): string {
-  if (!isoString) return '—';
-  try {
-    const date = new Date(isoString);
-    if (isNaN(date.getTime())) return '—';
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const mins = String(date.getMinutes()).padStart(2, '0');
-    return `${year}-${month}-${day} ${hours}:${mins}`;
-  } catch {
-    return '—';
-  }
-}
+const indexBadge: Record<string, string> = {
+  indexing:    'bg-viindoo-info/10 text-viindoo-info',
+  indexed:     'bg-green-100 text-green-700',
+  failed:      'bg-red-100 text-red-700',
+  not_indexed: 'bg-gray-100 text-gray-600',
+};
 
 // Helper to truncate long error messages
 function truncate(text: string | null | undefined, maxLen: number): string {
@@ -218,8 +211,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
             <th class="px-4 py-3 text-left">Profile</th>
             <th class="px-4 py-3 text-left">Local Path (server-managed)</th>
             <th class="px-4 py-3 text-left">Clone</th>
-            <th class="px-4 py-3 text-left">Last Job</th>
-            <th class="px-4 py-3 text-left">Last Indexed</th>
+            <th class="px-4 py-3 text-left" title="This repository's own indexing state, from every index run (Web UI, CLI or scheduled)">Index status</th>
             <th class="px-4 py-3 text-left" title="CoreSymbol count in graph (0 = core API not indexed for this version)">Core Index</th>
             <th class="px-4 py-3 text-right">Actions</th>
           </tr>
@@ -227,6 +219,8 @@ function truncate(text: string | null | undefined, maxLen: number): string {
         <tbody class="divide-y divide-gray-100">
           {repos.map((repo) => {
             const cloneClass = cloneStatusColor[repo.clone_status ?? 'manual'] ?? cloneStatusColor.manual;
+            const profileName = profiles.find((p) => p.repos?.some((r) => r.id === repo.id))?.name ?? '';
+            const state = repoIndexState(repo);
             return (
               <tr data-testid="repo-row" data-testid-id={`repo-row-${repo.id}`} class="hover:bg-gray-50">
                 <td class="px-4 py-3">
@@ -234,7 +228,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                   <p class="text-gray-500 text-xs mt-0.5">{repo.branch}</p>
                 </td>
                 <td class="px-4 py-3 text-gray-600">
-                  {profiles.find((p) => p.repos?.some((r) => r.id === repo.id))?.name ?? '—'}
+                  {profileName || '-'}
                 </td>
                 <td class="px-4 py-3">
                   <p
@@ -255,24 +249,50 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                         {truncate(repo.clone_error_msg, 100)}
                       </span>
                     )}
+                    {(repo.clone_status === 'error' || repo.clone_status === 'pending') && (
+                      <details class="text-xs clone-log" data-repo-id={String(repo.id)} data-testid={`repo-clone-log-${repo.id}`}>
+                        <summary class="cursor-pointer text-gray-600">Clone log</summary>
+                        <p class="mt-1 text-gray-500 font-mono break-all" data-clone-log-path></p>
+                        <pre class="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono bg-gray-900 text-gray-100 rounded p-2" data-clone-log>Loading log...</pre>
+                      </details>
+                    )}
                   </div>
                 </td>
-                <td class="px-4 py-3">
-                  <div class="flex flex-col gap-1">
-                    {repo.last_job ? (
-                      <span class="text-xs text-gray-600">#{repo.last_job.id} {repo.last_job.status}</span>
-                    ) : (
-                      <span class="text-xs text-gray-400">—</span>
-                    )}
-                    {repo.error_msg && (
-                      <span class="text-red-700 text-xs" title={repo.error_msg}>
-                        {truncate(repo.error_msg, 100)}
+                <td class="px-4 py-3" data-testid={`repo-index-status-${repo.id}`} data-state={state.kind}>
+                  <div class="flex flex-col gap-1 max-w-xs">
+                    <span class:list={['self-start px-2 py-0.5 rounded-full text-xs font-medium', indexBadge[state.kind]]}>
+                      {state.label}
+                    </span>
+                    {state.kind === 'indexing' && (
+                      <span class="text-xs text-gray-600">
+                        by {state.jobId !== null ? (
+                          <a
+                            href={`/admin/operations#job-${state.jobId}`}
+                            class="text-viindoo-info underline"
+                            data-index-job={String(state.jobId)}
+                            data-testid={`repo-index-job-${repo.id}`}
+                          >{state.runText}</a>
+                        ) : state.runText}
                       </span>
                     )}
+                    {state.kind === 'indexing' && state.jobId !== null && (
+                      <span class="text-xs text-gray-500 font-mono truncate" data-job-step={String(state.jobId)}></span>
+                    )}
+                    {state.kind === 'failed' && (
+                      <details class="text-xs" data-testid={`repo-index-error-${repo.id}`}>
+                        <summary class="cursor-pointer text-red-700">{truncate(state.error, 80)}</summary>
+                        <pre class="mt-1 whitespace-pre-wrap break-words text-red-800 bg-red-50 rounded p-2">{state.error}</pre>
+                      </details>
+                    )}
+                    {state.lastIndexedAt && (
+                      <span class="text-xs text-gray-500">
+                        {state.kind === 'indexed' ? '' : 'Last indexed '}{formatTimestamp(state.lastIndexedAt)}
+                      </span>
+                    )}
+                    {state.note && (
+                      <span class="text-xs text-amber-700" data-testid={`repo-index-note-${repo.id}`}>{state.note}</span>
+                    )}
                   </div>
-                </td>
-                <td class="px-4 py-3">
-                  <span class="text-xs text-gray-600">{formatTimestamp(repo.last_indexed_at)}</span>
                 </td>
                 <td class="px-4 py-3">
                   <span
@@ -294,9 +314,10 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                     <button
                       data-testid={`index-repo-button-${repo.id}`}
                       data-repo-id={String(repo.id)}
-                      class="text-xs bg-viindoo-info/10 hover:bg-viindoo-info/20 text-viindoo-info px-3 py-1.5 rounded-lg transition-colors index-repo-btn"
+                      title={`Index every repository of profile ${profileName} (one job for the whole profile)`}
+                      class="text-xs bg-viindoo-info/10 hover:bg-viindoo-info/20 text-viindoo-info px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap index-repo-btn"
                     >
-                      Index
+                      Index profile
                     </button>
                     {repo.head_sha && (
                       <button
@@ -331,7 +352,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
                 class="edit-repo-form-row bg-blue-50"
                 hidden
               >
-                <td colspan="8" class="px-4 py-4">
+                <td colspan="7" class="px-4 py-4">
                   <form
                     data-testid={`edit-repo-form-${repo.id}`}
                     data-edit-repo-form
@@ -411,6 +432,7 @@ function truncate(text: string | null | undefined, maxLen: number): string {
 <script>
   import { submitJson } from '../lib/apiClient';
   import { flash } from '../lib/flash';
+  import { isJobLive, lastLogLine } from '../lib/jobs';
 
   // Add repo form
   document.querySelector('[data-testid="add-repo-form"]')?.addEventListener('submit', async (e) => {
@@ -438,11 +460,67 @@ function truncate(text: string | null | undefined, maxLen: number): string {
         body.full = '1';
       }
       const r = await submitJson(`/api/repos/repos/${repoId}/index`, { method: 'POST', body });
-      const data = r.data as { job_id?: number };
+      const data = r.data as { job_id?: number | null; message?: string };
       if (r.ok) {
-        flash(`Index job #${data.job_id} started.`);
+        // Started, or already covered by the profile's running job: either way
+        // the rows now show it as Indexing.
+        flash(data.message ?? `Index job #${data.job_id} started.`);
+        setTimeout(() => location.reload(), 1200);
       } else {
         flash(r.error!, { error: true });
+      }
+    });
+  });
+
+  // Rows being indexed by a Web UI job: show its current step (the last log
+  // line, admins only) and say when it ends, without reloading the page.
+  function watchIndexJobs(): void {
+    const links = Array.from(document.querySelectorAll<HTMLElement>('[data-index-job]'));
+    const ids = [...new Set(links.map((a) => a.dataset.indexJob).filter(Boolean))] as string[];
+    for (const id of ids) {
+      const tick = async () => {
+        const r = await submitJson<{ status?: string; log?: { tail?: string | null } | null }>(
+          `/api/jobs/${id}/status`, { method: 'GET', stepUp: false },
+        );
+        if (!r.ok) return;
+        const step = lastLogLine(r.data.log?.tail);
+        document.querySelectorAll<HTMLElement>(`[data-job-step="${id}"]`).forEach((el) => {
+          el.textContent = step ?? '';
+          el.title = step ?? '';
+        });
+        if (isJobLive(r.data.status)) {
+          setTimeout(tick, 5000);
+          return;
+        }
+        document.querySelectorAll<HTMLElement>(`[data-index-job="${id}"]`).forEach((a) => {
+          a.textContent = `job #${id} finished (${r.data.status}) - reload to see the result`;
+        });
+      };
+      tick();
+    }
+  }
+  watchIndexJobs();
+
+  // Clone log of a failed or running clone (admins; GET .../clone-status `log`).
+  document.querySelectorAll<HTMLDetailsElement>('details.clone-log').forEach((details) => {
+    details.addEventListener('toggle', async () => {
+      if (!details.open) return;
+      const pathEl = details.querySelector('[data-clone-log-path]') as HTMLElement | null;
+      const pre = details.querySelector('[data-clone-log]') as HTMLElement | null;
+      if (!pre || !pathEl) return;
+      const r = await submitJson<{ log?: { path: string; tail: string | null; truncated: boolean } | null }>(
+        `/api/repos/repos/${details.dataset.repoId}/clone-status`, { method: 'GET', stepUp: false },
+      );
+      const log = r.ok ? r.data.log : null;
+      if (!r.ok) {
+        pathEl.textContent = '';
+        pre.textContent = r.error ?? 'Could not read the clone status.';
+      } else if (!log || log.tail === null) {
+        pathEl.textContent = '';
+        pre.textContent = log ? `No clone log for this repository (looked for ${log.path}).` : 'No log available.';
+      } else {
+        pathEl.textContent = `Log file on the server: ${log.path}`;
+        pre.textContent = (log.truncated ? '[showing the end of the log]\n' : '') + (log.tail || '(empty)');
       }
     });
   });
