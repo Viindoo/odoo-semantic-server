@@ -57,8 +57,12 @@ StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
-# Writable XDG data dir holds indexer clones + known_hosts; moved from
-# /home/odoo-semantic/repos per ADR-0027 operational path-migration (2026-05-25).
+# Writable XDG data dir holds indexer clones + known_hosts (ADR-0027) and the
+# Web UI job, clone and backup logs (job-logs/osm-job-<id>.log,
+# osm-clone-<repo id>.log, osm-backup-<uuid>.log; readable on the host and by
+# admins in the Web UI). INDEXER_JOB_LOG_DIR moves them: the new directory
+# must be listed here too, never under /tmp (PrivateTmp below hides it from the
+# host and drops it on every restart).
 # App dir carve-out covers audit log writes; indexer subprocess spawned from
 # Web UI inherits this unit's cgroup + sandbox restrictions.
 ReadWritePaths=/home/odoo-semantic/odoo-semantic-mcp

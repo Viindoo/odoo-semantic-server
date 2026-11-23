@@ -1688,44 +1688,82 @@ location /admin/ {
 ⚠️ **KHÔNG expose Web UI trực tiếp ra internet** — Web UI yêu cầu session login (ADR-0011, M7 W16),
 nhưng port bound `127.0.0.1`-only + nginx IP allowlist là defense-in-depth bắt buộc.
 
-### Indexer Job Status (M5.5 F)
+### Job indexer và log của job
 
-Khi admin click "Index" trên `/repos`, Web UI:
+**Nút Index làm gì.** Nút "Index profile" trên mỗi dòng repository (trang admin
+Repositories và cổng khách hàng) index toàn bộ profile chứa repository đó: một job
+`index-repo --profile <profile>`, vì profile là đơn vị mà indexer khoá và chạy. Khi
+profile đó đang có một lượt index chạy (advisory lock của profile đang bị giữ - bởi
+job Web UI, CLI hay unit reindex hằng đêm - hoặc còn job Web UI của profile hay của
+`all` đang `queued`/`running`):
 
-1. Tạo row trong `indexer_jobs` (`status='queued'`, `profile_name`, `created_at`).
-2. Spawn `python -m src.indexer index-repo --profile X --job-id N` (fire-and-forget).
-3. Subprocess update `status='running'` + `pid` + `started_at` ngay khi bắt đầu.
-4. Khi xong: `status='done'` + `finished_at`. Nếu fail: `status='error'` + `error_msg` (truncated 1000 chars) + `finished_at`.
+- repository đã có trước khi lượt chạy đó đọc danh sách repository -> HTTP 200
+  `{"already_running": true, "job_id": N | null, "message": ...}`: không khởi động
+  thêm gì, repository đã nằm trong job đang chạy;
+- repository được thêm sau khi lượt chạy bắt đầu (hoặc không đọc được thời điểm bắt
+  đầu của lượt chạy) -> HTTP 409 nêu tên lượt chạy: bấm Index lại khi nó xong.
 
-Status badge trên `/repos` page poll `GET /repos/jobs/{job_id}/status` mỗi 5s khi
-status ∈ `{queued, running}`; tự dừng khi reach `{done, error}`. Vanilla JS, không
-dependency frontend.
+**Trạng thái repository.** Cột "Index status" trên trang Repositories hiển thị trạng
+thái của chính repository, do mọi lượt index ghi lại (Web UI, CLI hay lịch chạy):
+Indexing (kèm job, hoặc "a run started outside the Web UI"), Failed (kèm lỗi; admin
+thấy nguyên văn, thành viên tenant thấy một nhóm lỗi cố định), Indexed (thời điểm)
+hoặc Not indexed. Một job đã kết thúc là lịch sử, không bao giờ là trạng thái của
+repository.
 
-**Endpoint JSON shape:**
-```json
-{
-  "id": 42, "profile_name": "viindoo_17", "status": "running",
-  "pid": 12345, "started_at": "2026-05-10 10:00:00+00:00",
-  "finished_at": null, "error_msg": null,
-  "created_at": "2026-05-10 09:59:58+00:00"
-}
-```
+**Vòng đời job.** Mỗi job Web UI là một dòng trong `indexer_jobs`:
 
-**Operational queries** (psql):
+1. Web UI tạo dòng (`status='queued'`) rồi spawn
+   `python -m src.indexer <subcommand> ... [--verbose] --job-id N`
+   (`--verbose` khi subcommand có khai báo cờ này, để log ghi từng bước).
+2. Tiến trình con báo `running` + `pid` + `started_at` + định danh tiến trình của
+   nó, rồi báo `done` hoặc `error` (+ `error_msg`, tối đa 1000 ký tự) kèm
+   `finished_at`.
+3. Job có tiến trình đã mất (pid chết hoặc bị dùng lại, chưa từng khởi động trong
+   `INDEXER_JOB_QUEUED_TTL_SECONDS`) bị đánh dấu `error` kèm lý do
+   (`job_registry.job_staleness`) khi Web UI khởi động và trước mỗi lần Web UI đọc
+   trạng thái job (danh sách repository, danh sách job, trạng thái job), nên một job
+   đã chết không bao giờ hiện là queued hay running. Job tự báo kết thúc trong lúc đó
+   thì giữ nguyên trạng thái nó báo.
+
+**Lịch sử job.** Trang admin Operations -> Jobs: mọi job Web UI, mới nhất trước
+(`GET /api/jobs?limit=50`, chỉ admin, limit 1-500), kèm trạng thái, thời lượng và lỗi
+nguyên văn. Mở một job để xem lỗi và log của nó; log của job đang chạy tự làm mới mỗi
+5 giây. `GET /api/jobs/{id}/status` trả về, chỉ cho admin, trường `log`:
+`{"path", "tail", "truncated"}` (32 KiB cuối, chỉ gồm dòng trọn vẹn). Các lượt chạy
+khởi động từ CLI hay timer `odoo-semantic-reindex` không phải job: output của chúng
+nằm trong journal (`journalctl -u odoo-semantic-reindex`) và kết quả theo từng
+repository nằm ở cột Index status.
+
+**Log của job, của clone và của backup.** Mỗi job Web UI ghi stdout + stderr vào
+`$INDEXER_JOB_LOG_DIR/osm-job-<id>.log`; mỗi lượt clone repository do Web UI spawn
+(thêm repository SSH, "Clone all" của profile) ghi vào
+`$INDEXER_JOB_LOG_DIR/osm-clone-<repo id>.log` (mỗi repository một file, lượt clone
+sau ghi đè); mỗi lượt backup khởi động từ trang Operations ghi vào
+`$INDEXER_JOB_LOG_DIR/osm-backup-<job uuid>.log`. Log clone xem được trong ô Clone của
+trang Repositories ("Clone log") và qua `GET /api/repos/repos/{id}/clone-status`
+(trường `log`, chỉ admin); log backup được stream tới admin trong lúc chạy và có trong
+`GET /api/operations/backup/{job_id}/status` (trường `log`, chỉ admin). Sau khi Web UI
+restart, trạng thái của job backup (giữ trong bộ nhớ) mất, nhưng file log vẫn còn trên
+host.
+
+| Env | Mặc định | Ý nghĩa |
+|-----|----------|---------|
+| `INDEXER_JOB_LOG_DIR` | `~/.local/share/odoo-semantic-mcp/job-logs` | Thư mục chứa log job, log clone và log backup (tạo với quyền `0700`, file `0600`). Unit Web UI phải ghi được vào đây: thư mục mặc định nằm trong `ReadWritePaths` của unit; thư mục tuỳ chỉnh phải được thêm vào đó. Không bao giờ đặt dưới `/tmp`: unit đi kèm có `PrivateTmp=true`, khiến `/tmp` không nhìn thấy được từ host và bị xoá sạch mỗi lần restart. |
+| `INDEXER_JOB_LOG_RETENTION_DAYS` | `30` | Log cũ hơn số ngày này bị xoá khi job, lượt clone hoặc lượt backup kế tiếp bắt đầu; `0` giữ lại mọi log. |
+
+Trên layout chuẩn:
+`sudo -u odoo-semantic less /home/odoo-semantic/.local/share/odoo-semantic-mcp/job-logs/osm-job-<id>.log`.
+
+**Truy vấn vận hành** (psql):
 
 ```sql
--- Jobs đang chạy:
-SELECT id, profile_name, pid, started_at FROM indexer_jobs WHERE status='running';
+-- Các job chưa kết thúc:
+SELECT id, profile_name, status, pid, started_at FROM indexer_jobs
+WHERE status IN ('queued', 'running');
 
--- 10 job gần nhất:
-SELECT id, profile_name, status, started_at, finished_at, error_msg
-FROM indexer_jobs ORDER BY created_at DESC LIMIT 10;
-
--- Cleanup jobs cũ (nếu cần):
-DELETE FROM indexer_jobs WHERE created_at < now() - INTERVAL '30 days';
+-- Dọn các dòng job cũ (bảng không tự dọn):
+DELETE FROM indexer_jobs WHERE created_at < now() - INTERVAL '90 days';
 ```
-
-`indexer_jobs` không tự cleanup — nếu trở thành lớn, schedule cron `DELETE`. M6 used idempotent `ALTER TABLE IF NOT EXISTS` for additive schema changes; formal migration tool deferred (see ADR-0001 revision).
 
 ---
 

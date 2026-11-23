@@ -796,3 +796,33 @@ class TestProfileTreeView:
 
         expect(page.locator("#profile-tree-view")).to_be_visible(timeout=5000)
         expect(page.locator("#profile-flat-list")).not_to_be_visible(timeout=5000)
+
+
+class TestIndexStatus:
+    """#403: the Index button says it indexes the profile, and the row shows the
+    repository's own state, not a past job of its profile."""
+
+    def test_index_button_names_the_profile_and_a_past_job_is_not_the_state(
+        self, astro_server, clean_browser, page
+    ):
+        pg_conn = clean_browser
+        _add_profile_and_repo(page, astro_server, "ixstate_br", "/tmp/browser_ixstate")
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO indexer_jobs (profile_name, status, error_msg)"
+                " VALUES ('ixstate_br', 'error', 'old failure')"
+            )
+            cur.execute("SELECT r.id FROM repos r JOIN profiles p ON p.id = r.profile_id"
+                        " WHERE p.name = 'ixstate_br'")
+            repo_id = cur.fetchone()[0]
+        pg_conn.commit()
+
+        page.goto(f"{astro_server}{REPOS_URL}")
+        page.wait_for_load_state("load")
+
+        button = page.get_by_test_id(f"index-repo-button-{repo_id}")
+        expect(button).to_have_text("Index profile", timeout=5000)
+        assert "ixstate_br" in (button.get_attribute("title") or "")
+        cell = page.get_by_test_id(f"repo-index-status-{repo_id}")
+        expect(cell).to_have_attribute("data-state", "not_indexed")
+        expect(cell).not_to_contain_text("old failure")

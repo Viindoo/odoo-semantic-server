@@ -99,3 +99,31 @@ class TestFernetPlaceholder:
     # false failure the moment the FERNET UI ships. The genuine, durable
     # invariant (the FERNET section must expose NO trigger button) is protected
     # by test_fernet_no_trigger_button above. No coverage lost.
+
+
+class TestJobHistory:
+    """#403: Operations lists every Web UI job (not only this browser session's)
+    and an admin can open a failed job to read why it failed."""
+
+    def test_a_failed_job_shows_its_error_when_opened(self, astro_server, clean_browser, page):
+        pg_conn = clean_browser
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO indexer_jobs (profile_name, status, error_msg, finished_at)"
+                " VALUES ('hist_profile', 'error', 'Job stayed queued for 4012345s', now())"
+                " RETURNING id"
+            )
+            job_id = cur.fetchone()[0]
+        pg_conn.commit()
+
+        page.goto(f"{astro_server}{OPS_URL}")
+        page.wait_for_load_state("load")
+
+        row = page.locator(f"#job-{job_id}")
+        expect(row).to_contain_text("Index profile hist_profile", timeout=5000)
+        expect(page.get_by_test_id(f"job-status-{job_id}")).to_have_text("error")
+        expect(page.get_by_test_id("operations-empty-state")).not_to_be_visible()
+        row.locator("summary").click()
+        expect(page.get_by_test_id(f"job-error-{job_id}")).to_contain_text(
+            "Job stayed queued for 4012345s")
+        expect(page.get_by_test_id(f"job-log-{job_id}")).to_contain_text("No log file")

@@ -219,3 +219,48 @@ class TestMarkDeadJobs:
         row = job_store().get_job(job)
         assert row["status"] == "error"
         assert "boot" in row["error_msg"]
+
+    def test_the_sweep_never_turns_a_job_that_finished_meanwhile_into_error(self, pg_jobs_conn):
+        """#403: the sweep runs on every Web UI read of job state, so it races
+        the child's own final report. A job that reported 'done' after the
+        sweep read it as unfinished keeps 'done'."""
+        from src.constants import INDEXER_JOB_QUEUED_TTL_SECONDS
+
+        store = job_store()
+        job = store.create_job("odoo17")
+        self._age(pg_jobs_conn, job, INDEXER_JOB_QUEUED_TTL_SECONDS + 60)
+        seen_unfinished = store.list_unfinished_jobs()
+        store.update_job(job, status="done", finished_at=datetime.now(tz=UTC))
+
+        original = store.list_unfinished_jobs
+        store.list_unfinished_jobs = lambda: seen_unfinished
+        try:
+            assert store.mark_dead_jobs(found="in a test") == 0
+        finally:
+            store.list_unfinished_jobs = original
+        row = store.get_job(job)
+        assert row["status"] == "done" and row["error_msg"] is None
+
+    def test_the_sweep_says_where_it_found_the_dead_job(self, pg_jobs_conn):
+        from src.constants import INDEXER_JOB_QUEUED_TTL_SECONDS
+
+        job = job_store().create_job("odoo17")
+        self._age(pg_jobs_conn, job, INDEXER_JOB_QUEUED_TTL_SECONDS + 60)
+        assert job_store().mark_dead_jobs(found="when the Web UI listed jobs") == 1
+        assert job_store().get_job(job)["error_msg"].endswith(
+            "(found when the Web UI listed jobs)")
+
+
+class TestJobHistory:
+    def test_newest_first_and_bounded(self, pg_jobs_conn):
+        ids = [job_store().create_job(label) for label in ("a", "b", "c")]
+        assert [j["id"] for j in job_store().list_all_jobs()] == ids[::-1]
+        assert [j["id"] for j in job_store().list_all_jobs(limit=2)] == ids[:0:-1]
+
+    def test_unfinished_jobs_are_the_queued_and_running_ones(self, pg_jobs_conn):
+        queued = job_store().create_job("a")
+        running = job_store().create_job("b")
+        job_store().update_job(running, status="running")
+        done = job_store().create_job("c")
+        job_store().update_job(done, status="done")
+        assert [j["id"] for j in job_store().list_unfinished_jobs()] == [running, queued]

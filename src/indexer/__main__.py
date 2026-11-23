@@ -303,16 +303,22 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def subcommand_accepts_job_id(subcommand: str) -> bool:
-    """True when *subcommand* declares ``--job-id`` (it reports its state on
-    its Web UI job row). Read from the real parser, so the Web UI spawn helper
-    never hands the flag to a subcommand whose argparse would exit 2 on it."""
+def subcommand_accepts(subcommand: str, option: str) -> bool:
+    """True when *subcommand* declares *option* (e.g. ``--verbose``). Read
+    from the real parser, so the Web UI spawn helper never hands a flag to a
+    subcommand whose argparse would exit 2 on it."""
     parser = _build_parser()
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             sub = action.choices.get(subcommand)
-            return sub is not None and "--job-id" in sub._option_string_actions
+            return sub is not None and option in sub._option_string_actions
     return False
+
+
+def subcommand_accepts_job_id(subcommand: str) -> bool:
+    """True when *subcommand* declares ``--job-id`` (it reports its state on
+    its Web UI job row); see :func:`subcommand_accepts`."""
+    return subcommand_accepts(subcommand, "--job-id")
 
 
 def _track_job(pg, job_id: int, **fields) -> None:

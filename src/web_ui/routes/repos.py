@@ -69,17 +69,16 @@ def _redact_repo_rows(repos: list[dict], *, is_admin: bool) -> list[dict]:
 
     The ONE redaction point for repo rows: every endpoint that sends repo rows
     (or fields of one) to a viewer passes them through here after attaching
-    whatever it adds (``_attach_lifecycle``, ``last_job``).
+    whatever it adds (``_attach_lifecycle``, ``index_run``).
 
     ``repos.error_msg`` (indexer failure, ``str(e)``) and ``clone_error_msg``
     (git/SSH failure) can carry server paths, repo URLs of other tenants and
     stack traces (#237). A non-admin gets ``error_msg`` as the fixed
     owner-facing category of :func:`jobs.sanitize_job_error` (the same rule as
     ``/api/jobs/{id}/status``), ``clone_error_msg`` None (the same rule as
-    ``/repos/{id}/clone-status``) and an attached ``last_job['error_msg']``
-    sanitized likewise; the attached job's process identity (``pid``,
-    ``proc_start_ticks``, ``boot_id``) becomes None, as ``pid`` already is on
-    ``/api/jobs/{id}/status``. ``local_path`` (the server-side checkout directory,
+    ``/repos/{id}/clone-status``). An attached ``index_run`` of an ``all`` job
+    loses its ``job_id`` (``all`` jobs are admin-only on
+    ``/api/jobs/{id}/status``). ``local_path`` (the server-side checkout directory,
     derived by ``default_clone_dir``, never user input) becomes None: it
     discloses the server's filesystem layout. ``lifecycle_attention`` becomes
     None: the text can name repos of other tenants (an undecidable retirement
@@ -101,16 +100,9 @@ def _redact_repo_rows(repos: list[dict], *, is_admin: bool) -> list[dict]:
             repo["local_path"] = None
         if "lifecycle_attention" in repo:
             repo["lifecycle_attention"] = None
-        job = repo.get("last_job")
-        if isinstance(job, dict):
-            job = {**job}
-            if "error_msg" in job:
-                job["error_msg"] = sanitize_job_error(job["error_msg"])
-            # Process identity stays admin-only, as on /api/jobs/{id}/status.
-            for key in ("pid", "proc_start_ticks", "boot_id"):
-                if key in job:
-                    job[key] = None
-            repo["last_job"] = job
+        run = repo.get("index_run")
+        if isinstance(run, dict) and run.get("job_label") == "all":
+            repo["index_run"] = {**run, "job_id": None}
     return repos
 
 

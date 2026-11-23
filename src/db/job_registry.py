@@ -135,8 +135,9 @@ def _as_datetime(value) -> datetime | None:
 
 def job_staleness(row: dict, *, now: datetime | None = None) -> str | None:
     """Why the unfinished (queued / running) job *row*'s process is gone, or
-    None while it may still be alive. The one rule of the start-up sweep
-    (:meth:`JobStore.mark_dead_jobs`) and the admin reset route (#381).
+    None while it may still be alive. The one rule of the Web UI sweep
+    (:meth:`JobStore.mark_dead_jobs`, run at start-up and whenever the Web UI
+    reads job state) and the admin reset route (#381).
 
     * queued, never started (``started_at`` NULL), older than
       ``INDEXER_JOB_QUEUED_TTL_SECONDS``: a live child reports 'running'
@@ -213,14 +214,21 @@ def update_job(
     error_msg: str | None = None,
     proc_start_ticks: int | None = None,
     boot_id: str | None = None,
-) -> None:
+    only_unfinished: bool = False,
+) -> bool:
     """Partial update of one indexer_jobs row on *conn* - only non-None fields
     are written. ``proc_start_ticks`` / ``boot_id`` are the child's own
     process identity (:func:`own_process_identity`), sent with its 'running'
     report. The caller owns the transaction (the indexer CLI passes its
     autocommit connection; :meth:`JobStore.update_job` commits a pool one).
 
-    Raises ValueError if job_id does not exist or status is not a valid value.
+    ``only_unfinished`` writes the row only while it is still 'queued' or
+    'running' and returns False instead of raising when it is not: the sweep
+    must never turn a job that reported 'done' after the sweep read it into
+    'error'. Returns True when the row was written.
+
+    Raises ValueError if job_id does not exist (unless ``only_unfinished``) or
+    status is not a valid value.
     """
     if status is not None and status not in _VALID_STATUSES:
         raise ValueError(
@@ -244,13 +252,12 @@ def update_job(
         col_values.append(("boot_id", boot_id))
 
     if not col_values:
-        return  # nothing to update
+        return False  # nothing to update
 
     with conn.cursor() as cur:
         identity = [cv for cv in col_values if cv[0] in _IDENTITY_COLUMNS]
         if not identity:
-            _execute_update(cur, job_id, col_values)
-            return
+            return _execute_update(cur, job_id, col_values, only_unfinished)
         # Code deployed before migration 0004: the identity columns do not
         # exist yet. Still write the rest, or a live run would never report
         # 'running' and its queued row would expire (#383 item 4).
@@ -258,7 +265,7 @@ def update_job(
         if savepoint:
             cur.execute("SAVEPOINT job_identity")
         try:
-            _execute_update(cur, job_id, col_values)
+            written = _execute_update(cur, job_id, col_values, only_unfinished)
         except pg_errors.UndefinedColumn:
             if savepoint:
                 cur.execute("ROLLBACK TO SAVEPOINT job_identity")
@@ -266,24 +273,36 @@ def update_job(
                 "indexer_jobs has no process identity columns (apply migration "
                 "0004_indexer_jobs_proc_identity); job %s updated without them", job_id,
             )
-            _execute_update(cur, job_id, [cv for cv in col_values if cv not in identity])
-        else:
-            if savepoint:
-                cur.execute("RELEASE SAVEPOINT job_identity")
+            return _execute_update(
+                cur, job_id, [cv for cv in col_values if cv not in identity], only_unfinished,
+            )
+        if savepoint:
+            cur.execute("RELEASE SAVEPOINT job_identity")
+        return written
 
 
-def _execute_update(cur, job_id: int, col_values: list[tuple[str, object]]) -> None:
+def _execute_update(
+    cur, job_id: int, col_values: list[tuple[str, object]], only_unfinished: bool = False,
+) -> bool:
     """UPDATE the given columns of one row (psycopg2.sql.Identifier escapes
-    the column names); ValueError when the row does not exist."""
-    sql_obj = pgsql.SQL("UPDATE indexer_jobs SET {fields} WHERE id = %s").format(
+    the column names); ValueError when the row does not exist. With
+    *only_unfinished* the row is written only while 'queued' or 'running', and
+    False is returned when it is not (finished, or gone)."""
+    sql_obj = pgsql.SQL("UPDATE indexer_jobs SET {fields} WHERE id = %s{guard}").format(
         fields=pgsql.SQL(", ").join(
             pgsql.SQL("{col} = %s").format(col=pgsql.Identifier(c))
             for c, _ in col_values
-        )
+        ),
+        guard=pgsql.SQL(
+            " AND status IN ('queued', 'running')" if only_unfinished else ""
+        ),
     )
     cur.execute(sql_obj, [v for _, v in col_values] + [job_id])
     if cur.rowcount == 0:
+        if only_unfinished:
+            return False
         raise ValueError(f"Job {job_id} not found")
+    return True
 
 
 class JobStore:
@@ -338,19 +357,22 @@ class JobStore:
         error_msg: str | None = None,
         proc_start_ticks: int | None = None,
         boot_id: str | None = None,
-    ) -> None:
+        only_unfinished: bool = False,
+    ) -> bool:
         """Partial update on a pool connection; see :func:`update_job`."""
         with self._pool.checkout() as conn:
             try:
-                update_job(
+                written = update_job(
                     conn, job_id, status=status, pid=pid, started_at=started_at,
                     finished_at=finished_at, error_msg=error_msg,
                     proc_start_ticks=proc_start_ticks, boot_id=boot_id,
+                    only_unfinished=only_unfinished,
                 )
             except ValueError:
                 conn.rollback()
                 raise
             conn.commit()
+        return written
 
     def list_running_jobs(self) -> list[dict]:
         """All jobs with status='running'. Empty list if none.
@@ -377,40 +399,52 @@ class JobStore:
             return None
         return _serialize_datetimes(row)
 
-    def mark_dead_jobs(self) -> int:
+    def mark_dead_jobs(self, *, found: str = "at Web UI startup") -> int:
         """Mark running/queued jobs whose process is gone as 'error'.
 
-        Called on Web UI startup to clean up jobs left over from crashed
-        subprocesses; the rule is :func:`job_staleness` (shared with the
-        admin reset route). Returns the number of jobs marked as error.
+        Runs at Web UI start-up and before every Web UI read of job state
+        (repository listing, job list, job status), so a job whose process
+        died never shows as queued or running; the rule is
+        :func:`job_staleness` (shared with the admin reset route). *found*
+        says where, appended to the error text. A job that reports 'done' or
+        'error' after this sweep read it keeps its own report. Returns the
+        number of jobs marked as error.
         """
-        with self._pool.checkout() as conn:
-            rows = self._pool.fetch_all(
-                conn,
-                "SELECT * FROM indexer_jobs"
-                " WHERE status IN ('running', 'queued') ORDER BY created_at ASC",
-            )
+        rows = self.list_unfinished_jobs()
         now = datetime.now(UTC)
         count = 0
         for row in rows:
             reason = job_staleness(row, now=now)
             if reason is None:
                 continue
-            self.update_job(
+            if self.update_job(
                 row["id"], status="error", finished_at=now,
-                error_msg=f"{reason} (found at Web UI startup)",
-            )
-            count += 1
+                error_msg=f"{reason} (found {found})", only_unfinished=True,
+            ):
+                count += 1
         return count
 
-    def list_all_jobs(self) -> list[dict]:
-        """All jobs ordered by created_at DESC.
+    def list_unfinished_jobs(self) -> list[dict]:
+        """Jobs still 'queued' or 'running', newest first, with raw column
+        values (datetimes stay datetimes, for :func:`job_staleness`)."""
+        with self._pool.checkout() as conn:
+            return self._pool.fetch_all(
+                conn,
+                "SELECT * FROM indexer_jobs"
+                " WHERE status IN ('running', 'queued') ORDER BY created_at DESC, id DESC",
+            )
+
+    def list_all_jobs(self, limit: int | None = None) -> list[dict]:
+        """Jobs ordered by created_at DESC (newest first), at most *limit*
+        when given.
 
         Returns dicts shaped like get_job().
         """
+        sql = "SELECT * FROM indexer_jobs ORDER BY created_at DESC, id DESC"
+        params: tuple = ()
+        if limit is not None:
+            sql += " LIMIT %s"
+            params = (int(limit),)
         with self._pool.checkout() as conn:
-            rows = self._pool.fetch_all(
-                conn,
-                "SELECT * FROM indexer_jobs ORDER BY created_at DESC",
-            )
+            rows = self._pool.fetch_all(conn, sql, params)
         return [_serialize_datetimes(entry) for entry in rows]

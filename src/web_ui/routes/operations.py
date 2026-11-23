@@ -345,14 +345,30 @@ async def post_apply_preset(
 # ---------------------------------------------------------------------------
 
 
+def _backup_log_path(job_id: str) -> Path | None:
+    """The log file of backup job *job_id*, None when the id is not a uuid (the
+    ids this module makes), so a URL value never names another file."""
+    from src.web_ui.helpers import job_logs
+
+    try:
+        return job_logs.log_path("backup", job_id)
+    except ValueError:
+        return None
+
+
 class BackupBody(BaseModel):
     output: str = ""
     bundle_passphrase_env: str = ""
 
 
 def _spawn_backup_subprocess(job_id: str, output_path: str, bundle_passphrase_env: str) -> None:
-    """Spawn backup CLI in a background thread, streaming output to a log file."""
-    log_path = Path(tempfile.gettempdir()) / f"osm-backup-{job_id}.log"
+    """Spawn backup CLI in a background thread, its output in the backup log
+    (``helpers.job_logs``: ``osm-backup-<job id>.log`` in the job-log directory,
+    ``0600``, same retention; readable on the host after a restart, and by
+    admins through the backup stream and status)."""
+    from src.web_ui.helpers import job_logs
+
+    log_path = job_logs.log_path("backup", job_id)
 
     argv = [
         sys.executable, "-m", "src.cli", "backup",
@@ -368,7 +384,8 @@ def _spawn_backup_subprocess(job_id: str, output_path: str, bundle_passphrase_en
 
         _logger.info("Backup job %s: spawning %s → log %s", job_id, argv, log_path)
         try:
-            with open(log_path, "w") as log_file:
+            job_logs.prune_job_logs()
+            with job_logs.open_log("backup", job_id) as log_file:
                 proc = subprocess.Popen(
                     argv,
                     stdout=log_file,
@@ -448,8 +465,11 @@ async def trigger_backup(
 
 @router.get("/backup/{job_id}/stream")
 async def backup_stream(job_id: str, request: Request, _user_id: int = Depends(require_admin)):
-    """SSE stream of backup process output. Streams until done, then sends done event."""
-    log_path = Path(tempfile.gettempdir()) / f"osm-backup-{job_id}.log"
+    """SSE stream of backup process output (its log file, ``helpers.job_logs``).
+    Streams until done, then sends done event."""
+    with _backup_jobs_lock:
+        known = job_id in _backup_jobs
+    log_path = _backup_log_path(job_id) if known else None
 
     async def event_gen():
         heartbeat_interval = 15.0  # seconds — avoids nginx timeout
@@ -465,7 +485,7 @@ async def backup_stream(job_id: str, request: Request, _user_id: int = Depends(r
                 return
 
             # Read new lines from log file
-            if log_path.exists():
+            if log_path is not None and log_path.exists():
                 try:
                     with open(log_path, "rb") as f:
                         f.seek(byte_offset)
@@ -505,7 +525,11 @@ async def backup_status(job_id: str, request: Request, _user_id: int = Depends(r
         job = _backup_jobs.get(job_id)
     if job is None:
         return JSONResponse(_json_safe({"error": "job not found"}), status_code=404)
-    return JSONResponse(_json_safe(dict(job)))
+    from src.web_ui.helpers.job_logs import read_log_tail
+
+    # Admin-only route: the log path and its end, as on /api/jobs/{id}/status.
+    log = read_log_tail("backup", job_id) if _backup_log_path(job_id) is not None else None
+    return JSONResponse(_json_safe({**dict(job), "log": log}))
 
 
 # ---------------------------------------------------------------------------

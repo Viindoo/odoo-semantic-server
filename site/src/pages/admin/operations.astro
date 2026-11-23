@@ -55,6 +55,23 @@ try {
 }
 // Default to latest (last in numeric-sorted list)
 const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length - 1] : '';
+
+// #403: job history (every job, newest first, raw errors; admin-only route).
+// Rendered by the page script from this JSON, the same path its refresh uses.
+let initialJobs: unknown[] = [];
+try {
+  const jres = await fetch(`${FASTAPI_BASE}/api/jobs?limit=50`, {
+    headers: { cookie: cookieHeader },
+  });
+  if (jres.ok) {
+    const jd = await jres.json();
+    initialJobs = Array.isArray(jd.jobs) ? jd.jobs : [];
+  }
+} catch {
+  // non-blocking: the list loads on the client refresh
+}
+// Inline JSON must not close the <script> element: error text is user-influenced.
+const initialJobsJson = JSON.stringify(initialJobs).replace(/</g, '\\u003c');
 ---
 
 <AdminLayout title="Operations — Admin">
@@ -466,16 +483,31 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
     </div>
   </div>
 
-  <!-- Recent jobs placeholder - populated via JS -->
-  <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-    <div class="px-5 py-4 border-b border-gray-100">
-      <h2 class="text-base font-semibold text-gray-800">Recent Jobs</h2>
+  <!-- Job history (#403): every Web UI job, newest first; open one for its
+       error and log. Rendered by renderJobs() below from /api/jobs. -->
+  <div id="jobs" class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-gray-100 flex items-start justify-between gap-3">
+      <div>
+        <h2 class="text-base font-semibold text-gray-800">Jobs</h2>
+        <p class="text-xs text-gray-500 mt-0.5">
+          Jobs started from the Web UI, newest first. Open a job to see why it failed and its log.
+          Runs started from the CLI or the scheduled reindex log to the system journal.
+        </p>
+      </div>
+      <button
+        type="button"
+        data-testid="jobs-refresh"
+        class="text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50"
+      >
+        Refresh
+      </button>
     </div>
-    <div data-testid="operations-empty-state" class="py-12 text-center text-gray-500">
+    <div data-testid="operations-empty-state" hidden={initialJobs.length > 0} class="py-12 text-center text-gray-500">
       <p class="text-3xl mb-2">⚙️</p>
-      <p class="font-medium">Start an operation above to see job status here.</p>
+      <p class="font-medium">No jobs yet. Start an operation above to see it here.</p>
     </div>
-    <div data-testid="recent-jobs-list" hidden class="divide-y divide-gray-100"></div>
+    <div data-testid="recent-jobs-list" class="divide-y divide-gray-100"></div>
+    <script is:inline type="application/json" id="jobs-initial" set:html={initialJobsJson}></script>
   </div>
 </AdminLayout>
 
@@ -483,12 +515,142 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
   import { submitJson } from '../../lib/apiClient';
   import { extractApiError } from '../../lib/apiError';
   import { flash } from '../../lib/flash';
+  import { formatTimestamp, isJobLive, jobDuration, jobWhat, type JobRow } from '../../lib/jobs';
+
+  // ---- Job history (#403) ------------------------------------------------
+  const jobBadge: Record<string, string> = {
+    queued: 'bg-yellow-100 text-yellow-700',
+    running: 'bg-viindoo-info/10 text-viindoo-info',
+    done: 'bg-green-100 text-green-700',
+    error: 'bg-red-100 text-red-700',
+  };
+
+  function el<K extends keyof HTMLElementTagNameMap>(
+    tag: K, className = '', text = '',
+  ): HTMLElementTagNameMap[K] {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text) node.textContent = text;
+    return node;
+  }
+
+  type JobLog = { path: string; tail: string | null; truncated: boolean };
+  type JobStatus = { status?: string; error_msg?: string | null; log?: JobLog | null };
+
+  // Fill an open job's log (and refresh its status) from /api/jobs/{id}/status;
+  // a live job keeps refreshing while its row stays open.
+  async function loadJobLog(details: HTMLDetailsElement, jobId: number): Promise<void> {
+    const r = await submitJson<JobStatus>(`/api/jobs/${jobId}/status`, { method: 'GET', stepUp: false });
+    const pathEl = details.querySelector('[data-job-log-path]') as HTMLElement | null;
+    const pre = details.querySelector('[data-job-log]') as HTMLElement | null;
+    if (!pre || !pathEl) return;
+    if (!r.ok) {
+      pre.textContent = r.error ?? 'Could not read the job status.';
+      return;
+    }
+    const log = r.data.log;
+    if (!log || log.tail === null) {
+      pathEl.textContent = '';
+      pre.textContent = log ? `No log file for this job (looked for ${log.path}).` : 'No log available.';
+    } else {
+      pathEl.textContent = `Log file on the server: ${log.path}`;
+      pre.textContent = (log.truncated ? '[showing the end of the log]\n' : '') + (log.tail || '(empty)');
+      pre.scrollTop = pre.scrollHeight;
+    }
+    if (isJobLive(r.data.status) && details.open && details.isConnected) {
+      setTimeout(() => loadJobLog(details, jobId), 5000);
+    } else if (!isJobLive(r.data.status) && details.dataset.status && isJobLive(details.dataset.status)) {
+      refreshJobs();  // it just finished: show its final status and error
+    }
+  }
+
+  function jobRow(job: JobRow, open: boolean): HTMLDetailsElement {
+    const details = el('details', 'group');
+    details.id = `job-${job.id}`;
+    details.setAttribute('data-testid', 'job-row');
+    details.dataset.jobId = String(job.id);
+    details.dataset.status = job.status;
+
+    const summary = el('summary', 'px-5 py-3 flex flex-wrap items-center gap-x-4 gap-y-1 cursor-pointer hover:bg-gray-50');
+    summary.append(
+      el('span', 'text-sm font-medium text-gray-800 w-16', `#${job.id}`),
+      el('span', 'text-sm text-gray-700 flex-1 min-w-[12rem]', jobWhat(job.profile_name)),
+    );
+    const badge = el('span', `text-xs px-2 py-0.5 rounded-full ${jobBadge[job.status] ?? 'bg-gray-100 text-gray-600'}`, job.status);
+    badge.setAttribute('data-testid', `job-status-${job.id}`);
+    if (job.error_msg) badge.title = job.error_msg;
+    const when = el('span', 'text-xs text-gray-500',
+      `${formatTimestamp(job.created_at)}${job.started_at ? ` · ${jobDuration(job.started_at, job.finished_at)}` : ''}`);
+    summary.append(badge, when);
+    details.append(summary);
+
+    const body = el('div', 'px-5 pb-4 space-y-2');
+    if (job.error_msg) {
+      const err = el('pre', 'text-xs whitespace-pre-wrap break-words text-red-800 bg-red-50 rounded p-2', job.error_msg);
+      err.setAttribute('data-testid', `job-error-${job.id}`);
+      body.append(err);
+    }
+    body.append(el('p', 'text-xs text-gray-500',
+      `Created ${formatTimestamp(job.created_at)} · started ${formatTimestamp(job.started_at)} · finished ${formatTimestamp(job.finished_at)}`));
+    const pathEl = el('p', 'text-xs text-gray-500 font-mono break-all');
+    pathEl.setAttribute('data-job-log-path', '');
+    const pre = el('pre', 'text-xs font-mono whitespace-pre-wrap break-words bg-gray-900 text-gray-100 rounded p-3 max-h-96 overflow-auto', 'Loading log...');
+    pre.setAttribute('data-job-log', '');
+    pre.setAttribute('data-testid', `job-log-${job.id}`);
+    body.append(pathEl, pre);
+    details.append(body);
+
+    details.addEventListener('toggle', () => {
+      if (details.open) loadJobLog(details, job.id);
+    });
+    details.open = open;
+    return details;
+  }
+
+  let jobsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function renderJobs(jobs: JobRow[]): void {
+    const list = document.querySelector('[data-testid="recent-jobs-list"]') as HTMLElement | null;
+    const emptyState = document.querySelector('[data-testid="operations-empty-state"]') as HTMLElement | null;
+    if (!list) return;
+    // A row whose status did not change is kept as it is (open state, log).
+    const existing = new Map(
+      Array.from(list.querySelectorAll<HTMLDetailsElement>('details[data-job-id]'))
+        .map((d) => [d.dataset.jobId, d] as const),
+    );
+    const firstRender = existing.size === 0;
+    const wanted = location.hash.startsWith('#job-') ? location.hash.slice('#job-'.length) : null;
+    list.replaceChildren(...jobs.map((job) => {
+      const prior = existing.get(String(job.id));
+      if (prior && prior.dataset.status === job.status) return prior;
+      return jobRow(job, prior?.open ?? (firstRender && wanted === String(job.id)));
+    }));
+    if (emptyState) emptyState.hidden = jobs.length > 0;
+    if (firstRender && wanted) {
+      document.getElementById(`job-${wanted}`)?.scrollIntoView({ block: 'center' });
+    }
+    if (jobsTimer) clearTimeout(jobsTimer);
+    if (jobs.some((j) => isJobLive(j.status))) jobsTimer = setTimeout(refreshJobs, 5000);
+  }
+
+  async function refreshJobs(): Promise<void> {
+    const r = await submitJson<{ jobs?: JobRow[] }>('/api/jobs?limit=50', { method: 'GET', stepUp: false });
+    if (r.ok) renderJobs(r.data.jobs ?? []);
+  }
+
+  try {
+    const initial = JSON.parse(document.getElementById('jobs-initial')?.textContent || '[]') as JobRow[];
+    renderJobs(initial);
+  } catch {
+    refreshJobs();
+  }
+  document.querySelector('[data-testid="jobs-refresh"]')?.addEventListener('click', () => refreshJobs());
 
   function showJobStarted(jobId: number | null, label: string) {
     const container = document.querySelector('[data-testid="active-job-container"]') as HTMLElement | null;
     const idEl = document.querySelector('[data-testid="active-job-id"]') as HTMLElement | null;
     if (container && idEl) {
-      idEl.textContent = jobId !== null ? `Job #${jobId} — ${label}` : label;
+      idEl.textContent = jobId !== null ? `Job #${jobId}: ${jobWhat(label)} (see Jobs below)` : label;
       // Swap Tailwind's `hidden` (display:none) for `flex` (display:flex) so
       // the previously-hidden container becomes visible with its intended
       // layout. Reversing the action_-job_container fix above also requires
@@ -497,45 +659,7 @@ const latestVersion = odooVersions.length > 0 ? odooVersions[odooVersions.length
       container.classList.remove('hidden');
       container.classList.add('flex');
     }
-    // Add to recent jobs list
-    const list = document.querySelector('[data-testid="recent-jobs-list"]') as HTMLElement | null;
-    const emptyState = document.querySelector('[data-testid="operations-empty-state"]') as HTMLElement | null;
-    if (list && jobId !== null) {
-      emptyState?.setAttribute('hidden', '');
-      list.removeAttribute('hidden');
-      const item = document.createElement('div');
-      item.className = 'px-5 py-3 flex items-center justify-between';
-      item.innerHTML = `
-        <span class="text-sm text-gray-700">Job #${jobId} — ${label}</span>
-        <span class="text-xs px-2 py-0.5 bg-viindoo-info/10 text-viindoo-info rounded-full" data-job-badge="${jobId}">running</span>
-      `;
-      list.prepend(item);
-      pollJob(jobId, item.querySelector(`[data-job-badge="${jobId}"]`) as HTMLElement);
-    }
-  }
-
-  function pollJob(jobId: number, badgeEl: HTMLElement | null) {
-    async function poll() {
-      const r = await submitJson<{ status?: string }>(`/api/jobs/${jobId}/status`, { method: 'GET', stepUp: false });
-      if (r.ok) {
-        if (badgeEl) {
-          badgeEl.textContent = r.data.status ?? 'unknown';
-          const colorMap: Record<string, string> = {
-            running: 'bg-viindoo-info/10 text-viindoo-info',
-            done: 'bg-green-100 text-green-700',
-            error: 'bg-red-100 text-red-700',
-            pending: 'bg-yellow-100 text-yellow-700',
-          };
-          badgeEl.className = `text-xs px-2 py-0.5 rounded-full ${colorMap[r.data.status ?? ''] ?? 'bg-gray-100 text-gray-600'}`;
-        }
-        if (r.data.status === 'running' || r.data.status === 'pending') {
-          setTimeout(poll, 3000);
-        }
-      } else {
-        setTimeout(poll, 5000);
-      }
-    }
-    setTimeout(poll, 3000);
+    if (jobId !== null) refreshJobs();
   }
 
   // Index Core

@@ -312,6 +312,34 @@ def advisory_lock_id(key: str) -> int:
     return int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**31)
 
 
+def advisory_lock_holders(conn: PgConn, lock_ids) -> dict:
+    """Which of *lock_ids* (31-bit ids taken with ``pg_try_advisory_lock(bigint)``
+    / ``pg_advisory_lock(bigint)``) are held right now, by any session ->
+    ``{lock_id: holder session start (datetime) or None}``. The start is None
+    when ``pg_stat_activity`` does not show the holder to this role.
+
+    Reads ``pg_locks`` and takes no lock, so a peek can never make a session
+    that tries the lock at the same moment find it busy (a take-and-release
+    peek did, for the length of the peek). A lock held by *conn*'s own session
+    counts as held. ``pg_try_advisory_lock(bigint)`` lands in ``pg_locks`` with
+    the key's high half in ``classid`` and the low half in ``objid``
+    (``objsubid`` 1); ids below 2**31 have ``classid`` 0.
+    """
+    ids = sorted({int(i) for i in lock_ids})
+    if not ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT l.objid::bigint, a.backend_start FROM pg_locks l"
+            " LEFT JOIN pg_stat_activity a ON a.pid = l.pid"
+            " WHERE l.locktype = 'advisory' AND l.granted AND l.classid = 0"
+            " AND l.objsubid = 1 AND l.objid::bigint = ANY(%s)",
+            (ids,),
+        )
+        rows = cur.fetchall()
+    return {int(lock_id): backend_start for lock_id, backend_start in rows}
+
+
 @contextmanager
 def advisory_lock(
     conn: PgConn, lock_id: int, *, wait_seconds: float = 0.0,

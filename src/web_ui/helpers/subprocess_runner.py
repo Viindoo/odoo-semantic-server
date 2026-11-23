@@ -8,12 +8,11 @@ subprocess with --job-id, return job_id for status polling.
 import logging
 import subprocess
 import sys
-import tempfile
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 
 from src.db.pg import job_store
+from src.web_ui.helpers import job_logs
 
 _logger = logging.getLogger(__name__)
 
@@ -24,9 +23,14 @@ def spawn_indexer_subcommand(
 ) -> int:
     """Create an indexer_jobs row, spawn detached subprocess, return job_id.
 
-    Spawns `python -m src.indexer <argv> --job-id N` as a detached process.
-    Subprocess stdout+stderr are redirected to /tmp/osm-job-{job_id}.log so
-    indexer output is not silently lost.
+    Spawns `python -m src.indexer <argv> [--verbose] --job-id N` as a detached
+    process. ``--verbose`` is added when the subcommand declares it, so the
+    job log records each step (which repository, fetch, incremental plan,
+    per-repo result) and an admin can tell what a running job is doing.
+    Subprocess stdout+stderr go to the job log
+    (:func:`src.web_ui.helpers.job_logs.job_log_path`), a persistent data
+    directory readable on the host and through ``GET /api/jobs/{id}/status``;
+    logs older than the retention are deleted first.
 
     Args:
         subcommand_argv: e.g. ["index-repo", "--profile", "viindoo17", "--full"]
@@ -47,22 +51,24 @@ def spawn_indexer_subcommand(
     # The child reports running / done / error through --job-id; a subcommand
     # that does not declare it would die on argparse exit 2 and leave its job
     # queued forever (#381 F2). Refuse before any job row exists.
-    from src.indexer.__main__ import subcommand_accepts_job_id  # noqa: PLC0415
+    from src.indexer.__main__ import subcommand_accepts  # noqa: PLC0415
 
     subcommand = subcommand_argv[0] if subcommand_argv else ""
-    if not subcommand_accepts_job_id(subcommand):
+    if not subcommand_accepts(subcommand, "--job-id"):
         raise ValueError(
             f"indexer subcommand {subcommand!r} does not accept --job-id: "
             "a Web UI job could never leave 'queued'"
         )
     job_id = job_store().create_job(job_label)
-    argv = [sys.executable, "-m", "src.indexer", *subcommand_argv, "--job-id", str(job_id)]
+    argv = [sys.executable, "-m", "src.indexer", *subcommand_argv]
+    if "--verbose" not in argv and subcommand_accepts(subcommand, "--verbose"):
+        argv.append("--verbose")
+    argv += ["--job-id", str(job_id)]
 
-    # Capture subprocess output to /tmp/osm-job-{job_id}.log.
+    job_logs.prune_job_logs()
     # Popen dup2()s the fd into the child — parent can close its copy right after.
-    log_path = Path(tempfile.gettempdir()) / f"osm-job-{job_id}.log"
     try:
-        with open(log_path, "w") as log_file:
+        with job_logs.open_job_log(job_id) as log_file:
             proc = subprocess.Popen(
                 argv,
                 start_new_session=True,
@@ -94,3 +100,25 @@ def spawn_indexer_subcommand(
     # stays in Z (zombie) state indefinitely after the indexer finishes.
     threading.Thread(target=proc.wait, daemon=True).start()
     return job_id
+
+
+def spawn_cloner(repo_id: int) -> None:
+    """Spawn ``python -m src.cloner --repo-id N`` detached, its stdout + stderr
+    in the repository's clone log
+    (:func:`src.web_ui.helpers.job_logs.clone_log_path`; same directory,
+    permissions and retention as the job logs, readable by admins through
+    ``GET /api/repos/repos/{id}/clone-status``). The cloner records its own
+    outcome on the repo row (``clone_status`` / ``clone_error_msg``).
+
+    Raises whatever opening the log or the spawn raised; nothing is started then.
+    """
+    job_logs.prune_job_logs()
+    with job_logs.open_clone_log(repo_id) as log_file:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "src.cloner", "--repo-id", str(repo_id)],
+            start_new_session=True,
+            stdout=log_file,
+            stderr=log_file,
+        )
+    # Reap the child when it exits so it does not linger as a zombie.
+    threading.Thread(target=proc.wait, daemon=True).start()

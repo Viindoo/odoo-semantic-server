@@ -267,6 +267,25 @@ def _ensure_current_event_loop():
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _job_logs_in_a_test_directory(tmp_path_factory):
+    """Indexer job logs of Web UI spawns go to a per-session test directory.
+
+    ``spawn_indexer_subcommand`` writes ``osm-job-<id>.log`` under
+    ``INDEXER_JOB_LOG_DIR`` (default: the user's data directory). Tests spawn
+    (mostly mocked) jobs with ids of throwaway databases; their logs must never
+    land in the developer's or the service's real job-log directory. Set in
+    ``os.environ`` so servers the browser fixtures start inherit it too.
+    """
+    previous = os.environ.get("INDEXER_JOB_LOG_DIR")
+    os.environ["INDEXER_JOB_LOG_DIR"] = str(tmp_path_factory.mktemp("job-logs"))
+    yield
+    if previous is None:
+        os.environ.pop("INDEXER_JOB_LOG_DIR", None)
+    else:
+        os.environ["INDEXER_JOB_LOG_DIR"] = previous
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _close_server_driver_at_session_end():
     """Close the Neo4j driver singleton after all tests complete.
 
@@ -1281,7 +1300,9 @@ def _wipe_web_ui_tables(conn) -> None:
     doesn't poison the connection state for subsequent DELETEs (which would
     otherwise raise InFailedSqlTransaction).
     """
-    for tbl in ("usage_log", "repos", "api_keys", "ssh_key_pairs", "profiles"):
+    # indexer_jobs: the admin Operations page lists every job (#403), so a job
+    # spawned by one browser test must not show up in the next one.
+    for tbl in ("usage_log", "indexer_jobs", "repos", "api_keys", "ssh_key_pairs", "profiles"):
         try:
             with conn.cursor() as cur:
                 cur.execute(f"DELETE FROM {tbl}")

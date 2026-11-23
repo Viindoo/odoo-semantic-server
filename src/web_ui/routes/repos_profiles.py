@@ -39,6 +39,13 @@ async def list_profiles(request: Request):
     W2: tenant-scoped read-side filter. Admin sees all; non-admin sees only profiles
     in their tenant scope (own tenant + shared/null). tenant_id is included in every
     profile and repo entry so the portal can route writes correctly.
+
+    Each repo's indexing state is its own row (``status``, ``error_msg``,
+    ``last_indexed_at``: written by every index run, Web UI job, CLI or
+    scheduled) plus ``index_run``: the run indexing its profile right now, or
+    null (``helpers.index_runs``; ``covers_repo`` false when the repo was added
+    after that run read its repository list). Dead jobs are swept first, so a
+    job whose process is gone never shows as running.
     """
     from src.web_ui.routes import repos as repos_module
 
@@ -49,6 +56,7 @@ async def list_profiles(request: Request):
     all_job_status = None
     try:
         from src.db.pg import job_store, repo_store
+        from src.web_ui.helpers.index_runs import current_profile_runs
 
         all_repos: list[dict] = []
         for p in repo_store().list_profiles():
@@ -57,15 +65,23 @@ async def list_profiles(request: Request):
             if not is_in_scope(scope, profile_tenant_id):
                 continue
             repos = repo_store().get_repos_for_profile(p["name"])
-            # Attach last_job to each repo for status badge; expose tenant_id
-            for repo in repos:
-                repo["last_job"] = job_store().get_last_job(p["name"])
             all_repos.extend(repos)
             profiles.append({
                 **p,
                 "tenant_id": profile_tenant_id,
                 "repos": repos,
             })
+        runs, created = current_profile_runs(
+            [p["name"] for p in profiles], [r["id"] for r in all_repos],
+            found="when the Web UI listed repositories",
+        )
+        for p in profiles:
+            run = runs.get(p["name"])
+            for repo in p["repos"]:
+                repo["index_run"] = (
+                    run.as_json(covers_repo=run.covers(created.get(repo["id"])))
+                    if run is not None else None
+                )
         repos_module._attach_lifecycle(all_repos)
         repos_module._redact_repo_rows(all_repos, is_admin=is_admin)
 

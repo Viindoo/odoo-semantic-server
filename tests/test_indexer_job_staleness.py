@@ -71,7 +71,8 @@ def _sweep(rows, proc, monkeypatch):
     monkeypatch.setattr(job_registry, "_PROC", proc, raising=False)
     store = JobStore(_Pool(rows))
     updates: list[dict] = []
-    store.update_job = lambda job_id, **kw: updates.append({"id": job_id, **kw})
+    # The store's update_job returns True when it wrote the (still unfinished) row.
+    store.update_job = lambda job_id, **kw: updates.append({"id": job_id, **kw}) or True
     return store.mark_dead_jobs(), {u["id"]: u for u in updates}
 
 
@@ -428,16 +429,18 @@ def test_update_job_without_the_columns_still_writes_running(autocommit):
 
 
 def test_non_admins_never_see_a_jobs_process_identity():
+    """A repo row carries the run indexing its profile (``index_run``), never
+    a job's process identity; an ``all`` job's id is admin-only (#237, #403)."""
+    from src.web_ui.helpers.index_runs import ProfileRun
     from src.web_ui.routes.repos import _redact_repo_rows
 
-    def rows():
-        return [{"id": 1, "last_job": {
-            "id": 5, "status": "running", "error_msg": None,
-            "pid": 4242, "proc_start_ticks": TICKS, "boot_id": BOOT,
-        }}]
+    run = ProfileRun(job_id=5, job_label="all", started_at=NOW, repos_listed_by=NOW)
 
-    job = _redact_repo_rows(rows(), is_admin=False)[0]["last_job"]
-    assert job["pid"] is None and job["proc_start_ticks"] is None and job["boot_id"] is None
-    assert job["id"] == 5 and job["status"] == "running"
-    admin = _redact_repo_rows(rows(), is_admin=True)[0]["last_job"]
-    assert admin["pid"] == 4242 and admin["boot_id"] == BOOT
+    def rows():
+        return [{"id": 1, "index_run": run.as_json(covers_repo=True)}]
+
+    member = _redact_repo_rows(rows(), is_admin=False)[0]["index_run"]
+    assert not {"pid", "proc_start_ticks", "boot_id"} & set(member)
+    assert member["job_id"] is None and member["covers_repo"] is True
+    admin = _redact_repo_rows(rows(), is_admin=True)[0]["index_run"]
+    assert admin["job_id"] == 5

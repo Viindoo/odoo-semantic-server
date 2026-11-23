@@ -99,6 +99,45 @@ def sanitize_job_error(error_msg):
     return _JOB_ERROR_DEFAULT
 
 
+_JOB_LIST_DEFAULT_LIMIT = 50
+_JOB_LIST_MAX_LIMIT = 500
+
+
+@router.get("")
+async def list_jobs(
+    request: Request, limit: int = _JOB_LIST_DEFAULT_LIMIT,
+    _user_id: int = Depends(require_admin),
+):
+    """Job history for admins: the newest *limit* jobs (1..500, default 50),
+    every kind (profile index runs, ``all``, ``core:<version>``, ``patterns``),
+    with the raw ``error_msg``. Dead jobs are swept first (same rule as the
+    start-up sweep), so a job whose process is gone shows as ``error`` with
+    the reason, never as queued or running. Log content is per job, on
+    ``GET /api/jobs/{id}/status``."""
+    if not 1 <= limit <= _JOB_LIST_MAX_LIMIT:
+        return JSONResponse(
+            _json_safe({"error": f"limit must be between 1 and {_JOB_LIST_MAX_LIMIT}"}),
+            status_code=422,
+        )
+    try:
+        from src.db.pg import job_store
+
+        store = job_store()
+        store.mark_dead_jobs(found="when the Web UI listed jobs")
+        rows = store.list_all_jobs(limit=limit)
+    except Exception as e:
+        _logger.warning("Job list failed: %s", e)
+        return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
+    jobs = [
+        {key: row.get(key) for key in (
+            "id", "profile_name", "status", "pid", "created_at", "started_at",
+            "finished_at", "error_msg",
+        )}
+        for row in rows
+    ]
+    return JSONResponse(_json_safe({"jobs": jobs, "limit": limit}))
+
+
 @router.get("/{job_id}/status")
 async def job_status(request: Request, job_id: int):
     """Return JSON status of a single indexer job.
@@ -109,11 +148,25 @@ async def job_status(request: Request, job_id: int):
     - Jobs with profile_name="all" (bulk admin jobs) or profiles missing from DB
       are admin-only; non-admin always gets 404 for those.
     - Non-admin callers never receive error_msg (may contain raw exceptions/paths).
+    - ``log`` (admin only, null for anyone else): ``{"path", "tail",
+      "truncated"}`` - the job log's path on the server and its last
+      ``JOB_LOG_TAIL_BYTES`` (whole lines; ``tail`` null when there is no log
+      file). A log carries what the indexer printed (repository URLs, server
+      paths, tracebacks): the same class of detail as the raw ``error_msg``,
+      which only admins receive.
+
+    Dead jobs are swept first, so a job whose process is gone is reported as
+    ``error`` with the reason.
     """
     try:
         from src.db.pg import job_store, repo_store
 
-        job = job_store().get_job(job_id)
+        store = job_store()
+        try:
+            store.mark_dead_jobs(found="when the Web UI read a job status")
+        except Exception as e:  # noqa: BLE001 - the status read must not fail on it
+            _logger.warning("Job sweep failed: %s", e)
+        job = store.get_job(job_id)
     except Exception as e:
         return JSONResponse(_json_safe({"error": str(e)}), status_code=503)
 
@@ -154,6 +207,12 @@ async def job_status(request: Request, job_id: int):
 
         is_alive = job_staleness(job) is None
 
+    log = None
+    if is_admin:
+        from src.web_ui.helpers.job_logs import read_job_log_tail
+
+        log = read_job_log_tail(job["id"])
+
     # Three-way error disclosure (#237 + follow-up):
     #   - admin           → full raw error_msg (operators need the detail)
     #   - non-admin owner → a sanitized category summary (in-scope by the time we
@@ -170,6 +229,7 @@ async def job_status(request: Request, job_id: int):
         "error_msg": job["error_msg"] if is_admin else sanitize_job_error(job["error_msg"]),
         "created_at": job["created_at"],
         "is_alive": is_alive,
+        "log": log,
     }))
 
 
