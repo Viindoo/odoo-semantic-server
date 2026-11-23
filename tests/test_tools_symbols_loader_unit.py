@@ -40,11 +40,45 @@ class TestLoaderDataCompleteness:
         assert sql_sym.status == "stable"
         assert sql_sym.kind == "tool_export"
 
-    def test_v17_has_deprecated_html_escape(self):
-        syms = _load_static_tools_symbols(TOOLS_V17, static_data_dir=_SPEC_DATA_DIR)
-        html_escape = next(
-            (s for s in syms if s.qualified_name == "odoo.tools.html_escape"), None
-        )
-        assert html_escape is not None
-        assert html_escape.status == "deprecated"
-        assert html_escape.replacement_qname == "markupsafe.escape"
+    def test_html_escape_is_stable_at_every_version_that_has_it(self):
+        """Core calls html_escape throughout v17-v20 and no source marks it
+        deprecated, so it is stable with no replacement at every major.
+        """
+        for major in range(8, 21):
+            syms = _load_static_tools_symbols(f"{major}.0", static_data_dir=_SPEC_DATA_DIR)
+            html_escape = next(s for s in syms if s.qualified_name == "odoo.tools.html_escape")
+            assert html_escape.status == "stable", major
+            assert html_escape.replacement_qname is None, major
+
+    def test_ustr_is_deprecated_from_v18_and_stable_before(self):
+        """odoo/loglevels.py emits a DeprecationWarning from ustr() starting
+        Odoo 18; every earlier major that carries it keeps it stable.
+        """
+        for major in range(8, 20):
+            version = f"{major}.0"
+            syms = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
+            ustr = next(s for s in syms if s.qualified_name == "odoo.tools.ustr")
+            assert ustr.status == ("deprecated" if major >= 18 else "stable"), version
+
+    def test_pycompat_is_curated_from_v11_to_v19_and_deprecated_from_v18(self):
+        """pycompat.py exists at v11-v19 (resolvable as a submodule even when
+        odoo/tools/__init__.py stops importing it) and is gone at v20.
+        """
+        for major in range(8, 21):
+            version = f"{major}.0"
+            syms = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
+            entry = next((s for s in syms if s.qualified_name == "odoo.tools.pycompat"), None)
+            if major < 11 or major > 19:
+                assert entry is None, version
+            else:
+                assert entry is not None, version
+                assert entry.status == ("deprecated" if major >= 18 else "stable"), version
+
+    def test_html_escape_alias_is_carried_as_its_source_statement_from_v15(self):
+        """From v15 odoo/tools/misc.py binds html_escape = markupsafe.escape, so
+        the curated signature is that statement, not a function signature.
+        """
+        for major in range(15, 21):
+            syms = _load_static_tools_symbols(f"{major}.0", static_data_dir=_SPEC_DATA_DIR)
+            entry = next(s for s in syms if s.qualified_name == "odoo.tools.html_escape")
+            assert entry.signature == "html_escape = markupsafe.escape", major

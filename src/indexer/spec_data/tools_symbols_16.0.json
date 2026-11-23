@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated odoo.tools symbols for Odoo 16.0. No SQL class yet (introduced v17). pycompat still present but shrinking. html_escape is NOT yet deprecated at v16 - the symbols[] array below correctly carries status='stable' for v16 (status only becomes 'deprecated' at v17, matching odoo.tools.html_escape being a plain markupsafe.escape alias with no deprecation marker attached until then); do not read v16 as a soft-deprecation point. js_transpiler stable.",
+  "_note": "Curated odoo.tools symbols for Odoo 16.0. No SQL class yet (introduced v17). pycompat still present but shrinking. html_escape is the statement `html_escape = markupsafe.escape` in odoo/tools/misc.py. js_transpiler stable.",
   "symbols": [
     {
       "qualified_name": "odoo.tools.js_transpiler",
@@ -49,7 +49,7 @@
       "qualified_name": "odoo.tools.ustr",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "ustr(value) -> str",
+      "signature": "ustr(value, hint_encoding='utf-8', errors='strict') -> str",
       "note": "Unicode string coercion helper. Present through v19."
     },
     {
@@ -84,21 +84,21 @@
       "qualified_name": "odoo.tools.html_escape",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "html_escape(text, keep_newlines=False) -> str",
-      "note": "Escape HTML special characters. In v16+ prefer markupsafe.escape for Markup-aware escaping."
+      "signature": "html_escape = markupsafe.escape",
+      "note": "Alias of markupsafe.escape (odoo/tools/misc.py), so it returns Markup."
     },
     {
       "qualified_name": "odoo.tools.plaintext2html",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "plaintext2html(text, container_tag=False) -> str",
+      "signature": "plaintext2html(text, container_tag=None) -> Markup",
       "note": "Convert plain text to HTML."
     },
     {
       "qualified_name": "odoo.tools.html2plaintext",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "html2plaintext(html) -> str",
+      "signature": "html2plaintext(html, body_id=None, encoding='utf-8') -> str",
       "note": "Strip HTML tags and return plain text."
     },
     {

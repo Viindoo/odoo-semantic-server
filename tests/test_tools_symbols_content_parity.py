@@ -44,6 +44,11 @@ text-regex-on-SyntaxError parameter extraction, and a plain substring check on
 fact does not need a general-purpose symbol walker to be checked one file at a
 time.
 
+Part C checks every curated entry of every surveyed major against the source of
+that major: parameters and defaults, return-type names, aliases, constants,
+instances, class definitions and deprecation status (see the section header
+before `_spec_of_args`).
+
 Part B is the demanded, not-yet-built production oracle contract
 (`parse_tools_symbols`) - see that section's docstring for the full API this
 file codes against and why it fails with a clean ImportError today (same
@@ -81,6 +86,7 @@ import pytest
 
 from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
 from src.indexer.parser_tools_symbols import _load_static_tools_symbols
+from src.indexer.parser_util import parse_external_source
 from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
 
 _SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
@@ -303,7 +309,7 @@ def test_image_process_qualified_name_no_longer_resolves_from_v19(major):
     and its own failure message - it demanded the real v19 checkout still
     re-export image_process, which is a fact about upstream source no
     curated-data edit could ever change, and which is also simply false
-    (confirmed against /home/tuan/git/odoo19/odoo/tools/__init__.py). Fixed
+    (confirmed against odoo/tools/__init__.py of the v19 checkout). Fixed
     here to assert the real rule the docstring always described: the
     re-export IS gone at v19, and the curated data must model that by
     OMITTING the flat qualified_name (schema's own "'removed' = absent - do
@@ -591,53 +597,483 @@ def test_ormcache_is_a_deprecated_alias_served_by_module_getattr_from_v20(major)
     assert entry.replacement_qname == "odoo.api.ormcache"
 
 
-def _signature_param_names(signature: str) -> list[str]:
-    """Parameter names of a `name(params) [-> ret]` signature string."""
-    head = signature[: signature.rindex(")") + 1]
-    args = ast.parse(f"def {head}: pass").body[0].args  # type: ignore[attr-defined]
-    return [
-        a.arg
-        for a in [*args.posonlyargs, *args.args, *([args.vararg] if args.vararg else []),
-                  *args.kwonlyargs, *([args.kwarg] if args.kwarg else [])]
-    ]
+# ---------------------------------------------------------------------------
+# Part C - every curated entry of every surveyed major is checked against the
+# real source of that major: parameters, defaults, constants, aliases, class
+# existence, return-type names and deprecation status. The oracle's own
+# signature is the parameter ground truth wherever it carries one; a name it
+# binds through an import or a class (no signature) is read at its definition
+# site by `_locate`.
+# ---------------------------------------------------------------------------
+
+_ParamSpec = list[tuple[str, str | None]]
 
 
-# Versions whose curated function signatures are source-checked parameter by
-# parameter. The older files carry hand-copied signatures that drifted from
-# source (see the report of the v20 curation); extend this tuple when a file is
-# re-curated against its checkout.
-_SIGNATURE_CHECKED_MAJORS = [20]
-
-
-@pytest.mark.odoo_source
-@pytest.mark.parametrize("major", _SIGNATURE_CHECKED_MAJORS)
-def test_curated_function_signatures_carry_the_real_parameter_names(major):
-    """Business rule: a curated `name(params)` signature lists exactly the
-    parameters the live source function takes, in order - AI clients copy
-    these signatures into call sites.
+def _spec_of_args(args: ast.arguments) -> _ParamSpec:
+    """(name, default source) per parameter, in call order; `*`/`**` prefixed
+    for variadics. Annotations are not part of the spec.
     """
+    positional = [*args.posonlyargs, *args.args]
+    defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
+    spec: _ParamSpec = [
+        (a.arg, ast.unparse(d) if d is not None else None)
+        for a, d in zip(positional, defaults, strict=True)
+    ]
+    if args.vararg:
+        spec.append((f"*{args.vararg.arg}", None))
+    spec.extend(
+        (a.arg, ast.unparse(d) if d is not None else None)
+        for a, d in zip(args.kwonlyargs, args.kw_defaults, strict=True)
+    )
+    if args.kwarg:
+        spec.append((f"**{args.kwarg.arg}", None))
+    return spec
+
+
+def _signature_spec(signature: str) -> _ParamSpec:
+    """Parameter spec of a `name(params) [-> ret]` signature string."""
+    head = signature[: signature.rindex(")") + 1]
+    return _spec_of_args(ast.parse(f"def {head}: pass").body[0].args)  # type: ignore[attr-defined]
+
+
+def _return_hint(signature: str) -> str | None:
+    tail = signature[signature.rindex(")") + 1:].strip()
+    return tail.removeprefix("->").strip() if tail.startswith("->") else None
+
+
+_RE_FUNCTION_SIGNATURE = re.compile(r"^\w+\(.*\)(?:\s*->\s*.+)?$")
+_RE_ALIAS_SIGNATURE = re.compile(r"^(\w+) = ([\w.]+)$")
+_RE_CONSTANT_SIGNATURE = re.compile(r"^str = (.+)$")
+_RE_INSTANCE_SIGNATURE = re.compile(r"^odoo\.tools\.(\w+)\.(\w+)$")
+
+
+def _signature_kind(signature: str | None) -> str:
+    """function | class | module | alias | constant | instance | other."""
+    sig = signature or ""
+    if sig == "module":
+        return "module"
+    if sig.startswith("class "):
+        return "class"
+    if _RE_ALIAS_SIGNATURE.match(sig):
+        return "alias"
+    if _RE_CONSTANT_SIGNATURE.match(sig):
+        return "constant"
+    if _RE_INSTANCE_SIGNATURE.match(sig):
+        return "instance"
+    return "function" if _RE_FUNCTION_SIGNATURE.match(sig) else "other"
+
+
+class _Site:
+    """Where a name is defined: the file (relative to the checkout root), its
+    text and, when the file parses, the defining AST node.
+    """
+
+    def __init__(self, rel: str, text: str, tree: ast.Module | None, node: ast.AST | None):
+        self.rel, self.text, self.tree, self.node = rel, text, tree, node
+
+
+def _module_file(root: Path, module: str, importer_rel: str, level: int) -> str | None:
+    """Relative path of the file `from <module> import ...` reads, or None
+    when it is not part of the checkout (stdlib, third-party).
+    """
+    if level:
+        base = list(Path(importer_rel).parent.parts)
+        base = base[: len(base) - (level - 1)]
+        parts = base + (module.split(".") if module else [])
+    else:
+        parts = module.split(".")
+        if parts[0] not in ("odoo", "openerp"):
+            parts = [*Path(importer_rel).parent.parts, *parts]  # py2 implicit relative
+    stem = Path(*parts)
+    for candidate in (stem.with_suffix(".py"), stem / "__init__.py"):
+        if (root / candidate).is_file():
+            return candidate.as_posix()
+    return None
+
+
+def _top_level_statements(tree: ast.Module) -> list[ast.stmt]:
+    out: list[ast.stmt] = []
+    for stmt in tree.body:
+        out.append(stmt)
+        if isinstance(stmt, ast.If):
+            out.extend([*stmt.body, *stmt.orelse])
+    return out
+
+
+_RE_FROM_IMPORT_LINE = re.compile(r"^from\s+([.\w]+)\s+import\s+(.+)$", re.MULTILINE)
+
+
+def _locate(root: Path, rel: str, name: str, depth: int = 0) -> _Site | None:
+    """Definition site of `name`, starting at file `rel` and following
+    `from X import name` re-exports into the checkout (AST when the file
+    parses, a line-regex over `from ... import` when it is Python 2 syntax).
+    """
+    path = root / rel
+    if depth > 6 or not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        tree: ast.Module | None = parse_external_source(text, filename=rel)  # type: ignore[assignment]
+    except SyntaxError:
+        tree = None
+    if tree is not None:
+        for stmt in reversed(_top_level_statements(tree)):
+            if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)) and stmt.name == name:
+                return _Site(rel, text, tree, stmt)
+            if isinstance(stmt, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name for t in stmt.targets
+            ):
+                return _Site(rel, text, tree, stmt)
+        for stmt in _top_level_statements(tree):
+            if isinstance(stmt, ast.ImportFrom) and any(
+                (a.asname or a.name) == name for a in stmt.names
+            ):
+                source = _module_file(root, stmt.module or "", rel, stmt.level)
+                original = next(a.name for a in stmt.names if (a.asname or a.name) == name)
+                found = _locate(root, source, original, depth + 1) if source else None
+                if found:
+                    return found
+        for stmt in _top_level_statements(tree):
+            if isinstance(stmt, ast.ImportFrom) and any(a.name == "*" for a in stmt.names):
+                source = _module_file(root, stmt.module or "", rel, stmt.level)
+                found = _locate(root, source, name, depth + 1) if source else None
+                if found:
+                    return found
+        return None
+    for module, imported in _RE_FROM_IMPORT_LINE.findall(text):
+        if name in re.findall(r"\w+", imported):
+            dots = len(module) - len(module.lstrip("."))
+            source = _module_file(root, module.lstrip("."), rel, dots)
+            found = _locate(root, source, name, depth + 1) if source else None
+            if found:
+                return found
+    defined = rf"^[ \t]*(?:def|class)\s+{re.escape(name)}\b|^{re.escape(name)}\s*="
+    if re.search(defined, text, re.MULTILINE):
+        return _Site(rel, text, None, None)
+    return None
+
+
+def _real_spec(root: Path, parsed, name: str, leaf: str) -> _ParamSpec | None:
+    """Parameter spec the source gives for `name`: the oracle's own signature,
+    else the definition site (function arguments, or a class's `__init__`
+    without `self`).
+    """
+    real = parsed[name]
+    if real.signature and real.signature != "module":
+        return _signature_spec(real.signature)
+    site = _locate(root, real.file_path, leaf)
+    node = site.node if site else None
+    if isinstance(node, ast.FunctionDef):
+        return _spec_of_args(node.args)
+    if isinstance(node, ast.ClassDef):
+        init = next(
+            (s for s in node.body if isinstance(s, ast.FunctionDef) and s.name == "__init__"),
+            None,
+        )
+        return _spec_of_args(init.args)[1:] if init else None
+    return None
+
+
+def _parsed_and_entries(major: int):
     root = checkout_root(major)
     if root is None:
         pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
-    parse_tools_symbols = _import_tools_symbols_oracle()
     version = f"{major}.0"
-    parsed = parse_tools_symbols(root, version)
+    parsed = _import_tools_symbols_oracle()(root, version)
     assert parsed is not None
-    checked = 0
-    mismatches = []
-    for entry in _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR):
-        name = entry.qualified_name.removeprefix("odoo.tools.")
-        real = parsed.get(name)
-        leaf = name.rsplit(".", 1)[-1]
-        if (
-            real is None or not real.signature or real.signature == "module"
-            or not (entry.signature or "").startswith(f"{leaf}(")
-        ):
+    entries = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
+    return root, parsed, entries
+
+
+def _leaf(entry) -> tuple[str, str]:
+    name = entry.qualified_name.removeprefix("odoo.tools.")
+    return name, name.rsplit(".", 1)[-1]
+
+
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_every_curated_signature_has_a_form_the_source_checks_can_read(major):
+    """Business rule: no curated signature is free text. Each one is a
+    function signature, `class X`, `module`, an `X = Y` alias, a `str = <value>`
+    constant or a `odoo.tools.<module>.<class>` instance - the forms the source
+    checks of this file read back - so a new entry cannot slip past them.
+    """
+    entries = _load_static_tools_symbols(f"{major}.0", static_data_dir=_SPEC_DATA_DIR)
+    assert entries, f"no curated entries for v{major}"
+    free_text = [e.qualified_name for e in entries if _signature_kind(e.signature) == "other"]
+    assert not free_text, f"signatures the source checks cannot read: {free_text}"
+    for entry in entries:
+        if _signature_kind(entry.signature) == "function":
+            assert _signature_spec(entry.signature), entry.qualified_name
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_curated_function_signatures_carry_the_real_parameters_and_defaults(major):
+    """Business rule: a curated `name(params)` signature lists exactly the
+    parameters the live source takes - names, order, kind and default values -
+    at every surveyed major. AI clients copy these signatures into call sites,
+    so a missing parameter or a stale default reaches generated code directly.
+    Annotations and the `-> ret` hint are not part of the parameter spec (the
+    return hint is checked by its own test).
+    """
+    root, parsed, entries = _parsed_and_entries(major)
+    checked, unresolved, mismatches = 0, [], []
+    for entry in entries:
+        if _signature_kind(entry.signature) != "function":
+            continue
+        name, leaf = _leaf(entry)
+        if name not in parsed:
+            continue  # absence is reported by the recoverability test
+        real = _real_spec(root, parsed, name, leaf)
+        if real is None:
+            unresolved.append(entry.qualified_name)
             continue
         checked += 1
-        curated_names = _signature_param_names(entry.signature)
-        real_names = _signature_param_names(real.signature)
-        if curated_names != real_names:
-            mismatches.append((entry.qualified_name, curated_names, real_names))
+        curated = _signature_spec(entry.signature)
+        if curated != real:
+            mismatches.append((entry.qualified_name, curated, real))
+    assert not unresolved, f"v{major}: no source signature found for {unresolved}"
     assert checked >= 8, f"parameter check ran on only {checked} signatures - oracle drift?"
-    assert not mismatches, f"curated signature parameters differ from source: {mismatches}"
+    assert not mismatches, (
+        f"v{major}: curated signature parameters differ from source: {mismatches}"
+    )
+
+
+def _annotation_name(node: ast.expr | None) -> str | None:
+    """Last dotted segment of a plain-name return annotation (`str`,
+    `markupsafe.Markup` -> `Markup`); None for unions, `Literal[...]`,
+    subscripts and unannotated functions.
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_curated_return_hints_name_the_type_the_source_annotates(major):
+    """Business rule: where the live function annotates its return with a
+    plain type name, the curated `-> hint` names that same type. Sources before
+    v18 carry no annotations and later ones use unions and `Literal[...]`
+    that a short hint cannot restate, so those returns are not checked
+    mechanically; the older hints are limited to what the function body shows.
+    """
+    root, parsed, entries = _parsed_and_entries(major)
+    checked, mismatches = 0, []
+    for entry in entries:
+        if _signature_kind(entry.signature) != "function":
+            continue
+        name, leaf = _leaf(entry)
+        real = parsed.get(name)
+        site = _locate(root, real.file_path, leaf) if real else None
+        node = site.node if site else None
+        annotated = _annotation_name(node.returns) if isinstance(node, ast.FunctionDef) else None
+        if annotated is None:
+            continue
+        checked += 1
+        hint = _return_hint(entry.signature)
+        if hint is None or hint.rsplit(".", 1)[-1] != annotated:
+            mismatches.append((entry.qualified_name, hint, annotated))
+    assert not mismatches, (
+        f"v{major}: curated return hint differs from source annotation: {mismatches}"
+    )
+    if major >= 18:
+        assert checked >= 3, f"return check ran on only {checked} functions - oracle drift?"
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_curated_aliases_constants_and_instances_match_their_source_binding(major):
+    """Business rule: a curated `X = Y` alias, `str = '<value>'` constant or
+    `odoo.tools.<module>.<class>` instance signature restates the real
+    module-level binding, and an alias's replacement is the aliased object
+    itself. html_escape is the alias case: from v15 it is the statement
+    `html_escape = markupsafe.escape`, which has no signature of its own, so
+    the curated entry carries that statement and the test reads it back.
+    """
+    root, parsed, entries = _parsed_and_entries(major)
+    checked, problems = 0, []
+    for entry in entries:
+        kind = _signature_kind(entry.signature)
+        if kind not in ("alias", "constant", "instance"):
+            continue
+        name, leaf = _leaf(entry)
+        real = parsed.get(name)
+        if real is None:
+            continue
+        checked += 1
+        if kind == "instance":
+            module, cls = _RE_INSTANCE_SIGNATURE.match(entry.signature).groups()
+            text = (root / real.file_path).read_text(encoding="utf-8", errors="ignore")
+            if not (
+                re.search(rf"^class {cls}\b", text, re.MULTILINE)
+                and re.search(rf"^{leaf}\s*=\s*{cls}\(", text, re.MULTILINE)
+            ):
+                problems.append(
+                    (entry.qualified_name, f"no `{leaf} = {cls}(...)` in {real.file_path}")
+                )
+            continue
+        site = _locate(root, real.file_path, leaf)
+        node = site.node if site else None
+        if not isinstance(node, ast.Assign):
+            problems.append((entry.qualified_name, f"no module-level assignment of {leaf}"))
+            continue
+        if kind == "alias":
+            lhs, rhs = _RE_ALIAS_SIGNATURE.match(entry.signature).groups()
+            if lhs != leaf or ast.unparse(node.value) != rhs:
+                problems.append(
+                    (entry.qualified_name, f"source binds {leaf} = {ast.unparse(node.value)}")
+                )
+            if entry.replacement_qname not in (None, rhs):
+                problems.append((
+                    entry.qualified_name,
+                    f"replacement {entry.replacement_qname!r} is not the alias target {rhs!r}",
+                ))
+        else:
+            curated = ast.literal_eval(_RE_CONSTANT_SIGNATURE.match(entry.signature).group(1))
+            if _evaluate(node.value, site.tree) != curated:
+                problems.append(
+                    (entry.qualified_name, f"source value is {ast.unparse(node.value)}")
+                )
+    assert checked >= 3, f"alias/constant check ran on only {checked} entries - oracle drift?"
+    assert not problems, f"v{major}: curated bindings differ from source: {problems}"
+
+
+def _evaluate(node: ast.expr, tree: ast.Module):
+    """Value of a constant expression built from literals, `%` formatting and
+    names assigned earlier in the same module.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Tuple):
+        return tuple(_evaluate(e, tree) for e in node.elts)
+    if isinstance(node, ast.Name):
+        for stmt in tree.body:
+            if isinstance(stmt, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == node.id for t in stmt.targets
+            ):
+                return _evaluate(stmt.value, tree)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+        return _evaluate(node.left, tree) % _evaluate(node.right, tree)
+    raise AssertionError(f"constant not evaluable: {ast.unparse(node)}")
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_curated_class_entries_are_class_definitions_in_source(major):
+    """Business rule: a curated `class X` entry names a real class definition
+    at that major. A name the module-level `__getattr__` of odoo/tools/__init__.py
+    serves (ormcache at v20) is defined elsewhere and is covered by
+    test_ormcache_is_a_deprecated_alias_served_by_module_getattr_from_v20.
+    """
+    root, parsed, entries = _parsed_and_entries(major)
+    problems = []
+    for entry in entries:
+        if _signature_kind(entry.signature) != "class":
+            continue
+        name, leaf = _leaf(entry)
+        real = parsed.get(name)
+        if real is None or real.file_path.endswith("tools/__init__.py"):
+            continue
+        site = _locate(root, real.file_path, leaf)
+        if site is None or not isinstance(site.node, ast.ClassDef):
+            problems.append(entry.qualified_name)
+        elif entry.signature != f"class {site.node.name}":
+            problems.append(entry.qualified_name)
+    assert not problems, f"v{major}: curated class entries without a class definition: {problems}"
+
+
+_RE_DEPRECATION = re.compile(r"DeprecationWarning|@deprecated\b")
+
+def _marks_deprecation(node: ast.AST) -> bool:
+    """Whether a function (anywhere in its body or decorators) or a class
+    (decorators and `__init__`/`__new__` only - a deprecated method does not
+    deprecate its class) raises a DeprecationWarning or carries `@deprecated`.
+    """
+    if isinstance(node, ast.ClassDef):
+        parts = [*node.decorator_list] + [
+            s for s in node.body
+            if isinstance(s, ast.FunctionDef) and s.name in ("__init__", "__new__")
+        ]
+    else:
+        parts = [node]
+    return any(_RE_DEPRECATION.search(ast.unparse(part)) for part in parts)
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_curated_deprecated_status_agrees_with_source_markers(major):
+    """Business rule: an entry is 'deprecated' exactly when the live source
+    marks it so - a function or class that raises a DeprecationWarning, a module
+    every public function of which does, or a name the module `__getattr__`
+    serves with one - and never the other way round: a name whose source warns
+    is not left 'stable' (ustr from v18, pycompat from v18). There are no
+    exemptions: html_escape is the stable alias `html_escape = markupsafe.escape`
+    at every major from v15 because nothing in source discourages it.
+    """
+    root, parsed, entries = _parsed_and_entries(major)
+    problems, checked = [], 0
+    for entry in entries:
+        kind = _signature_kind(entry.signature)
+        name, leaf = _leaf(entry)
+        real = parsed.get(name)
+        if real is None:
+            continue
+        if real.file_path.endswith("tools/__init__.py"):
+            init_text = (root / real.file_path).read_text(encoding="utf-8")
+            marked = bool(_RE_DEPRECATION.search(init_text))
+        elif kind in ("function", "class"):
+            site = _locate(root, real.file_path, leaf)
+            marked = bool(site and site.node is not None and _marks_deprecation(site.node))
+            if site is not None and site.node is None and kind == "function":
+                body = re.search(
+                    rf"^[ \t]*def {re.escape(leaf)}\(.*?(?=^\S)",
+                    site.text,
+                    re.MULTILINE | re.DOTALL,
+                )
+                marked = bool(body and _RE_DEPRECATION.search(body.group(0)))
+        elif kind == "module":
+            text = (root / real.file_path).read_text(encoding="utf-8", errors="ignore")
+            try:
+                tree = parse_external_source(text, filename=real.file_path)
+            except SyntaxError:
+                continue
+            functions = [
+                s for s in tree.body
+                if isinstance(s, ast.FunctionDef) and not s.name.startswith("_")
+            ]
+            marked = bool(functions) and all(_marks_deprecation(f) for f in functions)
+        else:
+            marked = False
+        checked += 1
+        if entry.status == "deprecated":
+            if not marked:
+                problems.append((entry.qualified_name, "deprecated without a source marker"))
+        elif marked:
+            problems.append((
+                entry.qualified_name,
+                f"source marks it deprecated but status is {entry.status!r}",
+            ))
+    assert checked >= 8, f"deprecation check ran on only {checked} entries - oracle drift?"
+    assert not problems, f"v{major}: {problems}"
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _majors(11, 19))
+def test_pycompat_is_curated_wherever_the_module_resolves(major):
+    """Business rule: `from odoo.tools import pycompat` resolves at every
+    major from 11 to 19 (odoo/tools/pycompat.py exists, so the submodule
+    fallback serves it even when odoo/tools/__init__.py stops importing it at
+    v19), so the curated file carries the entry; v20 has no pycompat.py and
+    omits it.
+    """
+    root, parsed, entries = _parsed_and_entries(major)
+    assert (_tools_dir(root, major) / "pycompat.py").is_file(), (
+        f"ground-truth check itself is broken: v{major} has no pycompat.py"
+    )
+    entry = next((e for e in entries if e.qualified_name == "odoo.tools.pycompat"), None)
+    assert entry is not None, (
+        f"tools_symbols_{major}.0.json omits odoo.tools.pycompat, which resolves at v{major}"
+    )

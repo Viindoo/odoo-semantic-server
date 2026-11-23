@@ -42,7 +42,7 @@
       "qualified_name": "odoo.tools.ustr",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "ustr(value) -> str",
+      "signature": "ustr(value, hint_encoding='utf-8', errors='strict') -> str",
       "note": "Unicode string coercion helper. Present through v19."
     },
     {
@@ -77,7 +77,7 @@
       "qualified_name": "odoo.tools.html_escape",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "html_escape(text, keep_newlines=False) -> str",
+      "signature": "html_escape(text)",
       "note": "Escape HTML special characters."
     },
     {
@@ -91,7 +91,7 @@
       "qualified_name": "odoo.tools.html2plaintext",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "html2plaintext(html) -> str",
+      "signature": "html2plaintext(html, body_id=None, encoding='utf-8') -> str",
       "note": "Strip HTML tags and return plain text."
     },
     {

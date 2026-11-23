@@ -153,13 +153,14 @@ class TestToolsSymbolKindInOutput:
         )
 
 
-class TestHtmlEscapeDeprecationInV17:
-    """html_escape is deprecated in v17 — lookup must surface deprecation."""
+class TestHtmlEscapeIsStableInV17:
+    """html_escape is the stable alias of markupsafe.escape in v17 - lookup must
+    not report it as deprecated and must show the alias.
+    """
 
-    def test_html_escape_deprecated_in_v17(self, tools_mcp, seeded_tools_neo4j):
+    def test_html_escape_is_a_stable_alias_in_v17(self, tools_mcp, seeded_tools_neo4j):
         out = tools_mcp._lookup_core_api("html_escape", TOOLS_V17)
         assert "html_escape" in out
         assert "not found" not in out.lower()
-        assert "deprecated" in out.lower(), (
-            f"Expected 'deprecated' for html_escape in v17.0, got:\n{out}"
-        )
+        assert "Status:      stable" in out, f"html_escape is not deprecated in v17.0, got:\n{out}"
+        assert "html_escape = markupsafe.escape" in out, f"Expected the alias, got:\n{out}"
