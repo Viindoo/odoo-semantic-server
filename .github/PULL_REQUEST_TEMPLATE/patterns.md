@@ -17,6 +17,8 @@ Brief summary of the pattern entry you're adding (1–2 sentences). What does th
   - [ ] No EE-specific features (Studio, Database Cleaning, Valuation Methods, etc.)
 - [ ] **`core_symbol_names` (if used)** — qualified names like `odoo.api.depends`, `odoo.fields.Char` (CI will warn if not found in CE index)
 - [ ] **JSON schema valid** — entry passes `src/data/patterns.schema.json` (CI check)
+- [ ] **True at every version of its window** - `file_ref` exists and holds the code at `odoo_version_min`..`odoo_version_max` (`tests/test_pattern_catalogue_versions.py` with `OSM_ODOO_CHECKOUTS`)
+- [ ] **Quoted or marked** - `snippet_text` is verbatim from `file_ref`, or the entry carries `illustrative: {reason, anchor}`
 
 ### Reviewer Notes
 
