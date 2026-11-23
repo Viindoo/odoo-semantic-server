@@ -348,9 +348,11 @@ def advisory_lock_holders(conn: PgConn, lock_ids) -> dict:
     Reads ``pg_locks`` and takes no lock, so a peek can never make a session
     that tries the lock at the same moment find it busy (a take-and-release
     peek did, for the length of the peek). A lock held by *conn*'s own session
-    counts as held. ``pg_try_advisory_lock(bigint)`` lands in ``pg_locks`` with
-    the key's high half in ``classid`` and the low half in ``objid``
-    (``objsubid`` 1); ids below 2**31 have ``classid`` 0.
+    counts as held. Advisory locks are per database while ``pg_locks`` lists
+    the whole cluster, so only locks of *conn*'s database count.
+    ``pg_try_advisory_lock(bigint)`` lands in ``pg_locks`` with the key's high
+    half in ``classid`` and the low half in ``objid`` (``objsubid`` 1); ids
+    below 2**31 have ``classid`` 0.
     """
     ids = sorted({int(i) for i in lock_ids})
     if not ids:
@@ -360,7 +362,9 @@ def advisory_lock_holders(conn: PgConn, lock_ids) -> dict:
             "SELECT l.objid::bigint, a.backend_start FROM pg_locks l"
             " LEFT JOIN pg_stat_activity a ON a.pid = l.pid"
             " WHERE l.locktype = 'advisory' AND l.granted AND l.classid = 0"
-            " AND l.objsubid = 1 AND l.objid::bigint = ANY(%s)",
+            " AND l.objsubid = 1 AND l.objid::bigint = ANY(%s)"
+            " AND l.database = (SELECT oid FROM pg_database"
+            " WHERE datname = current_database())",
             (ids,),
         )
         rows = cur.fetchall()
