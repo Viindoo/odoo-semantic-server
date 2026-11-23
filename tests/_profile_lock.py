@@ -31,7 +31,13 @@ def profile_lock_session():
     try:
         yield lock
     finally:
-        conn.close()  # releases the session's advisory locks
+        # Release explicitly before closing: a closed session's locks are only
+        # freed when its backend exits, which a following peek may not see yet.
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock_all()")
+        finally:
+            conn.close()
 
 
 @contextmanager

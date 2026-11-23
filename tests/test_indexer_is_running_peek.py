@@ -110,6 +110,33 @@ def test_a_lock_held_by_the_peeking_session_itself_is_running(pg_conn):
             cur.execute("SELECT pg_advisory_lock(%s)", (_profile_lock_id(PROFILE),))
         assert indexer_is_running(conn, PROFILE) is True
     finally:
+        with conn.cursor() as cur:  # release before close: backend exit is async
+            cur.execute("SELECT pg_advisory_unlock_all()")
+        conn.close()
+
+
+def test_a_lock_of_another_database_is_not_this_profiles_run(pg_conn):
+    """Advisory locks are per database and pg_locks lists the whole cluster:
+    a run of the same profile name on another database of the cluster (a
+    staging copy, another test database) is not a run of this deployment."""
+    import os
+
+    admin_dsn = os.environ.get("PG_ADMIN_DSN")
+    if not admin_dsn:
+        pytest.skip("PG_ADMIN_DSN not set - no second database to hold the lock on")
+    other = psycopg2.connect(admin_dsn)
+    other.autocommit = True
+    conn = _session()
+    try:
+        with other.cursor() as cur:
+            cur.execute("SELECT current_database() <> %s", (conn.info.dbname,))
+            assert cur.fetchone()[0], "the admin DSN must name another database"
+            cur.execute("SELECT pg_advisory_lock(%s)", (_profile_lock_id(PROFILE),))
+        assert indexer_is_running(conn, PROFILE) is False
+    finally:
+        with other.cursor() as cur:
+            cur.execute("SELECT pg_advisory_unlock_all()")
+        other.close()
         conn.close()
 
 
