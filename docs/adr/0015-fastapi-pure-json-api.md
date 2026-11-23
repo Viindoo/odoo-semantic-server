@@ -25,7 +25,7 @@ Keeping Jinja2 alongside Astro would create two sources of truth for the admin U
 3. **URL prefix convention: `/api/*`.**
    - Auth: `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/verify`
    - Dashboard: `GET /api/dashboard/stats`
-   - Repos: `GET/POST /api/repos/profiles`, `DELETE /api/repos/profiles/{id}`, `GET/POST /api/repos/repos`, `DELETE /api/repos/repos/{id}`, `GET /api/repos/repos/{id}/clone-status`, `POST /api/repos/repos/{id}/index`, `POST /api/repos/repos/{id}/reset-embed`, `POST /api/repos/index-all`, `GET /api/repos/jobs/{id}/status`, `POST /api/repos/jobs/{id}/reset`
+   - Repos: `GET/POST /api/repos/profiles`, `DELETE /api/repos/profiles/{id}`, `GET/POST /api/repos/repos`, `DELETE /api/repos/repos/{id}`, `GET /api/repos/repos/{id}/clone-status`, `POST /api/repos/repos/{id}/index`, `POST /api/repos/repos/{id}/reset-embed`, `POST /api/repos/index-all`, `GET /api/jobs` (admin job history), `GET /api/jobs/{id}/status`, `POST /api/jobs/{id}/reset`
    - API Keys: `GET/POST /api/api-keys`, `POST /api/api-keys/{id}/deactivate`
    - SSH Keys: `GET/POST /api/ssh-keys`, `POST /api/ssh-keys/import`, `DELETE /api/ssh-keys/{id}`
    - Operations: `GET /api/operations/presets`, `POST /api/operations/index-core`, `POST /api/operations/seed-patterns`, `POST /api/operations/apply-preset`
