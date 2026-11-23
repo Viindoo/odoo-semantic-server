@@ -63,8 +63,9 @@ Given that the problem is **AI misuse patterns** (not API discovery), curated is
 | `odoo.tools.js_transpiler` | v15+ | Introduced v15 |
 | `odoo.tools.pycompat` | v8-v18 (stable/deprecated), absent in __init__ v19 | Removal trip-wire |
 | `float_compare`, `float_round`, `float_is_zero` | all versions | Common misuse of re-export path |
-| `html_escape` | all versions (deprecated v17+) | markupsafe.escape preferred |
-| `ustr`, `config`, format constants | all versions | Stable, included for completeness |
+| `html_escape` | all versions (alias `html_escape = markupsafe.escape` from v15, stable) | Not deprecated in any version; calling `markupsafe.escape` directly is equivalent |
+| `ustr` | v8-v19 (deprecated v18-v19, absent v20) | `DeprecationWarning` from v18 |
+| `config`, format constants | all versions | Stable, included for completeness |
 
 Symbols NOT included: private helpers (`_`-prefixed), internal-only utils, symbols where version history is uncertain.
 

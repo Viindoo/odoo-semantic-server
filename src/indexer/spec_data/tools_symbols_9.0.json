@@ -14,7 +14,7 @@
       "qualified_name": "odoo.tools.image_resize_image_big",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "image_resize_image_big(base64_source, size=(1024, 1024), encoding='base64', filetype=None, avoid_if_small=False)",
+      "signature": "image_resize_image_big(base64_source, size=(1024, 1024), encoding='base64', filetype=None, avoid_if_small=True)",
       "note": "Convenience wrapper for large image resize. Removed v13+."
     },
     {
@@ -35,7 +35,7 @@
       "qualified_name": "odoo.tools.ustr",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "ustr(value) -> str",
+      "signature": "ustr(value, hint_encoding='utf-8', errors='strict') -> unicode",
       "note": "Unicode string coercion helper. Present through v19."
     },
     {
@@ -63,21 +63,21 @@
       "qualified_name": "odoo.tools.html_escape",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "html_escape(text, keep_newlines=False) -> str",
+      "signature": "html_escape(text)",
       "note": "Escape HTML special characters."
     },
     {
       "qualified_name": "odoo.tools.plaintext2html",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "plaintext2html(text, container_tag=False) -> str",
+      "signature": "plaintext2html(text, container_tag=False) -> unicode",
       "note": "Convert plain text to HTML."
     },
     {
       "qualified_name": "odoo.tools.html2plaintext",
       "kind": "tool_export",
       "status": "stable",
-      "signature": "html2plaintext(html) -> str",
+      "signature": "html2plaintext(html, body_id=None, encoding='utf-8') -> unicode",
       "note": "Strip HTML tags and return plain text."
     },
     {

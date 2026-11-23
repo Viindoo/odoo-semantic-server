@@ -335,8 +335,8 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
             "html_escape", 15, "moved",
             "odoo.tools.html_escape became a direct alias for "
             "markupsafe.escape at 15.0 (odoo/tools/misc.py); before that it "
-            "was a vendored werkzeug.utils.escape wrapper. Issue #364 "
-            "corrected this from a claimed 17.0.",
+            "was a wrapper of werkzeug.utils.escape (v8-v11, v13) or a "
+            "vendored copy of it (v12, v14). Not deprecated at any version.",
         ),
         # --- odoo.tools image API — removed v13, frequent AI misuse ---
         DeprecatedApiSymbol(
