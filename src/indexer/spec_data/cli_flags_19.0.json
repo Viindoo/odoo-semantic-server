@@ -1,154 +1,154 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-06-20",
-  "_note": "v19 source confirmed from ~/git/odoo19. Includes all subparser sub-actions (db/i18n/module) as compound command_name with space, non-subparser command flags, 10 flags[] entries below curated posix_only=true (not 7 - recounted directly against this file's own flags[] array), and tsconfig removed from commands[]. Note: real v19 odoo/tools/config.py literally wraps only 6 of those 10 in an explicit PosixOnlyOption(...) call (--workers, --limit-memory-hard, --limit-memory-hard-gevent, --limit-memory-soft-gevent, --limit-time-cpu, --limit-request); the other 4 (--limit-time-worker-cron, --limit-memory-soft, --limit-time-real, --limit-time-real-cron) are a curator judgment call, not a literal source wrapper - flagged here rather than silently asserting a false-precise count. WI-A issue #336.",
+  "_note": "v19 commands and flags verified against odoo/odoo branch 19.0: global flags from odoo/tools/config.py (synced by scripts/sync_cli_flags.py), commands[] and per-command flags from odoo/cli/*.py and addons/iot_drivers/cli/genproxytoken.py. Every subparser sub-action (db/i18n/module) is a compound command name with a space; tsconfig is not a v19 command. posix_only is true on exactly the 6 flags config.py wraps in PosixOnlyOption(...) (--workers, --limit-memory-soft-gevent, --limit-memory-hard, --limit-memory-hard-gevent, --limit-time-cpu, --limit-request). env_name records only an explicit env_name= argument of an add_option call; options whose environment variable is derived by the framework (ODOO_<DEST>) carry null.",
   "_global_flags_provenance": {
     "source_repo": "https://github.com/odoo/odoo",
     "source_branch": "19.0",
-    "source_commit": "2d49178c1ac0cebd2dec687d9e2f5f414c587e9a",
+    "source_commit": "3535c63cdfa1a488f633afd3632c5adc2c2b7080",
     "source_file": "odoo/tools/config.py",
     "oracle": "src.indexer.parser_cli._parse_options_calls",
-    "synced_at": "2026-10-20"
+    "synced_at": "2026-11-23"
   },
   "commands": [
     {
       "name": "server",
-      "description": "Start the Odoo server",
+      "description": "Start the odoo server (default command)",
       "file_path": "odoo/cli/server.py"
     },
     {
       "name": "scaffold",
-      "description": "Scaffold a new Odoo module",
+      "description": "Generates an Odoo module skeleton.",
       "file_path": "odoo/cli/scaffold.py"
     },
     {
       "name": "start",
-      "description": "Quick start with automatic database setup",
+      "description": "Quickly start the odoo server with default options",
       "file_path": "odoo/cli/start.py"
     },
     {
       "name": "deploy",
-      "description": "Deploy a module to an Odoo instance",
+      "description": "Deploy a module on an Odoo instance",
       "file_path": "odoo/cli/deploy.py"
     },
     {
       "name": "shell",
-      "description": "Open an interactive Python shell with Odoo environment",
+      "description": "Start odoo in an interactive shell",
       "file_path": "odoo/cli/shell.py"
     },
     {
       "name": "cloc",
-      "description": "Count lines of code for Odoo modules",
+      "description": "Count lines of code per modules",
       "file_path": "odoo/cli/cloc.py"
     },
     {
       "name": "populate",
-      "description": "Populate database with fake data for testing",
+      "description": "Populate database via duplication of existing data for testing/demo purposes",
       "file_path": "odoo/cli/populate.py"
     },
     {
       "name": "genproxytoken",
-      "description": "Generate a proxy token for use with the proxy mode",
+      "description": "Generate and (re)set proxy access token in config file",
       "file_path": "addons/iot_drivers/cli/genproxytoken.py"
     },
     {
       "name": "db",
-      "description": "Database management commands: init, load, dump, duplicate, rename, drop",
+      "description": "Create, drop, dump, load databases",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "db init",
-      "description": "Create a new database",
+      "description": "Create and initialize a database",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "db load",
-      "description": "Load a database dump into a new database",
+      "description": "Load a dump file.",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "db dump",
-      "description": "Dump a database to a file or stdout",
+      "description": "Create a dump with filestore.",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "db duplicate",
-      "description": "Duplicate a database",
+      "description": "Duplicate a database including filestore.",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "db rename",
-      "description": "Rename a database",
+      "description": "Rename a database including filestore.",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "db drop",
-      "description": "Drop a database",
+      "description": "Delete a database including filestore",
       "file_path": "odoo/cli/db.py"
     },
     {
       "name": "neutralize",
-      "description": "Neutralize a production database for development use",
+      "description": "Neutralize a production database for testing: no emails sent, etc.",
       "file_path": "odoo/cli/neutralize.py"
     },
     {
       "name": "obfuscate",
-      "description": "Obfuscate sensitive data in a database",
+      "description": "Obfuscate data in a given odoo database",
       "file_path": "odoo/cli/obfuscate.py"
     },
     {
       "name": "help",
-      "description": "Show help for Odoo commands",
+      "description": "Display the list of available commands",
       "file_path": "odoo/cli/help.py"
     },
     {
       "name": "i18n",
-      "description": "Internationalization tools: import, export, loadlang",
+      "description": "Import, export, setup languages and internationalization files",
       "file_path": "odoo/cli/i18n.py"
     },
     {
       "name": "i18n import",
-      "description": "Import translation files (.po, .csv) into a database",
+      "description": "Import i18n files",
       "file_path": "odoo/cli/i18n.py"
     },
     {
       "name": "i18n export",
-      "description": "Export module translations to i18n/ folder",
+      "description": "Export i18n files",
       "file_path": "odoo/cli/i18n.py"
     },
     {
       "name": "i18n loadlang",
-      "description": "Install languages into a database",
+      "description": "Load languages",
       "file_path": "odoo/cli/i18n.py"
     },
     {
       "name": "module",
-      "description": "Module management: install, upgrade, uninstall, force-demo",
+      "description": "Manage modules, install demo data",
       "file_path": "odoo/cli/module.py"
     },
     {
       "name": "module install",
-      "description": "Install one or more Odoo modules",
+      "description": "Install modules",
       "file_path": "odoo/cli/module.py"
     },
     {
       "name": "module upgrade",
-      "description": "Upgrade one or more Odoo modules",
+      "description": "Upgrade modules",
       "file_path": "odoo/cli/module.py"
     },
     {
       "name": "module uninstall",
-      "description": "Uninstall one or more Odoo modules",
+      "description": "Uninstall modules",
       "file_path": "odoo/cli/module.py"
     },
     {
       "name": "module force-demo",
-      "description": "Force installation of demo data for a module",
+      "description": "Install demo data (force)",
       "file_path": "odoo/cli/module.py"
     },
     {
       "name": "upgrade_code",
-      "description": "Automated code upgrade helper for Odoo migrations",
+      "description": "Rewrite the entire source code using the scripts found at /odoo/upgrade_code",
       "file_path": "odoo/cli/upgrade_code.py"
     }
   ],
@@ -179,7 +179,7 @@
       "flag_name": "--init",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "comma",
       "help": "install one or more modules (comma-separated list, use \"all\" for all modules), requires -d",
       "replacement_flag_name": null,
@@ -190,7 +190,7 @@
       "flag_name": "--update",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "comma",
       "help": "update one or more modules (comma-separated list, use \"all\" for all modules). Requires -d.",
       "replacement_flag_name": null,
@@ -201,7 +201,7 @@
       "flag_name": "--reinit",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "comma",
       "help": "reinitialize one or more modules (comma-separated list), requires -d",
       "replacement_flag_name": null,
@@ -267,7 +267,7 @@
       "flag_name": "--addons-path",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "addons_path",
       "help": "specify additional addons paths (separated by commas).",
       "replacement_flag_name": null,
@@ -278,7 +278,7 @@
       "flag_name": "--upgrade-path",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "upgrade_path",
       "help": "specify an additional upgrade path.",
       "replacement_flag_name": null,
@@ -289,7 +289,7 @@
       "flag_name": "--pre-upgrade-scripts",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "pre_upgrade_scripts",
       "help": "Run specific upgrade scripts before loading any module when -u is provided.",
       "replacement_flag_name": null,
@@ -476,7 +476,7 @@
       "flag_name": "--log-handler",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[':INFO']",
       "type": "comma",
       "help": "setup a handler at LEVEL for a given MODULE. An empty MODULE indicates the root logger. This option can be repeated. Example: \"odoo.orm:DEBUG\" or \"werkzeug:CRITICAL\" (default: \":INFO\")",
       "replacement_flag_name": null,
@@ -652,7 +652,7 @@
       "flag_name": "--database",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "comma",
       "help": "database(s) used when installing or updating modules.",
       "replacement_flag_name": null,
@@ -828,11 +828,11 @@
       "flag_name": "--dev",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": "comma",
       "help": "Enable developer features (comma-separated list, use   \"all\" for access,reload,qweb,xml). Available features: - access: log the traceback of access errors           - qweb: log the compiled xml with qweb errors          - reload: restart server on change in the source code  - replica: simulate a deployment with readonly replica - xml: read views from the source code, and not the db ",
       "replacement_flag_name": null,
-      "env_name": null,
+      "env_name": "ODOO_DEV",
       "posix_only": false
     },
     {
@@ -888,7 +888,7 @@
       "help": "Maximum time a cron thread/worker stays alive before it is restarted. Set to 0 to disable. (default: 0)",
       "replacement_flag_name": null,
       "env_name": null,
-      "posix_only": true
+      "posix_only": false
     },
     {
       "flag_name": "--unaccent",
@@ -938,12 +938,12 @@
       "flag_name": "--limit-memory-soft",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "2147483648",
       "type": "int",
       "help": "Maximum allowed virtual memory per worker (in bytes), when reached the worker be reset after the current request (default 2048MiB).",
       "replacement_flag_name": null,
       "env_name": null,
-      "posix_only": true
+      "posix_only": false
     },
     {
       "flag_name": "--limit-time-real",
@@ -954,18 +954,18 @@
       "help": "Maximum allowed Real time per request (default 120).",
       "replacement_flag_name": null,
       "env_name": null,
-      "posix_only": true
+      "posix_only": false
     },
     {
       "flag_name": "--limit-time-real-cron",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "-1",
       "type": "int",
       "help": "Maximum allowed Real time per cron job. (default: --limit-time-real). Set to 0 for no limit. ",
       "replacement_flag_name": null,
       "env_name": null,
-      "posix_only": true
+      "posix_only": false
     },
     {
       "flag_name": "--workers",
@@ -973,7 +973,7 @@
       "status": "stable",
       "default": "0",
       "type": "int",
-      "help": "Specify the number of workers, 0 disables prefork mode.",
+      "help": "Specify the number of workers, 0 disable prefork mode.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -984,7 +984,7 @@
       "status": "stable",
       "default": "2684354560",
       "type": "int",
-      "help": "Maximum allowed virtual memory per worker (in bytes), when reached, any memory allocation will fail.",
+      "help": "Maximum allowed virtual memory per worker (in bytes), when reached, any memory allocation will fail (default 2560MiB).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -995,7 +995,7 @@
       "status": "stable",
       "default": null,
       "type": "int",
-      "help": "Maximum allowed virtual memory per gevent worker (in bytes). Defaults to --limit-memory-hard.",
+      "help": "Maximum allowed virtual memory per gevent worker (in bytes), when reached, any memory allocation will fail. Defaults to `--limit-memory-hard`.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -1006,7 +1006,7 @@
       "status": "stable",
       "default": null,
       "type": "int",
-      "help": "Maximum allowed virtual memory per gevent worker (in bytes). Defaults to --limit-memory-soft.",
+      "help": "Maximum allowed virtual memory per gevent worker (in bytes), when reached the worker will be reset after the current request. Defaults to `--limit-memory-soft`.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -1017,7 +1017,7 @@
       "status": "stable",
       "default": "65536",
       "type": "int",
-      "help": "Maximum number of request to be processed by a worker before being recycled.",
+      "help": "Maximum number of request to be processed per worker (default 65536).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": true
@@ -1254,6 +1254,17 @@
       "posix_only": false
     },
     {
+      "flag_name": "--move",
+      "command_name": "db load",
+      "status": "stable",
+      "default": "false",
+      "type": null,
+      "help": "restore as a moved database, keeping its UUID instead of generating a new one",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
       "flag_name": "--database",
       "command_name": "db dump",
       "status": "stable",
@@ -1391,7 +1402,7 @@
       "status": "stable",
       "default": null,
       "type": "path",
-      "help": "specify alternate config file (-c shorthand). Shared by all i18n sub-commands. Source: i18n.py:55-61",
+      "help": "specify alternate config file (-c shorthand). Shared by all i18n sub-commands.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1402,7 +1413,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name (-d shorthand). Shared by all i18n sub-commands. Source: i18n.py:55-61",
+      "help": "database name (-d shorthand). Shared by all i18n sub-commands.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1413,7 +1424,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "files to import (.po or .csv, nargs=+, positional, required). Source: i18n.py:75-83",
+      "help": "files to import (.po or .csv, nargs=+, positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1424,7 +1435,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "language code to import (-l shorthand, required). Source: i18n.py:79",
+      "help": "language code to import (-l shorthand, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1435,7 +1446,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "overwrite existing translation terms on import (-w shorthand). Source: i18n.py:81",
+      "help": "overwrite existing translation terms on import (-w shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1446,7 +1457,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "modules to export (nargs=+, positional, required). Source: i18n.py:87",
+      "help": "modules to export (nargs=+, positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1457,7 +1468,7 @@
       "status": "stable",
       "default": "['pot']",
       "type": "str",
-      "help": "language codes to export; 'pot' exports template (-l shorthand, nargs=+). Source: i18n.py:90",
+      "help": "language codes to export; 'pot' exports template (-l shorthand, nargs=+).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1468,7 +1479,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "output to a single file (.po/.pot/.tgz/.csv or '-' for stdout) instead of i18n/ folder (-o shorthand). Source: i18n.py:94",
+      "help": "output to a single file (.po/.pot/.tgz/.csv or '-' for stdout) instead of i18n/ folder (-o shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1479,7 +1490,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "language codes to install (nargs=+, -l shorthand; practical requirement). Source: i18n.py:101-103",
+      "help": "language codes to install (nargs=+, -l shorthand; practical requirement).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1490,7 +1501,7 @@
       "status": "stable",
       "default": null,
       "type": "path",
-      "help": "specify alternate config file (-c shorthand). Shared by all module sub-commands. Source: module.py:59-67",
+      "help": "specify alternate config file (-c shorthand). Shared by all module sub-commands.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1501,7 +1512,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name (-d shorthand). Shared by all module sub-commands. Source: module.py:59-67",
+      "help": "database name (-d shorthand). Shared by all module sub-commands.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1512,7 +1523,7 @@
       "status": "stable",
       "default": null,
       "type": "path",
-      "help": "data directory (-D shorthand). Shared by all module sub-commands. Source: module.py:59-67",
+      "help": "data directory (-D shorthand). Shared by all module sub-commands.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1523,7 +1534,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "module names to install (nargs=+, positional, required). Source: module.py:68-80",
+      "help": "module names to install (nargs=+, positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1534,7 +1545,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "module names to upgrade (nargs=+, positional, required). Source: module.py:84-91",
+      "help": "module names to upgrade (nargs=+, positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1545,7 +1556,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "only upgrade modules that are outdated (have available updates). Source: module.py:89",
+      "help": "only upgrade modules that are outdated (have available updates).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1556,7 +1567,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "module names to uninstall (nargs=+, positional, required). Source: module.py:81-83",
+      "help": "module names to uninstall (nargs=+, positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1567,7 +1578,7 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "module template name or path (-t shorthand). Source: scaffold.py:23",
+      "help": "module template name or path (-t shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1578,7 +1589,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "name of the module to create (positional, required). Source: scaffold.py:25",
+      "help": "name of the module to create (positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1589,7 +1600,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "directory to create the module in (positional, optional). Source: scaffold.py:27",
+      "help": "directory to create the module in (positional, optional).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1600,7 +1611,7 @@
       "status": "stable",
       "default": "",
       "type": "str",
-      "help": "Python script to run after shell start; overrides PYTHONSTARTUP. Inherits server flags. Source: shell.py:64",
+      "help": "Python script to run after shell start; overrides PYTHONSTARTUP. Inherits server flags.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1611,7 +1622,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "preferred REPL: ipython|ptpython|bpython|python. Inherits server flags. Source: shell.py:69",
+      "help": "preferred REPL: ipython|ptpython|bpython|python. Inherits server flags.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1622,7 +1633,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "directory where project modules are stored (autodetects from cwd). Passes remaining args to server. Source: start.py:18",
+      "help": "directory where project modules are stored (autodetects from cwd). Passes remaining args to server.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1633,7 +1644,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name (defaults to project directory name, -d shorthand). Source: start.py:20",
+      "help": "database name (defaults to project directory name, -d shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1644,7 +1655,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name for counting custom code lines (-d shorthand). Source: cloc.py:28",
+      "help": "database name for counting custom code lines (-d shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1655,7 +1666,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "file or directory path to count (-p shorthand, append action). Source: cloc.py:29",
+      "help": "file or directory path to count (-p shorthand, append action).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1666,7 +1677,7 @@
       "status": "stable",
       "default": "0",
       "type": "count",
-      "help": "increase verbosity level (-v shorthand). Source: cloc.py:30",
+      "help": "increase verbosity level (-v shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1677,7 +1688,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "path of the module to deploy (positional, required). Source: deploy.py:65",
+      "help": "path of the module to deploy (positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1688,7 +1699,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the Odoo server (positional, optional). Source: deploy.py:66",
+      "help": "URL of the Odoo server (positional, optional).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1699,7 +1710,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to use if server does not use db-filter. Source: deploy.py:67",
+      "help": "database to use if server does not use db-filter.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1710,7 +1721,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "login username for authentication. Source: deploy.py:68",
+      "help": "login username for authentication.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1721,7 +1732,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "password for authentication. Source: deploy.py:69",
+      "help": "password for authentication.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1732,7 +1743,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "verify SSL certificate on connection. Source: deploy.py:70",
+      "help": "verify SSL certificate on connection.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1743,7 +1754,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "force init even if module is already installed (updates noupdate=1 records). Source: deploy.py:71",
+      "help": "force init even if module is already installed (updates noupdate=1 records).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1754,7 +1765,7 @@
       "status": "stable",
       "default": "10000",
       "type": "str",
-      "help": "comma-separated list of factors per model; a factor of 3 copies 3x (inherits server flags). Source: populate.py:28",
+      "help": "comma-separated list of factors per model; a factor of 3 copies 3x (inherits server flags).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1763,9 +1774,9 @@
       "flag_name": "--models",
       "command_name": "populate",
       "status": "stable",
-      "default": "res.partner,product.template,...",
+      "default": "res.partner,product.template,account.move,sale.order,crm.lead,stock.picking,project.task",
       "type": "str",
-      "help": "comma-separated list of models to populate (inherits server flags). Source: populate.py:33",
+      "help": "comma-separated list of models to populate (inherits server flags).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1776,7 +1787,7 @@
       "status": "stable",
       "default": "_",
       "type": "str",
-      "help": "single character separator for char/text fields (inherits server flags). Source: populate.py:38",
+      "help": "single character separator for char/text fields (inherits server flags).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1787,7 +1798,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "output SQL to stdout instead of applying it (inherits server flags via --database/-d). Source: neutralize.py:24",
+      "help": "output SQL to stdout instead of applying it (inherits server flags via --database/-d).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1796,9 +1807,9 @@
       "flag_name": "--pwd",
       "command_name": "obfuscate",
       "status": "stable",
-      "default": null,
+      "default": "False",
       "type": "str",
-      "help": "cypher password for obfuscation/unobfuscation (required). Source: obfuscate.py:106",
+      "help": "cypher password for obfuscation/unobfuscation (required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1807,9 +1818,9 @@
       "flag_name": "--fields",
       "command_name": "obfuscate",
       "status": "stable",
-      "default": null,
+      "default": "False",
       "type": "str",
-      "help": "comma-separated list of table.column pairs to obfuscate. Source: obfuscate.py:107",
+      "help": "comma-separated list of table.column pairs to obfuscate.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1818,9 +1829,9 @@
       "flag_name": "--exclude",
       "command_name": "obfuscate",
       "status": "stable",
-      "default": null,
+      "default": "False",
       "type": "str",
-      "help": "comma-separated list of table.column pairs to exclude from obfuscation. Source: obfuscate.py:108",
+      "help": "comma-separated list of table.column pairs to exclude from obfuscation.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1829,9 +1840,9 @@
       "flag_name": "--file",
       "command_name": "obfuscate",
       "status": "stable",
-      "default": null,
+      "default": "False",
       "type": "str",
-      "help": "file containing table.column pairs to obfuscate/unobfuscate. Source: obfuscate.py:109",
+      "help": "file containing table.column pairs to obfuscate/unobfuscate.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1842,7 +1853,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "reverse obfuscation (decrypt data). Source: obfuscate.py:110",
+      "help": "reverse obfuscation (decrypt data).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1853,7 +1864,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "in unobfuscate mode: try to unobfuscate all fields (cannot be used in obfuscate mode). Source: obfuscate.py:111",
+      "help": "in unobfuscate mode: try to unobfuscate all fields (cannot be used in obfuscate mode).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1864,7 +1875,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "run VACUUM FULL on obfuscated tables after unobfuscating. Source: obfuscate.py:112",
+      "help": "run VACUUM FULL on obfuscated tables after unobfuscating.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1875,7 +1886,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "commit after each table instead of a single large transaction. Source: obfuscate.py:113",
+      "help": "commit after each table instead of a single large transaction.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1886,7 +1897,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "skip manual confirmation prompt (-y shorthand; obfuscation is irreversible). Source: obfuscate.py:114",
+      "help": "skip manual confirmation prompt (-y shorthand; obfuscation is irreversible).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1897,7 +1908,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "specify alternate config file (-c shorthand). Source: genproxytoken.py:15",
+      "help": "specify alternate config file (-c shorthand).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1908,7 +1919,7 @@
       "status": "stable",
       "default": "16",
       "type": "int",
-      "help": "length of the generated proxy token. Source: genproxytoken.py:16",
+      "help": "length of the generated proxy token.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1919,7 +1930,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "run a single upgrade script by name (mutually exclusive with --from). Source: upgrade_code.py:181",
+      "help": "run a single upgrade script by name (mutually exclusive with --from).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1930,7 +1941,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "run all scripts starting from this version, inclusive (mutually exclusive with --script). Source: upgrade_code.py:185",
+      "help": "run all scripts starting from this version, inclusive (mutually exclusive with --script).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1941,7 +1952,7 @@
       "status": "stable",
       "default": "current_version",
       "type": "str",
-      "help": "run all scripts until this version, inclusive (default: current Odoo version). Source: upgrade_code.py:191",
+      "help": "run all scripts until this version, inclusive (default: current Odoo version).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1952,7 +1963,7 @@
       "status": "stable",
       "default": "**/*",
       "type": "str",
-      "help": "glob pattern to select files to rewrite. Source: upgrade_code.py:198",
+      "help": "glob pattern to select files to rewrite.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1963,7 +1974,7 @@
       "status": "stable",
       "default": "false",
       "type": null,
-      "help": "list files that would be rewritten without making changes. Source: upgrade_code.py:202",
+      "help": "list files that would be rewritten without making changes.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -1974,7 +1985,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "additional addons paths (comma-separated). Source: upgrade_code.py:206",
+      "help": "additional addons paths (comma-separated).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

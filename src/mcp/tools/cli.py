@@ -29,6 +29,12 @@ from src.mcp.server import (
 )
 
 
+def _one_line(text: str | None) -> str | None:
+    """Collapse a multi-line docstring/help (e.g. the v12-v15 `cloc` class
+    docstring) to one line so it cannot break the tree layout."""
+    return " ".join(text.split()) if text else text
+
+
 def _format_cli_flag_detail(rec: dict, replacement: str | None, version: str) -> str:
     """Format a single CLIFlag detail."""
     flag = rec.get("flag_name") or "?"
@@ -36,7 +42,7 @@ def _format_cli_flag_detail(rec: dict, replacement: str | None, version: str) ->
     status = rec.get("status") or "stable"
     typ = rec.get("type")
     default = rec.get("default")
-    help_text = rec.get("help")
+    help_text = _one_line(rec.get("help"))
     lines = [f"cli_help({cmd!r}, {flag!r}, Odoo {version})"]
     lines.append(f"├─ Status:      {status}")
     if typ:
@@ -74,7 +80,7 @@ def _format_cli_command_summary(
     # Subparser parents (db/i18n/module) store shared flags under the parent
     # command_name; each sub-action's own flags use the compound name.
     name = cmd_rec.get("name") or "?"
-    desc = cmd_rec.get("description")
+    desc = _one_line(cmd_rec.get("description"))
     lines = [f"cli_help({name!r}, Odoo {version})"]
     if desc:
         lines.append(f"├─ Description: {desc}")

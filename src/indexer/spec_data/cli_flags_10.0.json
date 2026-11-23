@@ -8,33 +8,38 @@
     "source_commit": "28c3f51c4878fbcd79b2e819948465fcf2160ebc",
     "source_file": "odoo/tools/config.py",
     "oracle": "src.indexer.parser_cli._parse_options_calls",
-    "synced_at": "2026-10-20"
+    "synced_at": "2026-11-23"
   },
   "commands": [
     {
       "name": "server",
-      "description": "Start the Odoo server",
+      "description": "Start the odoo server (default command)",
       "file_path": "odoo/cli/server.py"
     },
     {
       "name": "scaffold",
-      "description": "Scaffold a new Odoo module",
+      "description": "Generates an Odoo module skeleton.",
       "file_path": "odoo/cli/scaffold.py"
     },
     {
       "name": "start",
-      "description": "Quick start with automatic database setup",
+      "description": "Quick start the Odoo server for your project",
       "file_path": "odoo/cli/start.py"
     },
     {
       "name": "deploy",
-      "description": "Deploy a module to an Odoo instance",
+      "description": "Deploy a module on an Odoo instance",
       "file_path": "odoo/cli/deploy.py"
     },
     {
       "name": "shell",
-      "description": "Open an interactive Python shell with Odoo environment",
+      "description": "Start odoo in an interactive shell",
       "file_path": "odoo/cli/shell.py"
+    },
+    {
+      "name": "help",
+      "description": "Display the list of available commands",
+      "file_path": "odoo/cli/command.py"
     }
   ],
   "flags": [
@@ -453,7 +458,7 @@
       "type": null,
       "help": "specify the database name",
       "replacement_flag_name": null,
-      "env_name": "PGDATABASE",
+      "env_name": null,
       "posix_only": false
     },
     {
@@ -486,7 +491,7 @@
       "type": null,
       "help": "specify the pg executable path",
       "replacement_flag_name": null,
-      "env_name": "PGPATH",
+      "env_name": null,
       "posix_only": false
     },
     {
@@ -530,7 +535,7 @@
       "type": null,
       "help": "specify a custom database template to create a new database",
       "replacement_flag_name": null,
-      "env_name": "PGDATABASE_TEMPLATE",
+      "env_name": null,
       "posix_only": false
     },
     {
@@ -713,7 +718,7 @@
       "flag_name": "--limit-memory-soft",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "2147483648",
       "type": "int",
       "help": null,
       "replacement_flag_name": null,
@@ -724,7 +729,7 @@
       "flag_name": "--limit-memory-hard",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "2684354560",
       "type": "int",
       "help": null,
       "replacement_flag_name": null,
@@ -781,7 +786,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "path of the module to deploy (positional, required). Source: deploy.py",
+      "help": "path of the module to deploy (positional, required).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -792,7 +797,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the Odoo server (positional, optional). Source: deploy.py",
+      "help": "URL of the Odoo server (positional, optional).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -803,7 +808,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database to use if server does not use db-filter. Source: deploy.py",
+      "help": "database to use if server does not use db-filter.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -814,7 +819,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "login for deployment (default: admin). Source: deploy.py",
+      "help": "login for deployment (default: admin).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -825,7 +830,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "password for deployment (default: admin). Source: deploy.py",
+      "help": "password for deployment (default: admin).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -834,9 +839,9 @@
       "flag_name": "--verify-ssl",
       "command_name": "deploy",
       "status": "stable",
-      "default": null,
+      "default": "false",
       "type": null,
-      "help": "verify SSL certificate (boolean flag). Source: deploy.py",
+      "help": "verify SSL certificate (boolean flag).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -845,9 +850,9 @@
       "flag_name": "--force",
       "command_name": "deploy",
       "status": "stable",
-      "default": null,
+      "default": "false",
       "type": null,
-      "help": "force deployment even if module already installed (boolean flag). Source: deploy.py",
+      "help": "force deployment even if module already installed (boolean flag).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -858,7 +863,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "directory where project modules are stored (autodetect from cwd). Source: start.py",
+      "help": "directory where project modules are stored (autodetect from cwd).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -869,7 +874,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "database name (-d shorthand, defaults to project directory name). Source: start.py",
+      "help": "database name (-d shorthand, defaults to project directory name).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -880,7 +885,29 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "module template name or path (-t shorthand). Source: scaffold.py",
+      "help": "module template name or path (-t shorthand).",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--name",
+      "command_name": "scaffold",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "name of the module to create (positional, required)",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--dest",
+      "command_name": "scaffold",
+      "status": "stable",
+      "default": ".",
+      "type": "str",
+      "help": "directory to create the module in (positional, optional)",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

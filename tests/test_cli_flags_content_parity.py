@@ -51,9 +51,9 @@ SCOPE - GLOBAL ("server") FLAGS ONLY, BY DESIGN
 `cli/upgrade_code.py` for their own argparse/optparse flags - there is no second walker in
 production. Every per-command curated entry (`command_name` NOT in `{None, "server"}` -
 10 to 86 entries per version, the MAJORITY of v19's 165-entry file) therefore has ZERO
-production oracle at any surveyed version (the 20.0 entries have a dev-box test oracle of
-their own, ``TestV20CliSurface`` in test_spec_data_cli_flags_curated.py). This is not
-something a smarter comparison can paper over: there is nothing to diff against. Rather
+production oracle at any surveyed version (every surveyed major has a dev-box test oracle
+of its own, ``TestCommandFlagsMatchTheRealSource`` in test_spec_data_cli_flags_curated.py).
+This is not something a smarter comparison can paper over: there is nothing to diff against. Rather
 than let those entries silently "pass"
 by omission, `test_out_of_scope_per_command_flag_count_is_computed_and_reported_per_version`
 below makes the count of unverifiable entries an explicit, asserted, per-version fact -
@@ -87,13 +87,16 @@ unresolvable expression" judgment call to the follow-up data-correction commit, 
 exactly where that human triage belongs - baking it into this test would mean silently
 picking winners inside the alarm itself.
 
-EXCLUDED_FIELDS (structural - the oracle NEVER populates these, confirmed by direct call,
-not assumed from the schema) - see the `EXCLUDED_FIELDS` dict below for the full reasoning
-per field. In one sentence: `replacement_flag_name`/`env_name`/`posix_only` all stay at
-their `CLIFlagInfo` dataclass default (`None`/`None`/`False`) for EVERY flag the oracle
-ever produces, regardless of what real source contains - comparing them would be comparing
-curated data against a constant, which is exactly the "over-broad comparison that produces
-false failures" this work item warned against. `since_version` - named as a for-instance in
+EXCLUDED_FIELDS (structural - the oracle cannot supply them on every major, confirmed by
+direct call, not assumed from the schema) - see the `EXCLUDED_FIELDS` dict below for the
+full reasoning per field. In one sentence: `replacement_flag_name` is a cross-version fact
+and stays at its `CLIFlagInfo` default for every flag the oracle produces, and
+`env_name`/`posix_only` are read by the oracle only from the constructs v19+ uses
+(`env_name=`, `PosixOnlyOption`) - on v8-v18 comparing them would be comparing curated data
+against a constant, which is exactly the "over-broad comparison that produces false
+failures" this work item warned against. All three are checked against real source by
+`TestGlobalFlagCuratedOnlyFieldsMatchTheRealSource` in test_spec_data_cli_flags_curated.py
+instead. `since_version` - named as a for-instance in
 this work item's brief - is NOT actually a property of `cli_flag.schema.json` /
 `CLIFlagInfo` at all (grepped both; the only `since_version` in this repo belongs to an
 unrelated curated family, `src/data/ee_modules.py`); it is recorded in `EXCLUDED_FIELDS`
@@ -173,32 +176,24 @@ EXCLUDED_FIELDS: dict[str, str] = {
         "regardless of real source content."
     ),
     "env_name": (
-        "Real source DOES carry this as a literal add_option kwarg from v19 (confirmed: "
-        "group.add_option('-c', '--config', ..., env_name='ODOO_RC', ...) in "
-        "odoo19/odoo/tools/config.py), and _extract_kwargs_strings() generically captures "
-        "ANY ast.Constant kwarg including env_name - but _build_flag_info() (the one "
-        "function both oracle tiers call to build a CLIFlagInfo) never reads "
-        "kwargs['env_name'] into the object it returns. Verified directly: "
-        "parse_cli_flags(<v19 checkout>, '19.0') on --config returns env_name=None even "
-        "though real source sets one. This is a structural oracle gap, not a "
-        "source-representation gap - every comparison would be curated-value-vs-None, "
-        "100% false positives."
+        "From v19 the real source carries this as a literal add_option kwarg "
+        "(group.add_option('-c', '--config', ..., env_name='ODOO_RC', ...)) and "
+        "_build_flag_info() reads it. Before v19 config.py has no such kwarg: the "
+        "environment variable of a flag is read by other code (the one that locates the "
+        "config file, the libpq loop of sql_db.connection_info_for), so a per-flag diff "
+        "against the parsed value would compare curated data with None on 8 of 13 majors. "
+        "It has its own oracle for every major: TestGlobalFlagCuratedOnlyFieldsMatchTheRealSource "
+        "in test_spec_data_cli_flags_curated.py."
     ),
     "posix_only": (
-        "Same shape as env_name: no code path in _build_flag_info ever sets it - "
-        "CLIFlagInfo.posix_only stays at its dataclass default (False) for every "
-        "oracle-produced flag. Separately (not the reason for exclusion, but worth "
-        "recording): v19 wraps several real posix-only options in a PosixOnlyOption(...) "
-        "call - group.add_option(PosixOnlyOption('--workers', ...)) - which "
-        "_is_option_call/_flag_name_from_args cannot see AT ALL, because the outer "
-        "add_option's only positional arg is a Call node, not a string ast.Constant. "
-        "Confirmed by direct run: --workers, --limit-memory-hard, "
-        "--limit-memory-hard-gevent, --limit-memory-soft-gevent, --limit-request and "
-        "--limit-time-cpu all vanish from the oracle's v19 output entirely (not merely "
-        "this field) even though every one is real, current source. Those flags never "
-        "reach the matched set this file diffs, which is exactly why curated_only is "
-        "reported but never asserted on below - a new, previously-undocumented oracle "
-        "blind spot, distinct from the env_name/posix_only field-population gap."
+        "From v19 the parser sets it for every option wrapped in PosixOnlyOption(...) "
+        "(group.add_option(PosixOnlyOption('--workers', ...)); the wrapper is unwrapped, so "
+        "those flags are no longer invisible to the oracle). Before v19 an option is "
+        "POSIX-only when it is declared inside an `if os.name == 'posix':` block, which "
+        "_build_flag_info() cannot see, so a per-flag diff would compare curated data with "
+        "the False default on 8 of 13 majors. It has its own oracle for every major: "
+        "TestGlobalFlagCuratedOnlyFieldsMatchTheRealSource in "
+        "test_spec_data_cli_flags_curated.py."
     ),
 }
 
@@ -362,7 +357,8 @@ def test_out_of_scope_per_command_flag_count_is_computed_and_reported_per_versio
         UserWarning(
             f"cli_flags content-parity scope v{major}.0: {global_count} global flag(s) "
             f"in scope (oracle-covered), {out_of_scope} per-command flag(s) OUT of scope "
-            "(no oracle exists in production - see module docstring 'SCOPE')."
+            "(no production oracle; a dev-box oracle covers them - see module docstring "
+            "'SCOPE')."
         ),
         stacklevel=1,
     )
