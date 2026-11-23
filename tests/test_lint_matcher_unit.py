@@ -1,288 +1,237 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_lint_matcher_unit.py
-"""Pure unit tests for _match_lint_rule_lines + V0/V0.5 banner + noqa + pattern-first (WI-8).
+"""Pure unit tests for the lint_check line-pattern matcher, noqa and rendering.
 
-No Neo4j required - exercises only the token matching logic, pattern-first path,
-match-kind labelling, noqa suppression, and the V0.5 banner constant.
+No Neo4j required. Business rules:
 
-WI-8 additions:
-- SQL injection snippet fires E8501 with match_kind 'pattern' (regression for #271).
-- UserError string formatting fires W8201 with match_kind 'pattern'.
-- Safe parameterized cr.execute does NOT fire E8501 (no false positive).
-- Label distinguishes [pattern] from [fuzzy] via _lint_match_kind.
-- noqa suppresses pattern hits on the annotated line.
-- Invalid regex in code_pattern falls back to fuzzy without crashing.
+- A rule fires only where its ``code_pattern`` regex matches a line; a rule
+  without a compilable pattern never fires and is reported as not checked
+  (matching on the rule message flagged correct code: a correct ``write()``
+  override calling ``super()`` was reported as not calling it).
+- Correct model code raises no finding against the real 17.0-20.0 catalogues.
+- Real security/API patterns fire on the violating shape and stay quiet on the
+  safe one (SQL injection, UserError formatting, sanitize=False, regressions of
+  #271 and PR #275).
+- ``# noqa`` suppresses a hit on its own line only.
+- The rendered tree ends with the count of rules not checked.
 
 issue #364 B5 note: the SQL-injection pattern used to be curated TWICE at
-v17.0 - once as the OSM-local `W8140` (tested here) and once as the real
-Odoo-vendored `E8501` (`_odoo_checker_sql_injection.py`) - causing
-`lint_check` to double-report one defect. The fix consolidated onto the real
-upstream id E8501 from v14.0 onward (`W8140` removed there; kept only at
-v8.0-v13.0, where no live E8501 oracle is wired). These tests were updated
-from `W8140` to `E8501` accordingly - the REGEX BEHAVIOR under test is
-unchanged (same code_pattern, carried forward verbatim), only the rule_id
-that owns it in `lint_rules_17.0.json` changed.
+v17.0 - once as the OSM-local `W8140` and once as the real Odoo-vendored
+`E8501` (`_odoo_checker_sql_injection.py`) - causing `lint_check` to
+double-report one defect. The fix consolidated onto the real upstream id E8501
+from v14.0 onward (`W8140` removed there; kept only at v8.0-v13.0, where no
+live E8501 oracle is wired).
 """
 import json
 from pathlib import Path
 
+import pytest
+
 from src.mcp.server import (
-    _LINT_V0_BANNER,
+    _LINT_BANNER,
     _build_noqa_suppress,
     _compile_lint_pattern,
-    _lint_match_kind,
     _match_lint_rule_lines,
 )
+from src.mcp.tools.spec import _format_lint_check, _lint_rule_pattern
+
+_SPEC_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
 
 
-def _fires(code: str, rule: dict) -> bool:
-    """Whether *rule* fires on *code* (matches on at least one line).
-
-    Replaces the removed deprecated ``_match_lint_rule`` boolean wrapper: the
-    SSOT matcher ``_match_lint_rule_lines`` returns the matching line numbers, so
-    a non-empty result means the rule fired. Keeps the historical token-overlap
-    tests asserting the same fire/no-fire contract.
-    """
-    return bool(_match_lint_rule_lines(code, rule))
-
-# Load real spec data from the 17.0 JSON so regression tests use the actual
-# production patterns rather than hardcoded strings. This ensures tests break
-# if the data is edited in a way that breaks the patterns.
-_SPEC_DATA_PATH = (
-    Path(__file__).parent.parent / "src" / "indexer" / "spec_data" / "lint_rules_17.0.json"
-)
-_SPEC_17 = json.loads(_SPEC_DATA_PATH.read_text(encoding="utf-8"))
-_RULES_BY_ID: dict[str, dict] = {r["rule_id"]: r for r in _SPEC_17.get("rules", [])}
-_SPEC_20_PATH = _SPEC_DATA_PATH.with_name("lint_rules_20.0.json")
-_RULES_V20_BY_ID: dict[str, dict] = {
-    r["rule_id"]: r for r in json.loads(_SPEC_20_PATH.read_text(encoding="utf-8")).get("rules", [])
-}
+def _catalogue(version: str) -> dict[str, dict]:
+    data = json.loads((_SPEC_DIR / f"lint_rules_{version}.json").read_text(encoding="utf-8"))
+    return {r["rule_id"]: r for r in data.get("rules", [])}
 
 
-def _rule(message: str, rule_id: str = "E9001", severity: str = "warning") -> dict:
-    return {"rule_id": rule_id, "severity": severity, "message": message}
+# Real spec data so the regression tests break if a production pattern is
+# edited in a way that changes what it detects.
+_RULES_BY_ID = _catalogue("17.0")
+_RULES_V20_BY_ID = _catalogue("20.0")
 
 
-# --- Two-token-overlap requirement ---
+def _rule(rule_id: str = "E9001", pattern: str | None = None, message: str = "") -> dict:
+    rule = {"rule_id": rule_id, "severity": "warning", "message": message}
+    if pattern is not None:
+        rule["code_pattern"] = pattern
+    return rule
 
 
-def test_lint_match_requires_two_token_overlap_single_token_no_fire():
-    """Rule with only 1 significant token in code → must NOT fire."""
-    rule = _rule("Do not use concatenation here")
-    # Code has 'concatenation' but only 1 significant token overlap
-    code = "x = 'foo' + 'bar'  # some concatenation"
-    result = _fires(code, rule)
-    assert result is False, "Single token overlap must not fire (V0 tighten)"
-
-
-def test_lint_match_fires_on_two_token_overlap():
-    """Rule with 2 significant tokens present in code → must fire."""
-    rule = _rule("Bad usage of percent format string literal")
-    # Code clearly has 'percent' and 'format' — 2 tokens
-    code = "msg = 'Hello %s' % name  # percent format"
-    result = _fires(code, rule)
-    assert result is True, "Two matching tokens must trigger a match"
-
-
-def test_lint_match_ignores_stopwords_only_token():
-    """Rule message with only stopword tokens → no match even if code has them."""
-    rule = _rule("Must use this with that")  # all stopwords
-    code = "must use this with that"
-    result = _fires(code, rule)
-    assert result is False, "Stopwords-only rule must not fire"
-
-
-def test_lint_match_case_insensitive():
-    """Token matching is case-insensitive — uppercase in rule, lowercase in code."""
-    rule = _rule("Deprecated: Name_Get returns tuples, display_name preferred")
-    code = "result = self.name_get()  # display_name preferred"
-    result = _fires(code, rule)
-    # 'name_get', 'display_name', 'returns', 'tuples', 'preferred' — multiple significant tokens
-    assert result is True
-
-
-def test_lint_match_empty_message_no_fire():
-    """Rule with empty message → must not fire."""
-    rule = _rule("")
-    code = "x = 1"
-    result = _fires(code, rule)
-    assert result is False
-
-
-# --- V0 banner ---
-
-
-def test_lint_v0_banner_constant_exists():
-    """_LINT_V0_BANNER constant must be defined and contain 'V0'."""
-    assert _LINT_V0_BANNER is not None
-    assert "V0" in _LINT_V0_BANNER or "v0" in _LINT_V0_BANNER.lower()
-    assert len(_LINT_V0_BANNER) > 10
-
-
-# ===========================================================================
-# M10A D4 — noqa suppression unit tests
-# ===========================================================================
-
-
-# --- _build_noqa_suppress ---
-
-
-def test_build_noqa_suppress_specific_rule():
-    """Single rule ID on noqa line is parsed correctly."""
-    code = "x = foo()  # noqa: E8001"
+def _suppressed_count(code: str, rule: dict) -> tuple[list[int], int]:
     suppress = _build_noqa_suppress(code)
-    assert suppress == {1: {"E8001"}}, f"Unexpected suppress map: {suppress}"
+    hit_lines = _match_lint_rule_lines(code, rule)
+    rule_id = rule["rule_id"]
+    count = sum(
+        1 for ln in hit_lines
+        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
+    )
+    return hit_lines, count
 
 
-def test_build_noqa_suppress_multiple_rules():
-    """Comma-separated rule IDs on one noqa comment are each captured."""
-    code = "x = foo()  # noqa: E8001, W9002"
-    suppress = _build_noqa_suppress(code)
-    assert suppress == {1: {"E8001", "W9002"}}, f"Unexpected suppress map: {suppress}"
+# --- rules without a line pattern are never guessed ---
 
 
-def test_build_noqa_suppress_bare_noqa():
-    """Bare noqa (no colon) maps to wildcard '*'."""
-    code = "x = foo()  # noqa"
-    suppress = _build_noqa_suppress(code)
-    assert suppress == {1: {"*"}}, f"Unexpected suppress map: {suppress}"
+def test_rule_without_pattern_never_fires_even_when_code_shares_its_words():
+    """A rule with no code_pattern must not fire on code that repeats its message."""
+    rule = _rule("W8162", message="`write()` override does not call `super()`.")
+    code = "def write(self, vals):\n    return super().write(vals)  # write override super"
+    assert _match_lint_rule_lines(code, rule) == []
+    assert _lint_rule_pattern(rule) is None
 
 
-def test_build_noqa_suppress_multiline():
-    """noqa on line 2 only — line 1 must not appear in suppress map."""
-    code = "x = bad_percent_format()\ny = another_percent_format()  # noqa: E8001"
-    suppress = _build_noqa_suppress(code)
-    assert 1 not in suppress, f"Line 1 should not be in suppress map: {suppress}"
-    assert 2 in suppress and suppress[2] == {"E8001"}, f"Line 2 wrong: {suppress}"
+_CORRECT_EXTENSION = '''from odoo import api, models
 
 
-def test_build_noqa_suppress_no_noqa():
-    """Code with no noqa comments returns empty dict."""
-    code = "def f():\n    return 1\n"
-    suppress = _build_noqa_suppress(code)
-    assert suppress == {}, f"Expected empty suppress map, got: {suppress}"
+class SaleOrder(models.Model):
+    _inherit = "sale.order"
+
+    def action_confirm(self):
+        return super().action_confirm()
+'''
+
+_CORRECT_CRUD_OVERRIDES = '''class ResPartner(models.Model):
+    _inherit = "res.partner"
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        return super().create(vals_list)
+
+    def write(self, vals):
+        return super().write(vals)
+
+    def copy(self, default=None):
+        return super().copy(default)
+
+    def unlink(self):
+        return super().unlink()
+'''
 
 
-# --- _match_lint_rule_lines ---
+@pytest.mark.parametrize("version", ["17.0", "18.0", "19.0", "20.0"])
+@pytest.mark.parametrize("code", [_CORRECT_EXTENSION, _CORRECT_CRUD_OVERRIDES],
+                         ids=["inherit-extension", "crud-overrides-calling-super"])
+def test_correct_model_code_raises_no_finding(version, code):
+    """An `_inherit` extension and CRUD overrides that call super() are correct code."""
+    python_rules = [
+        r for r in _catalogue(version).values()
+        if (r.get("kind") or "").startswith("pylint")
+    ]
+    hits = [r["rule_id"] for r in python_rules if _match_lint_rule_lines(code, r)]
+    assert hits == [], f"correct code flagged at {version}: {hits}"
+
+
+_NEW_API_MODEL = '''from odoo import fields, models
+
+
+class SaleOrder(models.Model):
+    _inherit = "sale.order"
+
+    note = fields.Char()
+'''
+
+
+@pytest.mark.parametrize("version", ["10.0", "11.0", "12.0", "13.0", "14.0", "15.0", "16.0"])
+def test_new_api_model_is_not_reported_as_old_api(version):
+    """A `models.Model` class with `fields.*` attributes is the v10+ API, not `_columns`."""
+    python_rules = [
+        r for r in _catalogue(version).values()
+        if (r.get("kind") or "").startswith("pylint")
+    ]
+    hits = [r["rule_id"] for r in python_rules if _match_lint_rule_lines(_NEW_API_MODEL, r)]
+    assert hits == [], f"new-API model flagged at {version}: {hits}"
+
+
+def test_the_replacement_cli_flag_is_not_reported_as_the_removed_one():
+    """`--gevent-port` is the 18.0 replacement of `--longpolling-port` (W8212)."""
+    assert _match_lint_rule_lines("odoo-bin --gevent-port 8072", _catalogue("18.0")["W8212"]) == []
+
+
+def test_invalid_code_pattern_is_not_checked_and_does_not_crash():
+    """A rule whose regex does not compile is reported as not checked, never raised."""
+    bad_pattern = r"(?invalid-regex"
+    assert _compile_lint_pattern(bad_pattern) is None
+    rule = _rule("W9997", pattern=bad_pattern, message="percent format string literal usage")
+    assert _lint_rule_pattern(rule) is None
+    assert _match_lint_rule_lines("msg = 'Hello %s' % name  # percent format", rule) == []
+
+
+# --- line numbers ---
 
 
 def test_match_lint_rule_lines_returns_line_numbers():
-    """_match_lint_rule_lines returns 1-based line numbers of matching lines."""
-    rule = _rule("Bad usage of percent format string literal")
-    code = "x = 1\ny = 'hello %s' % name  # percent format\nz = 3"
-    lines = _match_lint_rule_lines(code, rule)
-    assert 2 in lines, f"Expected line 2 to match; got: {lines}"
+    """The matcher returns the 1-based numbers of the lines the pattern matches."""
+    rule = _rule(pattern=r"%\s*name")
+    code = "x = 1\ny = 'hello %s' % name\nz = 3\nw = '%s' % name"
+    assert _match_lint_rule_lines(code, rule) == [2, 4]
 
 
 def test_match_lint_rule_lines_no_match_returns_empty():
-    """Rule that doesn't match returns empty list."""
-    rule = _rule("Completely unrelated message about zebra patterns here")
-    code = "x = 1"
-    lines = _match_lint_rule_lines(code, rule)
-    assert lines == [], f"Expected no match; got: {lines}"
+    assert _match_lint_rule_lines("x = 1", _rule(pattern=r"\bzebra\b")) == []
 
 
-def test_match_lint_rule_lines_fallback_line1_when_tokens_spread():
-    """When tokens match across lines but no single line has ≥2, fallback to line 1."""
-    rule = _rule("percent format string literal syntax")
-    # 'percent' on line 1, 'format' on line 2 — neither line alone triggers
-    code = "x = percent_result\ny = format_string"
-    lines = _match_lint_rule_lines(code, rule)
-    # If whole-code triggers, fallback to [1]; if not, []
-    # This just confirms no crash and type is list.
-    assert isinstance(lines, list)
+# --- noqa ---
 
 
-# --- Integration: noqa suppresses violations ---
+def test_build_noqa_suppress_specific_rule():
+    assert _build_noqa_suppress("x = foo()  # noqa: E8001") == {1: {"E8001"}}
 
 
-def _make_rule_and_code_with_noqa(noqa_comment: str) -> tuple[dict, str]:
-    """Return a (rule, code) pair where the matching line has *noqa_comment*."""
-    rule = _rule("Bad usage of percent format string literal", rule_id="E8001")
-    code = f"msg = 'Hello %s' % name  # percent format {noqa_comment}"
-    return rule, code
+def test_build_noqa_suppress_multiple_rules():
+    assert _build_noqa_suppress("x = foo()  # noqa: E8001, W9002") == {1: {"E8001", "W9002"}}
+
+
+def test_build_noqa_suppress_bare_noqa():
+    assert _build_noqa_suppress("x = foo()  # noqa") == {1: {"*"}}
+
+
+def test_build_noqa_suppress_multiline():
+    suppress = _build_noqa_suppress("x = bad()\ny = other()  # noqa: E8001")
+    assert 1 not in suppress
+    assert suppress[2] == {"E8001"}
+
+
+def test_build_noqa_suppress_no_noqa():
+    assert _build_noqa_suppress("def f():\n    return 1\n") == {}
+
+
+_PERCENT_RULE = _rule("E8001", pattern=r"%\s*name")
 
 
 def test_noqa_specific_rule_suppresses_matching_line():
-    """noqa: E8001 on the matching line — rule must be suppressed."""
-    rule, code = _make_rule_and_code_with_noqa("# noqa: E8001")
-    from src.mcp.server import _build_noqa_suppress, _match_lint_rule_lines
-    suppress = _build_noqa_suppress(code)
-    hit_lines = _match_lint_rule_lines(code, rule)
-    rule_id = rule["rule_id"]
-    suppressed_count = sum(
-        1 for ln in hit_lines
-        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
-    )
-    assert suppressed_count == len(hit_lines), (
-        f"Expected all hit lines suppressed by noqa: E8001; "
-        f"hit_lines={hit_lines}, suppress={suppress}"
-    )
+    code = "msg = 'Hello %s' % name  # noqa: E8001"
+    hit_lines, suppressed = _suppressed_count(code, _PERCENT_RULE)
+    assert hit_lines and suppressed == len(hit_lines)
 
 
 def test_noqa_bare_suppresses_all_rules():
-    """Bare noqa on the matching line suppresses any rule ID."""
-    rule, code = _make_rule_and_code_with_noqa("# noqa")
-    suppress = _build_noqa_suppress(code)
-    hit_lines = _match_lint_rule_lines(code, rule)
-    rule_id = rule["rule_id"]
-    suppressed_count = sum(
-        1 for ln in hit_lines
-        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
-    )
-    assert suppressed_count == len(hit_lines), (
-        f"Expected bare noqa to suppress all; hit_lines={hit_lines}, suppress={suppress}"
-    )
+    hit_lines, suppressed = _suppressed_count("msg = 'Hello %s' % name  # noqa", _PERCENT_RULE)
+    assert hit_lines and suppressed == len(hit_lines)
 
 
 def test_noqa_different_rule_does_not_suppress():
-    """noqa: W9002 does NOT suppress rule E8001 on the same line."""
-    rule = _rule("Bad usage of percent format string literal", rule_id="E8001")
-    code = "msg = 'Hello %s' % name  # percent format  # noqa: W9002"
-    suppress = _build_noqa_suppress(code)
-    hit_lines = _match_lint_rule_lines(code, rule)
-    rule_id = rule["rule_id"]
-    suppressed_count = sum(
-        1 for ln in hit_lines
-        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
-    )
-    assert suppressed_count == 0, (
-        f"noqa: W9002 must not suppress E8001; "
-        f"hit_lines={hit_lines}, suppress={suppress}"
-    )
+    code = "msg = 'Hello %s' % name  # noqa: W9002"
+    hit_lines, suppressed = _suppressed_count(code, _PERCENT_RULE)
+    assert hit_lines and suppressed == 0
 
 
 def test_noqa_on_different_line_does_not_suppress_other_line():
-    """noqa on line 2 must not suppress a violation on line 1."""
-    rule = _rule("Bad usage of percent format string literal", rule_id="E8001")
-    # Line 1 triggers, line 2 has noqa but does NOT trigger
-    code = "msg = 'Hello %s' % name  # percent format\nclean = 42  # noqa: E8001"
-    suppress = _build_noqa_suppress(code)
-    hit_lines = _match_lint_rule_lines(code, rule)
-    rule_id = rule["rule_id"]
-    # Line 1 should NOT be in suppress
-    suppressed_count = sum(
-        1 for ln in hit_lines
-        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
-    )
-    # Line 1 triggered; noqa is only on line 2 - line 1 should NOT be suppressed
-    assert 1 in hit_lines, f"Expected line 1 to be in hit_lines; got {hit_lines}"
-    assert 1 not in suppress, f"Line 1 should not be in suppress map; {suppress}"
-    assert suppressed_count < len(hit_lines), (
-        "Line 1 violation should not be suppressed by line 2 noqa"
-    )
+    code = "msg = 'Hello %s' % name\nclean = 42  # noqa: E8001"
+    hit_lines, suppressed = _suppressed_count(code, _PERCENT_RULE)
+    assert hit_lines == [1]
+    assert suppressed == 0
+
+
+def test_noqa_suppresses_pattern_hit():
+    """noqa: E8501 on the SQL injection line suppresses the real E8501 hit."""
+    rule = _RULES_BY_ID["E8501"]
+    assert _match_lint_rule_lines(_SQL_INJECTION_CODE, rule), "E8501 must fire before noqa"
+    hit_lines, suppressed = _suppressed_count(_SQL_INJECTION_CODE + "  # noqa: E8501", rule)
+    assert hit_lines and suppressed == len(hit_lines)
 
 
 # ===========================================================================
-# WI-8 Pattern-first regression tests (issue #271 fix)
+# Real production patterns (issue #271 / PR #275 regressions)
 # ===========================================================================
-# These tests use real production patterns from lint_rules_17.0.json and guard
-# against regressions in the pattern-first matcher introduced in WI-6.
-# Each test MUST be able to fail: if the code_pattern in the JSON is removed or
-# broken, the corresponding assertion will fail.
 
-
-# SQL injection snippet from issue #271 - was false-green under V0 fuzzy matcher.
 _SQL_INJECTION_CODE = (
     'self.env.cr.execute("SELECT id FROM res_partner WHERE name = \'%s\'" % self.name)'
 )
@@ -291,204 +240,74 @@ _SQL_INJECTION_CODE = (
 _SQL_INJECTION_TUPLE_CODE = (
     'cr.execute("SELECT id FROM res_partner WHERE id = %s" % (self.id,))'
 )
-# Safe parameterized variant - must never fire E8501 (no false positive).
 _SQL_SAFE_CODE = "cr.execute(\"SELECT id FROM res_partner WHERE id = %s\", (self.id,))"
-# UserError string formatting snippet - was false-green under V0 fuzzy matcher.
 _USER_ERROR_CODE = "raise UserError('Hi %s' % n)"
 
 
+def _pattern_rule(catalogue: dict[str, dict], rule_id: str) -> dict:
+    rule = catalogue.get(rule_id)
+    assert rule is not None, f"{rule_id} must be present in the catalogue"
+    assert rule.get("code_pattern"), f"{rule_id} must have a non-null code_pattern"
+    return rule
+
+
 def test_pattern_e8501_fires_on_sql_injection():
-    """E8501 (SQL injection) must fire on cr.execute with string interpolation.
-
-    Regression for issue #271: V0 fuzzy matcher never fired this rule because
-    the rule message vocabulary ('injection', 'interpolation') does not appear
-    in the code. Pattern-first matcher uses the real regex from the JSON data.
-
-    Was W8140 before issue #364 B5 consolidated the duplicate SQL-injection
-    rule onto the real upstream id E8501 (see module docstring) - the regex
-    and code snippet are unchanged, only the owning rule_id is.
-    """
-    rule = _RULES_BY_ID.get("E8501")
-    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
-
-    lines = _match_lint_rule_lines(_SQL_INJECTION_CODE, rule)
-    assert len(lines) >= 1, (
-        f"E8501 must fire on SQL injection snippet; got no violations.\n"
-        f"code_pattern: {rule['code_pattern']!r}\n"
-        f"code: {_SQL_INJECTION_CODE!r}"
-    )
+    """E8501 (SQL injection) fires on cr.execute with string interpolation (#271)."""
+    assert _match_lint_rule_lines(_SQL_INJECTION_CODE, _pattern_rule(_RULES_BY_ID, "E8501"))
 
 
 def test_pattern_e8501_silent_on_safe_parameterized():
-    """E8501 must NOT fire on cr.execute with tuple parameters (no false positive).
-
-    The pattern specifically targets string interpolation; parameterized
-    queries pass the values as a separate tuple argument, not in the SQL string.
-    """
-    rule = _RULES_BY_ID.get("E8501")
-    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
-
-    lines = _match_lint_rule_lines(_SQL_SAFE_CODE, rule)
-    assert lines == [], (
-        f"E8501 must NOT fire on safe parameterized query; got lines={lines}.\n"
-        f"code_pattern: {rule['code_pattern']!r}\n"
-        f"code: {_SQL_SAFE_CODE!r}"
-    )
+    """E8501 stays quiet on a parameterized query (values passed as a tuple)."""
+    assert _match_lint_rule_lines(_SQL_SAFE_CODE, _pattern_rule(_RULES_BY_ID, "E8501")) == []
 
 
 def test_pattern_e8501_fires_on_tuple_interpolation():
-    """E8501 must fire on the tuple-`%` interpolation form (PR #275 HIGH #2).
-
-    `cr.execute("... %s" % (self.id,))` is an equally dangerous SQL-injection
-    shape. The pre-fix pattern carried a `(?!\\()` lookahead right after `%`
-    which blocked this form because the char after `% ` is `(`. Removing the
-    lookahead makes the must-fire set cover single-value AND tuple forms.
-    """
-    rule = _RULES_BY_ID.get("E8501")
-    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
-
-    lines = _match_lint_rule_lines(_SQL_INJECTION_TUPLE_CODE, rule)
-    assert len(lines) >= 1, (
-        f"E8501 must fire on tuple-interpolation SQL injection; got no violations.\n"
-        f"code_pattern: {rule['code_pattern']!r}\n"
-        f"code: {_SQL_INJECTION_TUPLE_CODE!r}"
-    )
+    """E8501 fires on the tuple-`%` interpolation form (PR #275 HIGH #2)."""
+    assert _match_lint_rule_lines(_SQL_INJECTION_TUPLE_CODE, _pattern_rule(_RULES_BY_ID, "E8501"))
 
 
 def test_pattern_w8229_fires_on_single_line_html_with_sanitize_disabled():
-    """W8229 must fire on a single-line `fields.Html(..., sanitize=False)`.
-
-    Recall guard for the per-line matcher: a pattern that spans the argument
-    list must still match when the whole call sits on one line.
-    """
-    rule = _RULES_V20_BY_ID.get("W8229")
-    assert rule is not None, "W8229 must be present in lint_rules_20.0.json"
-    assert rule.get("code_pattern"), "W8229 must have a non-null code_pattern"
-
+    """W8229 fires on a single-line `fields.Html(..., sanitize=False)`."""
     code = 'body = fields.Html(string="Body", sanitize=False)'
-    lines = _match_lint_rule_lines(code, rule)
-    assert len(lines) >= 1, (
-        f"W8229 must fire on single-line fields.Html(sanitize=False); got none.\n"
-        f"code_pattern: {rule['code_pattern']!r}\ncode: {code!r}"
-    )
+    assert _match_lint_rule_lines(code, _pattern_rule(_RULES_V20_BY_ID, "W8229"))
 
 
 def test_pattern_w8229_silent_on_multiline_open_line_with_sanitize_on():
-    """W8229 must NOT fire on the opening line of a multi-line `fields.Html(`.
-
-    Regression for PR #275 MED #3: the per-line matcher must not flag the
-    opening line of a multi-line field whose `sanitize=` keyword lives on a
-    later line - here `sanitize=True`, the default, so the field is correct.
-    """
-    rule = _RULES_V20_BY_ID.get("W8229")
-    assert rule is not None, "W8229 must be present in lint_rules_20.0.json"
-    assert rule.get("code_pattern"), "W8229 must have a non-null code_pattern"
-
-    # The matcher is per-line; the opening line is what previously false-fired.
+    """W8229 stays quiet on the opening line of a multi-line `fields.Html(` (PR #275 MED #3)."""
     multiline = "body = fields.Html(\n    sanitize=True,\n)"
-    lines = _match_lint_rule_lines(multiline, rule)
-    assert lines == [], (
-        f"W8229 must NOT fire on a multi-line fields.Html opening line; got "
-        f"lines={lines}.\ncode_pattern: {rule['code_pattern']!r}\ncode: {multiline!r}"
-    )
+    assert _match_lint_rule_lines(multiline, _pattern_rule(_RULES_V20_BY_ID, "W8229")) == []
 
 
 def test_pattern_w8201_fires_on_usererror_format():
-    """W8201 (UserError string formatting) must fire on 'raise UserError(... % n)'.
-
-    Regression for issue #271: V0 fuzzy matcher failed because 'usererror'
-    appears in the rule message but the code uses CamelCase 'UserError' which
-    after lower() becomes 'usererror' - only 1 token matched (below the
-    2-token threshold). Pattern-first resolves this deterministically.
-    """
-    rule = _RULES_BY_ID.get("W8201")
-    assert rule is not None, "W8201 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8201 must have a non-null code_pattern"
-
-    lines = _match_lint_rule_lines(_USER_ERROR_CODE, rule)
-    assert len(lines) >= 1, (
-        f"W8201 must fire on UserError string formatting; got no violations.\n"
-        f"code_pattern: {rule['code_pattern']!r}\n"
-        f"code: {_USER_ERROR_CODE!r}"
-    )
+    """W8201 (UserError string formatting) fires on 'raise UserError(... % n)' (#271)."""
+    assert _match_lint_rule_lines(_USER_ERROR_CODE, _pattern_rule(_RULES_BY_ID, "W8201"))
 
 
-def test_lint_match_kind_pattern_for_rule_with_code_pattern():
-    """_lint_match_kind returns 'pattern' when rule has a valid code_pattern."""
-    rule = _RULES_BY_ID.get("E8501")
-    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "E8501 must have a non-null code_pattern"
-
-    kind = _lint_match_kind(rule)
-    assert kind == "pattern", (
-        f"_lint_match_kind must return 'pattern' for a rule with code_pattern; got {kind!r}"
-    )
+# ===========================================================================
+# Rendering
+# ===========================================================================
 
 
-def test_lint_match_kind_fuzzy_for_rule_without_code_pattern():
-    """_lint_match_kind returns 'fuzzy' when rule has no code_pattern."""
-    rule = _rule("Some rule message without pattern", rule_id="W9999")
-    # No 'code_pattern' key -> falls back to fuzzy.
-    kind = _lint_match_kind(rule)
-    assert kind == "fuzzy", (
-        f"_lint_match_kind must return 'fuzzy' for a rule without code_pattern; got {kind!r}"
-    )
+def _tree(out: str) -> list[str]:
+    return [ln for ln in out.splitlines() if ln.startswith(("├─", "└─"))]
 
 
-def test_noqa_suppresses_pattern_hit():
-    """noqa: E8501 on the SQL injection line suppresses the pattern-match violation.
-
-    noqa suppression must work for pattern hits, not just fuzzy hits.
-    """
-    rule = _RULES_BY_ID.get("E8501")
-    assert rule is not None, "E8501 must be present in lint_rules_17.0.json"
-
-    code = _SQL_INJECTION_CODE + "  # noqa: E8501"
-    suppress = _build_noqa_suppress(code)
-    hit_lines = _match_lint_rule_lines(code, rule)
-    rule_id = rule["rule_id"]
-
-    # Without suppression the pattern must have fired (sanity guard).
-    raw_lines = _match_lint_rule_lines(_SQL_INJECTION_CODE, rule)
-    assert raw_lines, "Prerequisite: E8501 must fire before noqa is applied"
-
-    # All hit lines should be covered by the noqa annotation.
-    suppressed_count = sum(
-        1 for ln in hit_lines
-        if ln in suppress and ("*" in suppress[ln] or rule_id in suppress[ln])
-    )
-    assert suppressed_count == len(hit_lines), (
-        f"All pattern hits must be suppressed by '# noqa: E8501'; "
-        f"hit_lines={hit_lines}, suppress={suppress}"
-    )
+def test_rendered_findings_carry_the_pattern_label():
+    out = _format_lint_check([_RULES_BY_ID["E8501"]], "17.0", _SQL_INJECTION_CODE)
+    assert out.splitlines()[0] == _LINT_BANNER
+    assert "[pattern] E8501" in _tree(out)[-1]
+    assert _tree(out)[-1].startswith("└─")
 
 
-def test_invalid_code_pattern_falls_back_to_fuzzy_no_crash():
-    """A rule with an invalid regex code_pattern falls back to fuzzy without crashing.
+def test_rendered_tree_ends_with_the_rules_not_checked():
+    """Rules without a line pattern are disclosed: 'no violations' is not a clean bill."""
+    out = _format_lint_check([], "20.0", "x = 1", unchecked=23, total=58)
+    tree = _tree(out)
+    assert tree[-2] == "├─ no violations"
+    assert tree[-1] == "└─ Not checked: 23 of 58 rules have no line pattern"
 
-    _compile_lint_pattern must cache None for bad patterns so callers get fuzzy
-    behaviour rather than an unhandled exception.
-    """
-    bad_pattern = r"(?invalid-regex"
-    # _compile_lint_pattern must return None, not raise.
-    result = _compile_lint_pattern(bad_pattern)
-    assert result is None, (
-        f"_compile_lint_pattern must return None for invalid regex; got {result!r}"
-    )
 
-    # With a bad pattern the rule should fall back to fuzzy (no crash).
-    rule_with_bad_pattern = {
-        "rule_id": "W9997",
-        "severity": "warning",
-        "message": "percent format string literal usage",
-        "code_pattern": bad_pattern,
-    }
-    code = "msg = 'Hello %s' % name  # percent format"
-    # Must not raise; result is either [] or a list from fuzzy fallback.
-    lines = _match_lint_rule_lines(code, rule_with_bad_pattern)
-    assert isinstance(lines, list), (
-        f"_match_lint_rule_lines must return a list even with bad code_pattern; got {lines!r}"
-    )
+def test_rendered_tree_has_no_not_checked_line_when_every_rule_is_checked():
+    out = _format_lint_check([], "20.0", "x = 1", unchecked=0, total=4)
+    assert _tree(out)[-1] == "└─ no violations"
+    assert "Not checked" not in out

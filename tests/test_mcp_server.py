@@ -2754,7 +2754,7 @@ def test_grammar_consistency_all_tools(grammar_seed, idx):
     - Every subsequent line either starts with a connector at column 0, or
       with a sublist indent (``│   `` or ``    ``) followed by a connector,
       or is the truncation tail (``... and N more``), or is a known
-      informational banner (V0 lint matcher / spec curation status).
+      informational banner (lint matcher / spec curation status).
     - No two consecutive ``└─`` branches at column 0.
 
     SENTINEL_EDGE_CASES are exempt: their empty-input branches return plain
@@ -2771,15 +2771,13 @@ def test_grammar_consistency_all_tools(grammar_seed, idx):
     lines = out.splitlines()
     assert lines, f"{tool_name}: output is empty"
 
-    # Strip leading informational banners (V0 lint matcher / V0.5 hybrid matcher,
-    # curate status). Updated for WI-6: banner wording changed from "V0 fuzzy
-    # matcher" to "Hybrid matcher (V0.5)" - both substrings must be recognised so
-    # the grammar check sees the header as the first non-banner line.
+    lint_banner = _import_server_module()._LINT_BANNER
+
+    # Strip leading informational banners (lint matcher, curate status) so the
+    # grammar check sees the header as the first non-banner line.
     def _is_banner(line: str) -> bool:
         return (
-            "V0 fuzzy matcher" in line
-            or "Hybrid matcher" in line
-            or "V0.5" in line
+            line == lint_banner
             or "Spec data" in line
             and "pending curation" in line
         )

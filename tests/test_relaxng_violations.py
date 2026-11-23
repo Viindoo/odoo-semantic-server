@@ -232,11 +232,10 @@ class TestMcpLintCheckXml:
         assert "no RelaxNG violations" in result
 
     def test_lint_check_dispatches_xml_language(self, writer, neo4j_driver):
-        """_lint_check('', version, 'xml') dispatches to xml path (not V0 fuzzy)."""
-        from src.mcp.server import _lint_check
+        """_lint_check('', version, 'xml') dispatches to the xml path, not the line matcher."""
+        from src.mcp.server import _LINT_BANNER, _lint_check
 
-        # language=xml must return xml-style header, not python-style V0 banner
+        # language=xml must return the xml-style header, not the line-matcher banner
         result = _lint_check("", "8.0", "xml")
         assert "RelaxNG violations" in result
-        # Must NOT contain V0 fuzzy banner
-        assert "V0 fuzzy" not in result
+        assert _LINT_BANNER not in result
