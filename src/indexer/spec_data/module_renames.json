@@ -1,7 +1,7 @@
 {
   "_description": "Cross-version module renames and merges, one block per OpenUpgrade branch N.0: renamed_modules / merged_modules of that branch's apriori.py (old name at N-1 -> new name at N). GENERATED - do not edit by hand: python scripts/sync_module_renames.py --write (weekly workflow module-renames-resync.yml opens a PR on drift).",
   "_oracle": "ADR-0055 provenance + oracle. Provenance: each branch block records repo, branch, commit and path of the apriori.py it was parsed from (ast.literal_eval, never executed). Oracle: the read side (src/indexer/module_renames.resolve_chain) shows an edge only when the caller's index has old at N-1 and not from N to the asked version, and new at N; chains are composed hop by hop under the same rule.",
-  "generated_at": "2026-10-20",
+  "generated_at": "2026-11-16",
   "branches": {
     "8.0": {
       "repo": "OCA/OpenUpgrade",
@@ -662,7 +662,7 @@
     "16.0": {
       "repo": "OCA/OpenUpgrade",
       "branch": "16.0",
-      "commit": "afa31b1df1a4dd1f5f5c8cc47d938685fa255d1d",
+      "commit": "08eae463b6bc00bd38abdc141b6f6aabe7ce3d44",
       "path": "openupgrade_scripts/apriori.py",
       "renamed_modules": {
         "account_bank_statement_import_qif": "account_statement_import_qif",
@@ -683,6 +683,7 @@
         "l10n_it_account_balance_eu": "l10n_it_financial_statement_eu",
         "l10n_it_ricevute_bancarie": "l10n_it_riba_oca",
         "mass_editing": "server_action_mass_edit",
+        "mrp_analytic": "mrp_stock_analytic",
         "payment_test": "payment_demo",
         "payment_transfer": "payment_custom",
         "pos_cashback_warning": "pos_cashback",
@@ -766,7 +767,7 @@
     "17.0": {
       "repo": "OCA/OpenUpgrade",
       "branch": "17.0",
-      "commit": "f3908223532a7e8ab06d533fea78afdb25d04953",
+      "commit": "0eddd35be9a1ee7db76f2afb138366ed3538403d",
       "path": "openupgrade_scripts/apriori.py",
       "renamed_modules": {
         "delivery_carrier_customer_info": "partner_delivery_info",
@@ -778,6 +779,7 @@
       },
       "merged_modules": {
         "account_invoice_fiscal_position_update": "account",
+        "account_invoice_force_number": "account",
         "account_payment_invoice_online_payment_patch": "account_payment",
         "account_sequence": "account",
         "association": "membership",
@@ -813,11 +815,13 @@
         "product_catalog_sale": "sale",
         "project_list": "project",
         "purchase_discount": "purchase",
+        "purchase_fully_received": "purchase_reception_status",
         "purchase_price_diff": "purchase_stock",
         "sale_loyalty_initial_date_validity": "sale_loyalty",
         "sale_report_country_state": "sale",
         "spreadsheet_dashboard_sale_expense": "spreadsheet_dashboard_hr_expense",
         "stock_lot_filter_available": "stock",
+        "stock_procurement_group_hook": "stock",
         "web_advanced_search": "web",
         "web_kanban_gauge": "web",
         "web_listview_range_select": "web",
@@ -834,7 +838,7 @@
     "18.0": {
       "repo": "OCA/OpenUpgrade",
       "branch": "18.0",
-      "commit": "b7fd10df0749ef084b2f72d9dfb74246f616fa30",
+      "commit": "861135699842e95f203db9f591956075db92b22e",
       "path": "openupgrade_scripts/apriori.py",
       "renamed_modules": {
         "account_commission": "account_commission_oca",
@@ -853,6 +857,7 @@
         "product_supplierinfo_for_customer": "product_customerinfo",
         "product_supplierinfo_for_customer_elaboration": "product_customerinfo_elaboration",
         "product_supplierinfo_for_customer_invoice": "product_customerinfo_invoice",
+        "product_supplierinfo_for_customer_picking": "product_customerinfo_picking",
         "product_supplierinfo_for_customer_sale": "product_customerinfo_sale",
         "product_supplierinfo_import_by_barcode": "product_supplierinfo_import",
         "product_supplierinfo_import_by_barcode_margin": "product_supplierinfo_import_margin",
@@ -880,6 +885,7 @@
         "account_debit_note_sequence": "account_debit_note",
         "account_invoice_mass_sending": "account",
         "account_invoice_supplierinfo_update_discount": "account_invoice_supplierinfo_update",
+        "account_invoice_view_payment": "account",
         "account_lock": "account",
         "account_payment_term": "account",
         "document_page_group": "document_page_access_group",
@@ -901,6 +907,7 @@
         "payment_ogone": "payment_worldline",
         "payment_sips": "payment_worldline",
         "pos_sale_product_configurator": "pos_sale",
+        "procurement_mto_analytic": "sale_purchase_stock",
         "sale_order_qty_change_no_recompute": "sale",
         "sale_partner_shipping_invoice_domain": "sale_commercial_partner",
         "sale_product_configurator": "sale",
@@ -916,7 +923,7 @@
     "19.0": {
       "repo": "OCA/OpenUpgrade",
       "branch": "19.0",
-      "commit": "e8d904349a52a6f5260f8d36fce76e07d93676b7",
+      "commit": "542cda3923630fc30308f7fae740148b59f9a6ff",
       "path": "openupgrade_scripts/apriori.py",
       "renamed_modules": {
         "l10n_ec_website_sale": "l10n_ec_sale",
@@ -926,6 +933,7 @@
         "pos_viva_wallet": "pos_viva_com",
         "project_timesheet_time_control": "hr_timesheet_time_control",
         "sales_team_invoiced_target_domain": "sales_team_invoiced_target_report",
+        "stock_valuation_layer_usage": "stock_move_valuation_usage",
         "website_odoo_debranding": "website_debranding"
       },
       "merged_modules": {
@@ -967,16 +975,63 @@
         "stock_picking_mass_action": "stock",
         "stock_picking_show_return": "stock",
         "web_editor": "html_editor",
-        "website_login_page_editable": "web"
+        "website_login_page_editable": "web",
+        "website_sale_category_breadcrumb": "website_sale"
       }
     },
     "20.0": {
       "repo": "OCA/OpenUpgrade",
       "branch": "20.0",
-      "commit": "c1935fb19483ac0cd022aa5d18d9fd1b05298ba7",
-      "path": null,
-      "renamed_modules": {},
-      "merged_modules": {}
+      "commit": "480dce61a36974913d3d883711f4593412e554b0",
+      "path": "openupgrade_scripts/apriori.py",
+      "renamed_modules": {
+        "purchase_requisition_sale": "purchase_alternative_sale",
+        "website_sale_autocomplete": "website_address_autocomplete"
+      },
+      "merged_modules": {
+        "account_add_gln": "account",
+        "account_peppol_response": "account_peppol",
+        "base_iban": "account",
+        "base_vat": "base",
+        "crm_stage_multi_team": "crm",
+        "delivery_stock_picking_batch": "stock_delivery",
+        "hr_holidays_homeworking": "hr_holidays",
+        "hr_homeworking": "hr",
+        "hr_homeworking_calendar": "hr_calendar",
+        "hr_hourly_cost": "hr",
+        "hr_org_chart": "hr",
+        "hr_work_entry_holidays": "hr_holidays",
+        "iot_base": "iot",
+        "l10n_cn_city": "l10n_cn",
+        "l10n_dk_nemhandel": "l10n_dk",
+        "l10n_dk_nemhandel_response": "l10n_dk",
+        "l10n_dk_oioubl": "l10n_dk",
+        "l10n_ec_stock": "l10n_ec",
+        "l10n_fr_hr_work_entry_holidays": "l10n_fr_hr_holidays",
+        "l10n_hu_edi_receive": "l10n_hu_edi",
+        "l10n_latam_base": "account",
+        "l10n_lk_invoice": "l10n_lk",
+        "l10n_pl_bank_verification": "l10n_pl",
+        "l10n_ro_cpv_code": "l10n_ro_edi",
+        "l10n_ro_edi_stock_batch": "l10n_ro_edi_stock",
+        "l10n_sa_withholding_tax": "l10n_sa",
+        "l10n_tr_gib_invoice_scenarios": "l10n_tr_nilvera_einvoice",
+        "l10n_tr_nilvera_base_vat": "l10n_tr_nilvera",
+        "l10n_tr_nilvera_einvoice_extended": "l10n_tr_nilvera_einvoice",
+        "l10n_uy_pos": "l10n_uy",
+        "pos_restaurant_adyen": "pos_adyen",
+        "pos_restaurant_stripe": "pos_stripe",
+        "pos_self_order_adyen": "pos_adyen",
+        "pos_self_order_stripe": "pos_stripe",
+        "pos_self_order_viva_com": "pos_viva_com",
+        "stock_move_quantity_product_uom": "stock",
+        "stock_picking_batch": "stock",
+        "website_sale_collect_wishlist": "website_sale_collect",
+        "website_sale_comparison": "website_sale",
+        "website_sale_comparison_wishlist": "website_sale",
+        "website_sale_stock_wishlist": "website_sale_stock",
+        "website_sale_wishlist": "website_sale"
+      }
     }
   }
 }
