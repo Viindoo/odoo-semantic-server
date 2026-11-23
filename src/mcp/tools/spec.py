@@ -54,6 +54,7 @@ from src.constants import (
     LIST_PREVIEW_MAX_ITEMS,
     REL_USES_CORE_SYMBOL,
 )
+from src.mcp.catalogue import NOT_INDEXED_STATUS, catalogue_indexed, not_indexed_warning
 from src.mcp.hints import format_next_step
 from src.mcp.server import (
     READONLY_TOOL_KWARGS,
@@ -119,11 +120,24 @@ def _lookup_core_api(name: str, odoo_version: str = "auto") -> str:
         # Reuse _fetch_core_symbol (same bounded CoreSymbol query) so the Cypher
         # lives in one place — api_version_diff already uses it (review: de-dup).
         sym = _fetch_core_symbol(session, name, odoo_version)
-    if sym is None:
-        next_line = format_next_step([
-            f"find_examples(query='{name}', odoo_version='{odoo_version}')"
-            " for in-the-wild usage patterns",
+        indexed = sym is not None or catalogue_indexed(
+            _srv._single_bounded, session, "core", odoo_version,
+        )
+    next_line = format_next_step([
+        f"find_examples(query='{name}', odoo_version='{odoo_version}')"
+        " for in-the-wild usage patterns",
+    ])
+    if not indexed:
+        # issue #404: a miss on a version index-core never ran for is not "not found".
+        return "\n".join([
+            f"lookup_core_api({name!r}, {odoo_version!r})",
+            f"├─ Status:      {NOT_INDEXED_STATUS}",
+            "├─ " + not_indexed_warning(
+                "core", odoo_version, f"{name!r}", "the Odoo source",
+            ),
+            next_line,
         ])
+    if sym is None:
         return (
             f"lookup_core_api({name!r}, {odoo_version!r})\n"
             f"├─ not found in indexed Odoo core for version {odoo_version}\n"
@@ -235,7 +249,26 @@ def _api_version_diff(
                     sym_old = _fetch_core_symbol(session, qn, from_version)
                 if sym_new is None or sym_new["qualified_name"] != qn:
                     sym_new = _fetch_core_symbol(session, qn, to_version)
+        # issue #404: a side missing because index-core never ran for its version
+        # must not read as "added in" / "removed in" / "not found".
+        not_indexed = [
+            v for v, sym in ((from_version, sym_old), (to_version, sym_new))
+            if sym is None and not catalogue_indexed(
+                _srv._single_bounded, session, "core", v,
+            )
+        ]
 
+    if not_indexed:
+        lines = [
+            f"api_version_diff({symbol!r}: {from_version} → {to_version})",
+            f"├─ Status:      {NOT_INDEXED_STATUS}",
+        ]
+        lines += [
+            "├─ " + not_indexed_warning("core", v, f"{symbol!r}", "the Odoo source")
+            for v in not_indexed
+        ]
+        lines[-1] = lines[-1].replace("├─", "└─", 1)
+        return "\n".join(lines)
     if sym_old is None and sym_new is None:
         return (
             f"api_version_diff({symbol!r})\n"
@@ -266,7 +299,9 @@ def lookup_core_api(name: str, odoo_version: RequiredOdooVersion) -> str:
 
     Returns:
         Tree text: Kind, Status, Signature, Replacement (if any), Added in,
-        Deprecated, Removed in, Source file location.
+        Deprecated, Removed in, Source file location. "Status: not_indexed"
+        means the version's core catalogue is not indexed yet - never
+        evidence that the symbol is absent.
 
     Example:
         lookup_core_api("name_get", "17.0")
@@ -454,6 +489,11 @@ def _find_deprecated_usage(
             label=f"deprecated-usage scan (Odoo {odoo_version})",
             **params,
         )
+        # issue #404: without the version's core catalogue the call-based leg
+        # cannot match anything, so an empty result is not a clean bill.
+        catalogue_missing = not any(
+            r.get("status") == "deprecated" for r in records
+        ) and not catalogue_indexed(_srv._single_bounded, session, "core", odoo_version)
     # Backfill the decorator replacement note from the SSOT dict (the Cypher
     # leg returns NULL replacement; the human-readable note lives in Python).
     for r in records:
@@ -463,7 +503,14 @@ def _find_deprecated_usage(
     overflow = len(records) > LIST_PREVIEW_MAX_ITEMS
     if overflow:
         records = records[:LIST_PREVIEW_MAX_ITEMS]
-    return _format_deprecated_usage(records, odoo_version, overflow=overflow)
+    out = _format_deprecated_usage(records, odoo_version, overflow=overflow)
+    if catalogue_missing:
+        header, _, rest = out.partition("\n")
+        warning = not_indexed_warning(
+            "core", odoo_version, "deprecated API usage", "the Odoo source",
+        )
+        out = f"{header}\n├─ Status:      {NOT_INDEXED_STATUS}\n├─ {warning}\n{rest}"
+    return out
 
 
 _VALID_LINT_LANGUAGES = {"python", "javascript", "xml"}
