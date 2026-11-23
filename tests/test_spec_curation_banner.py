@@ -261,7 +261,7 @@ class TestLintCheckCompleteVersionNoBanner:
     def test_complete_version_no_pending_banner(self, banner_writer):
         """A fully curated version must not emit any pending-curation or NOT-clean-bill banner.
 
-        The V0.5 hybrid-matcher banner (_LINT_V0_BANNER) is always present; this test
+        The line-matcher banner (_LINT_BANNER) is always present; this test
         only asserts that the disclosure banners are absent.
         """
         import src.mcp.server as spec_tools

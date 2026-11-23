@@ -297,20 +297,17 @@ class TestFindDeprecatedUsage:
 
 
 class TestLintCheck:
-    def test_python_code_with_gettext_violation_flagged(
+    def test_rule_without_line_pattern_is_disclosed_not_guessed(
         self, spec_tools, seeded_spec_neo4j,
     ):
+        """A rule with no code_pattern is counted as not checked, never reported as a finding."""
         v_from, _ = seeded_spec_neo4j
-        # Seeded LintRule E8502 message contains 'Bad usage of _, _lt function'.
-        # V0 matcher is substring-on-message - the rule's message keyword
-        # 'gettext' / '_lt' / 'literal string' triggers the rule.
-        code = "name = _(\"Hello %s\" % user.name)"
+        # Seeded E8502 ('Bad usage of _, _lt function') carries no code_pattern.
+        code = "name = _(\"Hello %s\" % user.name)  # bad usage of _ function, literal"
         out = spec_tools._lint_check(code, v_from, language="python")
-        # The rule may or may not match - V0 contract is structured output.
-        # Header `lint_check(...)` always present (banner may prepend per WI-F6).
-        assert "lint_check(" in out
-        # Output must mention either 'no violations' or list a rule id.
-        assert "no violations" in out.lower() or "E8502" in out or "E" in out
+        assert "0 violations" in out
+        assert "E8502" not in out
+        assert out.splitlines()[-1] == "└─ Not checked: 1 of 1 rules have no line pattern"
 
     def test_clean_code_returns_no_violations(self, spec_tools, seeded_spec_neo4j):
         v_from, _ = seeded_spec_neo4j

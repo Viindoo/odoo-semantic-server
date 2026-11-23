@@ -671,3 +671,32 @@ DELEGATES_TO branch.)
 already deduplicates by name at each hop, so collapsing the write-side fan-out to one target does not
 change resolvability — it removes write-time noise and the `.single()` warning. CI is green; this
 amendment is the docs/governance reconciliation for the already-landed, already-correct writer Cypher.
+
+---
+
+## Amendment - D9 matcher: line patterns only, the fuzzy fallback is removed
+
+**Decision:** `lint_check` (python/javascript) reports a rule only where its `code_pattern` regex
+matches a line. A rule without a compilable `code_pattern` is not matched at all; the output ends
+with `Not checked: N of M rules have no line pattern`, so `no violations` is never read as a clean
+bill for those rules. Findings keep the `[pattern]` label (client agents read a `[pattern]` security
+hit as a finding); `[fuzzy]` no longer appears. The banner names the matcher "Line-pattern matcher".
+
+**Why:** the token-overlap fallback matched a rule when a line shared two words with the rule's
+message. The rules left without a pattern are the ones a single line cannot decide - a missing
+manifest key, a missing `super()` call, a reference to another file - and their message is written
+in the vocabulary of the correct code. On the curated 17.0-20.0 catalogues a correct `_inherit`
+extension was reported as W8115 "New model class is missing `_name`" and W8172 "`search()` override
+must return a recordset", and correct `create`/`write`/`copy` overrides that call `super()` were
+reported as W8161/W8162/W8176 "does not call `super()`". Where a rule names a removed API, its
+message also names the replacement, so a hit carried no information: at 10.0 a `models.Model` class
+with `fields.*` attributes fired W8110 "deprecated `_columns`" exactly as `_columns` did, and W8113
+"`osv.osv` base class" fired on `models.Model` but not on `osv.osv`; at 18.0 W8212 fired on
+`--gevent-port` exactly as on `--longpolling-port`; W8210 `group_operator` and W8192 `<tree>` fired
+on neither form.
+
+**Consequence:** rules that need the whole file or other modules stay unchecked by `lint_check`
+until V1 (real pylint-odoo, below) or a curated line pattern covers them; a regex that fails to
+compile is logged and counted as not checked. `tests/test_lint_matcher_unit.py` locks the rule:
+correct model code raises no finding against every 17.0-20.0 catalogue.
+

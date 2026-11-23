@@ -1288,8 +1288,9 @@ tracked. Each has bounded risk (not blocking merge); see ADR-0048 Amendment for 
 
 ## Deferred — Lint V1 + mini-AST checks (ADR-0048 D9 direction)
 
-These items are explicitly out of scope for the #271/#273 fix wave. V0.5 hybrid matcher fixes the
-false-green root cause. V1 requires separate infra design.
+These items are explicitly out of scope for the #271/#273 fix wave. The line-pattern matcher fixes the
+false-green root cause; rules without a line pattern are reported as not checked. V1 requires
+separate infra design.
 
 - [ ] **Lint V1 — real pylint-odoo per-era in isolated subprocess:** 3 pinned venv environments
   (era1 v8-v9 / era2 v10-v16 / era3 v17+) + sandbox (`setrlimit` CPU/mem, no-network) + `noqa`

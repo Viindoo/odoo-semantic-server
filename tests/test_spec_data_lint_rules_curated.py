@@ -429,9 +429,8 @@ class TestCodePatternDataIntegrity:
     def test_code_pattern_regex_compiles(self):
         """Every non-null code_pattern in every version file must compile via re.compile.
 
-        A broken regex in the data causes silent fallback to fuzzy matching for all
-        rules in that version during index-core. Compile-check at test time catches
-        typos early.
+        A broken regex in the data leaves its rule silently not checked by
+        lint_check. Compile-check at test time catches typos early.
         """
         failures = []
         for version, rule_id, pattern in self._all_rules_with_patterns():

@@ -3384,10 +3384,10 @@ from src.mcp.tools.session_tools import (  # noqa: E402,F401
 # bodies reach the hub through `srv.` at call time so monkeypatch.setattr(srv, ...)
 # keeps working.  The whole lint const/cache cluster (incl. the sole mutable
 # compiled-pattern cache, §2.7 - exactly one home) now lives solely in
-# tools/spec.py; _LINT_V0_BANNER is the only one tests import, re-exported here
+# tools/spec.py; _LINT_BANNER is the only one tests import, re-exported here
 # for path stability.
 from src.mcp.tools.spec import (  # noqa: E402,F401
-    _LINT_V0_BANNER,
+    _LINT_BANNER,
     _api_version_diff,
     _build_noqa_suppress,
     _compile_lint_pattern,
@@ -3395,7 +3395,6 @@ from src.mcp.tools.spec import (  # noqa: E402,F401
     _format_deprecated_usage,
     _lint_check,
     _lint_check_xml,
-    _lint_match_kind,
     _lookup_core_api,
     _match_lint_rule_lines,
     api_version_diff,
