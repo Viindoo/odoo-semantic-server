@@ -36,7 +36,25 @@
       "snippet_text": {
         "type": "string",
         "minLength": 1,
-        "description": "Code snippet illustrating the pattern."
+        "description": "Code snippet illustrating the pattern. Without an 'illustrative' marker every non-comment line is a line of the file_ref file at every Odoo version the pattern is served for."
+      },
+      "illustrative": {
+        "type": "object",
+        "required": ["reason", "anchor"],
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why snippet_text is not a verbatim quote of the file_ref file (condensed, composite or synthetic example)."
+          },
+          "anchor": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Python regex (multiline) that matches in the file_ref file at every Odoo version the pattern is served for; it names the idiom the snippet illustrates."
+          }
+        },
+        "description": "Optional marker: present when snippet_text is illustrative rather than quoted from file_ref. The anchor is what the catalogue tests look for in the real source instead of the snippet lines."
       },
       "gotchas": {
         "type": "array",

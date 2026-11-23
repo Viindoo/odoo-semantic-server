@@ -508,7 +508,10 @@ Want to add a new pattern to the catalogue? Patterns are stored in `src/data/pat
 - Language must be one of: `python`, `xml`, `js`
 - Include ≥3 specific gotchas (concrete API or edge case, not boilerplate)
 - NO Odoo Enterprise references (module paths, license markers, proprietary addons)
-- Optional: reference `core_symbol_names` (qualified API names like `odoo.api.depends`)
+- Optional: reference `core_symbol_names` (qualified API names like `odoo.api.depends`) - core symbols only, never addon classes
+- The pattern must be true at EVERY version of its `odoo_version_min`..`odoo_version_max` window: `file_ref` (`path:line`) exists there and holds the code; narrow the window, or add a per-window twin, when the idiom changes
+- `snippet_text` is quoted verbatim from `file_ref`, unless the entry carries `illustrative: {reason, anchor}` (condensed example; `anchor` is a regex that must match in the `file_ref` file)
+- `tests/test_pattern_catalogue_versions.py` checks all of this against the real checkout of every surveyed version (`OSM_ODOO_CHECKOUTS`)
 
 **Full policy:** [ADR-0009](docs/adr/0009-pattern-catalogue-community-contribution.md)
 
