@@ -424,7 +424,7 @@ export const faqs: FaqEntry[] = [
   {
     question: 'What is the difference between Odoo AI Agent Team and odoo-ls (language server)?',
     answer:
-      'odoo-ls is an IDE language server for syntax checking and autocompletion in a single local Odoo checkout. Odoo AI Agent Team is a Claude Code plugin that runs 8 specialist AI agents grounded on a cross-version knowledge graph covering 12 Odoo versions. Both can be used together: odoo-ls checks syntax in your editor while Odoo AI Agent Team handles semantic questions — what breaks if I change this field, what is the override chain, is this ORM path valid across versions.',
+      'odoo-ls is an IDE language server for syntax checking and autocompletion in a single local Odoo checkout. Odoo AI Agent Team is a Claude Code plugin that runs 8 specialist AI agents grounded on a cross-version knowledge graph covering 13 Odoo versions. Both can be used together: odoo-ls checks syntax in your editor while Odoo AI Agent Team handles semantic questions - what breaks if I change this field, what is the override chain, is this ORM path valid across versions.',
   },
   {
     question: 'What AI tools does Odoo AI Agent Team work with?',

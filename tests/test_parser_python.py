@@ -2369,3 +2369,36 @@ def test_parse_columns_update_call_captured(tmp_path, v8_module):
     fmap = {fld.name: fld for fld in result[0].fields}
     assert "ref" in fmap, "_columns.update() field 'ref' must be captured"
     assert "amount" in fmap
+
+
+@pytest.fixture
+def v20_base_module(tmp_path) -> ModuleInfo:
+    return ModuleInfo(
+        name="base", odoo_version="20.0", repo="odoo_20.0",
+        path=str(tmp_path), depends=[], version_raw="20.0.1.3",
+    )
+
+
+def test_v20_cached_model_definitions_are_indexed_as_models(tmp_path, v20_base_module):
+    """Odoo 20 defines res.currency, res.lang, res.country, website and uom.uom
+    on models.CachedModel (a Model subclass). A CachedModel class with its own
+    _name and no _inherit is a model definition; dropping it loses the model's
+    defining module and every field and method it declares."""
+    f = write_py(tmp_path, "res_currency.py", """
+        from odoo import fields, models
+
+        class ResCurrency(models.CachedModel):
+            _name = 'res.currency'
+            _description = 'Currency'
+
+            name = fields.Char()
+            rate = fields.Float()
+
+            def _get_rates(self, company, date):
+                return {}
+    """)
+    (model,) = parse_file(f, v20_base_module)
+    assert model.name == "res.currency"
+    assert model.is_abstract is False and model.is_transient is False
+    assert {fld.name for fld in model.fields} >= {"name", "rate"}
+    assert "_get_rates" in {m.name for m in model.methods}

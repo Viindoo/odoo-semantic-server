@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from src.constants import SURVEYED_MAX_MAJOR
 from src.indexer.models import ModuleInfo
 from src.indexer.parser_python import parse_file as parse_python_file
 from src.indexer.parser_qweb import parse_file as parse_qweb_file
@@ -30,7 +31,7 @@ from tests._odoo_checkouts import checkout_root
 
 pytestmark = pytest.mark.odoo_source
 
-MAJORS = list(range(14, 20))
+MAJORS = list(range(14, SURVEYED_MAX_MAJOR + 1))
 
 
 def _addon_dir(major: int, name: str) -> Path:

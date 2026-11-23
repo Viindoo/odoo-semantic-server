@@ -180,11 +180,11 @@ def test_curated_table_matches_parsed_fixture_per_version(major, tmp_path):
 
 def test_ci_layer_covers_every_surveyed_major_with_no_silent_gaps():
     """T7 CI layer guard - business rule: this file's parametrization must
-    actually exercise the full [8, 19] surveyed range. A discovery bug that
+    actually exercise the full [8, 20] surveyed range. A discovery bug that
     silently narrows SURVEYED_MAJORS, or a directory move that orphans the
     fixtures, must fail here rather than quietly reducing the alarm's coverage.
     """
-    assert SURVEYED_MAJORS == list(range(8, 20))
+    assert SURVEYED_MAJORS == list(range(8, 21))
     fixture_majors = {
         int(p.stem.split("_")[0][1:])
         for p in FIXTURE_DIR.glob("v*_common.py")

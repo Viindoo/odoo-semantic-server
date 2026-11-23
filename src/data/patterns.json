@@ -280,6 +280,7 @@
       "mode='eval' is the default; pass 'exec' for statement evaluation (rare in user code)"
     ],
     "odoo_version_min": "19.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["safe_eval"],
     "category": "production"
@@ -295,6 +296,7 @@
       "formatted_read_group adds rendering metadata for kanban/dashboard — pick by use case"
     ],
     "odoo_version_min": "19.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["read_group"],
     "category": "production"
@@ -310,6 +312,7 @@
       "self.env.cr.execute() does NOT auto-flush — call self.env.flush_all() if reading data just written via ORM"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -445,6 +448,7 @@
       "tracking_disable=True suppresses mail.thread audit — useful for bulk create perf"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -475,6 +479,7 @@
       "Audit log: sudo() bypass is invisible in CRUD log — log explicitly when sudo() critical actions"
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -490,6 +495,7 @@
       "Empty groups => global rule applied to ALL users (rare); always scope groups for personal/team rules"
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -505,6 +511,7 @@
       "Composite UNIQUE on (name, company_id) — multi-company friendly; UNIQUE(name) breaks multi-company"
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -670,6 +677,7 @@
       "Only ORM models use @api.private effectively — OWL component methods don't need it"
     ],
     "odoo_version_min": "19.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -700,6 +708,7 @@
       "Combining selection_add= with callable parent base does NOT work — pick one"
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -715,6 +724,7 @@
       "Don't mix company_dependent with required=True — Odoo raises (no global default possible)"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -775,6 +785,7 @@
       "Long-running cron blocks worker — split into chunks + commit periodically (cr.commit()) to avoid timeout"
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -790,6 +801,7 @@
       "Computed values from props: use getter `get total() { return this.props.x * 2 }` — re-runs on prop change"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -805,6 +817,7 @@
       "Don't import orm directly from a module — useService is required for proper teardown / mock"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -880,6 +893,7 @@
       "`self.env.context.get('active_ids')` can be a list of IDs from multi-select; `active_id` is only the last-clicked record in a list view and may differ from `active_ids[0]` when records are selected in reverse order — always prefer `active_ids` for batch wizards."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["odoo.models.TransientModel"],
     "category": "production"
@@ -895,6 +909,7 @@
       "Returning an `ir.actions.act_window` dict that opens another model's form view (e.g. to show the created invoice) requires setting both `res_model` AND `res_id` for a single-record form view; omitting `res_id` opens a new empty form."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -940,6 +955,7 @@
       "When `perm_read`, `perm_write`, `perm_create`, `perm_unlink` are all omitted, the rule defaults to applying only to read; explicitly declare all four perms you intend to restrict to avoid silently missing write/unlink protection."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -955,6 +971,7 @@
       "Deleting a company in a multi-company setup does NOT cascade-delete its `ir.property` rows — stale property values for a deleted company survive and can silently re-appear if a new company is created with the same ID."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["odoo.fields.Many2one"],
     "category": "production"
@@ -1015,6 +1032,7 @@
       "Use `onWillUnmount` to clean up DOM event listeners registered in `onMounted`; forgetting cleanup causes memory leaks for components that mount/unmount frequently (e.g. modal dialogs)."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -1030,6 +1048,7 @@
       "`useState(this.env.dialogData)` subscribes this component to the env-level reactive object — multiple components reading the same `useState`-wrapped object share state updates; changes in one component re-render ALL subscribers."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -1075,6 +1094,7 @@
       "The CSV `id` column must be globally unique across all installed addons — duplicate IDs in different modules silently overwrite each other during install; prefix with the module name (e.g. `access_sale_order_manager`) to avoid collisions."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1090,6 +1110,7 @@
       "Portal rules apply ON TOP OF model-level ACL — a portal user who passes the `ir.rule` filter but lacks `perm_read=1` in `ir.model.access.csv` still gets `AccessError`; both ACL and record rules must allow access."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1120,6 +1141,7 @@
       "Mixing `'|'` and `'&'` prefixes without careful counting causes silent logic errors — draw the expression tree first; Odoo's domain normaliser will not warn about unbalanced prefix operators."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1195,6 +1217,7 @@
       "`self.with_context(**so_ctx).message_post(...)` passes the modified context to super — NOT `super(...).message_post(self.with_context(...), ...)` (wrong signature); the context must be applied to `self` before the super call."
     ],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["odoo.addons.mail.models.mail_thread.MailThread.message_post"],
     "category": "production"
@@ -1324,6 +1347,7 @@
       "The `'css'` key at top level is v9 syntax (`'css': ['static/src/css/...']`) — in v10+ use `'assets'` dict with asset bundles; the `'css'` key is silently ignored in v10+"
     ],
     "odoo_version_min": "10.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1340,6 +1364,7 @@
       "`order.update({...})` is preferred over repeated `order.field = value` assignments inside a loop because it batches a single write call per record instead of N writes"
     ],
     "odoo_version_min": "10.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["odoo.api.depends"],
     "category": "production"
@@ -1356,6 +1381,7 @@
       "`<attribute name=\"editable\"/>` with no value REMOVES the attribute — to set a value use `<attribute name=\"editable\">bottom</attribute>`"
     ],
     "odoo_version_min": "10.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1372,6 +1398,7 @@
       "`@api.multi` decorator was removed in v14 (noqa in v11-v13) — code that still uses `@api.multi` in v11 emits deprecation warnings and breaks in v14"
     ],
     "odoo_version_min": "11.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1388,6 +1415,7 @@
       "Lambda defaults are NOT copied when the record is duplicated by default — if your sequence should be regenerated on copy, also override `copy()` or add `copy=False` to the field"
     ],
     "odoo_version_min": "11.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1420,6 +1448,7 @@
       "The order in `_inherit` list matters for MRO — put `mail.thread` before `mail.activity.mixin` to avoid method resolution conflicts in the chatter setup hooks"
     ],
     "odoo_version_min": "11.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1436,6 +1465,7 @@
       "Fields on the parent model appear on the child as if declared locally — you can override them in `_columns`/class body, but the ORM may still write to the parent table; always test with `ir.model.fields` inspection after override"
     ],
     "odoo_version_min": "12.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1452,6 +1482,7 @@
       "`self._context` inside `@api.model` is a frozen dict — never mutate it; use `self.with_context(key=val)` to create a new environment with an extended context"
     ],
     "odoo_version_min": "12.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["odoo.api.model"],
     "category": "production"
@@ -1468,6 +1499,7 @@
       "`@api.one` decorator (v12 pattern) was removed in v13 — rewrite `_compute_priority` to loop `for picking in self:` explicitly if migrating to v13+"
     ],
     "odoo_version_min": "12.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1484,6 +1516,7 @@
       "f-strings require Python 3.6+ — v12 runs Python 3.6; v11 runs Python 3.5 where f-strings are also available; but v9-v10 are Python 2/3 hybrid so f-strings are NOT safe in addons targeting those versions"
     ],
     "odoo_version_min": "12.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1500,6 +1533,7 @@
       "`force_company` context key (v13) sets the company context for journal/sequence lookups — it was replaced by `allowed_company_ids` in v14; using `force_company` in v14+ code silently falls back to the user's primary company"
     ],
     "odoo_version_min": "13.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1549,6 +1583,7 @@
       "In v14, the `@api.multi` decorator is removed — any addon importing it from `odoo.api` will get an `ImportError`; remove all `@api.multi` decorators when upgrading to v14"
     ],
     "odoo_version_min": "14.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1599,6 +1634,7 @@
       "`Dropdown.props` must be declared as a static property for prop validation — omitting it in v15 silently accepts any props; in strict mode (v16+) missing prop declarations cause runtime warnings"
     ],
     "odoo_version_min": "15.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -1615,6 +1651,7 @@
       "The position bus (`POSITION_BUS`) is shared within the component subtree via `useSubEnv` — multiple nested popovers reuse the same bus; triggering 'update' on parent also repositions all children"
     ],
     "odoo_version_min": "15.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -1631,6 +1668,7 @@
       "Patching a getter (like `get columns()`) via `patch()` works in v15 but requires the patch object to define it as a getter too — defining it as a regular method makes it return the function instead of calling it"
     ],
     "odoo_version_min": "15.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -1647,6 +1685,7 @@
       "`position=\"after\"` inserts the new node as the NEXT sibling — if the target filter is the last in its group, the new filter appears correctly; but if there's a `<separator/>` after the target, your filter appears between the target and the separator"
     ],
     "odoo_version_min": "10.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1663,6 +1702,7 @@
       "When `store=True` fields are recomputed, Odoo runs a SQL UPDATE for each record in the batch — for large recordsets (>1000 records) this can cause table locks; use `--limit-time-cpu` and batch manually if running manual recomputes"
     ],
     "odoo_version_min": "10.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": ["odoo.api.depends"],
     "category": "production"
@@ -1695,6 +1735,7 @@
       "CSV header must be exactly `id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink` in that order — Odoo parses by column index, not header name; wrong column order silently assigns wrong permissions"
     ],
     "odoo_version_min": "12.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1711,6 +1752,7 @@
       "`index=True` on a Many2one FK is almost always correct — without it, filtering or grouping by `order_id` does a full table scan; Odoo does NOT add FK indexes automatically unlike most ORMs"
     ],
     "odoo_version_min": "13.0",
+    "odoo_version_max": "19.0",
     "language": "python",
     "core_symbol_names": [],
     "category": "production"
@@ -1727,6 +1769,7 @@
       "When adding `optional` to an existing column via `<xpath position=\"attributes\">`, the attribute must be added BEFORE the view is cached — a server restart or module upgrade is needed to see the change"
     ],
     "odoo_version_min": "15.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1747,6 +1790,7 @@
       "Register the widget in `web.assets_backend` (not `web.assets_frontend`) for backend views; frontend (portal/website) widgets go in `web.assets_frontend`"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "core_symbol_names": [],
     "category": "production"
@@ -1767,6 +1811,7 @@
       "Template must be included in the same `<templates>` bundle loaded in `web.assets_backend`; cross-bundle template references fail silently and render an empty widget"
     ],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "xml",
     "core_symbol_names": [],
     "category": "production"
@@ -1778,6 +1823,7 @@
     "snippet_text": "<!-- valid: auto-bound method ref -->\n<button t-on-click=\"onSave\"/>\n<!-- valid: explicit this in an arrow -->\n<button t-on-click=\"() => this.onSave(ev)\"/>\n<!-- BUG: bare free identifier resolves to nothing at render -->\n<button t-on-click=\"() => onSave()\"/>",
     "gotchas": ["OWL injects this=component into the template context, so () => this.foo() is valid (not a stale-this bug)", "t-on-click=\"foo\" auto-binds to the component method - also safe", "The real bug is a bare free identifier () => onFoo() where onFoo is not on the component, props, or a slot variable"],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "category": "production"
   },
@@ -1788,6 +1834,7 @@
     "snippet_text": "// preserve reactivity when the service is not already reactive\nthis.ui = useState(useService(\"ui\"));",
     "gotchas": ["v16 requires wrapping useState(useService(\"ui\")) or size/state changes never re-render", "v17/v18 keep useState(useService(...)) as the canonical form", "v19+ some services are already reactive() so a plain useService() re-renders - verify per service"],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "category": "production"
   },
@@ -1798,6 +1845,7 @@
     "snippet_text": "// lazy-load the audited editor in onWillStart, build stable props once\nsetup() {\n    onWillStart(async () => {\n        await loadBundle('web_editor.backend_assets_wysiwyg');\n    });\n}",
     "gotchas": ["Raw contenteditable bypasses OdooEditor sanitisation (an XSS / data-corruption surface)", "Mounting the editor with fresh props each render remounts it and drops the captured instance", "Build stable props once in setup and lazy-load the bundle in onWillStart"],
     "odoo_version_min": "17.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "category": "production"
   },
@@ -1808,6 +1856,7 @@
     "snippet_text": "<Dialog title=\"'Title'\">\n    <!-- body goes in the default slot, no t-set-slot -->\n    <p>Body content</p>\n    <t t-set-slot=\"footer\"><button t-on-click=\"confirm\">OK</button></t>\n</Dialog>",
     "gotchas": ["The default slot of Dialog IS the body; wrapping it in t-set-slot=\"body\" targets a slot Dialog never renders", "Only header and footer are named slots", "v18/v19 reorder the body/footer markup but the slot names are unchanged"],
     "odoo_version_min": "16.0",
+    "odoo_version_max": "19.0",
     "language": "js",
     "category": "production"
   },
@@ -1912,5 +1961,521 @@
     "odoo_version_min": "16.0",
     "language": "python",
     "category": "test"
+  },
+  {
+    "pattern_id": "owl3-use-props-types",
+    "intent_keywords": ["owl", "owl3", "props", "useProps", "t", "types", "validation", "component", "schema"],
+    "file_ref": "addons/web/static/src/core/tooltip/tooltip.js:5",
+    "snippet_text": "import { Component, t, useProps } from \"@odoo/owl\";\n\nexport class Tooltip extends Component {\n    static template = \"web.Tooltip\";\n    props = useProps({\n        close: t.function(),\n        tooltip: t.string().optional(),\n        template: t.string().optional(),\n        info: t.any().optional(),\n    });\n}",
+    "gotchas": [
+      "The props schema is an instance field, `props = useProps({...})`, built from the `t` validators exported by @odoo/owl; every prop the component accepts is listed in it.",
+      "Optionality and defaults sit on the validator: `t.string().optional()` marks a prop optional and `t.boolean().optional(false)` gives it the default `false` (dialogProps in core/dialog/dialog.js).",
+      "Share a schema between components by exporting a const and spreading it: `{...standardFieldProps, autocomplete: t.string().optional()}` (views/fields/char/char_field.js).",
+      "Callbacks and slots are validated like any other prop: `t.function()` for a handler, `t.object({default: t.object(), footer: t.object().optional()})` for slots."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "js",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-proxy-and-signal-state",
+    "intent_keywords": ["owl", "owl3", "proxy", "signal", "reactive", "state", "reactivity", "component", "useState"],
+    "file_ref": "addons/web/static/src/core/dialog/dialog.js:106",
+    "snippet_text": "import { Component, onWillDestroy, proxy, signal, t, useListener, useProps } from \"@odoo/owl\";\n// ...\n        this.isMovable = this.props.header;\n        if (this.isMovable) {\n            this.position = proxy({ left: 0, top: 0 });\n            useDialogDraggable({\n                enable: () => !this.uiService.isSmall,\n                ref: this.modalRef,\n                elements: \".modal-content\",\n                handle: \".modal-header\",\n                ignore: \"button, input\",\n                edgeScrolling: { enabled: false },\n                onDrop: ({ top, left }) => {\n                    this.position.left += left;\n                    this.position.top += top;\n                },\n            });\n            const throttledResize = throttleForAnimation(this.onResize.bind(this));\n            useListener(window, \"resize\", throttledResize);\n        }",
+    "gotchas": [
+      "Owl 3 exports no `useState`; reactive local state is `proxy(plainObject)` (`this.position = proxy({ left: 0, top: 0 })`) and a single reactive value is `signal(initial)`, written with `.set(value)` and read by calling it.",
+      "Mutate properties of the proxy (`this.position.left += left`); assigning a new object to the field itself (`this.position = {...}`) leaves the template reading a plain, non-reactive object.",
+      "Wrap an object shared through the env with `proxy(this.env.dialogData)` so that every component reading it re-renders when it changes.",
+      "Create proxies and signals in `setup()` or as class fields so they belong to the component instance; module-level ones are shared by every instance."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "js",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-signal-ref-onmounted",
+    "intent_keywords": ["owl", "owl3", "signal.ref", "t-ref", "onMounted", "onPatched", "useListener", "dom", "element", "useRef"],
+    "file_ref": "addons/web/static/src/views/fields/char/char_field.js:27",
+    "snippet_text": "import { Component, onMounted, onPatched, signal, t, useListener, useProps } from \"@odoo/owl\";\n// ...\nexport class CharField extends Component {\n    static template = \"web.CharField\";\n// ...\n    props = useProps(charFieldProps);\n    input = signal.ref();\n\n    setup() {\n        if (this.props.dynamicPlaceholder) {\n            this.dynamicPlaceholder = useDynamicPlaceholder(this.input);\n            useListener(document, \"keydown\", this.dynamicPlaceholder.onKeydown);\n            const updateModel = () =>\n                this.dynamicPlaceholder.updateModel(\n                    this.props.dynamicPlaceholderModelReferenceField\n                );\n            onMounted(updateModel);\n            onPatched(updateModel);\n        }\n        useInputField({\n            ref: this.input,\n            getValue: () => this.props.record.data[this.props.name] || \"\",\n            parse: (v) => this.parse(v),\n        });",
+    "gotchas": [
+      "A DOM element reference is a class field `input = signal.ref()`; the template binds it with `t-ref=\"this.input\"` and code reads the element by calling it, `this.input()`.",
+      "`this.input()` is empty until the element is rendered, so read it inside `onMounted`/`onPatched` callbacks or event handlers (`if (this.input()) {...}`), never synchronously in `setup()`.",
+      "Owl 3 exports no `useRef`; pass the signal itself to helpers that need the element (`useInputField({ ref: this.input, ... })`).",
+      "Register DOM listeners with `useListener(target, event, handler)` so they are tied to the component lifetime.",
+      "Pair `onMounted(fn)` with `onPatched(fn)` when the work must also run after later renders."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "js",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-template-this-prefix",
+    "intent_keywords": ["owl", "owl3", "template", "this", "t-on-click", "t-ref", "props", "qweb", "handler", "t-att"],
+    "file_ref": "addons/web/static/src/views/fields/char/char_field.xml:4",
+    "snippet_text": "    <t t-name=\"web.CharField\">\n        <t t-if=\"this.props.readonly\">\n            <span t-out=\"this.formattedValue\" />\n        </t>\n        <t t-else=\"\">\n            <input\n                class=\"o_input\"\n                t-att-class=\"{\n                    'o_field_translate': this.isTranslatable,\n                    'o_field_placeholder': this.hasDynamicPlaceholder\n                }\"\n                t-att-id=\"this.props.id\"\n                t-att-type=\"this.props.isPassword ? 'password' : 'text'\"\n                t-att-autocomplete=\"this.props.autocomplete or (this.props.isPassword ? 'new-password' : 'off')\"\n                t-att-maxlength=\"this.maxLength > 0 and this.maxLength\"\n                t-att-placeholder=\"this.props.placeholder\"\n                t-on-blur=\"this.onBlur\"\n                t-ref=\"this.input\"\n            />",
+    "gotchas": [
+      "A template expression reaches the component through `this`: `this.props.readonly`, `this.formattedValue`, `t-on-blur=\"this.onBlur\"`, `t-ref=\"this.input\"`. A bare identifier resolves only to a template variable (`t-set`, `t-foreach`, slot or `t-call` parameter).",
+      "An event handler is the expression itself, `t-on-click=\"this.onClick\"`, or an arrow function, `t-on-click=\"() => this.props.close()\"`; a bare `onClick` is looked up among template variables, not on the component.",
+      "Use `this.` for every prop in a child-component call too: `fieldName=\"this.props.name\"`, `record=\"this.props.record\"`.",
+      "Use `t-out` to render text and markup; `t-esc` is a deprecated alias that Owl logs a warning for."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-field-widget-register",
+    "intent_keywords": ["owl", "owl3", "field", "widget", "registry", "fields", "useProps", "standardFieldProps", "record.update", "extractProps"],
+    "file_ref": "addons/web/static/src/views/fields/boolean/boolean_field.js:12",
+    "snippet_text": "import { Component, proxy, useEffect, useProps } from \"@odoo/owl\";\nimport { CheckBox } from \"@web/core/checkbox/checkbox\";\nimport { _t } from \"@web/core/l10n/translation\";\nimport { registry } from \"@web/core/registry\";\nimport { useService } from \"@web/core/utils/hooks\";\nimport { standardFieldProps } from \"../standard_field_props\";\n\nexport const booleanFieldProps = {\n    ...standardFieldProps,\n};\n\nexport class BooleanField extends Component {\n    static template = \"web.BooleanField\";\n    static components = { CheckBox };\n    props = useProps(booleanFieldProps);\n\n    setup() {\n        this.ui = useService(\"ui\");\n        this.state = proxy({});\n        useEffect(() => {\n            this.state.value = this.props.record.data[this.props.name];\n        });\n    }\n\n    get displayAsToggle() {\n        return this.ui.isSmall;\n    }\n\n    /**\n     * @param {boolean} newValue\n     */\n    onChange(newValue) {\n        this.state.value = newValue;\n        this.props.record.update({ [this.props.name]: newValue });\n    }\n}\n\nexport const booleanField = {\n    component: BooleanField,\n    displayName: _t(\"Checkbox\"),\n    supportedTypes: [\"boolean\"],\n    isEmpty: () => false,\n};\n\nregistry.category(\"fields\").add(\"boolean\", booleanField);",
+    "gotchas": [
+      "A field widget declares `props = useProps({...standardFieldProps, ...})`; the standard props are `id`, `name`, `readonly` and `record`, and the value is read from `this.props.record.data[this.props.name]`.",
+      "Commit a change with `this.props.record.update({ [this.props.name]: newValue })`; write through `record.update`, not by assigning into `record.data`.",
+      "Register the definition object under the `fields` registry category: `registry.category(\"fields\").add(\"boolean\", booleanField)`; `supportedTypes` lists the field types the widget may bind to.",
+      "Extra props that come from view-arch attributes or options are produced by `extractProps: ({ attrs, options }) => ({...})` on the definition object and must be declared in the props schema (see charField in views/fields/char/char_field.js).",
+      "Keep transient UI state in `proxy({})` and sync it from the record with `useEffect` (`this.state.value = this.props.record.data[this.props.name]`)."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "js",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-dialog-slots",
+    "intent_keywords": ["owl", "owl3", "dialog", "slot", "t-set-slot", "footer", "header", "body", "modal", "confirmation"],
+    "file_ref": "addons/web/static/src/core/confirmation_dialog/confirmation_dialog.xml:4",
+    "snippet_text": "  <t t-name=\"web.ConfirmationDialog\">\n    <Dialog size=\"this.props.size\" title=\"this.props.title\" modalRef=\"this.modalRef\">\n      <p t-out=\"this.props.body\" class=\"text-prewrap mb-0\"/>\n      <t t-set-slot=\"footer\">\n        <button class=\"btn\" t-att-class=\"this.props.confirmClass\" t-on-click=\"this._confirm\" t-out=\"this.props.confirmLabel\" data-hotkey=\"q\" data-available-offline=\"\"/>\n        <button t-if=\"this.props.cancel\" class=\"btn btn-secondary\" t-on-click=\"this._cancel\" t-out=\"this.props.cancelLabel\" data-hotkey=\"x\" data-available-offline=\"\"/>\n      </t>\n    </Dialog>\n  </t>",
+    "gotchas": [
+      "The default slot of `Dialog` is the body: put the content directly inside `<Dialog>`. Only `header` and `footer` are named slots (`t-set-slot=\"footer\"`); `body` is not a slot name.",
+      "Slot content and every handler inside it use `this.` for the owning component: `t-on-click=\"this._confirm\"`, `t-out=\"this.props.confirmLabel\"`.",
+      "Dialog props are expressions: `size=\"'sm'\"` passes a literal, `size=\"this.props.size\"` passes a value.",
+      "Pass `modalRef` to share the dialog element with the owner (`modalRef=\"this.modalRef\"`); `Dialog` otherwise creates its own `signal.ref()`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-use-service-orm",
+    "intent_keywords": ["owl", "owl3", "useService", "orm", "rpc", "onWillStart", "searchRead", "service", "call"],
+    "file_ref": "addons/web/static/src/core/model_selector/model_selector.js:24",
+    "snippet_text": "import { useService } from \"@web/core/utils/hooks\";\n// ...\nimport { Component, onWillStart, t, useProps } from \"@odoo/owl\";\n// ...\n    setup() {\n        this.orm = useService(\"orm\");\n\n        onWillStart(async () => {\n            if (!this.props.models) {\n                this.models = await this._fetchAvailableModels();\n            } else {\n                this.models = await this.orm.call(\"ir.model\", \"display_name_for\", [\n                    this.props.models,\n                ]);\n            }",
+    "gotchas": [
+      "Call `useService(\"orm\")` in `setup()`, outside any callback or condition: the hook reads the component scope and throws `Service orm is not available` when the service is not in the env.",
+      "Load data in `onWillStart(async () => {...})` so the first render waits for it; calling `this.orm.call(model, method, args)` from `setup()` directly returns a promise nobody awaits.",
+      "The `orm` object offers `call`, `read`, `searchRead`, `searchCount`, `create`, `write`, `unlink`, `webSearchRead` and `webReadGroup` (core/orm_plugin.js); use it instead of `fetch` against a `/web/dataset/...` route.",
+      "Plugins are reached with `usePlugin(Class)`; `useService(name)` serves the services registered in the `services` registry category."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "js",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "owl3-plugin-class",
+    "intent_keywords": ["owl", "owl3", "plugin", "usePlugin", "Plugin", "services", "service", "useScope", "global"],
+    "file_ref": "addons/web/static/src/core/effects/effect_plugin.js:68",
+    "snippet_text": "export class EffectPlugin extends Plugin {\n    /** @private */\n    overlay = usePlugin(OverlayPlugin);\n    /** @private */\n    scope = useScope();\n\n    /**\n     * @param {Object} [params] various params depending on the type of effect\n     * @param {string} [params.type=\"rainbow_man\"] the effect to display\n     */\n    add(params = {}) {\n        const type = params.type || \"rainbow_man\";\n        const effect = effectRegistry.get(type);\n        const { Component, props } = this.scope.run(() => effect(params)) || {};\n        if (Component) {\n            const remove = this.overlay.add(Component, {\n                ...props,\n                close: () => remove(),\n            });\n        }\n    }\n}\n\nservices.add(EffectPlugin);",
+    "gotchas": [
+      "A global service is a class extending `Plugin`; dependencies are class fields built with `usePlugin(OtherPlugin)` and `useScope()`, not a `dependencies: [...]` array.",
+      "Register the class in the `services` resource (`services.add(EffectPlugin)`) from @web/core/services; the framework starts it with the others.",
+      "Components and other plugins get the instance with `usePlugin(EffectPlugin)`; `useService(\"effect\")` keeps working for code that is not converted yet.",
+      "Run code that needs the plugin scope through `this.scope.run(() => ...)` so hooks used inside it find their scope."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "js",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "models-constraint-v20",
+    "intent_keywords": ["constraint", "models.Constraint", "sql", "unique", "check", "database", "_sql_constraints", "uniq"],
+    "file_ref": "addons/sale/models/res_company.py:30",
+    "snippet_text": "class ResCompany(models.Model):\n    _inherit = \"res.company\"\n    _check_company_auto = True\n    _check_quotation_validity_days = models.Constraint(\n        \"CHECK(quotation_validity_days >= 0)\",\n        \"You cannot set a negative number for the default quotation validity. Leave empty (or 0) to\"\n        \" disable the automatic expiration of quotations.\",\n    )",
+    "gotchas": [
+      "A database constraint is a class attribute holding `models.Constraint(definition, message)`; its name must start with `_` (`_check_quotation_validity_days`) and the database identifier is `<table>_<name>`.",
+      "`_sql_constraints = [...]` is ignored: the registry logs `Model attribute '_sql_constraints' is no longer supported, please define models.Constraint on the model.` (odoo/orm/model_classes.py).",
+      "The definition is raw SQL (`CHECK(quotation_validity_days >= 0)`, `UNIQUE(name, company_id)`); a composite UNIQUE on `(name, company_id)` keeps a multi-company model valid, `UNIQUE(name)` does not.",
+      "Python-level validation of several fields still belongs in an `@api.constrains` method; a `models.Constraint` can only express what PostgreSQL can check."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "ormcache-from-odoo-api-v20",
+    "intent_keywords": ["ormcache", "cache", "api.ormcache", "invalidate", "registry", "memoize", "stable"],
+    "file_ref": "addons/http_routing/models/ir_http.py:627",
+    "snippet_text": "from odoo import api, exceptions, models, tools\n# ...\n    @api.model\n    @api.ormcache('path', 'query_args', cache='routing.rewrites')\n    def url_rewrite(self, path, query_args=None):",
+    "gotchas": [
+      "`ormcache` is a member of `odoo.api`: write `@api.ormcache('path', 'query_args', cache='routing.rewrites')`; `from odoo.tools import ormcache` raises a DeprecationWarning (`Since 20.0 import ormcache from odoo.api`, odoo/tools/__init__.py).",
+      "The decorator arguments are strings evaluated against the method signature (`@ormcache('model_name', 'mode')` for `def _compute_domain(self, model_name, mode=\"read\")`); they build the cache key.",
+      "`cache='stable'` selects the cache named `stable`, which `CachedModel` and `ir.access` use and which `transaction.invalidate_ormcache('stable')` clears.",
+      "A cached method must never return a recordset: the cursor behind it is closed later (odoo/orm/cache.py)."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "read-group-tuples-v20",
+    "intent_keywords": ["read_group", "_read_group", "aggregate", "groupby", "sum", "tuples", "having", "grouping", "report"],
+    "file_ref": "addons/sale/models/product_product.py:33",
+    "snippet_text": "        for product, product_uom_qty in self.env[\"sale.report\"]._read_group(\n            domain, [\"product_id\"], [\"product_uom_qty:sum\"]\n        ):\n            r[product.id] = product_uom_qty\n        for product in self:",
+    "gotchas": [
+      "`read_group(domain, groupby=(), aggregates=(), having=(), offset=0, limit=None, order=None)` returns a list of tuples: the group values first, then the aggregates, in the order requested (odoo/orm/models.py).",
+      "Many2one group values come back as recordsets from `_read_group` and as ids from `read_group`; `product, product_uom_qty` unpacks `groupby=['product_id']`, `aggregates=['product_uom_qty:sum']`.",
+      "Each aggregate is `'field:agg'` with a PostgreSQL aggregate, `count_distinct` or `recordset`; a having domain filters on those aggregate names.",
+      "Use `formatted_read_group(domain, groupby, aggregates, ...)` (addons/web) when a client needs dictionaries with display values instead of tuples."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "sudo-with-user-check-access-v20",
+    "intent_keywords": ["sudo", "with_user", "check_access", "AccessError", "portal", "access", "token", "impersonate"],
+    "file_ref": "addons/portal/controllers/mail.py:42",
+    "snippet_text": "            record_sudo = request.env[model].sudo().browse(res_id).exists()\n            try:\n                record_sudo.with_user(uid).check_access('read')\n            except AccessError:\n                if record_sudo.access_token and access_token and consteq(record_sudo.access_token, access_token):",
+    "gotchas": [
+      "`sudo()` runs as superuser and skips every access rule; narrow it to the one recordset that needs it (`request.env[model].sudo().browse(res_id).exists()`) and keep the rest of the code in the caller's rights.",
+      "`records.with_user(uid).check_access('read')` asks whether that user may perform the operation and raises `AccessError` when not; operations are `'read'`, `'write'`, `'create'` and `'unlink'`.",
+      "`check_access(operation)` is the single access check on a recordset (there is no `check_access_rights` or `check_access_rule`); on an empty recordset it checks the model-level permission.",
+      "Catch `AccessError` only around the check, then decide explicitly (access token, redirect) instead of falling back to `sudo()` silently."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "has-access-filtered-access-v20",
+    "intent_keywords": ["has_access", "_filtered_access", "access", "boolean", "portal", "counter", "sudo", "permission"],
+    "file_ref": "addons/portal/controllers/portal.py:216",
+    "snippet_text": "        for counter, category in counters.items():\n            model_name, domain, access = self._prepare_portal_counter_values(counter)\n            count = 0\n            if model_name:\n                Model = request.env[model_name].sudo(request.env.su or access == 'sudo')\n                if access == 'sudo' or not isinstance(access, str) or Model.has_access(access):\n                    # Need precise count for alerts and discuss unread messages, else\n                    # only need to know if there's one matching record or not to display the card.\n                    precise_count = counter == 'discuss_count' or category == \"alert\"\n                    count = Model.search_count(domain, limit=None if precise_count else 1)",
+    "gotchas": [
+      "`records.has_access(operation)` returns a boolean for the current user and is consistent with `check_access(operation)`, which raises instead; use it for a branch (`Model.has_access(access)`), not for security-critical writes.",
+      "`records._filtered_access(operation)` returns the subset of the recordset the user may use, equivalent to `filtered(lambda r: r.has_access(operation))` in one query.",
+      "A superuser environment (`env.su`) always passes; `request.env[model].sudo(request.env.su or access == 'sudo')` shows the conditional-sudo form.",
+      "An empty recordset answers for the model in general: `Model.browse().has_access('read')`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "cached-model-v20",
+    "intent_keywords": ["CachedModel", "cache", "master data", "ormcache", "stable", "_cached_data_fields", "uom", "currency"],
+    "file_ref": "addons/uom/models/uom_uom.py:17",
+    "snippet_text": "class UomUom(models.CachedModel):\n    _name = 'uom.uom'\n    _description = 'Product Unit of Measure'\n    _parent_name = 'relative_uom_id'\n    _parent_store = True\n    _order = 'sequence, relative_uom_id, id'\n\n    # master data: a handful of records, read on every price computation, and\n    # almost never written\n    @property\n    def _cached_data_fields(self):\n        return ('name', 'active', 'relative_uom_id', 'relative_factor', 'factor', 'related_uom_ids')",
+    "gotchas": [
+      "Inherit `models.CachedModel` for master data that is read on every operation and rarely written (uom, currency, language, company); the ORM keeps the listed fields in the `stable` cache.",
+      "`_cached_data_fields` lists the fields to cache and `_cached_data_domain` restricts the records; the cached fields must not depend on other models or on the context.",
+      "The cache is cleared on write to a cached field (`_clear_cache_on_fields`), so keep the cached field list short.",
+      "`CachedModel` is meant for Python inheritance (`_register = False`): it is not a model of its own."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "card-view-kanban-card-id-v20",
+    "intent_keywords": ["card", "kanban", "card_id", "view", "template", "mobile", "t-name", "ir.ui.view", "card view"],
+    "file_ref": "addons/stock/views/stock_picking_batch_views.xml:118",
+    "snippet_text": "    <record id=\"stock_picking_batch_card\" model=\"ir.ui.view\">\n        <field name=\"name\">stock.picking.batch.card</field>\n        <field name=\"model\">stock.picking.batch</field>\n        <field name=\"arch\" type=\"xml\">\n            <card>\n                <field name=\"company_id\"/>\n                <field name=\"picking_ids\"/>\n                <templates>\n                    <t t-name=\"card\">\n                        <div class=\"d-flex\">\n<!-- ... -->\n                                <field name=\"user_id\" widget=\"many2one_avatar_user\" readonly=\"state not in ['draft', 'in_progress']\" class=\"me-1\"/>\n                                <field name=\"activity_ids\" widget=\"kanban_activity\"/>\n                            </div>\n                        </footer>\n                    </t>\n                </templates>\n            </card>\n        </field>\n    </record>\n\n    <record id=\"stock_picking_batch_kanban\" model=\"ir.ui.view\">\n        <field name=\"name\">stock.picking.batch.kanban</field>\n        <field name=\"model\">stock.picking.batch</field>\n        <field name=\"arch\" type=\"xml\">\n            <kanban class=\"o_kanban_mobile oe_stock_picking_batch\" sample=\"1\" card_id=\"%(stock.stock_picking_batch_card)d\"/>\n        </field>",
+    "gotchas": [
+      "A card layout is its own `ir.ui.view` record whose root is `<card>`; the kanban view points to it with `card_id=\"%(stock.stock_picking_batch_card)d\"` and, in this view, carries no templates of its own.",
+      "Declare the fields the card needs before `<templates>` (`<field name=\"company_id\"/>`) and render them in `<t t-name=\"card\">` with `record.<field>.raw_value` for expressions.",
+      "The card is validated as a sub-view of the same model, so fields it references are added inside `<card>` and not to the parent view.",
+      "`card` is a selectable view type on `ir.ui.view`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "message-post-override-v20",
+    "intent_keywords": ["message_post", "override", "chatter", "mail.thread", "kwargs", "tracking_disable", "context"],
+    "file_ref": "addons/sale/models/sale_order.py:2205",
+    "snippet_text": "    def message_post(self, **kwargs):\n        if self.env.context.get(\"mark_so_as_sent\"):\n            self.filtered(lambda o: o.state == \"draft\").with_context(tracking_disable=True).write({\n                \"state\": \"sent\"\n            })\n            kwargs[\"notify_author_mention\"] = kwargs.get(\"notify_author_mention\", True)\n        return super().message_post(**kwargs)",
+    "gotchas": [
+      "Override `message_post(self, **kwargs)` and return `super().message_post(**kwargs)`; `odoo.api` has no `returns` decorator to add.",
+      "`message_post` takes keyword-only arguments (`body`, `subject`, `message_type`, `subtype_xmlid`, `partner_ids`, ...); read the ones you need from `kwargs` and pass the rest through.",
+      "Write with `with_context(tracking_disable=True)` when changing state from inside the post, so the write does not trigger a second tracked message.",
+      "`body` is escaped text unless it is `Markup`; build rich bodies with `Markup` and format dynamic values into it."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "company-dependent-field-v20",
+    "intent_keywords": ["company_dependent", "multi-company", "property", "jsonb", "check_company", "ir.default", "per company"],
+    "file_ref": "addons/account/models/partner.py:563",
+    "snippet_text": "    credit_limit = fields.Float(\n        string='Credit Limit', help='Credit limit specific to this partner.',\n        groups='account.group_account_invoice,account.group_account_readonly',\n        company_dependent=True, copy=False, readonly=False)\n    property_account_payable_id = fields.Many2one('account.account', company_dependent=True,\n        check_company=True,\n        string=\"Account Payable\",\n        domain=\"[('account_type', '=', 'liability_payable')]\",\n        ondelete='restrict')",
+    "gotchas": [
+      "`company_dependent=True` stores one value per company as a jsonb dict on the model's own table, keyed by company id; there is no separate property table.",
+      "The field's `ir.default` values are the fallback for companies without a stored value; `company_default_for(fname, target_model, target_fname)` (base/models/res_company.py) mirrors that default on a res.company field.",
+      "A company-dependent field cannot be `required` or `translate`; the field setup warns (`company_dependent field ... cannot be required`) and only the types in COMPANY_DEPENDENT_FIELDS are allowed.",
+      "Reads and writes use `env.company`; use `with_company(company)` to act for another company, and add `check_company=True` on relational ones.",
+      "`copy` defaults to `False` and the column gets a `btree_not_null` index, which keeps searches and company deletion cheap."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "cron-record-v20",
+    "intent_keywords": ["cron", "ir.cron", "scheduled action", "interval", "code", "model_id", "priority", "noupdate"],
+    "file_ref": "addons/mail/data/ir_cron_data.xml:4",
+    "snippet_text": "    <data noupdate=\"1\">\n        <record forcecreate=\"True\" id=\"ir_cron_mail_scheduler_action\" model=\"ir.cron\">\n            <field name=\"name\">Mail: Email Queue Manager</field>\n            <field name=\"model_id\" ref=\"model_mail_mail\"/>\n            <field name=\"state\">code</field>\n            <field name=\"code\">model.process_email_queue(batch_size=1000)</field>\n            <field name=\"user_id\" ref=\"base.user_root\"/>\n            <field name=\"interval_number\">1</field>\n            <field name=\"interval_type\">hours</field>\n            <field name=\"priority\">6</field>\n        </record>",
+    "gotchas": [
+      "A scheduled action is an `ir.cron` record with `model_id`, `state=\"code\"`, `code` (`model.method()`), `user_id`, `interval_number` and `interval_type`.",
+      "Put it in a `<data noupdate=\"1\">` block so a module update keeps the interval and active flag an administrator changed.",
+      "`priority` is an integer from 0 (higher priority) to 10 (lower); due jobs are picked by failure count, then priority, then id (base/models/ir_cron.py).",
+      "Give the cron method a bounded batch (`batch_size=1000` in the example) so one run does not hold a worker for long."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "api-private-v20",
+    "intent_keywords": ["api.private", "private", "rpc", "web", "hidden", "method", "exposed", "call_kw"],
+    "file_ref": "addons/website/models/website.py:570",
+    "snippet_text": "    @api.private\n    def get_cta_data(self, website_purpose, website_type):\n        return {'cta_btn_text': False, 'cta_btn_href': '/contactus', 'shop_btn_href': '#'}",
+    "gotchas": [
+      "`@api.private` marks a record-style method as not callable using RPC; business methods that must not be called over RPC are prefixed with `_`, and the decorator covers existing public names and ORM methods (odoo/orm/decorators.py).",
+      "Apply it to methods that are only meant for Python callers (`def get_cta_data(...)`), including overrides of such methods in other modules.",
+      "`check_access` carries the decorator itself (`@api.private  # use has_access`).",
+      "It belongs on model methods; an Owl component method needs nothing, because the RPC layer never reaches it."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "safe-eval-v20",
+    "intent_keywords": ["safe_eval", "eval", "expression", "domain", "context", "sandbox", "mode", "untrusted"],
+    "file_ref": "addons/base_automation/models/base_automation.py:729",
+    "snippet_text": "from odoo.tools import BinaryBytes, safe_eval\n# ...\n            domain = safe_eval.safe_eval(self_sudo.filter_pre_domain, self._get_eval_context())",
+    "gotchas": [
+      "`safe_eval(expr, /, context=None, *, mode=\"eval\", filename=None)` (odoo/tools/safe_eval/evaluation.py): the expression is positional-only, the evaluation context is the second argument, `mode` is keyword-only.",
+      "The names the expression can use are exactly the keys of `context`; build it with only what the expression needs (`self._get_eval_context()`).",
+      "`from odoo.tools import safe_eval` binds the module, so the call reads `safe_eval.safe_eval(expr, context)`; `from odoo.tools.safe_eval import safe_eval` binds the function.",
+      "Evaluate user-editable text (domains, record getters) with `safe_eval`, never with the built-in `eval`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "ir-access-csv-group-operation-v20",
+    "intent_keywords": ["ir.access", "access", "csv", "group", "operation", "permission", "crud", "security", "model_id", "ir.access.csv"],
+    "file_ref": "addons/sale/security/ir.access.csv:33",
+    "snippet_text": "id,name,model_id,group_id/id,operation,domain\naccess_product_pricelist_sale_user,product.pricelist.sale.user,product.pricelist,sales_team.group_sale_salesman,r,\naccess_product_pricelist_sale_manager,product.pricelist salemanager,product.pricelist,sales_team.group_sale_manager,crud,\nsale_order_see_all,All Orders,sale.order,sales_team.group_sale_salesman_all_leads,cru,\nsale_order_see_all_1,All Orders,sale.order,sales_team.group_sale_manager,crud,",
+    "gotchas": [
+      "Access rights live in `security/ir.access.csv` with the columns `id,name,model_id,group_id/id,operation,domain`; `model_id` is the model's technical name (`sale.order`) and `group_id/id` an external id.",
+      "`operation` is any subset of the letters `c`, `r`, `u`, `d` in that order (`r`, `cru`, `crud`); the allowed values are listed in CRUD_SELECTION in base/models/ir_access.py.",
+      "A row with a group is a permission: the user gets the access if any of their groups' rows allows the operation.",
+      "A row needs `id` and `name` unique per module; use a name that states group and model (`access_product_pricelist_sale_manager`).",
+      "List the file in the manifest `data` as `security/ir.access.csv`; the file name is fixed by the loader."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "ir-access-company-restriction-v20",
+    "intent_keywords": ["ir.access", "multi-company", "company_ids", "restriction", "domain", "global", "rule", "security", "company"],
+    "file_ref": "addons/sale/security/ir.access.csv:35",
+    "snippet_text": "id,name,model_id,group_id/id,operation,domain\nsale_order_comp_rule,Sales Order multi-company,sale.order,,crud,\"[('company_id', 'in', company_ids)]\"\nsale_order_line_comp_rule,Sales Order Line multi-company,sale.order.line,,crud,\"[('company_id', 'in', company_ids)]\"",
+    "gotchas": [
+      "A row with an empty `group_id/id` is a restriction: it applies to every user and is ANDed with the permissions (`Domain.OR(permissions) & Domain.AND(restrictions)` in `_access_domain`, odoo/orm/models.py).",
+      "The domain is evaluated with `user`, `time`, `company_ids` (ids of the companies activated in the switcher) and `company_id`; `[('company_id', 'in', company_ids)]` is the multi-company rule.",
+      "Give the child model its own restriction (`sale.order.line`, `sale.report`) when its table carries `company_id` too.",
+      "A restriction row alone grants nothing: a user still needs a permission row for the operation."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "ir-access-portal-domain-v20",
+    "intent_keywords": ["ir.access", "portal", "child_of", "access operator", "commercial_partner_id", "domain", "security", "read-only"],
+    "file_ref": "addons/sale/security/ir.access.csv:29",
+    "snippet_text": "id,name,model_id,group_id/id,operation,domain\nsale_order_rule_portal,Portal Personal Quotations/Sales Orders,sale.order,base.group_portal,r,\"[('partner_id','child_of',[user.commercial_partner_id.id])]\"\nsale_order_line_rule_portal,Portal Sales Orders Line,sale.order.line,base.group_portal,r,\"[('order_id', 'access', 'read')]\"",
+    "gotchas": [
+      "A portal permission is a row for `base.group_portal` with operation `r` and a domain on the record owner: `[('partner_id','child_of',[user.commercial_partner_id.id])]`.",
+      "`('order_id', 'access', 'read')` is the `access` operator: the child record is readable when the user can read the parent `order_id`, so line rows reuse the order rule.",
+      "`user` in the domain is the current user record, so `user.commercial_partner_id.id` follows the company contact hierarchy.",
+      "The domain is validated against the model when the row is saved; a field that does not exist raises `Invalid domain`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "ir-access-personal-or-domain-v20",
+    "intent_keywords": ["ir.access", "domain", "or", "prefix", "personal", "own records", "salesman", "security", "user.id"],
+    "file_ref": "addons/sale/security/ir.access.csv:32",
+    "snippet_text": "id,name,model_id,group_id/id,operation,domain\nsale_order_personal_rule,Personal Orders,sale.order,sales_team.group_sale_salesman,cru,\"['|',('user_id','=',user.id),('user_id','=',False)]\"\nsale_order_see_all,All Orders,sale.order,sales_team.group_sale_salesman_all_leads,cru,\nsale_order_see_all_1,All Orders,sale.order,sales_team.group_sale_manager,crud,",
+    "gotchas": [
+      "`['|',('user_id','=',user.id),('user_id','=',False)]` is Polish notation: `'|'` takes the next two leaves, so the personal-orders row means own records or unassigned ones.",
+      "Permission rows of the same user are ORed: the salesman row (personal domain) and the `see_all` row (empty domain) together give the broader access to a user in both groups.",
+      "An empty `domain` column is the true domain: the group gets the operation on every record.",
+      "`operation` limits what the row grants: `cru` leaves delete to the manager row `crud`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "selection-callable-v20",
+    "intent_keywords": ["selection", "callable", "lambda", "dynamic selection", "fields.Selection", "company_dependent", "options"],
+    "file_ref": "addons/account/models/partner.py:353",
+    "snippet_text": "    qr_code_method = fields.Selection(\n        selection=lambda self: self.env['res.partner.bank'].get_available_qr_methods_in_sequence(),\n        string=\"Payment QR-code\",\n        company_dependent=True,\n        copy=False,\n    )",
+    "gotchas": [
+      "`selection=` accepts a callable that receives the recordset: `selection=lambda self: self.env['res.partner.bank'].get_available_qr_methods_in_sequence()`.",
+      "The callable runs when the selection values are needed (view rendering, validation), so keep it cheap and independent of the individual record.",
+      "Selection fields are stored as keys; the callable must return `(key, label)` pairs with stable keys.",
+      "A method name works too (`selection='_get_options'`)."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "post-init-hook-env-v20",
+    "intent_keywords": ["post_init_hook", "hook", "env", "install", "manifest", "data setup", "module install", "init"],
+    "file_ref": "addons/sale/__init__.py:9",
+    "snippet_text": "def _post_init_hook(env):\n    _synchronize_crons(env)\n    _setup_downpayment_account(env)\n    _setup_accrual_accounts(env)\n\n\ndef _synchronize_crons(env):\n    for param, cron_xmlid in const.PARAM_CRON_MAPPING.items():\n        if cron := env.ref(cron_xmlid, raise_if_not_found=False):\n            cron.active = env[\"ir.config_parameter\"].get_bool(param)",
+    "gotchas": [
+      "A `post_init_hook` receives the environment: `def _post_init_hook(env):`; `env.cr` is the cursor and `env['model']` the usual registry access.",
+      "Name the function in the manifest: `\"post_init_hook\": \"_post_init_hook\"` (addons/sale/__manifest__.py), and import it in the module `__init__.py`.",
+      "It runs at module installation, after the module's data is loaded.",
+      "Read configuration through `env[\"ir.config_parameter\"]` helpers (`get_bool`) rather than raw SQL."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "context-frozendict-v20",
+    "intent_keywords": ["context", "with_context", "frozendict", "env.context", "immutable", "override", "tracking_disable"],
+    "file_ref": "odoo/orm/models.py:5506",
+    "snippet_text": "    def with_context(self, ctx: dict[str, typing.Any] | None = None, /, **overrides) -> Self:\n# ...\n            # current context is {'key1': True}\n            r2 = records.with_context({}, key2=True)\n            # -> r2.env.context is {'key2': True}\n            r2 = records.with_context(key2=True)\n            # -> r2.env.context is {'key1': True, 'key2': True}",
+    "gotchas": [
+      "`env.context` is a `frozendict` (`self.context = frozendict(context)` in odoo/orm/environments.py); assigning a key raises `TypeError`.",
+      "`with_context(ctx=None, /, **overrides)`: the dict is positional-only and replaces the context; keyword overrides are merged into the current context (or into the dict when one is passed).",
+      "Use `with_context(tracking_disable=True)` or `with_context(lang='vi_VN')` for a local change; the original recordset keeps its context.",
+      "A context key travels with every recordset derived from the new one, including records read through relations."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "wizard-default-get-v20",
+    "intent_keywords": ["wizard", "default_get", "TransientModel", "context", "default_product_id", "active_id", "defaults"],
+    "file_ref": "addons/stock/wizard/product_replenish.py:51",
+    "snippet_text": "    @api.model\n    def default_get(self, fields):\n        res = super(ProductReplenish, self).default_get(fields)\n        product_tmpl_id = self.env['product.template']\n        if self.env.context.get('default_product_id'):\n            product_id = self.env['product.product'].browse(self.env.context['default_product_id'])\n            product_tmpl_id = product_id.product_tmpl_id\n            if 'product_id' in fields:\n                res['product_tmpl_id'] = product_id.product_tmpl_id.id\n                res['product_id'] = product_id.id\n        elif self.env.context.get('default_product_tmpl_id'):\n            product_tmpl_id = self.env['product.template'].browse(self.env.context['default_product_tmpl_id'])\n            if 'product_id' in fields:\n                res['product_tmpl_id'] = product_tmpl_id.id\n                res['product_id'] = product_tmpl_id.product_variant_id.id\n                if len(product_tmpl_id.product_variant_ids) > 1:\n                    res['product_has_variants'] = True\n        company = product_tmpl_id.company_id or self.env.company\n        if 'uom_id' in fields:\n            res['uom_id'] = product_tmpl_id.uom_id.id\n        if 'company_id' in fields:\n            res['company_id'] = company.id",
+    "gotchas": [
+      "`default_get(self, fields)` receives the field names the form needs; fill `res` only for names in `fields` (`if 'product_id' in fields:`).",
+      "Read the opening context from `self.env.context` (`default_product_id`, `active_id`, `active_ids`, `active_model`) and call `super().default_get(fields)` first.",
+      "Wizard records are `TransientModel` rows removed by the autovacuum; they are not business data.",
+      "Dependent defaults (`uom_id`, `company_id`, `warehouse_id`) are derived inside `default_get` from the same context values, each guarded by `if '<name>' in fields`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "wizard-act-window-close-v20",
+    "intent_keywords": ["wizard", "act_window_close", "notification", "return action", "infos", "close dialog", "next"],
+    "file_ref": "addons/stock/wizard/product_replenish.py:106",
+    "snippet_text": "            act_window_close = {\n                'type': 'ir.actions.act_window_close',\n                'infos': {'done': True},\n            }\n            if notification:\n                notification['params']['next'] = act_window_close\n                return notification\n            return act_window_close",
+    "gotchas": [
+      "A wizard button method returns an action dict; `{'type': 'ir.actions.act_window_close'}` closes the dialog.",
+      "`'infos': {'done': True}` is read by the caller of the dialog; keep the key names the caller expects.",
+      "To show a message first, return a notification action and set `notification['params']['next']` to the close action so the dialog closes afterwards.",
+      "Raise `UserError` for expected failures; the dialog stays open and shows the message."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "check-company-auto-v20",
+    "intent_keywords": ["check_company", "_check_company_auto", "multi-company", "many2one", "domain", "consistency", "company_id"],
+    "file_ref": "addons/sale/models/sale_order_line.py:22",
+    "snippet_text": "    _check_company_auto = True\n# ...\n    product_id = fields.Many2one(\n        comodel_name=\"product.product\",\n        string=\"Product\",\n        change_default=True,\n        ondelete=\"restrict\",\n        index=\"btree_not_null\",\n        domain=lambda self: self._domain_product_id(),\n        check_company=True,\n    )",
+    "gotchas": [
+      "`_check_company_auto = True` on the model makes the ORM validate every field declared with `check_company=True` on create and write.",
+      "`check_company=True` on a relational field requires the target record's `company_id` to be `False` or the record's own company; a mismatch raises a `UserError` that lists the fields (odoo/orm/models.py `_check_company`).",
+      "Combine it with a `domain` that already filters by company so the UI offers only valid choices.",
+      "A target record without a company is valid for every company."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "xml-list-optional-column-v20",
+    "intent_keywords": ["list", "optional", "column", "show", "hide", "decoration", "view", "sample", "multi_edit"],
+    "file_ref": "addons/sale/views/sale_order_views.xml:118",
+    "snippet_text": "            <list\n                string=\"Sales Orders\"\n                class=\"o_sale_order\"\n                sample=\"1\"\n                multi_edit=\"1\"\n                decoration-muted=\"state == 'cancel'\"\n            >\n<!-- ... -->\n                <field name=\"name\" string=\"Number\" readonly=\"1\" decoration-bf=\"1\"/>\n                <field name=\"date_order\" optional=\"show\" readonly=\"state in ['cancel', 'sale']\"/>\n<!-- ... -->\n                <field name=\"commitment_date\" readonly=\"1\" optional=\"show\"/>\n                <field name=\"partner_id\" widget=\"many2one_avatar\" readonly=\"1\"/>\n                <field name=\"user_id\" widget=\"many2one_avatar_user\" optional=\"hide\"/>\n                <field name=\"team_id\" optional=\"hide\"/>",
+    "gotchas": [
+      "The list root is `<list>`; `<tree>` is not a view type of `ir.ui.view`.",
+      "`optional=\"show\"` shows the column by default and lets the user hide it; `optional=\"hide\"` hides it by default and lets the user show it; a column without `optional` is always visible.",
+      "Conditional styling uses `decoration-*` with a Python expression (`decoration-muted=\"state == 'cancel'\"`); a hidden helper column uses `column_invisible=\"True\"`.",
+      "Per-record read-only is an expression on the field: `readonly=\"state in ['cancel', 'sale']\"`."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "xml",
+    "core_symbol_names": [],
+    "category": "production"
+  },
+  {
+    "pattern_id": "compute-inverse-editable-field-v20",
+    "intent_keywords": ["compute", "inverse", "editable computed field", "store", "depends", "writable compute", "scheduled_date"],
+    "file_ref": "addons/stock/models/stock_picking.py:74",
+    "snippet_text": "    scheduled_date = fields.Datetime(\n        'Scheduled Date', compute='_compute_scheduled_date', inverse='_set_scheduled_date', store=True,\n        index=True, default=fields.Datetime.now, tracking=True,\n        help=\"Scheduled time for the first part of the shipment to be processed. Setting manually a value here would set it as expected date for all the stock moves.\")\n# ...\n    @api.depends('move_ids.state', 'move_ids.date', 'move_type')\n    def _compute_scheduled_date(self):\n        for picking in self:\n            if not picking.id:\n                continue\n            moves_dates = picking.move_ids.filtered(lambda move: move.state not in ('done', 'cancel')).mapped('date')\n            if picking.move_type == 'direct':\n                picking.scheduled_date = min(moves_dates, default=picking.scheduled_date or fields.Datetime.now())\n            else:\n                picking.scheduled_date = max(moves_dates, default=picking.scheduled_date or fields.Datetime.now())\n# ...\n    def _set_scheduled_date(self):\n        for picking in self:\n            if picking.state == 'cancel':\n                raise UserError(_(\"You cannot change the Scheduled Date on a cancelled transfer.\"))\n            if picking.state == 'done':\n                continue\n            picking.move_ids.write({'date': picking.scheduled_date})",
+    "gotchas": [
+      "`inverse='_set_scheduled_date'` makes a computed field writable: the method runs when a user or `write()` sets the field, and writes the new value into the source data (`picking.move_ids.write({'date': ...})`).",
+      "The inverse writes the fields the compute reads, never the computed field itself, which would call the inverse again.",
+      "A stored computed field lists every source in `@api.depends` (`'move_ids.state'`, `'move_ids.date'`, `'move_type'`); without them the stored value goes stale.",
+      "Guard the inverse for states that must not change (`cancel` raises `UserError`, `done` is skipped)."
+    ],
+    "odoo_version_min": "20.0",
+    "language": "python",
+    "core_symbol_names": [],
+    "category": "production"
   }
 ]

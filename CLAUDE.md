@@ -48,11 +48,12 @@ Venv ở `~/.venv/odoo-semantic-mcp` - không bao giờ tạo `.venv/` trong rep
 - Timeout/concurrency env: `NEO4J_QUERY_TIMEOUT_SECONDS` (30; bound từng query qua `neo4j.Query(timeout=)`), server `db.transaction.timeout`=600s; `ORM_QUERY_MAX_CONCURRENCY`/`NONORM_READ_MAX_CONCURRENCY` (8, pool riêng) + `*_SLOT_ACQUIRE_TIMEOUT` (5s) - thread-held `threading.BoundedSemaphore` (cancel-safe), KHÔNG `asyncio.Semaphore`; `SESSION_IDLE_TIMEOUT` (3600s, bỏ qua khi `--transport stdio`).
 - **Full Cypher patterns:** [`huong-dan-stack.md §Cypher gotchas`](docs/huong-dan-stack.md#cypher-gotchas).
 
-## Parsing & versions (v8 → v19)
+## Parsing & versions (v8 → v20)
 
+- **Dải đã khảo sát (SSOT):** `src.constants.SURVEYED_MIN_MAJOR..SURVEYED_MAX_MAJOR`. Thêm series mới = nâng `SURVEYED_MAX_MAJOR` cùng dữ liệu curated của series đó (`spec_data/*_<N>.0.json`, era `framework_bases`, fixture test); parity test đỏ tới khi đủ.
 - **ManifestFinder** (`registry.get_manifest_finder`): Legacy `__openerp__.py` (v8-9) / Dual (v10) / Modern `__manifest__.py` (v11+). ADR-0002.
 - **Era-aware Python parser:** era1 text-regex (`parser_python_era1._parse_era1_text` + `FIELD_TYPES_LEGACY` cho `_columns`) cho v8-9; era2 AST (v10+). Version dispatch qua `VersionRegistry` (ADR-0032, dùng ở `parser_odoo_core`/`_cli`/`_xml`).
-- **index-core paths:** `parser_odoo_core._resolve_core_paths()` - `openerp/` (v8-9), fallback `odoo/orm/` (v19+). Drop >20% CoreSymbol vs version trước = nghi path refactor → fix + regression test. ADR-0005.
+- **index-core paths:** `parser_odoo_core._resolve_core_paths()` - `openerp/` (v8-9), fallback `odoo/orm/` (v19+); module thành package (v20 `odoo/tools/safe_eval/`) đọc qua re-export của `__init__.py` (`_resolve_core_targets`). Drop >20% CoreSymbol vs version trước = nghi path refactor → fix + regression test. ADR-0005.
 - **AST:** dùng `tree.body` (NOT `ast.walk`) cho manifest; `_inherit` normalize về list; thiếu `_name` + có `_inherit` → `name = inherit[0]`. → [`huong-dan-stack.md §AST`](docs/huong-dan-stack.md#ast-parsing).
 - **`_latest_version()`** numeric compare - KHÔNG hardcode `"17.0"`; DB rỗng → `None`.
 

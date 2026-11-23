@@ -1,8 +1,8 @@
 # Odoo Semantic MCP (OSM)
 
-AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v8-v19 (as of 2026-06). No running Odoo database required.
+AI coding assistants hallucinate Odoo field names, miss inheritance chains, and suggest deprecated APIs. OSM grounds your AI against a verified index of 12,000+ models and 184,000+ fields across Odoo v8-v20 (counts as of 2026-06). No running Odoo database required.
 
-**12,000+ models** | **184,000+ fields** | **v14-v19 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free tier available**
+**12,000+ models** | **184,000+ fields** | **v14-v20 (actively maintained)** | **31 MCP tools** | **9 resources** | **95% vs 43% accuracy on real tasks** | **Free tier available**
 
 ---
 
@@ -184,7 +184,7 @@ OSM is not a replacement for IDE language servers or local code analysis tools. 
 |------|----------|-------------|---------------------|
 | OSM (this server) | Hosted semantic graph | Answers AI agent queries against an indexed cross-version codebase | - |
 | odoo-ls | Language server (IDE) | Syntax checking, autocompletion, go-to-definition in your editor for a single local checkout | Complementary - odoo-ls checks syntax in your IDE; OSM answers semantic questions across all versions |
-| Akaidoo | Local context tool | Reads your local Odoo source and loads it into the AI context window | Complementary - works on your local checkout; OSM covers all 12 versions without local files |
+| Akaidoo | Local context tool | Reads your local Odoo source and loads it into the AI context window | Complementary - works on your local checkout; OSM covers all 13 versions without local files |
 | Database bridge MCP servers | Live data tools | Read and write live Odoo business records from a running instance | Different use case - they retrieve records; OSM understands source structure |
 
 ---
@@ -299,7 +299,7 @@ Resources are URI templates for bookmark-stable entity reads via the `odoo://` U
 
 ## Test Surface Indexing
 
-OSM now indexes the entire automated-test surface across Odoo v8-v19: test classes, test methods, test helpers, and frontend JS test suites (Hoot, QUnit, web tours). This includes class inheritance chains, static field/method coverage, and framework base-class semantics. Agents can now ground test decisions against real test patterns, discover what tests exist, and understand cursor/transaction contracts — eliminating the need to reinvent test approaches or misuse `cr.commit()` in an isolation context. Test metadata is indexed as Neo4j nodes (TestClass/TestMethod/TestHelper/JsTestSuite) with coverage edges (COVERS_MODEL/COVERS_FIELD/COVERS_METHOD) linked to the production model graph. All 6 test tools + 2 test resources are zero-migration additions.
+OSM now indexes the entire automated-test surface across Odoo v8-v20: test classes, test methods, test helpers, and frontend JS test suites (Hoot, QUnit, web tours). This includes class inheritance chains, static field/method coverage, and framework base-class semantics. Agents can now ground test decisions against real test patterns, discover what tests exist, and understand cursor/transaction contracts - eliminating the need to reinvent test approaches or misuse `cr.commit()` in an isolation context. Test metadata is indexed as Neo4j nodes (TestClass/TestMethod/TestHelper/JsTestSuite) with coverage edges (COVERS_MODEL/COVERS_FIELD/COVERS_METHOD) linked to the production model graph. All 6 test tools + 2 test resources are zero-migration additions.
 
 ---
 
@@ -339,7 +339,7 @@ The following reference documents cover installation, tool parameters, and advan
 
 **What is the difference between OSM and an Odoo language server like odoo-ls?**
 
-An Odoo language server is built for IDE features: hover, go-to-definition, autocomplete. It works on a single local checkout. OSM is built for AI query tools: it indexes 12 Odoo versions in one graph, exposes 31 query tools over MCP, and answers questions like "what breaks if I change this field" across all module extensions in the graph. Both can be active simultaneously - odoo-ls checks syntax in your IDE while OSM answers semantic questions that require the full cross-version index.
+An Odoo language server is built for IDE features: hover, go-to-definition, autocomplete. It works on a single local checkout. OSM is built for AI query tools: it indexes 13 Odoo versions in one graph, exposes 31 query tools over MCP, and answers questions like "what breaks if I change this field" across all module extensions in the graph. Both can be active simultaneously - odoo-ls checks syntax in your IDE while OSM answers semantic questions that require the full cross-version index.
 
 **Does OSM require a running Odoo instance?**
 
@@ -355,7 +355,7 @@ On 40 real-world Odoo coding tasks tested with Claude claude-sonnet-4-5, AI grou
 
 **Which Odoo versions does OSM support?**
 
-v14-v19 are actively maintained. v8-v13 are available but receive no active index updates. All 12 versions (v8-v19) are indexed and queryable in a single API session. Use `set_active_version` to pin your session to one version.
+v14-v20 are actively maintained. v8-v13 are available but receive no active index updates. All 13 versions (v8-v20) are indexed and queryable in a single API session. Use `set_active_version` to pin your session to one version.
 
 **Is OSM open source?**
 

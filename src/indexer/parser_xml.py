@@ -166,6 +166,9 @@ _VIEW_TYPES = {
     # of these would silently default to "form". `gantt`/`activity`/`map` are
     # already above; `hierarchy`/`cohort` are EE additions (v17+).
     "hierarchy", "cohort",
+    # v20+: <card> root (ir.ui.view.type selection gains ('card', "Card"),
+    # odoo/addons/base/models/ir_ui_view.py).
+    "card",
 }
 
 # GAP-1 - the four conditional-visibility attributes that, in v17+, carry a

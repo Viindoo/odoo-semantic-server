@@ -39,10 +39,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Every major this test suite's live-parser families survey (8.0 through
-# 19.0 inclusive) - the one definition of "the full range" every live-parser
-# test file imports.
-SURVEYED_MAJORS: list[int] = list(range(8, 20))
+from src.constants import SURVEYED_MAJORS as SURVEYED_MAJORS_SSOT
+
+# Every major this test suite's live-parser families survey - the one
+# definition of "the full range" every live-parser test file imports, derived
+# from the production SSOT (src.constants.SURVEYED_MAJORS).
+SURVEYED_MAJORS: list[int] = list(SURVEYED_MAJORS_SSOT)
 
 
 def checkouts_parent() -> Path:

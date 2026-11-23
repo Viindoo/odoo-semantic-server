@@ -9,6 +9,8 @@ was complete.
 """
 from pathlib import Path
 
+import pytest
+
 from src.indexer.models import ModuleInfo, TestParseResult
 from src.indexer.parser_test import (
     _extract_tagged_args,
@@ -430,6 +432,18 @@ def test_seed_framework_helpers_returns_known_bases():
     assert "SavepointCase" not in names
 
 
+def test_seed_framework_helpers_at_v20_follow_the_v20_menu():
+    """Business rule: the graph seed at 20.0 carries the 20.0 menu - CrossModule
+    in, SingleTransactionCase out (odoo/odoo 20.0 removed it) - so a 20.0 index
+    never writes a class the series does not define.
+    """
+    names = {h.name for h in seed_framework_helpers("20.0")}
+    assert "CrossModule" in names
+    assert "TransactionCase" in names
+    assert "SingleTransactionCase" not in names
+    assert "SavepointCase" not in names
+
+
 def test_framework_helpers_use_at_framework_sentinel():
     """Business rule: framework helpers use module='@framework' (MED-3).
 
@@ -498,9 +512,12 @@ _E4_NAMES = _E3_NAMES | {"Form", "O2MForm"}
 _E5_NAMES = _E4_NAMES | {"HttpCaseCommon", "HttpSavepointCase"}
 _E6_NAMES = _E5_NAMES - {"TreeCase", "HttpCaseCommon"}
 _E7_NAMES = _E6_NAMES - {"SavepointCase", "HttpSavepointCase"}
+# v20: SingleTransactionCase removed, CrossModule added (odoo/odoo 20.0
+# odoo/tests/common.py).
+_E8_NAMES = (_E7_NAMES - {"SingleTransactionCase"}) | {"CrossModule"}
 
 # T1 boundary matrix: covers all four proven era transitions (v10/v11, v11/v12,
-# v13/v14, v14/v15) plus v16/v17 and the v19 open-ended-era check, per §8 T1.
+# v13/v14, v14/v15) plus v16/v17, the v19/v20 boundary and the v20 era, per §8 T1.
 _ERA_MENU_BY_VERSION = {
     "8.0": _E1_E2_NAMES,
     "10.0": _E1_E2_NAMES,
@@ -510,7 +527,9 @@ _ERA_MENU_BY_VERSION = {
     "15.0": _E6_NAMES,
     "16.0": _E6_NAMES,
     "17.0": _E7_NAMES,
+    "18.0": _E7_NAMES,
     "19.0": _E7_NAMES,
+    "20.0": _E8_NAMES,
 }
 
 
@@ -564,10 +583,10 @@ def test_treecase_window_is_v11_through_v14_only():
 def test_httpcasecommon_exists_at_v14_only_across_the_whole_surveyed_range():
     """T4 - business rule: HttpCaseCommon is a one-version-only HTTP mixin
     (introduced and folded back out between 14.0 and 15.0) - it must be present at
-    14.0 and absent at every one of the other eleven surveyed majors (8-19).
+    14.0 and absent at every one of the other surveyed majors (8-20).
     """
     fb = _import_framework_bases()
-    for major in range(8, 20):
+    for major in range(8, 21):
         version = f"{major}.0"
         entry = fb.framework_base(version, "HttpCaseCommon")
         if version == "14.0":
@@ -627,44 +646,128 @@ def test_testcase_file_path_is_always_none_stdlib_has_no_repo_path():
     §2.4) - it must never carry a repo-relative file_path.
     """
     fb = _import_framework_bases()
-    for major in range(8, 20):
+    for major in range(8, 21):
         version = f"{major}.0"
         entry = fb.framework_base(version, "TestCase")
         assert entry is not None, f"TestCase classifier entry must exist at {version}"
         assert entry.file_path is None, f"TestCase.file_path must be None at {version}"
 
 
-def test_sentinel_version_99_resolves_to_the_same_menu_as_v19():
+def test_sentinel_version_99_resolves_to_the_same_menu_as_the_newest_surveyed_version():
     """T6 - business rule: 99.0 (the repo's TEST_VERSION sentinel convention,
-    tests/conftest.py) is out-of-catalogue and resolves through the open-ended v17+
-    era, giving the identical name set as the newest real surveyed version.
+    tests/conftest.py) is out-of-catalogue and resolves through the open-ended
+    newest era, giving the identical name set as the newest real surveyed version.
     """
     fb = _import_framework_bases()
+    from src.constants import SURVEYED_MAX_MAJOR
     names_99 = {f.name for f in fb.framework_bases("99.0")}
-    names_19 = {f.name for f in fb.framework_bases("19.0")}
-    assert names_99 == names_19
+    names_newest = {f.name for f in fb.framework_bases(f"{SURVEYED_MAX_MAJOR}.0")}
+    assert names_99 == names_newest
 
 
 def test_is_out_of_catalogue_flags_the_sentinel_but_not_a_real_surveyed_version():
     """T6 - business rule: is_out_of_catalogue() is the provenance-line trigger -
-    True only for a resolved major outside the surveyed [8, 19] range.
+    True only for a resolved major outside the surveyed [8, 20] range.
     """
     fb = _import_framework_bases()
     assert fb.is_out_of_catalogue("99.0") is True
+    assert fb.is_out_of_catalogue("7.0") is True
     assert fb.is_out_of_catalogue("17.0") is False
+    assert fb.is_out_of_catalogue("20.0") is False
 
 
-def test_empty_and_unparseable_version_strings_fail_open_to_the_v17_plus_menu():
+def test_empty_and_unparseable_version_strings_fail_open_to_the_newest_menu():
     """T6 - business rule: an empty or garbage version string must never raise - it
-    fails open to the newest known era (v17+), exactly like any out-of-range major,
+    fails open to the newest known era (v20+), exactly like any out-of-range major,
     so a caller always gets a usable menu instead of a crash.
     """
     fb = _import_framework_bases()
-    v17_names = {f.name for f in fb.framework_bases("17.0")}
+    newest_names = {f.name for f in fb.framework_bases(f"{fb.NEWEST_MENU_MIN_MAJOR}.0")}
     empty_result = fb.framework_bases("")  # must not raise
     garbage_result = fb.framework_bases("not-a-version")  # must not raise
-    assert {f.name for f in empty_result} == v17_names
-    assert {f.name for f in garbage_result} == v17_names
+    assert {f.name for f in empty_result} == newest_names
+    assert {f.name for f in garbage_result} == newest_names
+    assert fb.removed_at("") == fb.removed_at("99.0")
+
+
+def test_single_transaction_case_window_is_v8_through_v19_and_removed_at_v20():
+    """T9 - business rule: SingleTransactionCase exists at every major 8-19 and is
+    gone at 20.0 (odoo/odoo commit 050ac53426c0 removed it; its users became
+    TransactionCase tests with one method or subtests). removed_at() names
+    TransactionCase as the replacement from 20.0 on, and not before.
+    """
+    fb = _import_framework_bases()
+    for major in range(8, 20):
+        assert fb.framework_base(f"{major}.0", "SingleTransactionCase") is not None, major
+        assert ("SingleTransactionCase", "TransactionCase") not in fb.removed_at(f"{major}.0")
+    assert fb.framework_base("20.0", "SingleTransactionCase") is None
+    assert ("SingleTransactionCase", "TransactionCase") in fb.removed_at("20.0")
+    assert ("SingleTransactionCase", "TransactionCase") in fb.removed_at("99.0")
+    # The two savepoint removals stay reported at 20.0 for a reader upgrading from <=16.
+    assert ("SavepointCase", "TransactionCase") in fb.removed_at("20.0")
+    assert ("HttpSavepointCase", "HttpCase") in fb.removed_at("20.0")
+
+
+def test_cross_module_is_a_v20_menu_entry_with_no_cursor_of_its_own():
+    """T9 - business rule: CrossModule (odoo/tests/common.py, derives from the
+    stdlib TestCase and not BaseCase) is offered from 20.0 on, never before. It is
+    classed 'unittest' - it opens no cursor or transaction - and its summary says
+    so and points at HttpCase for tests that need an environment. It is the only
+    CrossModule-style entry: no other 20.0 name is new relative to 19.0.
+    """
+    fb = _import_framework_bases()
+    for major in range(8, 20):
+        assert fb.framework_base(f"{major}.0", "CrossModule") is None, major
+    entry = fb.framework_base("20.0", "CrossModule")
+    assert entry is not None
+    assert entry.test_type == "unittest"
+    assert entry.commit_allowed is False
+    assert entry.file_path == "odoo/tests/common.py"
+    summary = " ".join(entry.setup_summary)
+    assert "no cursor" in summary and "HttpCase" in summary
+    new_at_20 = {f.name for f in fb.framework_bases("20.0")} - {
+        f.name for f in fb.framework_bases("19.0")
+    }
+    assert new_at_20 == {"CrossModule"}
+
+
+def test_basecase_concrete_subclass_list_tracks_the_era():
+    """T9 - business rule: BaseCase's summary names only the concrete subclasses
+    that exist in that era - at 20.0 SingleTransactionCase and SavepointCase are
+    not offered, so they must not be named as BaseCase's subclasses there.
+    """
+    fb = _import_framework_bases()
+    summary_20 = " ".join(fb.framework_base("20.0", "BaseCase").setup_summary)
+    assert "TransactionCase" in summary_20
+    assert "SingleTransactionCase" not in summary_20
+    assert "SavepointCase" not in summary_20
+    summary_16 = " ".join(fb.framework_base("16.0", "BaseCase").setup_summary)
+    assert "SingleTransactionCase" in summary_16 and "SavepointCase" in summary_16
+
+
+def test_every_menu_name_is_in_the_prune_universe_and_the_classifier_set():
+    """T9 - business rule: the names the menu offers at ANY era are all in
+    KNOWN_FRAMEWORK_BASE_NAMES (so index-time pruning can retire a node when the
+    era drops it) and in parser_test.TEST_BASE_CLASSES (so addon classes deriving
+    from them are recognised) - the three registries must not drift apart.
+    """
+    fb = _import_framework_bases()
+    from src.indexer.parser_test import TEST_BASE_CLASSES
+    for major in range(8, 21):
+        for fact in fb.framework_bases(f"{major}.0"):
+            assert fact.name in fb.KNOWN_FRAMEWORK_BASE_NAMES, (major, fact.name)
+            assert fact.name in TEST_BASE_CLASSES, (major, fact.name)
+
+
+def test_a_class_combining_cross_module_with_http_case_keeps_the_http_test_type():
+    """T9 - business rule: an addon suite deriving from both an HTTP base and
+    CrossModule (the shape of web's WebSuite) is classified by its transactional
+    or HTTP base, never downgraded to 'unittest' by CrossModule.
+    """
+    from src.indexer.parser_test import _classify_test_type
+    assert _classify_test_type(["HttpCase", "CrossModule"]) == "http"
+    assert _classify_test_type(["CrossModule", "HttpCase"]) == "http"
+    assert _classify_test_type(["HootCommon", "CrossModule"]) == "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -757,3 +860,24 @@ def test_openerp_tests_directory_holding_only_pycache_yields_none(tmp_path):
     pycache_dir.mkdir(parents=True)
     (pycache_dir / "common.cpython-27.pyc").write_bytes(b"\x00\x00")
     assert fb.parse_framework_bases(tmp_path, "8.0") is None
+
+
+@pytest.mark.parametrize("version, named, not_named", [
+    ("16.0", {"TransactionCase", "SingleTransactionCase", "SavepointCase"}, set()),
+    ("17.0", {"TransactionCase", "SingleTransactionCase"}, {"SavepointCase"}),
+    ("19.0", {"TransactionCase", "SingleTransactionCase"}, {"SavepointCase"}),
+    ("20.0", {"TransactionCase"}, {"SavepointCase", "SingleTransactionCase"}),
+])
+def test_basecase_guidance_names_only_subclasses_that_exist_at_the_version(
+    version, named, not_named,
+):
+    """Business rule: BaseCase's setup guidance tells the author which concrete
+    subclass to use; it must never point at a class removed at that version
+    (SavepointCase from 17.0, SingleTransactionCase from 20.0)."""
+    from src.indexer.framework_bases import framework_base
+
+    text = " ".join(framework_base(version, "BaseCase").setup_summary)
+    for cls in named:
+        assert cls in text, (version, cls, text)
+    for cls in not_named:
+        assert cls not in text, (version, cls, text)

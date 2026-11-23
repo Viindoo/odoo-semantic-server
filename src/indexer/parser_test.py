@@ -60,12 +60,19 @@ from .version_registry import python3_source_expected
 TEST_BASE_CLASSES: frozenset[str] = frozenset({
     "TestCase",                                         # unittest (all eras)
     "BaseCase", "TreeCase",                             # odoo abstract (v10+/v14+)
-    "TransactionCase", "SingleTransactionCase",         # all eras
+    "TransactionCase",                                  # all eras
+    "SingleTransactionCase",                            # v8-v19 (removed v20)
+    "CrossModule",                                      # cross-module suite mixin (v20+)
     "SavepointCase",                                    # v8-v16 (deprecated v15+, removed v17)
     "HttpCase", "HttpCaseCommon", "HttpSavepointCase",  # v8+/v14
     "Form", "O2MForm",                                  # form helpers v12+ (relocates v17+)
 })
 
+# CrossModule is recognised above but deliberately has NO entry here: it adds no
+# cursor/transaction semantics of its own and is combined with a transactional or
+# HTTP base (WebSuite(HootCommon, CrossModule)); mapping it would let it pre-empt
+# the real test_type that base chain carries (_classify_test_type takes the first
+# mapped base in MRO order).
 TEST_TYPE_MAP: dict[str, str] = {
     "TransactionCase": "transaction",
     "SavepointCase": "savepoint",

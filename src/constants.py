@@ -18,6 +18,17 @@ LEGACY_ERA_MAX_MAJOR: int = 9
 # openerp/ namespace (v8/v9) vs odoo/ namespace (v10+)
 ODOO_NAMESPACE_LEGACY_MAX_MAJOR: int = 9
 
+# The Odoo majors whose real source the version-keyed curated data was surveyed
+# against (framework test bases, CLI flags, lint rules, odoo.tools symbols) and
+# that the parity tests re-check. A major outside this range is "outside the
+# surveyed catalogue": answers fall back to the newest known era and say so.
+# Supporting a new Odoo series = raising SURVEYED_MAX_MAJOR together with that
+# series' curated data (spec_data/*_<N>.0.json, framework_bases era table,
+# test fixtures); the parity tests fail until every piece exists.
+SURVEYED_MIN_MAJOR: int = 8
+SURVEYED_MAX_MAJOR: int = 20
+SURVEYED_MAJORS: tuple[int, ...] = tuple(range(SURVEYED_MIN_MAJOR, SURVEYED_MAX_MAJOR + 1))
+
 # Minimum Odoo major version at which parser_lint_rules.py's live-extraction
 # path (pylint-odoo checker .py / eslintrc / ruff.toml under
 # addons/test_lint/tests/, repo-root ruff.toml) is turned on.
@@ -50,9 +61,12 @@ ODOO_NAMESPACE_LEGACY_MAX_MAJOR: int = 9
 #           (cleanly matches the glob): `_odoo_checker_gettext.py` (E8502)
 #           + `_odoo_checker_sql_injection.py` (E8501) present from v14;
 #           `_odoo_checker_unlink_override.py` (E8503) added at v15; ESLint
-#           `eslintrc` present from v16; repo-root `ruff.toml` present at v19
-#           only (confirmed absent at v16-v18). Every major v14-v19 yields at
-#           least one live-extracted LintRule with zero false gaps.
+#           `eslintrc` present from v16; repo-root `ruff.toml` present from
+#           v19 (confirmed absent at v16-v18). v20 (odoo/odoo 20.0) keeps the
+#           v19 layout: the same three checker files with the same msgs, the
+#           `eslintrc` (trailing comma included) and `ruff.toml`. Every major
+#           v14-v20 yields at least one live-extracted LintRule with zero
+#           false gaps.
 #
 # See tests/test_parser_lint_rules.py::test_lint_rules_live_parser_coverage_is_reported
 # for the machine-checked eligible/exercised count this boundary implies.
@@ -400,10 +414,12 @@ MAGIC_FIELDS: dict[str, tuple[str, str | None]] = {
 
 # ---------------------------------------------------------------------------
 # Domain operators — VERSION-AWARE (M10.5 P2, used by validate_domain).
-# Cross-version survey v8→v19 (12 Haiku agents): the term-operator set is NOT
-# constant across Odoo majors. `parent_of` arrived in v9; `any`/`not any` in
-# v17; v19 added access-rights-bypass variants (`any!`/`not any!`) + explicit
-# `not =like`/`not =ilike`. The `=like`/`=ilike` family persists v8→v19.
+# Cross-version survey v8→v20: the term-operator set is NOT constant across
+# Odoo majors. `parent_of` arrived in v9; `any`/`not any` in v17; v19 added
+# access-rights-bypass variants (`any!`/`not any!`) + explicit
+# `not =like`/`not =ilike`. The `=like`/`=ilike` family persists v8→v20.
+# v20 keeps v19's set unchanged (odoo/orm/domains.py
+# STANDARD_CONDITION_OPERATORS is identical in both).
 # Relational set ttypes are lowercase as stored in Neo4j Field.ttype.
 # ---------------------------------------------------------------------------
 

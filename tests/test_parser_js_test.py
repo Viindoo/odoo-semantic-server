@@ -407,3 +407,19 @@ def test_parse_module_returns_empty_when_no_static_tests(tmp_path):
     )
     suites = parse_module_js_tests(info)
     assert suites == []
+
+
+def test_extract_mock_models_includes_server_models():
+    """Business rule: a Hoot mock-server model declared as
+    `class X extends models.ServerModel { _name = "..." }` (v19+, the common
+    shape of addons' mock_server/mock_models/*.js) is a mock model too."""
+    source = (
+        'import { models } from "@web/../tests/web_test_helpers";\n'
+        "export class AccountMoveLine extends models.ServerModel {\n"
+        '    _name = "account.move.line";\n'
+        "}\n"
+        "class Plain extends models.Model {\n"
+        '    _name = "res.partner";\n'
+        "}\n"
+    )
+    assert _extract_mock_models(source) == ["account.move.line", "res.partner"]

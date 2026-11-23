@@ -1541,3 +1541,175 @@ def test_fix3_v17_and_v18_skip_orm_utils_silently(tmp_path):
     )
     # Sanity: v18 symbols still indexed
     assert "odoo.fields.Integer" in qnames18, "v18 flat fields.py must still be indexed"
+
+
+# ---------------------------------------------------------------------------
+# v20 layout: safe_eval became a package, query.py moved into odoo/orm/,
+# CachedModel and api.ormcache are new public API.
+# ---------------------------------------------------------------------------
+
+_V20_ROOT = checkout_root(20)
+
+
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+
+
+def _v20_safe_eval_package(root):
+    """Minimal copy of the real v20 odoo/tools/safe_eval/ package shape."""
+    pkg = root / "odoo" / "tools" / "safe_eval"
+    _write(pkg / "__init__.py", (
+        "from .evaluation import *  # noqa: F403\n"
+        "from .expression import expr_eval\n"
+        "from .runtime import *  # noqa: F403\n"
+        "from .extra import helper as aliased_helper\n"
+    ))
+    _write(pkg / "evaluation.py", (
+        "__all__ = ['safe_eval', 'const_eval', 'wrap_module', 'time']\n"
+        "def safe_eval(expr, /, context=None, *, mode='eval', filename=None):\n    pass\n"
+        "def const_eval(expr):\n    pass\n"
+        "def compile_codeobj(expr, /, filename='<unknown>', mode='eval'):\n    pass\n"
+        "class wrap_module:\n    pass\n"
+        "time = wrap_module()\n"
+    ))
+    _write(pkg / "expression.py", (
+        "def expr_eval(expr, context=None):\n    pass\n"
+        "class _ExprEval:\n    pass\n"
+        "def other_public(x):\n    pass\n"
+    ))
+    _write(pkg / "runtime.py", (
+        "def unsafe_policy():\n    pass\n"
+        "def _private_helper():\n    pass\n"
+        "class UnsafeError(BaseException):\n    pass\n"
+    ))
+    _write(pkg / "extra.py", "def helper():\n    pass\n")
+
+
+def test_module_turned_package_exposes_exactly_its_reexported_names(tmp_path):
+    """A core module that became a package (v20 odoo/tools/safe_eval/) is indexed
+    as the names its __init__.py re-exports, under the module's own qname (its
+    import path): star imports follow __all__ (or the public names when there is
+    none), named imports their names; names the package does not re-export are
+    not importable from it and must not be reported as its API."""
+    _v20_safe_eval_package(tmp_path)
+
+    out = {s.qualified_name: s for s in parse_odoo_core(str(tmp_path), "20.0")}
+    names = {q.removeprefix("odoo.tools.safe_eval.") for q in out
+             if q.startswith("odoo.tools.safe_eval.")}
+
+    assert names == {
+        "safe_eval", "const_eval", "wrap_module",  # evaluation.__all__ defs
+        "expr_eval",                               # from .expression import expr_eval
+        "unsafe_policy", "UnsafeError",            # runtime has no __all__: public names
+    }, names
+    assert out["odoo.tools.safe_eval.safe_eval"].file_path == (
+        "odoo/tools/safe_eval/evaluation.py"
+    )
+    assert out["odoo.tools.safe_eval.expr_eval"].file_path == (
+        "odoo/tools/safe_eval/expression.py"
+    )
+
+
+def test_module_file_wins_over_package_reexport_resolution(tmp_path):
+    """Before v20 safe_eval is a plain module: every top-level symbol is
+    indexed, exactly as before (no __all__ filtering, no package lookup)."""
+    _write(tmp_path / "odoo" / "tools" / "safe_eval.py", (
+        "__all__ = ['safe_eval']\n"
+        "def safe_eval(expr, context=None):\n    pass\n"
+        "def test_python_expr(expr, mode='eval'):\n    pass\n"
+    ))
+    qnames = {s.qualified_name for s in parse_odoo_core(str(tmp_path), "19.0")}
+    assert {"odoo.tools.safe_eval.safe_eval",
+            "odoo.tools.safe_eval.test_python_expr"} <= qnames
+
+
+def test_v20_query_module_moved_to_orm_keeps_its_qname(tmp_path):
+    """v20 moved query.py to odoo/orm/query.py (no module left at
+    odoo/tools/query.py). Query keeps its cross-version qname so
+    api_version_diff sees one symbol, and Source points at the real file."""
+    _write(tmp_path / "odoo" / "orm" / "query.py", (
+        "class Query:\n    def select(self, *args):\n        pass\n"
+    ))
+    resolved = _resolve_core_paths(tmp_path, "odoo/tools/query.py", "20.0")
+    assert resolved == [tmp_path / "odoo" / "orm" / "query.py"]
+
+    out = {s.qualified_name: s for s in parse_odoo_core(str(tmp_path), "20.0")}
+    assert out["odoo.tools.query.Query"].file_path == "odoo/orm/query.py"
+    assert "odoo.tools.query.Query.select" in out
+
+
+def test_v16_to_v19_query_still_read_from_odoo_tools(tmp_path):
+    """When both locations exist the odoo/tools/ file is the module (v16-v19)."""
+    _write(tmp_path / "odoo" / "tools" / "query.py", "class Query:\n    pass\n")
+    _write(tmp_path / "odoo" / "orm" / "query.py", "class Query:\n    pass\n")
+    assert _resolve_core_paths(tmp_path, "odoo/tools/query.py", "19.0") == [
+        tmp_path / "odoo" / "tools" / "query.py"
+    ]
+
+
+def test_v20_cached_model_and_api_ormcache_are_indexed(tmp_path):
+    """v20 public API: odoo.models.CachedModel (orm/models_cached.py) and
+    odoo.api.ormcache (orm/cache.py, which odoo.api re-exports alone - the
+    other cache helpers are not odoo.api names)."""
+    _write(tmp_path / "odoo" / "models" / "__init__.py", "")
+    _write(tmp_path / "odoo" / "api" / "__init__.py", "")
+    _write(tmp_path / "odoo" / "orm" / "models.py", "class BaseModel:\n    pass\n")
+    _write(tmp_path / "odoo" / "orm" / "models_cached.py", (
+        "class CachedModel(Model):\n    def get_all(self):\n        pass\n"
+    ))
+    _write(tmp_path / "odoo" / "orm" / "cache.py", (
+        "class ormcache:\n    def lookup(self, method):\n        pass\n"
+        "class ormcache_counter:\n    pass\n"
+        "def get_cache_key_counter(bound_method, *args, **kwargs):\n    pass\n"
+    ))
+    qnames = {s.qualified_name for s in parse_odoo_core(str(tmp_path), "20.0")}
+    assert {"odoo.models.CachedModel", "odoo.models.CachedModel.get_all",
+            "odoo.api.ormcache", "odoo.api.ormcache.lookup"} <= qnames
+    assert "odoo.api.ormcache_counter" not in qnames
+    assert "odoo.api.get_cache_key_counter" not in qnames
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("def safe_eval(expr, /, context=None, *, mode='eval', filename=None): pass",
+     "safe_eval(expr, /, context, *, mode, filename)"),
+    ("def f(a, *args, b, **kw): pass", "f(a, *args, b, **kw)"),
+    ("def f(a, b=1): pass", "f(a, b)"),
+    ("def f(*, key): pass", "f(*, key)"),
+])
+def test_signature_keeps_positional_only_and_keyword_only_parameters(source, expected):
+    """A signature lists every parameter a caller can pass, with the / and *
+    markers: dropping positional-only or keyword-only parameters rendered the
+    v19+ safe_eval as `safe_eval(context)`, a signature nobody can call."""
+    (sym,) = _extract_from_source(source + "\n", "odoo.tools.safe_eval", "20.0")
+    assert sym.signature == expected
+
+
+@pytest.mark.skipif(
+    _V20_ROOT is None or _V19_ROOT is None,
+    reason="Real Odoo 19 and 20 checkouts not found (see tests/_odoo_checkouts.py)",
+)
+def test_real_v20_core_surface_does_not_shrink_against_v19():
+    """CLAUDE.md index-core rule: a CoreSymbol drop of more than 20% against
+    the previous version means a path refactor was missed. Every logical
+    module that resolves at v19 must still resolve at v20."""
+    v19 = parse_odoo_core(str(_V19_ROOT), "19.0")
+    v20 = parse_odoo_core(str(_V20_ROOT), "20.0")
+    assert len(v20) >= 0.8 * len(v19), (len(v19), len(v20))
+
+    logical_modules = [
+        path.removesuffix(".py").replace("/", ".")
+        for path in (*_CORE_FILES, *_V19_CURATED_FILES)
+    ]
+
+    def resolved(symbols):
+        return {m for m in logical_modules
+                if any(s.qualified_name.startswith(m + ".") for s in symbols)}
+
+    missing = resolved(v19) - resolved(v20)
+    assert not missing, f"logical modules resolved at v19 but not at v20: {missing}"
+    v20_by_name = {s.qualified_name: s for s in v20}
+    assert v20_by_name["odoo.tools.safe_eval.safe_eval"].signature == (
+        "safe_eval(expr, /, context, *, mode, filename)"
+    )
+    assert "odoo.tools.query.Query" in v20_by_name

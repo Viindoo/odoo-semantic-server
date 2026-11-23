@@ -35,6 +35,7 @@ from pathlib import Path
 import pytest
 
 from src.indexer import cli_flags_sync as sync
+from tests._odoo_checkouts import SURVEYED_MAJORS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TODAY = date(2026, 10, 20)
@@ -228,17 +229,20 @@ def test_writer_keeps_non_ascii_text_readable():
 
 
 def test_curated_majors_lists_real_versions_and_skips_the_smoke_placeholder():
-    assert sync.curated_majors() == list(range(8, 20))
+    # The literal pins the surveyed range against silent narrowing (8.0-20.0); the
+    # second assertion keeps the curated files and the SSOT range in lockstep.
+    assert sync.curated_majors() == list(range(8, 21))
+    assert sync.curated_majors() == SURVEYED_MAJORS
 
 
-@pytest.mark.parametrize("major", range(8, 20))
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
 def test_writer_reproduces_every_stored_file_byte_for_byte(major):
     """S7: a --write diff must contain only real changes, never reformatting."""
     path = sync.spec_path(f"{major}.0")
     assert sync.dump_data(sync.load_data(f"{major}.0")) == path.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("major", range(8, 20))
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
 def test_every_stored_file_records_provenance_from_the_official_branch(major):
     """ADR-0055: the global flags carry repo + branch + commit + file + oracle."""
     prov = sync.load_data(f"{major}.0").get(sync.PROVENANCE_KEY)
@@ -392,4 +396,4 @@ def test_source_without_any_flag_is_an_error_not_mass_drift(world):
 
 def test_print_majors_lists_the_curated_versions(capsys):
     assert script.main(["--print-majors"]) == script.EXIT_OK
-    assert capsys.readouterr().out.split() == [str(m) for m in range(8, 20)]
+    assert capsys.readouterr().out.split() == [str(m) for m in range(8, 21)]

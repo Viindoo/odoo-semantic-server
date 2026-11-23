@@ -64,7 +64,7 @@ Hệ thống chia 3 tier độc lập — mỗi tier có thể chạy trên serv
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │  Odoo Repositories (cloned)                                   │  │
-│  │  ~/git/*_{version}/   (419+ thư mục, 12 versions)            │  │
+│  │  ~/git/*_{version}/   (419+ thư mục, 13 versions)            │  │
 │  └──────────────────────────────┬────────────────────────────────┘  │
 │                                 │  đọc trực tiếp từ host filesystem │
 │                                 ▼                                   │

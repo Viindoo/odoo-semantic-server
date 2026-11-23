@@ -10,14 +10,14 @@ evidence - this docstring only summarizes):
       real checker too but under a filename this glob does not match - see
       LINT_RULES_MIN_MAJOR's comment)
     - addons/test_lint/tests/eslintrc - JSON config with rules dict (v16+).
-      Real v19 ships this file with a trailing comma before a closing
+      Real v19 and v20 ship this file with a trailing comma before a closing
       `]`/`}}` (valid JSON5/JSONC, invalid strict JSON) - `_load_json_lenient`
-      tolerates exactly that one drift class so the v19 eslint rule family is
-      not silently dropped.
-    - ruff.toml at repo root (v19 only, confirmed absent v16-v18) - TOML with
-      [lint].select = [...]
+      tolerates exactly that one drift class so the eslint rule family of those
+      versions is not silently dropped.
+    - ruff.toml at repo root (v19 and later, confirmed absent v16-v18) - TOML
+      with [lint].select = [...]
 
-All 12 versions (v8-v19) have curated static JSON in spec_data/ with
+Every surveyed version (v8-v20) has curated static JSON in spec_data/ with
 `_curate_status: "complete"` - none are placeholders; that data is the SSOT
 for editorial/convention rules the live sources above cannot express (see
 issue #364 phase-2 audit). This module's job is only the falsifiable,
@@ -103,7 +103,7 @@ def _load_json_lenient(text: str) -> dict | None:
     directly before a closing ``]``/``}`` (valid JSON5/JSONC, invalid strict
     JSON).
 
-    Real Odoo v19 ships `addons/test_lint/tests/eslintrc` with exactly this
+    Real Odoo v19 and v20 ship `addons/test_lint/tests/eslintrc` with exactly this
     shape - a trailing comma after the last object in the
     `no-restricted-syntax` selector array. Strict `json.loads` raises
     `JSONDecodeError` on it; before this fix that exception was caught and
@@ -286,7 +286,7 @@ def parse_lint_rules_for_version(
     Pipeline:
       1. If odoo_source_root + version supports test_lint (v{LINT_RULES_MIN_MAJOR}+,
          currently v14): code-extract pylint-odoo checkers + ESLint config + ruff.toml.
-      2. Always merge in the curated static JSON (all 12 versions v8-v19 are
+      2. Always merge in the curated static JSON (every surveyed version v8-v20 is
          `_curate_status: "complete"` - none are empty placeholders; static
          data is the SSOT for editorial rules the live sources can't express).
 
@@ -342,7 +342,7 @@ def parse_lint_rules_for_version(
                 pass
 
     # Static data - always merge (curated editorial + version-boundary rules,
-    # complete for all 12 versions; see module docstring).
+    # complete for every surveyed version; see module docstring).
     for r in _load_static_lint_rules(odoo_version, static_data_dir):
         _add(r)
 

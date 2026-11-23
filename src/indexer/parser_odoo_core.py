@@ -2,10 +2,12 @@
 # src/indexer/parser_odoo_core.py
 """Extract CoreSymbol entries from Odoo upstream Python source (M4.5 WI2.2).
 
-Boil-the-Lake principle: complete top-down inventory across stable v17/v18/v19+
+Boil-the-Lake principle: complete top-down inventory across the stable v8-v20
 core API surface - but bounded by a small curated allow-list of well-known files
 (_CORE_FILES). We do NOT walk the full Odoo source (1000+ files), nor parse
-third-party addons here.
+third-party addons here. Files that moved between versions are mapped by
+_resolve_core_paths / _resolve_core_targets, keeping one qualified name per
+logical module.
 For v19+, a curated supplement (_V19_CURATED_FILES) indexes split-ORM public APIs
 (Domain, table_objects, utils, model_classes) via name allowlist — 4 small files,
 v19-only, emitting only public symbols.
@@ -49,8 +51,11 @@ _CORE_FILES: tuple[str, ...] = (
 )
 # _CORE_FILES is version-AGNOSTIC (no odoo/orm/ paths here).
 # The resolver fan-out (_resolve_core_paths) handles v19 package-dir splits for
-# fields/models/api automatically. Per ADR-0002 §6, adding to _CORE_FILES is a
-# deliberate curated decision — NOT automatic for every new v19 file.
+# fields/models/api and the v20 move of query.py into odoo/orm/ automatically;
+# a logical module that became a package (v20: odoo/tools/safe_eval/) is read
+# through its __init__.py re-exports (_resolve_core_targets). Per ADR-0002 §6,
+# adding to _CORE_FILES is a deliberate curated decision - NOT automatic for
+# every new file.
 
 # v19-only curated public APIs from the split ORM package (boil-the-lake, curated).
 # These files do not exist before v19, so _resolve_core_paths returns [] and they
@@ -147,7 +152,7 @@ _FIELD_BASE_NAMES = {
 # practice (one indirection through UserError); deeper trees would need a
 # recursive AST climb, deferred per ADR-0002.
 _EXCEPTION_BASE_NAMES = {"Exception", "Warning", "BaseException", "UserError"}
-_ORM_BASE_NAMES = {"BaseModel", "Model", "TransientModel", "AbstractModel"}
+_ORM_BASE_NAMES = {"BaseModel", "Model", "TransientModel", "AbstractModel", "CachedModel"}
 _CURSOR_HINT_FILES = {"odoo.sql_db"}  # methods inside any class in this module = cursor_method
 
 # Curated allow-list of UNDERSCORE-prefixed methods that must be indexed despite
@@ -260,6 +265,27 @@ def _has_body_level_deprecation_warning(fn_node: ast.FunctionDef | ast.AsyncFunc
     return False
 
 
+def _signature_params(args: ast.arguments) -> list[str]:
+    """Parameter names in call order, with the ``/`` and ``*`` markers.
+
+    Compact form: default values and annotations are omitted. Positional-only
+    parameters are followed by ``/``; keyword-only parameters follow ``*name``
+    or a bare ``*``. Example: ``safe_eval(expr, /, context, *, mode, filename)``.
+    """
+    params = [a.arg for a in args.posonlyargs]
+    if args.posonlyargs:
+        params.append("/")
+    params += [a.arg for a in args.args]
+    if args.vararg:
+        params.append(f"*{args.vararg.arg}")
+    elif args.kwonlyargs:
+        params.append("*")
+    params += [a.arg for a in args.kwonlyargs]
+    if args.kwarg:
+        params.append(f"**{args.kwarg.arg}")
+    return params
+
+
 def _build_function_symbol(
     fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
     qualified_name: str,
@@ -272,13 +298,7 @@ def _build_function_symbol(
         if (_has_deprecated_decorator(fn_node) or _has_body_level_deprecation_warning(fn_node))
         else "stable"
     )
-    # Compact signature: name(args). Default values omitted in V0.
-    args = [a.arg for a in fn_node.args.args]
-    if fn_node.args.vararg:
-        args.append(f"*{fn_node.args.vararg.arg}")
-    if fn_node.args.kwarg:
-        args.append(f"**{fn_node.args.kwarg.arg}")
-    sig = f"{fn_node.name}({', '.join(args)})"
+    sig = f"{fn_node.name}({', '.join(_signature_params(fn_node.args))})"
 
     return CoreSymbolInfo(
         qualified_name=qualified_name,
@@ -443,6 +463,10 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
       an empty list to be returned and are silently skipped by the caller.
     - v19+: ``odoo/fields.py``, ``odoo/models.py``, and ``odoo/api.py`` became
       package directories that re-export from ``odoo/orm/*.py`` split files.
+    - v20+: ``odoo/tools/query.py`` moved to ``odoo/orm/query.py``.
+    A logical module that became a package of its own (v20
+    ``odoo/tools/safe_eval/``) resolves to no file here; ``_resolve_core_targets``
+    reads it through the package's re-exports.
 
     Returns:
         List of real file paths to parse.  Empty list if no equivalent files exist.
@@ -457,18 +481,24 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
     # After prefix substitution above:
     #   v8-v9:  logical_path == "openerp/tools/query.py"  → real file: openerp/osv/query.py
     #   v10-v15: logical_path == "odoo/tools/query.py"    → real file: odoo/osv/query.py
-    #   v16+:   logical_path == "odoo/tools/query.py"     → real file: odoo/tools/query.py (HIT)
-    # The direct `candidate.is_file()` check below handles v16+ (HIT).
-    # For v8-v9 and v10-v15, we need the version-aware osv/ path.
+    #   v16-v19: logical_path == "odoo/tools/query.py"    → real file: odoo/tools/query.py
+    #   v20+:   logical_path == "odoo/tools/query.py"     → real file: odoo/orm/query.py
+    # v20 left no module at odoo/tools/query.py (the ORM imports `.query`
+    # from odoo/orm/). The qname stays `odoo.tools.query.*` across every era,
+    # like the osv/ era before it, so api_version_diff sees one Query module
+    # (moved, not removed + added); the Source line carries the real file.
     major = int(version.split(".")[0])
     if logical_path in ("odoo/tools/query.py", "openerp/tools/query.py"):
         if major <= 9:
-            p = odoo_root / "openerp" / "osv" / "query.py"
+            candidates = [odoo_root / "openerp" / "osv" / "query.py"]
         elif major <= 15:
-            p = odoo_root / "odoo" / "osv" / "query.py"
+            candidates = [odoo_root / "odoo" / "osv" / "query.py"]
         else:
-            p = odoo_root / "odoo" / "tools" / "query.py"
-        return [p] if p.is_file() else []
+            candidates = [
+                odoo_root / "odoo" / "tools" / "query.py",
+                odoo_root / "odoo" / "orm" / "query.py",
+            ]
+        return next(([p] for p in candidates if p.is_file()), [])
 
     # issue #117 bug#3 - res_users.py moved across directories between versions.
     # After prefix substitution above (openerp/ for v8-v9, odoo/ for v10+):
@@ -506,11 +536,19 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
     elif logical_path == "odoo/models.py":
         candidates = [
             odoo_root / "odoo" / "orm" / "models.py",
+            # v20+: CachedModel, re-exported via odoo/models/__init__.py
+            # (from odoo.orm.models_cached import CachedModel).
+            odoo_root / "odoo" / "orm" / "models_cached.py",
             odoo_root / "odoo" / "orm" / "models_transient.py",
         ]
         return [p for p in candidates if p.is_file()]
     elif logical_path == "odoo/api.py":
         candidates = [
+            # v20+: ormcache moved from odoo/tools/cache.py to odoo/orm/cache.py
+            # and is re-exported as odoo.api.ormcache (odoo.tools.ormcache is a
+            # deprecated alias since 20.0). Only `ormcache` is re-exported -
+            # see _FANOUT_NAME_ALLOWLISTS.
+            odoo_root / "odoo" / "orm" / "cache.py",
             odoo_root / "odoo" / "orm" / "decorators.py",
             odoo_root / "odoo" / "orm" / "environments.py",
             # T5 — V19-G5: NewId moved from odoo/api.py (v18) to odoo/orm/identifiers.py (v19).
@@ -522,6 +560,131 @@ def _resolve_core_paths(odoo_root: Path, logical_path: str, version: str) -> lis
         return [p for p in candidates if p.is_file()]
 
     return []
+
+
+# Fan-out files of which the logical module re-exports only some names
+# (root-relative path -> the re-exported names). A file listed here is parsed
+# with this allow-list; every other fan-out file emits all its top-level symbols.
+_FANOUT_NAME_ALLOWLISTS: dict[str, frozenset[str]] = {
+    # odoo/api/__init__.py (v20+): `from odoo.orm.cache import ormcache` only.
+    "odoo/orm/cache.py": frozenset({"ormcache"}),
+}
+
+
+def _rel(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _narrow(
+    allow: frozenset[str] | None, extra: frozenset[str] | None,
+) -> frozenset[str] | None:
+    """Intersection of two optional allow-lists (None = no restriction)."""
+    if allow is None:
+        return extra
+    if extra is None:
+        return allow
+    return allow & extra
+
+
+def _star_export_names(module_file: Path) -> frozenset[str]:
+    """Names a ``from .module import *`` binds: the literal ``__all__`` when the
+    module declares one, else every top-level def/class not starting with ``_``
+    (Python's own star-import rule, restricted to what CoreSymbol indexes)."""
+    try:
+        tree = parse_external_source(
+            module_file.read_text(encoding="utf-8", errors="ignore"),
+            filename=str(module_file),
+        )
+    except (OSError, SyntaxError):
+        return frozenset()
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
+        ):
+            try:
+                value = ast.literal_eval(node.value)
+            except ValueError:
+                break
+            if isinstance(value, list | tuple) and all(isinstance(v, str) for v in value):
+                return frozenset(value)
+            break
+    return frozenset(
+        node.name for node in tree.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        and not node.name.startswith("_")
+    )
+
+
+def _package_reexports(package_dir: Path) -> list[tuple[Path, frozenset[str]]]:
+    """``(submodule file, names)`` that ``package_dir/__init__.py`` re-exports.
+
+    Reads the package's relative imports: ``from .sub import *`` re-exports
+    the submodule's star-import names (``_star_export_names``);
+    ``from .sub import a, b`` re-exports ``a`` and ``b``. An aliased name
+    (``import a as b``) is skipped - CoreSymbol keys a symbol by its own
+    def/class name. Submodules are returned in sorted order (deterministic).
+    """
+    init = package_dir / "__init__.py"
+    try:
+        tree = parse_external_source(
+            init.read_text(encoding="utf-8", errors="ignore"), filename=str(init),
+        )
+    except (OSError, SyntaxError):
+        return []
+    names_by_file: dict[Path, set[str]] = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.ImportFrom) and node.level == 1 and node.module):
+            continue
+        sub = package_dir.joinpath(*node.module.split(".")).with_suffix(".py")
+        if not sub.is_file():
+            continue
+        if any(alias.name == "*" for alias in node.names):
+            names = set(_star_export_names(sub))
+        else:
+            names = {a.name for a in node.names if a.asname in (None, a.name)}
+        names_by_file.setdefault(sub, set()).update(names)
+    return [
+        (path, frozenset(names))
+        for path, names in sorted(names_by_file.items())
+        if names
+    ]
+
+
+def _resolve_core_targets(
+    odoo_root: Path, logical_path: str, version: str,
+    name_allowlist: frozenset[str] | None,
+) -> list[tuple[Path, frozenset[str] | None]]:
+    """``(real file, name allow-list)`` pairs to parse for one allow-list entry.
+
+    The files of ``_resolve_core_paths`` keep the entry's own allow-list. When
+    the logical module resolves to no file but exists as a package directory
+    (v20: ``odoo/tools/safe_eval.py`` became ``odoo/tools/safe_eval/``), its
+    public surface is what the package ``__init__.py`` re-exports, so each
+    re-exporting submodule is parsed with the re-exported names as its
+    allow-list. Symbols keep the logical module's qname
+    (``odoo.tools.safe_eval.safe_eval``), which is also their import path.
+    """
+    paths = _resolve_core_paths(odoo_root, logical_path, version)
+    if paths:
+        return [
+            (p, _narrow(name_allowlist, _FANOUT_NAME_ALLOWLISTS.get(_rel(p, odoo_root))))
+            for p in paths
+        ]
+    prefix_old = "odoo/"
+    prefix_new = _version_prefix(version)
+    if prefix_new != prefix_old and logical_path.startswith(prefix_old):
+        logical_path = prefix_new + logical_path[len(prefix_old):]
+    package_dir = odoo_root / logical_path.removesuffix(".py")
+    if not (package_dir / "__init__.py").is_file():
+        return []
+    return [
+        (path, _narrow(name_allowlist, names))
+        for path, names in _package_reexports(package_dir)
+    ]
 
 
 def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbolInfo]:
@@ -547,10 +710,10 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
     targets: list[tuple[str, frozenset[str] | None]] = [(p, None) for p in _CORE_FILES]
     targets += list(_V19_CURATED_FILES.items())
     for relpath, allow in targets:
-        resolved = _resolve_core_paths(root, relpath, odoo_version)
+        resolved = _resolve_core_targets(root, relpath, odoo_version, allow)
         # "odoo/tools/safe_eval.py" → module_qname "odoo.tools.safe_eval"
         module_qname = relpath.removesuffix(".py").replace("/", ".")
-        for full in resolved:
+        for full, file_allow in resolved:
             try:
                 source = full.read_text(encoding="utf-8", errors="ignore")
             except OSError:
@@ -565,7 +728,7 @@ def parse_odoo_core(odoo_source_root: str, odoo_version: str) -> list[CoreSymbol
                 rel_fp = str(full)
             out.extend(_extract_from_source(
                 source, module_qname, odoo_version, file_path=rel_fp,
-                name_allowlist=allow,
+                name_allowlist=file_allow,
             ))
     return out
 

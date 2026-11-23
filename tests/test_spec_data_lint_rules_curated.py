@@ -3,8 +3,8 @@
 """Acceptance tests for curated lint_rules_*.json static data files (WI-A4/WI-8).
 
 Tests:
-  1. test_each_version_has_curated_status_complete - all 12 versioned files
-     must have _curate_status == "complete" and len(rules) >= 10.
+  1. test_each_version_has_curated_status_complete - every versioned file
+     (one per surveyed major, v8-v20) must have _curate_status == "complete" and len(rules) >= 10.
   2. test_rule_schema_valid - every rule entry in every file must conform to
      lint_rule.schema.json (jsonschema validation).
   3. WI-8 additions:
@@ -24,6 +24,8 @@ from pathlib import Path
 
 import pytest
 
+from src.constants import SURVEYED_MAJORS
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -31,18 +33,15 @@ import pytest
 _SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
 _SCHEMA_FILE = _SPEC_DATA_DIR / "lint_rule.schema.json"
 
-# Versions required per WI-A4 spec (excludes 99.0 test fixture).
-_REQUIRED_VERSIONS = [
-    "8.0", "9.0", "10.0", "11.0", "12.0", "13.0",
-    "14.0", "15.0", "16.0", "17.0", "18.0", "19.0",
-]
+# One curated file per surveyed major (excludes the 99.0 test fixture).
+_REQUIRED_VERSIONS = [f"{major}.0" for major in SURVEYED_MAJORS]
 
 _MIN_RULES_PER_VERSION = 10
 
 # Modern-era (v10+) curation depth floor — moved here from the former
 # test_lint_rules_minimum_count.py (WI-5 curation goal). Legacy v8/v9 keep the
 # >=10 baseline already enforced by TestEachVersionHasCuratedStatusComplete
-# .test_minimum_rule_count (all 12 versions). Thresholds unchanged.
+# .test_minimum_rule_count (every surveyed version). Thresholds unchanged.
 _MODERN_ERA_VERSIONS = [v for v in _REQUIRED_VERSIONS if int(v.split(".")[0]) >= 10]
 _MIN_RULES_MODERN = 50
 
@@ -68,7 +67,12 @@ def _load_schema() -> dict:
 # ---------------------------------------------------------------------------
 
 class TestEachVersionHasCuratedStatusComplete:
-    """All 12 versioned lint_rules_*.json files must be marked complete with >= 10 rules."""
+    """Every versioned lint_rules_*.json file must be marked complete with >= 10 rules."""
+
+    def test_required_versions_pin_the_full_surveyed_range(self):
+        """A literal pin (not the SSOT) so narrowing the surveyed range cannot
+        silently drop a version's curated file from every check below."""
+        assert _REQUIRED_VERSIONS == [f"{m}.0" for m in range(8, 21)]
 
     @pytest.mark.parametrize("version", _REQUIRED_VERSIONS)
     def test_curate_status_complete(self, version: str):
@@ -407,7 +411,7 @@ class TestNoDuplicateCodePatternReporting:
 # ---------------------------------------------------------------------------
 
 class TestCodePatternDataIntegrity:
-    """WI-8 data integrity checks for code_pattern across all 12 version files."""
+    """WI-8 data integrity checks for code_pattern across every version file."""
 
     def _all_rules_with_patterns(self) -> list[tuple[str, str, str]]:
         """Return [(version, rule_id, code_pattern)] for every non-null pattern."""

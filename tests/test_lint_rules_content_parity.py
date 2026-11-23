@@ -45,9 +45,9 @@ THIS FILE'S TWO LAYERS
    CI-safe, no checkout needed, never skips. A mechanical regex sweep (the same
    method the audit used, section 1.2) over every version the live
    pylint-odoo/eslint/ruff extractor can actually reach today (`_LIVE_EXTRACTOR_
-   VERSIONS`, derived from `LINT_RULES_MIN_MAJOR` - widened from v17.0-v19.0 to
-   v14.0-v19.0 by issue #364 B3; the v14.0/15.0/16.0 snapshot rows below were
-   added then, using this exact same regex-then-manual-confirm method) flags
+   VERSIONS`, derived from `LINT_RULES_MIN_MAJOR` and the surveyed range: v14.0
+   up to the newest surveyed major; every snapshot row below was built with
+   this exact same regex-then-manual-confirm method) flags
    every rule whose message carries version-boundary language. The flagged set
    is pinned against a reviewed snapshot: if a FUTURE edit adds a new boundary
    claim without updating the snapshot, the mismatch fails loudly - an
@@ -88,15 +88,15 @@ from pathlib import Path
 
 import pytest
 
-from src.constants import LINT_RULES_MIN_MAJOR
+from src.constants import LINT_RULES_MIN_MAJOR, SURVEYED_MAJORS
 from tests._odoo_checkouts import checkout_root
 
 _SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
 
 # Versions the live pylint-odoo/eslint/ruff extractor can reach today
-# (LINT_RULES_MIN_MAJOR gate - widened v17->v14 by issue #364 B3). Currently
-# ["14.0", "15.0", "16.0", "17.0", "18.0", "19.0"].
-_LIVE_EXTRACTOR_VERSIONS = [f"{m}.0" for m in range(LINT_RULES_MIN_MAJOR, 20)]
+# (LINT_RULES_MIN_MAJOR gate - widened v17->v14 by issue #364 B3): every
+# surveyed major from the gate upward. Currently ["14.0", ..., "20.0"].
+_LIVE_EXTRACTOR_VERSIONS = [f"{m}.0" for m in SURVEYED_MAJORS if m >= LINT_RULES_MIN_MAJOR]
 
 
 def _load_rules(version: str) -> list[dict]:
@@ -191,7 +191,7 @@ def _mechanically_flagged_rule_ids(version: str) -> set[str]:
 
 # The reviewed snapshot ("marked falsifiable") for every live-extractor
 # version, computed by running the regex above over the real
-# lint_rules_{14..19}.0.json files and manually confirming each hit is a
+# lint_rules_{14..20}.0.json files and manually confirming each hit is a
 # genuine version-boundary claim (none pruned as false positives this pass).
 # A rule_id appearing in the mechanical sweep but ABSENT from this snapshot is
 # exactly the "unmarked boundary claim" this layer exists to catch - the pin
@@ -224,6 +224,12 @@ _KNOWN_FALSIFIABLE_RULE_IDS: dict[str, frozenset[str]] = {
     "19.0": frozenset({
         "W8107", "W8108", "W8192", "W8202", "W8210", "W8220",
     }),
+    # v20.0: every claim below is checked against the real 19.0/20.0 sources by
+    # tests/test_lint_rules_v20_source_parity.py (W8202 here as well).
+    "20.0": frozenset({
+        "W8202", "W8211", "W8220", "W8223", "W8224", "W8225", "W8226",
+        "W8230", "W8233",
+    }),
 }
 
 
@@ -247,7 +253,7 @@ def test_w8202_and_w8167_are_correctly_classified_as_falsifiable_not_editorial()
     docstring). A rule that is wrong AND miscategorized as editorial would be
     invisible to any future source-diff oracle entirely.
     """
-    for version in ("17.0", "18.0", "19.0"):
+    for version in ("17.0", "18.0", "19.0", "20.0"):
         assert "W8202" in _mechanically_flagged_rule_ids(version), (
             f"W8202 must be classified falsifiable at {version}"
         )
@@ -280,9 +286,9 @@ def test_falsifiable_editorial_split_is_reported_per_live_extractor_version():
     falsifiable/editorial split per live-extractor version, so the number is
     never buried in an aggregate pass/fail count. Compare against the
     phase2-B audit's own ~16%/84% split (that split was computed by hand
-    across all 12 files; this mechanical regex, scoped to v17-19 only, is
-    expected to be a conservative (smaller) subset - see the task report for
-    the full comparison).
+    across all 12 files; this mechanical regex, scoped to the live-extractor
+    versions only, is expected to be a conservative (smaller) subset - see the
+    task report for the full comparison).
     """
     lines = []
     for version in _LIVE_EXTRACTOR_VERSIONS:
@@ -293,7 +299,8 @@ def test_falsifiable_editorial_split_is_reported_per_live_extractor_version():
     warnings.warn(
         UserWarning(
             "lint_rules falsifiable/editorial split (mechanical regex, "
-            f"v{LINT_RULES_MIN_MAJOR}-v19 only): " + "; ".join(lines) + ". Audit's "
+            f"v{LINT_RULES_MIN_MAJOR}-v{SURVEYED_MAJORS[-1]} only): " + "; ".join(lines)
+            + ". Audit's "
             "hand-classified split across all 12 files was ~16% falsifiable / "
             "~84% editorial (phase2-B section 1.2)."
         ),
@@ -349,6 +356,23 @@ def test_w8202_v18_correctly_states_the_true_removal_boundary():
         "longer define name_get()"
     )
     assert "removed in v18" in _rule("18.0", "W8202")["message"]
+
+
+@pytest.mark.odoo_source
+def test_w8202_v20_states_the_true_removal_boundary():
+    """Control for v20: real v20 source defines no `name_get()` (removed at
+    v18), and the v20 entry says so with the v18 boundary - not "removed in v20".
+    """
+    root = checkout_root(20)
+    if root is None:
+        pytest.skip("Odoo 20 checkout not found (set OSM_ODOO_CHECKOUTS)")
+    assert not _name_get_defined(root), (
+        "ground-truth check itself is broken: v20 real source should not "
+        "define name_get()"
+    )
+    message = _rule("20.0", "W8202")["message"]
+    assert "removed in v18" in message
+    assert "removed in v20" not in message
 
 
 @pytest.mark.odoo_source

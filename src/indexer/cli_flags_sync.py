@@ -18,10 +18,12 @@ Scope - GLOBAL flags only, by design
 ``config.py`` is the only file the oracle reads. Per-command flags (``command_name``
 not in ``{None, "server"}``: ``odoo-bin db``, ``i18n``, ``module``, ``scaffold``,
 ``deploy``, ``cloc``, ``upgrade_code`` ...) live in ``cli/*.py`` argparse code the oracle
-never opens, so they have NO oracle at any version. ADR-0055 allows curated data without
-an oracle only when the reason is written down - this is that statement: those entries are
-left byte-for-byte untouched by every operation here, and the sync report states their
-count per version so the gap stays visible.
+never opens, so they have NO production oracle at any version. ADR-0055 allows curated
+data without an oracle only when the reason is written down - this is that statement:
+those entries are left byte-for-byte untouched by every operation here, and the sync
+report states their count per version so the gap stays visible. The v20 entries are
+additionally diffed against the argparse/optparse declarations of a real checkout by
+``tests/test_spec_data_cli_flags_curated.py::TestV20CliSurface``.
 
 What a sync changes (and what it never does)
 --------------------------------------------
@@ -88,7 +90,8 @@ class DiffResult:
     field_mismatches: tuple[FieldMismatch, ...]
     # Present in the curated global set, absent from the oracle output. NOT drift: it can
     # mean a genuinely removed flag OR a real oracle blind spot (the geoip-db multi-alias
-    # call, v19 ``PosixOnlyOption(...)``); conflating the two would be a false alarm.
+    # call, the ``--stop-after-init`` alias of v20's ``--stop``, v19+ ``PosixOnlyOption(...)``);
+    # conflating the two would be a false alarm.
     curated_only: frozenset[str]
     # Present in the oracle output (demonstrably real, current source) but absent from the
     # curated global set. Always drift: the curated file lacks a flag that exists.

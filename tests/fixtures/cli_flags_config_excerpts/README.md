@@ -8,7 +8,7 @@ test (`test_ci_excerpt_matches_curated_global_cli_flags_per_version`) was invert
 match: it now asserts PARITY (curated == oracle for every fixture-covered flag, field by
 field) instead of "reproduces the known mismatch" - a test that can only be green while a
 bug exists protects the bug, not the business rule. All 6 fixture-covered flags per
-version, on all 12 versions, are confirmed (by the same diff the test performs) to agree
+version, on every surveyed version, are confirmed (by the same diff the test performs) to agree
 with the corrected curated data today. The fixture `.py` excerpt files below were
 **not** regenerated - they are verbatim, `_find_option_call_arg_spans`-extracted real
 source and were unaffected by the JSON correction; re-running the extraction against the
@@ -22,7 +22,7 @@ See "Negative control" below for the reproducible proof that this test can still
 (`src/indexer/parser_cli.py::_parse_options_calls`), field by field
 (`status`/`default`/`type`/`help`). The dev-box layer runs that diff against a real
 `<pkg>/tools/config.py` checkout. The CI layer needs something to diff against when no
-checkout is present - that is what these 12 files are.
+checkout is present - that is what these per-version files are (one for every surveyed major, v8-v20).
 
 **They are NOT excerpts in the `tests/fixtures/odoo_tests_headers/` sense** (class
 signatures with bodies reduced to `pass` - see that directory's README). For a CLI flag,
@@ -35,7 +35,7 @@ checks.
 docstring)
 
 - A full-file copy of every version's real `tools/config.py`: **482,360 bytes** across the
-  12 checkouts (`~/git/odoo{8..19}`), 31-56 KB per version.
+  12 checkouts (`~/git/odoo{8..19}`, measured before v20 existed), 31-56 KB per version.
 - Even a "calls only" extraction (every `add_option`/`add_argument` argument-list span,
   via the production `_find_option_call_arg_spans` helper, with no other file content):
   **179,843 bytes** (37% of the full-file total) - still 11x the entire
@@ -51,7 +51,7 @@ docstring)
 
 ## What is committed instead
 
-A **small, real, verbatim subset**: for each of the 12 surveyed majors, 6 flags - the same
+A **small, real, verbatim subset**: for each of the surveyed majors v8-v19, 6 flags - the same
 6 chosen at issue #364 S3 fixture-build time (5 originally confirmed, via the same diff the
 test performs, to have >=1 curated-vs-oracle field mismatch, plus 1 originally confirmed to
 have **zero** mismatches - see "Status" above and "Chosen flags per version" below for
@@ -64,7 +64,7 @@ the parser under test, never imported or executed, so `group` does not need to r
 real object and a `self.<method>` reference inside a real `callback=` kwarg (e.g.
 `--addons-path`) is harmless.
 
-Total size: **18,797 bytes** across all 12 files (~1.4-1.9 KB/version) - in the same size
+Total size: **20,475 bytes** across all 13 files (~1.4-1.9 KB/version) - in the same size
 class as the `odoo_tests_headers/` precedent, not the 180-482 KB full/calls-only
 alternative above.
 
@@ -114,10 +114,18 @@ below record provenance (why each flag was picked), not current behavior.
 | 18 | `--data-dir`, `--database`, `--db-filter`, `--db_host`, `--db_maxconn_gevent` | `--addons-path` |
 | 19 | `--addons-path`, `--data-dir`, `--database`, `--db-filter`, `--db_app_name` | `--config` |
 
+The v20 excerpt was extracted with the same method but its 6 flags were chosen for the facts
+20.0 changed rather than by the historical mismatch rule: `--http-interface` (default
+`127.0.0.1`), `--syslog` (help marks it deprecated, status `deprecated`), `--stop` (first alias
+of the `--stop`/`--stop-after-init` call, the name the oracle reports), `--database` (explicit
+`env_name`), plus `--addons-path` and `--data-dir` as unchanged controls.
+
 ## Source provenance (real checkout -> commit SHA, `git log -1 --format=%H`)
 
-Same checkouts (`~/git/odoo{8..19}`), same HEAD SHAs, as
-`tests/fixtures/odoo_tests_headers/README.md` (both extracted in the same session):
+v8-v19: same checkouts (`~/git/odoo{8..19}`), same HEAD SHAs, as
+`tests/fixtures/odoo_tests_headers/README.md` (both extracted in the same session). v20: the
+upstream `odoo/odoo` branch `20.0` tip, the commit the curated file's `_global_flags_provenance`
+records:
 
 | fixture | real source file | repo HEAD commit SHA |
 |---|---|---|
@@ -133,6 +141,7 @@ Same checkouts (`~/git/odoo{8..19}`), same HEAD SHAs, as
 | `v17_config_excerpt.py` | `odoo/tools/config.py` (odoo17)    | `d5989146752ae0c91d5721f8d08821b95518b2bc` |
 | `v18_config_excerpt.py` | `odoo/tools/config.py` (odoo18)    | `fca652c0bef69066ced92cc162a18da0a4101275` |
 | `v19_config_excerpt.py` | `odoo/tools/config.py` (odoo19)    | `14ac0f3eb5ec6ef12023d0fec59fbe1e7504ff39` |
+| `v20_config_excerpt.py` | `odoo/tools/config.py` (odoo/odoo branch 20.0) | `530bc2789e2f5df794cc30f6daa50624db65e5c0` |
 
 ## Negative control (proof this test can still fail)
 
