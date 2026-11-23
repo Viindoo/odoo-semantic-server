@@ -375,6 +375,12 @@ EMBEDDER_SLOT_ACQUIRE_TIMEOUT: float = float(
 
 PG_POOL_MIN_CONN: int = 1
 PG_POOL_MAX_CONN: int = 10
+# A checkout waits this long for a connection another thread returns before it
+# raises PoolError: parallel index workers (up to --max-workers 8) and request
+# threads share one pool, so a momentary peak must queue, not fail the caller.
+PG_POOL_CHECKOUT_TIMEOUT_SECONDS: float = float(
+    os.getenv("PG_POOL_CHECKOUT_TIMEOUT_SECONDS", "30")
+)
 # Bound psycopg2.connect() so a dead/unreachable PG fails fast (TCP RST or
 # the timeout) instead of hanging the caller. Used by every init_pool() call.
 PG_CONNECT_TIMEOUT_SECONDS: int = 5

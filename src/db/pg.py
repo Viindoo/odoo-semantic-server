@@ -28,7 +28,7 @@ import psycopg2.extras
 import psycopg2.pool
 from psycopg2.extras import RealDictCursor, execute_values
 
-from src.constants import PG_CONNECT_TIMEOUT_SECONDS
+from src.constants import PG_CONNECT_TIMEOUT_SECONDS, PG_POOL_CHECKOUT_TIMEOUT_SECONDS
 from src.db._types import PgConn
 
 if TYPE_CHECKING:
@@ -42,7 +42,15 @@ _log = logging.getLogger(__name__)
 
 
 class PgPool:
-    """Centralizes psycopg2 connection pool + safe parameterized-query helpers."""
+    """Centralizes psycopg2 connection pool + safe parameterized-query helpers.
+
+    Shared by threads (parallel index workers, request threads), so it wraps
+    psycopg2's thread-safe ``ThreadedConnectionPool``. psycopg2 raises
+    ``PoolError`` the instant every connection is in use; a checkout here
+    instead waits up to ``checkout_timeout`` seconds for one to come back
+    (``_slots`` counts the free connections) and raises ``PoolError`` only when
+    none is returned in that time.
+    """
 
     def __init__(
         self,
@@ -51,14 +59,18 @@ class PgPool:
         min_conn: int = 2,
         max_conn: int = 10,
         connect_timeout: int = PG_CONNECT_TIMEOUT_SECONDS,
+        checkout_timeout: float = PG_POOL_CHECKOUT_TIMEOUT_SECONDS,
     ) -> None:
         # connect_timeout is forwarded to psycopg2.connect() so an unreachable
         # PG fails fast (within connect_timeout seconds) instead of hanging
-        # the caller. SimpleConnectionPool eagerly opens min_conn connections
-        # at construction, so a missing PG raises here — callers that want to
+        # the caller. The pool eagerly opens min_conn connections at
+        # construction, so a missing PG raises here — callers that want to
         # tolerate a transient outage should use init_pool_with_retry().
         self._dsn = dsn
-        self._pool = psycopg2.pool.SimpleConnectionPool(
+        self._max_conn = max_conn
+        self._checkout_timeout = checkout_timeout
+        self._slots = threading.BoundedSemaphore(max_conn)
+        self._pool = psycopg2.pool.ThreadedConnectionPool(
             min_conn, max_conn, dsn, connect_timeout=connect_timeout,
         )
 
@@ -77,6 +89,27 @@ class PgPool:
     # ------------------------------------------------------------------
 
     @contextmanager
+    def _borrow(self) -> Generator[PgConn, None, None]:
+        """One pool connection for the block; waits for a free one (see class doc)."""
+        if not self._slots.acquire(timeout=self._checkout_timeout):
+            raise psycopg2.pool.PoolError(
+                f"connection pool exhausted: all {self._max_conn} connections stayed "
+                f"in use for {self._checkout_timeout:g}s"
+            )
+        try:
+            conn = self._pool.getconn()
+        except BaseException:
+            self._slots.release()
+            raise
+        try:
+            yield conn
+        finally:
+            try:
+                self._pool.putconn(conn)
+            finally:
+                self._slots.release()
+
+    @contextmanager
     def checkout(self) -> Generator[PgConn, None, None]:
         """Checkout a connection from the pool. Auto-returns on context exit.
 
@@ -84,26 +117,20 @@ class PgPool:
         yielding so callers always receive a clean connection regardless of
         what the previous checkout left behind.
         """
-        conn = self._pool.getconn()
-        try:
+        with self._borrow() as conn:
             conn.rollback()       # clear any pending transaction
             conn.autocommit = True  # safe now; callers manage transactions explicitly
             yield conn
-        finally:
-            self._pool.putconn(conn)
 
     @contextmanager
     def checkout_vec(self) -> Generator[PgConn, None, None]:
         """Checkout + register pgvector (register_vector). For embedding queries."""
-        conn = self._pool.getconn()
-        try:
+        with self._borrow() as conn:
             conn.rollback()
             conn.autocommit = True
             from pgvector.psycopg2 import register_vector
             register_vector(conn)
             yield conn
-        finally:
-            self._pool.putconn(conn)
 
     # ------------------------------------------------------------------
     # SQL helpers

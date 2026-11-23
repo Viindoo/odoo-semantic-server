@@ -29,7 +29,7 @@ def test_init_pool_with_retry_succeeds_first_try(monkeypatch):
         def __init__(self, *args, **kwargs):
             constructed.append({"args": args, "kwargs": kwargs})
 
-    monkeypatch.setattr(pg_mod.psycopg2.pool, "SimpleConnectionPool", _FakePool)
+    monkeypatch.setattr(pg_mod.psycopg2.pool, "ThreadedConnectionPool", _FakePool)
 
     sleep_calls: list[float] = []
     monkeypatch.setattr(pg_mod.time, "sleep", lambda s: sleep_calls.append(s))
@@ -53,7 +53,7 @@ def test_init_pool_with_retry_recovers_on_third_attempt(monkeypatch):
             if attempts["n"] < 3:
                 raise psycopg2.OperationalError("simulated PG unreachable")
 
-    monkeypatch.setattr(pg_mod.psycopg2.pool, "SimpleConnectionPool", _FlakyPool)
+    monkeypatch.setattr(pg_mod.psycopg2.pool, "ThreadedConnectionPool", _FlakyPool)
 
     sleep_calls: list[float] = []
     monkeypatch.setattr(pg_mod.time, "sleep", lambda s: sleep_calls.append(s))
@@ -79,7 +79,7 @@ def test_init_pool_with_retry_raises_after_budget(monkeypatch):
         def __init__(self, *args, **kwargs):
             raise psycopg2.OperationalError("PG is dead")
 
-    monkeypatch.setattr(pg_mod.psycopg2.pool, "SimpleConnectionPool", _AlwaysFails)
+    monkeypatch.setattr(pg_mod.psycopg2.pool, "ThreadedConnectionPool", _AlwaysFails)
 
     sleep_calls: list[float] = []
     monkeypatch.setattr(pg_mod.time, "sleep", lambda s: sleep_calls.append(s))
@@ -105,7 +105,7 @@ def test_init_pool_with_retry_respects_max_delay_cap(monkeypatch):
         def __init__(self, *args, **kwargs):
             raise psycopg2.OperationalError("nope")
 
-    monkeypatch.setattr(pg_mod.psycopg2.pool, "SimpleConnectionPool", _AlwaysFails)
+    monkeypatch.setattr(pg_mod.psycopg2.pool, "ThreadedConnectionPool", _AlwaysFails)
 
     sleep_calls: list[float] = []
     monkeypatch.setattr(pg_mod.time, "sleep", lambda s: sleep_calls.append(s))
@@ -132,7 +132,7 @@ def test_is_pool_initialized_false_until_init(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-    monkeypatch.setattr(pg_mod.psycopg2.pool, "SimpleConnectionPool", _OkPool)
+    monkeypatch.setattr(pg_mod.psycopg2.pool, "ThreadedConnectionPool", _OkPool)
     pg_mod.init_pool("postgresql://fake/db")
     assert pg_mod.is_pool_initialized() is True
 
@@ -148,7 +148,7 @@ def test_init_pool_forwards_connect_timeout(monkeypatch):
             captured["args"] = args
             captured["kwargs"] = kwargs
 
-    monkeypatch.setattr(pg_mod.psycopg2.pool, "SimpleConnectionPool", _Spy)
+    monkeypatch.setattr(pg_mod.psycopg2.pool, "ThreadedConnectionPool", _Spy)
     pg_mod.init_pool("postgresql://fake/db", connect_timeout=7)
 
     assert captured["kwargs"]["connect_timeout"] == 7
