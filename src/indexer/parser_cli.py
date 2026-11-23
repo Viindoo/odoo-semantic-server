@@ -12,8 +12,9 @@ NOTE on optparse vs argparse: Odoo upstream historically uses optparse
 (`add_option`). We accept both `add_option` and `add_argument` AST shapes for
 forward compatibility — same argument shape (positional flag str + kwargs).
 
-Static fallback: spec_data/cli_flags_<version>.json for v8-v16 when no Odoo
-source is available (per ADR-0002 §4).
+Static data: spec_data/cli_flags_<version>.json for every surveyed version (v8-v20)
+holds the command list, the per-command flags and the hand-curated flag fields, and
+is the only source when no Odoo source is available (per ADR-0002 §4).
 
 Version-aware paths: v8/v9 use the ``openerp/`` package prefix; v10+ use
 ``odoo/``. This mirrors ``_version_prefix()`` in parser_odoo_core.py and uses
@@ -74,7 +75,7 @@ _DEPRECATED_HELP_TOKENS = ("deprecated", "obsolete")
 
 # Version-dispatch registry for namespace-prefix selection (ADR-0032).
 # v8/v9: openerp (pre-rename era).  v10+: odoo (modern namespace, open-ended).
-# To add v20 with a hypothetical new namespace: append one entry here.
+# A later major that renames the package again is one more entry here.
 _PKG_PREFIX_REGISTRY: VersionRegistry[str] = VersionRegistry([
     (8,  ODOO_NAMESPACE_LEGACY_MAX_MAJOR, "openerp"),  # v8-v9
     (10, None,                            "odoo"),      # v10+, open-ended
@@ -86,7 +87,8 @@ def _pkg_prefix(odoo_version: str) -> str:
 
     v8/v9 shipped as ``openerp/``; v10+ renamed to ``odoo/``.
     Mirrors ``_version_prefix()`` in parser_odoo_core.py — same threshold.
-    Delegates to ``_PKG_PREFIX_REGISTRY`` per ADR-0032 so v20+ is a 1-line change.
+    Delegates to ``_PKG_PREFIX_REGISTRY`` per ADR-0032, so a later renamed namespace is a
+    1-line change.
     """
     return _PKG_PREFIX_REGISTRY.resolve_version(odoo_version, default="odoo")  # type: ignore[return-value]
 
@@ -582,20 +584,35 @@ def _load_static_cli_flags(
     return out
 
 
+# CLIFlagInfo fields only the curated cli_flags_<version>.json carries.
+_CURATED_ONLY_FLAG_FIELDS: tuple[str, ...] = ("replacement_flag_name", "env_name", "posix_only")
+
+
 def parse_cli_flags(
     odoo_source_root: str, odoo_version: str,
     static_data_dir: str | Path | None = None,
 ) -> list[CLIFlagInfo]:
-    """Aggregate CLI flags: parse odoo/tools/config.py + merge static placeholders."""
+    """Aggregate CLI flags: parse odoo/tools/config.py + merge static placeholders.
+
+    A flag found in both keeps the parsed (source) values, and takes the
+    curated-only fields from the static entry: the parser never fills
+    ``replacement_flag_name`` / ``env_name`` / ``posix_only``
+    (``cli_flags_sync`` leaves them to hand curation), so dropping the static
+    entry would lose e.g. the ``--syslog`` -> ``--log-config`` replacement.
+    """
     out: list[CLIFlagInfo] = []
-    seen: set[tuple[str, str]] = set()  # (flag_name, command_name)
+    by_key: dict[tuple[str, str], CLIFlagInfo] = {}  # (flag_name, command_name)
 
     def _add(f: CLIFlagInfo) -> None:
         key = (f.flag_name, f.command_name)
-        if key in seen:
+        kept = by_key.get(key)
+        if kept is None:
+            by_key[key] = f
+            out.append(f)
             return
-        seen.add(key)
-        out.append(f)
+        for name in _CURATED_ONLY_FLAG_FIELDS:
+            if not getattr(kept, name) and getattr(f, name):
+                setattr(kept, name, getattr(f, name))
 
     pkg = _pkg_prefix(odoo_version)
     config_path = Path(odoo_source_root) / pkg / "tools" / "config.py"

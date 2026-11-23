@@ -205,6 +205,24 @@
         "CSS-custom-property-first theming approach increasingly favored over SCSS-variable overrides."
       ],
       "notes": "Evidence: addons/web/static/lib/bootstrap/dist/css/bootstrap.css:3 'Bootstrap v5.3.3'. Theming guidance: prefer runtime CSS custom properties (--bs-*, --o-*) when targeting a multi-theme deployment; reserve SCSS overrides for fixed brand defaults."
+    },
+    "20.0": {
+      "bootstrap_version": "5.3.3",
+      "preprocessor": "scss",
+      "scss_files": [
+        "addons/web/static/src/scss/primary_variables.scss",
+        "addons/web/static/src/scss/secondary_variables.scss",
+        "addons/web/static/src/scss/bootstrap_overridden.scss",
+        "addons/web/static/lib/bootstrap/scss/_variables.scss",
+        "addons/web/static/lib/bootstrap/scss/_variables-dark.scss"
+      ],
+      "breaking_changes": [
+        "Bootstrap 5.3.3 retained from v19 - no Bootstrap version bump at v20.",
+        "Owl 3 replaces Owl 2 (addons/web/static/lib/owl/owl.js: 3.0.0 pre-release, was 2.8.4): components declare props with useProps(...) instead of `static props`.",
+        "jQuery and QUnit are no longer shipped in addons/web/static/lib/ (frontend tests are Hoot only).",
+        "1237 .scss files, 0 .less files."
+      ],
+      "notes": "Evidence (odoo/odoo 20.0 at 530bc2789e2f): addons/web/static/lib/bootstrap/dist/css/bootstrap.css:3 'Bootstrap v5.3.3'; the five SCSS entry points above exist unchanged. Theming guidance is unchanged from v19: prefer runtime CSS custom properties (--bs-*, --o-*) for multi-theme deployments; reserve SCSS overrides for fixed brand defaults."
     }
   }
 }

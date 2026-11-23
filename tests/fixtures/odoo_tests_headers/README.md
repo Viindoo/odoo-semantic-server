@@ -17,7 +17,7 @@ need to exist as importable symbols.
 ## What "AST-faithful excerpt" means
 
 For every class in `{BaseCase, TransactionCase, SingleTransactionCase, SavepointCase, HttpCase,
-HttpCaseCommon, HttpSavepointCase, TreeCase, Form, O2MForm}` that exists in the real file at
+HttpCaseCommon, HttpSavepointCase, TreeCase, CrossModule, Form, O2MForm}` that exists in the real file at
 that version:
 
 - The `class` statement - name, base classes, and keyword arguments (e.g. `metaclass=MetaCase`)
@@ -56,12 +56,14 @@ mechanically verified against source, not guessed.
 | `v17_common.py` | `odoo/tests/common.py` (odoo17) | `d5989146752ae0c91d5721f8d08821b95518b2bc` |
 | `v18_common.py` | `odoo/tests/common.py` (odoo18) | `fca652c0bef69066ced92cc162a18da0a4101275` |
 | `v19_common.py` | `odoo/tests/common.py` (odoo19) | `14ac0f3eb5ec6ef12023d0fec59fbe1e7504ff39` |
+| `v20_common.py` | `odoo/tests/common.py` (odoo/odoo 20.0 upstream) | `530bc2789e2f5df794cc30f6daa50624db65e5c0` |
 | `v17_form.py` | `odoo/tests/form.py` (odoo17) | `d5989146752ae0c91d5721f8d08821b95518b2bc` |
 | `v18_form.py` | `odoo/tests/form.py` (odoo18) | `fca652c0bef69066ced92cc162a18da0a4101275` |
 | `v19_form.py` | `odoo/tests/form.py` (odoo19) | `14ac0f3eb5ec6ef12023d0fec59fbe1e7504ff39` |
+| `v20_form.py` | `odoo/tests/form.py` (odoo/odoo 20.0 upstream) | `530bc2789e2f5df794cc30f6daa50624db65e5c0` |
 
 Each SHA is the `git log -1 --format=%H` HEAD of the corresponding local checkout
-(`~/git/odoo{8..19}`) used to extract these excerpts - not a per-file blame SHA.
+(`~/git/odoo{8..19}`; the 20.0 row is a clean checkout of the odoo/odoo 20.0 branch) used to extract these excerpts - not a per-file blame SHA.
 
 ## Python-2-era note (v8/v9)
 
@@ -86,20 +88,20 @@ text-regex class-header scanner (`_scan_classes_text`, module docstring "THE v8/
 SYNTAX HAZARD") that reads class facts directly out of the raw source text, robust to the
 Python-2 construct the AST parser cannot accept. A SEPARATE fixture,
 `py2_fallback_common.py` in this same directory, exists specifically to give that fallback path
-CI coverage - it is NOT one of the 15 `v<major>_common.py` files above (a different naming
+CI coverage - it is NOT one of the `v<major>_common.py` files above (a different naming
 pattern, deliberately excluded from `test_ci_layer_covers_every_surveyed_major_with_no_silent_gaps`'s
 glob) and is consumed by `tests/test_framework_bases_text_scan_fallback.py`, not by the parity
 test in this directory's sibling `tests/test_framework_bases_parity.py`. It is a small, faithful
 excerpt of the real odoo8 `openerp/tests/common.py` that KEEPS the genuine
-`except select.error, e:` construct verbatim (unlike the 15 fixtures above, which excerpt around
+`except select.error, e:` construct verbatim (unlike the 17 fixtures above, which excerpt around
 it), so it genuinely fails `ast.parse` under Python 3 and exercises the fallback for real.
 
 ## Verification performed
 
-(The 15 `v<major>_common.py`/`v<major>_form.py` parity fixtures only - `py2_fallback_common.py`
+(The 17 `v<major>_common.py`/`v<major>_form.py` parity fixtures only - `py2_fallback_common.py`
 is deliberately excluded from this section, since its entire purpose is to FAIL `ast.parse`.)
 
-- All 15 fixtures parse under `ast.parse` (Python 3) with zero syntax errors.
+- All 17 fixtures parse under `ast.parse` (Python 3) with zero syntax errors.
 - For every fixture, the AST class-name set was diffed against this feature's authoritative
   per-era menu (`api-contract.md` § "Authoritative menus per era") - **zero mismatches** found
   at any era (E1 through E7).
@@ -107,7 +109,7 @@ is deliberately excluded from this section, since its entire purpose is to FAIL 
   presence were independently re-derived from the real source per version and diffed against
   the contract's curated `has_setUpClass` table - **zero mismatches** found.
 - For every class in every fixture, base classes and keyword arguments were diffed verbatim
-  (via `ast.unparse`) against the real source - **exact match**, all 15 files.
+  (via `ast.unparse`) against the real source - **exact match**, all 17 files.
 
 No contract disagreement was found; the curated menus and `has_setUpClass` table in
-`api-contract.md` are confirmed accurate against real source for every indexed version (v8-v19).
+`api-contract.md` are confirmed accurate against real source for every indexed version (v8-v20).

@@ -649,7 +649,7 @@ _AST_LOCK = threading.Lock()
 
 # Framework bases: never a local Python base of a model class.
 _FRAMEWORK_BASES = frozenset({
-    "Model", "TransientModel", "AbstractModel", "BaseModel",
+    "Model", "TransientModel", "AbstractModel", "BaseModel", "CachedModel",
     "osv", "osv_memory", "Model_memory", "AbstractModel_memory", "object",
 })
 

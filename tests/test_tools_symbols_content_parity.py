@@ -109,21 +109,34 @@ def _curated_entry(version: str, qualified_name: str):
     return next((s for s in symbols if s.qualified_name == qualified_name), None)
 
 
+def _majors(min_major: int, max_major: int | None = None) -> list[int]:
+    """Surveyed majors in [min_major, max_major] (SSOT: SURVEYED_MAJORS)."""
+    return [
+        m for m in SURVEYED_MAJORS
+        if m >= min_major and (max_major is None or m <= max_major)
+    ]
+
+
+def _versions(min_major: int, max_major: int | None = None) -> list[str]:
+    return [f"{m}.0" for m in _majors(min_major, max_major)]
+
+
 def _image_process_qname_for(version: str) -> str:
     """Which curated qualified_name carries image_process's signature truth
     at `version`.
 
-    Every version except 19.0 keys off the flat `odoo.tools.image_process`
-    re-export. v19 intentionally OMITS that flat entry (issue #364 Problem 2
-    - the re-export was dropped from odoo/tools/__init__.py at v19, so the
-    flat name no longer resolves there; see
-    test_image_process_qualified_name_no_longer_resolves_at_v19 for the full
-    ground-truth argument). v19's signature truth therefore lives under the
+    Every version before 19.0 keys off the flat `odoo.tools.image_process`
+    re-export. v19 and later intentionally OMIT that flat entry (issue #364
+    Problem 2 - the re-export was dropped from odoo/tools/__init__.py at v19,
+    so the flat name no longer resolves there; see
+    test_image_process_qualified_name_no_longer_resolves_from_v19 for the full
+    ground-truth argument). Their signature truth therefore lives under the
     replacement path, odoo.tools.image.image_process, instead - tests that
     inspect the curated signature must follow that move rather than looking
     up a qualified_name the data no longer carries.
     """
-    return "odoo.tools.image.image_process" if version == "19.0" else "odoo.tools.image_process"
+    major = int(version.split(".")[0])
+    return "odoo.tools.image.image_process" if major >= 19 else "odoo.tools.image_process"
 
 
 def _real_image_process_params(root: Path) -> list[str] | None:
@@ -207,15 +220,13 @@ def test_pycompat_correctly_present_from_v11():
 
 
 @pytest.mark.odoo_source
-@pytest.mark.parametrize(
-    "version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0", "19.0"],
-)
+@pytest.mark.parametrize("version", _versions(13))
 def test_image_process_signature_is_frozen_copy_paste_never_matching_real_params(version):
     """Business rule: image_process's curated `signature` string must match
     the real parameter list at each version - historically it was a single
     copy-pasted string across all versions (phase2-C audit section 3 item
     2a: real first positional parameter is 'base64_source' at v13-v15, then
-    'source' from v16 on). v19 looks up the entry under
+    'source' from v16 on). v19 and later look up the entry under
     odoo.tools.image.image_process rather than the flat odoo.tools.image_process
     - see `_image_process_qname_for` (issue #364 Problem 2: the flat qname is
     intentionally omitted at v19).
@@ -249,11 +260,11 @@ def test_image_process_signature_is_frozen_copy_paste_never_matching_real_params
 
 
 @pytest.mark.odoo_source
-@pytest.mark.parametrize("version", ["18.0", "19.0"])
-def test_image_process_v18_v19_curated_signature_missing_expand_and_padding(version):
+@pytest.mark.parametrize("version", _versions(18))
+def test_image_process_v18_plus_curated_signature_carries_expand_and_padding(version):
     """Business rule: real image_process() gained `expand` and `padding`
     parameters at v18 - the curated signature must carry them from v18 on.
-    v19 looks up the entry under odoo.tools.image.image_process rather than
+    v19 and later look up the entry under odoo.tools.image.image_process rather than
     the flat odoo.tools.image_process - see `_image_process_qname_for`
     (issue #364 Problem 2: the flat qname is intentionally omitted at v19).
     """
@@ -278,12 +289,14 @@ def test_image_process_v18_v19_curated_signature_missing_expand_and_padding(vers
 
 
 @pytest.mark.odoo_source
-def test_image_process_qualified_name_no_longer_resolves_at_v19():
+@pytest.mark.parametrize("major", _majors(19))
+def test_image_process_qualified_name_no_longer_resolves_from_v19(major):
     """Business rule: odoo.tools.image_process was re-exported via `from
     .image import image_process` in odoo/tools/__init__.py through v18; that
-    re-export was dropped at v19 (no 'image' reference anywhere in v19's
-    odoo/tools/__init__.py) - the curated data must reflect that the flat
-    qualified_name no longer resolves as a real import path there.
+    re-export was dropped at v19 and stays dropped (no 'image' reference
+    anywhere in odoo/tools/__init__.py from v19 on) - the curated data must
+    reflect that the flat qualified_name no longer resolves as a real import
+    path there.
 
     NOTE (issue #364 follow-up): the original version of this assertion
     (`assert real_still_reexports`) was inverted relative to this docstring
@@ -302,32 +315,33 @@ def test_image_process_qualified_name_no_longer_resolves_at_v19():
     (odoo.tools.image.image_process, the one v19's own test_image.py imports)
     must be present and 'stable' instead.
     """
-    root = checkout_root(19)
+    root = checkout_root(major)
     if root is None:
-        pytest.skip("Odoo 19 checkout not found (set OSM_ODOO_CHECKOUTS)")
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+    version = f"{major}.0"
     init_py = root / "odoo" / "tools" / "__init__.py"
     assert init_py.is_file()
     real_still_reexports = "image_process" in init_py.read_text(encoding="utf-8", errors="ignore")
     assert not real_still_reexports, (
-        "ground-truth check itself is broken (or v19 has changed upstream): "
-        "expected v19's odoo/tools/__init__.py to no longer mention "
+        f"ground-truth check itself is broken (or v{major} has changed upstream): "
+        f"expected v{major}'s odoo/tools/__init__.py to no longer mention "
         "image_process at all - if this fires, re-derive the curated-data "
         "decision below from source, do not just flip this assertion back"
     )
 
-    flat_entry = _curated_entry("19.0", "odoo.tools.image_process")
+    flat_entry = _curated_entry(version, "odoo.tools.image_process")
     assert flat_entry is None, (
-        "tools_symbols_19.0.json still carries a flat odoo.tools.image_process "
+        f"tools_symbols_{version}.json still carries a flat odoo.tools.image_process "
         f"entry (status={flat_entry.status if flat_entry else None!r}), but "
-        "v19's odoo/tools/__init__.py no longer re-exports it - per the "
+        f"v{major}'s odoo/tools/__init__.py no longer re-exports it - per the "
         "schema's 'removed = absent, omit it' convention (already applied to "
         "pycompat in this same file), this qualified_name must be omitted "
         "entirely, not kept as 'deprecated'"
     )
 
-    replacement_entry = _curated_entry("19.0", "odoo.tools.image.image_process")
+    replacement_entry = _curated_entry(version, "odoo.tools.image.image_process")
     assert replacement_entry is not None and replacement_entry.status == "stable", (
-        "tools_symbols_19.0.json must carry a 'stable' "
+        f"tools_symbols_{version}.json must carry a 'stable' "
         "odoo.tools.image.image_process entry - the real resolving path "
         "v19's own test_image.py imports ('from odoo.tools import image as tools')"
     )
@@ -455,8 +469,13 @@ def test_oracle_recovers_html_escape_bound_inside_module_scope_if_else(major):
     )
 
 
+# Last major whose odoo/loglevels.py still defines `ustr` (and therefore whose
+# odoo.tools namespace carries it); v20 dropped it.
+_USTR_LAST_MAJOR = 19
+
+
 @pytest.mark.odoo_source
-@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+@pytest.mark.parametrize("major", _majors(0, _USTR_LAST_MAJOR))
 def test_oracle_recovers_ustr_bound_via_transitive_import_reexport(major):
     """Under-recovery mode 2 (Part B docstring): ustr is never itself
     def'd/assigned in misc.py - it arrives via `from odoo.loglevels import
@@ -479,3 +498,146 @@ def test_oracle_recovers_ustr_bound_via_transitive_import_reexport(major):
         "via a transitive ImportFrom re-export, not a direct def/class/"
         "assignment - see phase2-C audit section 2 item 2"
     )
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", SURVEYED_MAJORS)
+def test_oracle_recovers_exception_to_unicode_via_transitive_import_reexport(major):
+    """The same under-recovery mode 2 mechanism as ustr above, witnessed by a
+    name that exists at EVERY surveyed version: exception_to_unicode is bound
+    in misc.py only through `from odoo.loglevels import exception_to_unicode`
+    and reaches odoo.tools through `from .misc import *`.
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+    parse_tools_symbols = _import_tools_symbols_oracle()
+    parsed = parse_tools_symbols(root, f"{major}.0")
+    assert parsed is not None
+    assert "exception_to_unicode" in parsed, (
+        f"v{major}: oracle failed to recover exception_to_unicode, which real "
+        "source binds via a transitive ImportFrom re-export"
+    )
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _majors(_USTR_LAST_MAJOR + 1))
+def test_ustr_is_gone_from_the_namespace_from_v20(major):
+    """Business rule: ustr no longer resolves off odoo.tools once odoo/loglevels.py
+    stops defining it, and a name that does not resolve is omitted from the
+    curated data (tools_symbol.schema.json status doc) - never kept 'stable'.
+    The source fact is checked on the file itself, independent of the oracle.
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+    loglevels = (root / "odoo" / "loglevels.py").read_text(encoding="utf-8", errors="ignore")
+    assert "def ustr" not in loglevels, (
+        f"ground-truth check itself is broken: v{major} odoo/loglevels.py defines ustr"
+    )
+    parse_tools_symbols = _import_tools_symbols_oracle()
+    parsed = parse_tools_symbols(root, f"{major}.0")
+    assert parsed is not None
+    assert "ustr" not in parsed
+    assert "odoo.tools.ustr" not in _curated_qnames(f"{major}.0"), (
+        f"tools_symbols_{major}.0.json lists odoo.tools.ustr, which does not resolve at v{major}"
+    )
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _majors(20))
+def test_oracle_exposes_safe_eval_package_surface_from_v20(major):
+    """From v20 safe_eval is a package whose __init__.py re-exports its
+    submodules. The oracle must reach those names (`odoo.tools.safe_eval.
+    safe_eval`) through the package, not only through `.py` files.
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+    assert (root / "odoo" / "tools" / "safe_eval" / "__init__.py").is_file(), (
+        f"ground-truth check itself is broken: v{major} has no safe_eval package"
+    )
+    parse_tools_symbols = _import_tools_symbols_oracle()
+    parsed = parse_tools_symbols(root, f"{major}.0")
+    assert parsed is not None
+    assert parsed["safe_eval"].signature == "module"
+    assert parsed["safe_eval.safe_eval"].file_path == "odoo/tools/safe_eval/evaluation.py"
+    assert parsed["safe_eval.expr_eval"].file_path == "odoo/tools/safe_eval/expression.py"
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _majors(20))
+def test_ormcache_is_a_deprecated_alias_served_by_module_getattr_from_v20(major):
+    """From v20 odoo.tools.ormcache is not bound by an import: the module-level
+    __getattr__ of odoo/tools/__init__.py serves it with a DeprecationWarning.
+    The oracle must recover it, and the curated entry must be 'deprecated'
+    with odoo.api.ormcache as replacement.
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+    init_text = (root / "odoo" / "tools" / "__init__.py").read_text(encoding="utf-8")
+    assert "def __getattr__" in init_text and "DeprecationWarning" in init_text, (
+        f"ground-truth check itself is broken: v{major} odoo/tools/__init__.py "
+        "no longer serves a deprecated name through __getattr__"
+    )
+    parse_tools_symbols = _import_tools_symbols_oracle()
+    parsed = parse_tools_symbols(root, f"{major}.0")
+    assert parsed is not None
+    assert parsed["ormcache"].file_path == "odoo/tools/__init__.py"
+
+    entry = _curated_entry(f"{major}.0", "odoo.tools.ormcache")
+    assert entry is not None and entry.status == "deprecated"
+    assert entry.replacement_qname == "odoo.api.ormcache"
+
+
+def _signature_param_names(signature: str) -> list[str]:
+    """Parameter names of a `name(params) [-> ret]` signature string."""
+    head = signature[: signature.rindex(")") + 1]
+    args = ast.parse(f"def {head}: pass").body[0].args  # type: ignore[attr-defined]
+    return [
+        a.arg
+        for a in [*args.posonlyargs, *args.args, *([args.vararg] if args.vararg else []),
+                  *args.kwonlyargs, *([args.kwarg] if args.kwarg else [])]
+    ]
+
+
+# Versions whose curated function signatures are source-checked parameter by
+# parameter. The older files carry hand-copied signatures that drifted from
+# source (see the report of the v20 curation); extend this tuple when a file is
+# re-curated against its checkout.
+_SIGNATURE_CHECKED_MAJORS = [20]
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _SIGNATURE_CHECKED_MAJORS)
+def test_curated_function_signatures_carry_the_real_parameter_names(major):
+    """Business rule: a curated `name(params)` signature lists exactly the
+    parameters the live source function takes, in order - AI clients copy
+    these signatures into call sites.
+    """
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+    parse_tools_symbols = _import_tools_symbols_oracle()
+    version = f"{major}.0"
+    parsed = parse_tools_symbols(root, version)
+    assert parsed is not None
+    checked = 0
+    mismatches = []
+    for entry in _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR):
+        name = entry.qualified_name.removeprefix("odoo.tools.")
+        real = parsed.get(name)
+        leaf = name.rsplit(".", 1)[-1]
+        if (
+            real is None or not real.signature or real.signature == "module"
+            or not (entry.signature or "").startswith(f"{leaf}(")
+        ):
+            continue
+        checked += 1
+        curated_names = _signature_param_names(entry.signature)
+        real_names = _signature_param_names(real.signature)
+        if curated_names != real_names:
+            mismatches.append((entry.qualified_name, curated_names, real_names))
+    assert checked >= 8, f"parameter check ran on only {checked} signatures - oracle drift?"
+    assert not mismatches, f"curated signature parameters differ from source: {mismatches}"

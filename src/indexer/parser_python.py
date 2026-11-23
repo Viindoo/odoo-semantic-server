@@ -68,6 +68,9 @@ FIELD_TYPES_LEGACY = {
 
 MODEL_BASE_CLASSES = {
     'Model', 'TransientModel', 'AbstractModel', 'BaseModel',
+    # v20+: models.CachedModel(Model) - the base of res.company, res.currency,
+    # res.lang, res.country, website, uom.uom (odoo/orm/models_cached.py).
+    'CachedModel',
     # Era1 (v8/v9) bases
     'osv', 'osv_memory', 'Model_memory', 'AbstractModel_memory',
 }
@@ -99,8 +102,8 @@ class DeprecatedApiSymbol:
     ``since_version`` is DATA, not a trailing comment (issue #364 D1): the
     first Odoo major where ``change`` is observably true in real source (a
     DeprecationWarning present, a method/kwarg absent, a parameter renamed,
-    ...). Every value below is grep/file:line-verified across all twelve
-    indexed checkouts (v8.0-v19.0) - see the issue #364 audit table - not
+    ...). Every value below is grep/file:line-verified across every indexed
+    checkout (v8.0-v20.0) - see the issue #364 audit table - not
     transcribed from memory. That is precisely the failure mode this table
     itself demonstrated before the fix: ``track_visibility`` was claimed at
     17.0 in a trailing comment; the real transition is 13.0 (0 hits of
@@ -108,28 +111,47 @@ class DeprecatedApiSymbol:
     comment cannot be tested, which is why it rotted silently for this long
     (same artifact class as issue #362's ``_FRAMEWORK_BASES``).
 
-    ``tests/test_deprecated_api_symbols_parity.py`` is the drift alarm: a
-    CI layer (never skips) pins ``since_version`` against tiny, hand-captured
-    real-source snippets for every entry with a mechanical check, and a
-    dev-box layer re-derives the same facts from the real checkouts on this
-    machine when present.
+    ``later`` records the follow-up transitions of the same name, as
+    ``(major, change)`` pairs in ascending major order, each strictly above
+    ``since_version``. A name keeps ONE entry: ``since_version``/``change`` is
+    its first transition and stays true at every major below ``later[0]``
+    (e.g. ``read_group`` is deprecated at 19.0 and is a different, current
+    API at 20.0 - ``since_version=19``, ``later=((20, "signature_changed"),)``;
+    ``check_access_rights`` is deprecated at 18.0 and removed at 20.0). A
+    follow-up is DATA for the same reason ``since_version`` is: the parity
+    test pins it against real source, so prose in ``detail`` cannot rot it.
 
-    No production code reads ``since_version`` today - the consuming check
-    at ``target not in _DEPRECATED_API_SYMBOLS`` (below) is membership-only;
-    the real version-gating for the USES_CORE_SYMBOL edge happens downstream,
-    against the matching CoreSymbol node's own ``status`` at the indexed
-    version (see the "ACL rename family" / "Cache/flush rename family"
-    comments below). Structuring the fact as data anyway - rather than
+    ``tests/test_deprecated_api_symbols_parity.py`` is the drift alarm: a
+    CI layer (never skips) pins ``since_version`` and every ``later`` fact
+    against tiny, hand-captured real-source snippets for every entry with a
+    mechanical check, and a dev-box layer re-derives the same facts from the
+    real checkouts on this machine when present.
+
+    No production code reads ``since_version`` or ``later`` today - the
+    consuming check at ``target not in _DEPRECATED_API_SYMBOLS`` (below) is
+    membership-only; the real version-gating for the USES_CORE_SYMBOL edge
+    happens downstream, against the matching CoreSymbol node's own ``status``
+    at the indexed version (see the "ACL rename family" / "Cache/flush rename
+    family" comments below). Structuring the fact as data anyway - rather than
     building a framework_bases.py-shaped production oracle for a fact
     nothing reads at runtime - keeps this module lean while still making the
     claim falsifiable; see the module docstring of the parity test for the
     full proportionality argument.
+
+    Membership follows from that edge rule: a name is worth listing only if
+    some indexed version carries a CoreSymbol with that short name and status
+    'deprecated' that the name identifies unambiguously. A name that is also a
+    generic container/str method (``clear``, ``join``), a deprecation that
+    depends on the arguments (``Query.add_where`` with a str clause), or an
+    alias sharing its short name with the supported API (``ormcache``) would
+    flag correct code and is left out.
     """
 
     name: str
     since_version: int
     change: str  # 'removed' | 'deprecated' | 'renamed' | 'moved' | 'signature_changed' | 'review'
     detail: str
+    later: tuple[tuple[int, str], ...] = ()
 
 
 _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
@@ -148,27 +170,59 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
             "migration script. Issue #364 corrected this from a claimed "
             "15.0 (real removal is 14.0; deprecation onset is 13.0).",
         ),
-        # --- ACL rename family (issue #117): old names deprecated in 18, replaced by
-        #     check_access / has_access / _filtered_access / _has_cycle. The edge only
+        # --- ACL rename family (issue #117): old names deprecated in 18 (or 19),
+        #     replaced by check_access / has_access / _filtered_access / _has_cycle /
+        #     action_archive, and REMOVED at 20.0 (`later`). The edge only
         #     MERGEs when a same-version CoreSymbol with status 'deprecated'
         #     exists, so these flag usage on the versions where the alias is still
-        #     present-but-deprecated (v18) - and resolve to the underscore CoreSymbols
-        #     that bug#2 (parser_odoo_core underscore-skip) now indexes. ---
+        #     present-but-deprecated (v18, v19) - and resolve to the underscore
+        #     CoreSymbols that bug#2 (parser_odoo_core underscore-skip) now indexes.
+        #     At 20.0 there is no CoreSymbol left to bind, so scanning the 19.0
+        #     code is how a migration to 20.0 finds these calls. ---
         DeprecatedApiSymbol(
             "check_access_rights", 18, "deprecated",
-            "Deprecated -> check_access() (odoo/models.py).",
+            "Deprecated -> check_access() / has_access() (odoo/models.py); "
+            "removed at 20.0.",
+            later=((20, "removed"),),
         ),
         DeprecatedApiSymbol(
             "check_access_rule", 18, "deprecated",
-            "Deprecated -> check_access() (odoo/models.py).",
+            "Deprecated -> check_access() (odoo/models.py); removed at 20.0.",
+            later=((20, "removed"),),
+        ),
+        DeprecatedApiSymbol(
+            "check_field_access_rights", 19, "deprecated",
+            "Deprecated at 19.0 -> check_field_access() to check a field "
+            "(_check_field_access() at 19.0), fields_get() to list the "
+            "accessible fields (odoo/models.py); removed at 20.0.",
+            later=((20, "removed"),),
         ),
         DeprecatedApiSymbol(
             "_filter_access_rules", 18, "deprecated",
-            "Deprecated -> _filtered_access() (odoo/models.py).",
+            "Deprecated -> _filtered_access() (odoo/models.py); removed at 20.0.",
+            later=((20, "removed"),),
+        ),
+        DeprecatedApiSymbol(
+            "_filter_access_rules_python", 18, "deprecated",
+            "Deprecated -> _filtered_access() (odoo/models.py); removed at 20.0.",
+            later=((20, "removed"),),
         ),
         DeprecatedApiSymbol(
             "_check_recursion", 18, "deprecated",
-            "Deprecated -> not self._has_cycle() (odoo/models.py).",
+            "Deprecated -> not self._has_cycle() (odoo/models.py); removed at 20.0.",
+            later=((20, "removed"),),
+        ),
+        DeprecatedApiSymbol(
+            "_check_m2m_recursion", 18, "deprecated",
+            "Deprecated -> not self._has_cycle(field_name) (odoo/models.py); "
+            "removed at 20.0.",
+            later=((20, "removed"),),
+        ),
+        DeprecatedApiSymbol(
+            "toggle_active", 19, "deprecated",
+            "Deprecated at 19.0 -> action_archive() / action_unarchive() "
+            "(odoo/models.py); removed at 20.0.",
+            later=((20, "removed"),),
         ),
         # --- Cache/flush rename family: old names deprecated in 16, REMOVED in 17.
         #     `flush` is a generic short name; the version-scoped + status-gated edge
@@ -180,11 +234,13 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
             "flush", 16, "deprecated",
             "Deprecated -> flush_model() / flush_recordset() / env.flush_all() "
             "(odoo/models.py); removed entirely at 17.0.",
+            later=((17, "removed"),),
         ),
         DeprecatedApiSymbol(
             "invalidate_cache", 16, "deprecated",
             "Deprecated -> invalidate_model() / invalidate_recordset() / "
             "env.invalidate_all() (odoo/models.py); removed entirely at 17.0.",
+            later=((17, "removed"),),
         ),
         # --- Signature-changed (kwarg/semantics breaking caller) ---
         DeprecatedApiSymbol(
@@ -205,7 +261,7 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
         DeprecatedApiSymbol(
             "fields_get", 8, "review",
             "No confirmed version-specific semantics change found for the "
-            "'attributes' kwarg despite auditing v14.0-v19.0 source "
+            "'attributes' kwarg despite auditing v14.0-v20.0 source "
             "(get_description()'s filter loop is byte-identical) and the "
             "full upstream git history. Issue #364 could not substantiate "
             "the original '18: attributes kwarg semantics changed' claim - "
@@ -225,8 +281,13 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
         ),
         DeprecatedApiSymbol(
             "read_group", 19, "deprecated",
-            "Deprecated -> _read_group() (backend) / formatted_read_group() "
-            "(formatted result) (odoo/models.py, @api.deprecated).",
+            "Deprecated at 19.0 -> _read_group() (backend) / "
+            "formatted_read_group() (formatted result) (odoo/models.py, "
+            "@api.deprecated). 20.0 reuses the name for a current, "
+            "non-deprecated API: read_group(domain, groupby, aggregates, "
+            "having, offset, limit, order) returning tuples (odoo/models.py); "
+            "callers still passing fields/orderby/lazy break.",
+            later=((20, "signature_changed"),),
         ),
         DeprecatedApiSymbol(
             "default_get", 19, "renamed",
@@ -253,7 +314,7 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
         DeprecatedApiSymbol(
             "float_compare", 8, "moved",
             "Re-exported at odoo.tools.float_compare via odoo/tools/__init__.py's "
-            "float_utils import at every surveyed major (v8.0-v19.0). Issue "
+            "float_utils import at every surveyed major (v8.0-v20.0). Issue "
             "#364 corrected this: there is NO 19.0-specific move - the "
             "previous claim was fabricated (no matching source event found "
             "at any version).",
@@ -266,7 +327,7 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
         DeprecatedApiSymbol(
             "get_modules", 8, "moved",
             "Reachable at {odoo,openerp}.modules.get_modules at every "
-            "surveyed major (v8.0-v19.0). Issue #364 corrected this: there "
+            "surveyed major (v8.0-v20.0). Issue #364 corrected this: there "
             "is NO 18.0-specific path change - the previous claim was "
             "fabricated (no matching source event found at any version).",
         ),
@@ -297,9 +358,64 @@ _DEPRECATED_API_SYMBOLS: dict[str, DeprecatedApiSymbol] = {
         # --- odoo.tools pycompat — removed from __init__ v19 ---
         DeprecatedApiSymbol(
             "pycompat", 19, "removed",
-            "Dropped from odoo/tools/__init__.py's re-export at 19.0 (the "
-            "pycompat.py module file itself still exists on disk); import "
-            "odoo.tools.pycompat directly if still needed.",
+            "Dropped from odoo/tools/__init__.py's re-export at 19.0; the "
+            "odoo/tools/pycompat.py module file itself exists through 19.0 "
+            "(import odoo.tools.pycompat directly there) and is removed at "
+            "20.0.",
+            later=((20, "removed"),),
+        ),
+        # --- New at 20.0: unconditionally @deprecated (odoo.tools.func.deprecated
+        #     / warnings.deprecated), each name present at 19.0 and unambiguous as
+        #     a short name. 20.0 core and addons no longer call the four methods
+        #     below, so an override of one is silently never invoked. ---
+        DeprecatedApiSymbol(
+            "_check_access", 20, "deprecated",
+            "Deprecated at 20.0 -> override Model._access_domain() "
+            "(odoo/models.py); check_access() / has_access() / "
+            "_filtered_access() no longer call _check_access(), so an "
+            "override stops restricting access.",
+        ),
+        DeprecatedApiSymbol(
+            "_check_field_access", 20, "deprecated",
+            "Deprecated at 20.0 -> check_field_access() (odoo/models.py); "
+            "_check_field_access() is the recommended API at 19.0.",
+        ),
+        DeprecatedApiSymbol(
+            "_init_column", 20, "deprecated",
+            "Deprecated at 20.0 -> column initialization is defined by "
+            "Field.init_storage (odoo/models.py); the ORM no longer calls "
+            "_init_column(), so an override is never invoked.",
+        ),
+        DeprecatedApiSymbol(
+            "_table_has_rows", 20, "deprecated",
+            "Deprecated at 20.0, no replacement named (odoo/models.py); the "
+            "ORM no longer calls _table_has_rows().",
+        ),
+        DeprecatedApiSymbol(
+            "left_join", 20, "deprecated",
+            "Query.left_join() deprecated at 20.0 -> TableSQL.join() or "
+            "Query.add_join() (odoo/tools/query.py, moved to "
+            "odoo/orm/query.py at 20.0).",
+        ),
+        # odoo.tools.sql helpers (odoo/tools/sql.py), module-level functions.
+        DeprecatedApiSymbol(
+            "fix_foreign_key", 20, "deprecated",
+            "Deprecated at 20.0, removed after 20.0 (odoo/tools/sql.py); no "
+            "replacement named.",
+        ),
+        DeprecatedApiSymbol(
+            "check_index_exist", 20, "deprecated",
+            "Deprecated at 20.0, removed after 20.0 (odoo/tools/sql.py) -> "
+            "index_exists().",
+        ),
+        DeprecatedApiSymbol(
+            "reverse_order", 20, "deprecated",
+            "Deprecated at 20.0, removed after 20.0 (odoo/tools/sql.py); no "
+            "replacement named.",
+        ),
+        DeprecatedApiSymbol(
+            "escape_psql", 20, "deprecated",
+            "Deprecated at 20.0 -> escape_like_value() (odoo/tools/sql.py).",
         ),
     )
 }

@@ -453,9 +453,9 @@ indexer subprocess; populated bởi `index-repo --job-id N` + Web UI status badg
 
 ### 3.3.5 Profiles and repos setup
 
-`python -m src.db.migrate` áp dụng schema migrations và seed 12 root profile
-`odoo_N` (Odoo CE v8–v19) qua migration `0004` (idempotent `ON CONFLICT (name)
-DO NOTHING`). Python seeder (`seed_all()`) cũng chạy nhưng **no-op mặc định** —
+`python -m src.db.migrate` áp dụng schema migrations và seed 13 root profile
+`odoo_N` (Odoo CE v8-v20) qua migration `0001` (v8-v19) và `0008` (v20), idempotent
+`ON CONFLICT (name) DO NOTHING`. Python seeder (`seed_all()`) cũng chạy nhưng **no-op mặc định** -
 không bundle roster nào. Admin tạo các profile khác + toàn bộ repos qua web UI
 hoặc JSON API.
 
@@ -560,6 +560,28 @@ sudo -u odoo-semantic -H bash -c '
 
 Output mong đợi: `Done: 502 CoreSymbol, 16 LintRule, 12 CLICommand, 80 CLIFlag` (per version, ±10%).
 Mất 30–60s/version.
+
+**Đưa một series Odoo mới vào phục vụ (vd 20.0).** Dải series đã khảo sát nằm ở
+`src.constants.SURVEYED_MAX_MAJOR`; code + dữ liệu curated của series phải có trong bản
+deploy trước. Thứ tự bắt buộc, vì profile pass chỉ nối được `USES_CORE_SYMBOL` tới
+CoreSymbol đã có, và pattern chỉ nối tới CoreSymbol của `odoo_version_min`:
+
+1. `python -m src.db.migrate` (migration tạo profile gốc dùng chung `odoo_<N>` nếu chưa có).
+2. Gắn repo Odoo CE nhánh `<N>.0` vào `odoo_<N>` (admin UI hoặc API), clone.
+3. `index-core --source <clone odoo_<N>.0> --version <N>.0` (đọc nguồn upstream sạch, không
+   phải fork có tuỳ biến).
+4. `index-repo --profile <mọi profile của <N>.0> --full` - chạy SAU bước 3: profile đã index
+   trước khi có CoreSymbol của version đó sẽ thiếu cạnh `USES_CORE_SYMBOL`
+   (`find_deprecated_usage` rỗng) cho tới khi chạy lại `--full`.
+5. `seed_patterns` (tự re-seed khi `patterns.json` đổi; `--force` nếu không đổi).
+
+Kiểm: `cli_help(odoo_version='<N>.0')` liệt kê lệnh; `lookup_core_api('safe_eval', '<N>.0')`
+trả chữ ký; một tra cứu trên version chưa chạy `index-core` trả `Status: not_indexed`
+chứ không phải "not found".
+
+Khi bản deploy đổi cách parser lõi dựng CoreSymbol (vd chữ ký giữ tham số `/` và `*`),
+chạy lại `index-core` cho MỌI version để `api_version_diff` không báo "Signature changed" giả
+giữa version index trước và sau.
 
 #### 3.4.2 Seed pattern catalogue (M4.6 — `suggest_pattern` & friends)
 

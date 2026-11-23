@@ -40,9 +40,15 @@ reference to bind; ordinary top-level imports are enough.
 
 from dataclasses import replace
 
-from src.constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
+from src.constants import (
+    ODOO_NAMESPACE_LEGACY_MAX_MAJOR,
+    SURVEYED_MAJORS,
+    SURVEYED_MAX_MAJOR,
+    SURVEYED_MIN_MAJOR,
+)
 from src.indexer.framework_bases import (
     KNOWN_FRAMEWORK_BASE_NAMES,
+    NEWEST_MENU_MIN_MAJOR,
     framework_base,
     is_out_of_catalogue,
     removed_at,
@@ -51,8 +57,10 @@ from src.mcp.hints import format_next_step
 
 _COMMIT_FORBIDDEN_MSG = "cr.commit() FORBIDDEN — isolation is savepoint rollback"
 
-# Surveyed catalogue per api-contract.md / framework_bases.is_out_of_catalogue.
-_SURVEYED_MAJORS = range(8, 20)  # 8..19
+# Surveyed catalogue per api-contract.md / framework_bases.is_out_of_catalogue
+# (SSOT: src.constants.SURVEYED_MAJORS).
+_SURVEYED_MAJORS = SURVEYED_MAJORS
+_SURVEYED_RANGE_LABEL = f"v{SURVEYED_MIN_MAJOR}-v{SURVEYED_MAX_MAJOR}"
 
 
 def _resolve_major_or_none(v: str) -> int | None:
@@ -158,8 +166,8 @@ def _format_base_classes(facts: list, v: str) -> str:
         )
     if is_out_of_catalogue(v):
         lines.append(
-            f"├─ Note: Odoo {v} is outside the surveyed catalogue (v8-v19); "
-            "showing the newest known menu (v17+)."
+            f"├─ Note: Odoo {v} is outside the surveyed catalogue ({_SURVEYED_RANGE_LABEL}); "
+            f"showing the newest known menu (v{NEWEST_MENU_MIN_MAJOR}+)."
         )
 
     # Always append cursor rule (PP3 contract - must appear in output). D2 fix:
@@ -180,7 +188,7 @@ def _format_base_classes(facts: list, v: str) -> str:
 def _describe_absence(name: str, v: str) -> tuple[str, str | None]:
     """Data-driven (ETHOS #11) absence description for *name* at *v*.
 
-    Scans ``framework_base()`` across the surveyed catalogue (8.0-19.0) — the
+    Scans ``framework_base()`` across the surveyed catalogue (``SURVEYED_MAJORS``) - the
     window/deprecation/removal facts are DERIVED from the SSOT, never a
     second hardcoded per-class literal (the exact anti-pattern issue #362
     exists to remove). Returns ``(window_line, replacement_or_None)``; the
@@ -253,8 +261,8 @@ def _format_base_class_not_available(v: str, name: str) -> str:
         )
     if is_out_of_catalogue(v):
         lines.append(
-            f"├─ Note: Odoo {v} is outside the surveyed catalogue (v8-v19); "
-            "showing the newest known menu (v17+)."
+            f"├─ Note: Odoo {v} is outside the surveyed catalogue ({_SURVEYED_RANGE_LABEL}); "
+            f"showing the newest known menu (v{NEWEST_MENU_MIN_MAJOR}+)."
         )
 
     lines.append(f"├─ Cursor rule:   {_COMMIT_FORBIDDEN_MSG}")

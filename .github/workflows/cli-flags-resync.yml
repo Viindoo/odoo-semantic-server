@@ -6,7 +6,7 @@
 # test tests/test_cli_flags_content_parity.py goes red when upstream changes a flag on a
 # stable branch, but only on a machine holding the checkouts - so drift used to wait for
 # whoever next ran it. This job closes the loop:
-#   1. shallow + sparse clone ONLY odoo/tools/config.py of every curated branch (8.0-19.0),
+#   1. shallow + sparse clone ONLY odoo/tools/config.py of every curated branch (8.0-20.0),
 #   2. scripts/sync_cli_flags.py --check  (exit 0 in sync / 1 drift / 2 broken input),
 #   3. on drift: --write, push ONE bot branch and open - or refresh - ONE pull request.
 #
@@ -72,8 +72,8 @@ jobs:
       - run: uv sync --locked
 
       # Only the one file the oracle reads, per branch: a few MB in total instead of
-      # twelve full odoo/odoo clones. The versions come from the curated files themselves,
-      # so adding cli_flags_20.0.json needs no workflow edit.
+      # one full odoo/odoo clone per version. The versions come from the curated files
+      # themselves, so adding a cli_flags_<major>.0.json needs no workflow edit.
       - name: Fetch config.py of every curated Odoo branch
         run: |
           set -euo pipefail

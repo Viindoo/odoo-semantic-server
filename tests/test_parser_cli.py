@@ -163,11 +163,11 @@ def test_parse_cli_commands_returns_empty_for_nonexistent_root(tmp_path):
 def test_parse_cli_flags_returns_empty_for_nonexistent_root(tmp_path):
     """Missing source root + no static file → empty list, no exception.
 
-    Uses version "20.0" which has no static cli_flags_20.0.json on disk.
-    (v17 now has a curated static file so it would return data; use a
-    version not yet in the static catalogue to keep the test intent intact.)
+    Uses version "21.0" which has no static cli_flags_21.0.json on disk.
+    (every surveyed version has a curated static file and would return data;
+    use a version outside the static catalogue to keep the test intent intact.)
     """
-    assert parse_cli_flags(str(tmp_path / "missing"), "20.0") == []
+    assert parse_cli_flags(str(tmp_path / "missing"), "21.0") == []
 
 
 @pytest.mark.skipif(
@@ -494,14 +494,14 @@ def test_cli_live_parser_coverage_is_reported():
     announce itself, not just fade into individual SKIPPED lines nobody
     aggregates (the exact "repo believes it has drift detection that never
     runs" failure issue #364 names). Reports, via a warning always shown in
-    pytest's terminal summary (regardless of -q/-v), how many of the 12
+    pytest's terminal summary (regardless of -q/-v), how many of the
     surveyed majors this session's live cli_flags/cli_commands oracle
     actually has a checkout for. Also self-checks the surveyed range itself
     so a future accidental narrowing of SURVEYED_MAJORS cannot silently
     shrink this report's coverage (mirrors
     test_framework_bases_parity.py::test_ci_layer_covers_every_surveyed_major_with_no_silent_gaps).
     """
-    assert SURVEYED_MAJORS == list(range(8, 20))
+    assert SURVEYED_MAJORS == list(range(8, 21))
     exercised = [m for m in SURVEYED_MAJORS if checkout_root(m) is not None]
     warnings.warn(
         UserWarning(
@@ -515,3 +515,98 @@ def test_cli_live_parser_coverage_is_reported():
         ),
         stacklevel=1,
     )
+
+
+# ---------------------------------------------------------------------------
+# Oracle for the curated commands[] list (ADR-0055). Every top-level command a
+# real checkout ships - a ``Command`` subclass in ``<pkg>/cli/*.py`` or in an
+# addon's ``cli/*.py`` - must be a curated commands[] entry with the file it
+# lives in, and every curated top-level entry must be backed by such a class.
+# Compound sub-action names ("db init", "module list") are argparse subparsers
+# that no class declares, so they stay out of this comparison.
+# Verified against real checkouts for v17 and later; earlier majors have not
+# been compared against checkouts yet.
+# ---------------------------------------------------------------------------
+
+_COMMAND_ORACLE_MAJORS = [m for m in SURVEYED_MAJORS if m >= 17]
+
+
+def _real_command_files(root, version):
+    """{command name: source-root-relative file} for every Command class on disk."""
+    found = {}
+    pkg = _pkg_prefix(version)
+    for pattern in (f"{pkg}/cli/*.py", "addons/*/cli/*.py"):
+        for f in sorted(root.glob(pattern)):
+            if f.name == "__init__.py" or f.stem == "command" or f.stem.startswith("_"):
+                continue
+            rel = str(f.relative_to(root))
+            source = f.read_text(encoding="utf-8", errors="ignore")
+            for cmd in _parse_cli_module(source, version, rel):
+                found[cmd.name] = rel
+    return found
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _COMMAND_ORACLE_MAJORS)
+def test_curated_top_level_commands_match_the_command_classes_on_disk(major):
+    """The curated commands[] list names exactly the commands a real checkout ships, each
+    with the file its class lives in (core ``odoo/cli`` and addon ``cli`` directories)."""
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS to override)")
+    version = f"{major}.0"
+    real = _real_command_files(root, version)
+    assert real, f"v{major}: no Command class found under {root} - the oracle is blind"
+    curated = {
+        c.name: c.file_path for c in _load_static_cli_commands(version, None) if " " not in c.name
+    }
+    assert curated == real, (
+        f"v{major}: curated commands[] disagrees with the Command classes on disk - "
+        f"missing from curated: {sorted(set(real) - set(curated))}, "
+        f"not on disk: {sorted(set(curated) - set(real))}, "
+        f"different file: {sorted(n for n in set(real) & set(curated) if real[n] != curated[n])}"
+    )
+
+
+def test_parsed_flag_keeps_the_curated_only_fields_of_its_static_entry(tmp_path):
+    """Business rule: a flag found in config.py AND in the curated JSON keeps
+    the source values the parser reads (help, default, status) and the fields
+    only curation provides (replacement, env var, POSIX-only) - the client
+    must still learn that a deprecated flag has a successor."""
+    root = tmp_path / "odoo20"
+    (root / "odoo" / "tools").mkdir(parents=True)
+    (root / "odoo" / "tools" / "config.py").write_text(
+        "group.add_option('--syslog', action='store_true', dest='syslog',\n"
+        "                 my_default=False,\n"
+        "                 help='Send the log to the syslog server (deprecated)')\n"
+        "group.add_option('--db_host', dest='db_host', my_default=False,\n"
+        "                 help='specify the database host')\n"
+    )
+    static = tmp_path / "spec"
+    static.mkdir()
+    (static / "cli_flags_20.0.json").write_text(json.dumps({"flags": [
+        {"flag_name": "--syslog", "command_name": None, "status": "stable",
+         "help": "stale curated help", "replacement_flag_name": "--log-config"},
+        {"flag_name": "--db_host", "command_name": None, "env_name": "PGHOST",
+         "posix_only": True},
+    ]}))
+
+    parsed = parse_cli_flags(str(root), "20.0", static_data_dir=str(static))
+    flags = {f.flag_name: f for f in parsed}
+
+    assert len(flags) == 2
+    syslog = flags["--syslog"]
+    assert syslog.status == "deprecated"                        # from source
+    assert syslog.help == "Send the log to the syslog server (deprecated)"
+    assert syslog.replacement_flag_name == "--log-config"       # from curation
+    assert flags["--db_host"].env_name == "PGHOST"
+    assert flags["--db_host"].posix_only is True
+
+
+@pytest.mark.skipif(checkout_root(20) is None, reason="no Odoo 20 checkout")
+def test_real_v20_syslog_flag_points_at_its_successor():
+    flags = {f.flag_name: f for f in parse_cli_flags(str(checkout_root(20)), "20.0")
+             if f.command_name == "server"}
+    assert flags["--syslog"].status == "deprecated"
+    assert flags["--syslog"].replacement_flag_name == "--log-config"
+    assert flags["--config"].env_name == "ODOO_RC"

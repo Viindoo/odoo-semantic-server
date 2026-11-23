@@ -948,3 +948,22 @@ def test_parse_module_collects_reports(tmp_path, sale_module):
     result = parse_module(sale_module)
     assert len(result.reports) == 1
     assert result.reports[0].xmlid == "sale.rep_a"
+
+
+def test_v20_card_view_type_captured(tmp_path, sale_module):
+    """Odoo 20 adds the `card` view type (ir.ui.view.type selection): a <card>
+    arch is a card view, not a form."""
+    f = write_xml(tmp_path, "views.xml", """
+        <?xml version="1.0"?>
+        <odoo>
+            <record id="view_batch_card" model="ir.ui.view">
+                <field name="name">stock.picking.batch.card</field>
+                <field name="model">stock.picking.batch</field>
+                <field name="arch" type="xml">
+                    <card><field name="name"/></card>
+                </field>
+            </record>
+        </odoo>
+    """)
+    result = parse_file(f, sale_module)
+    assert result[0].view_type == "card"

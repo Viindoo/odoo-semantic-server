@@ -119,16 +119,38 @@ it never breaks.
 ADR-0052 SHAPE
 ----------------
 This feature owns ONE ``VersionRegistry`` (``_FRAMEWORK_BASE_REGISTRY``), fans out
-to seven per-era handlers (``_era_v8_v9`` .. ``_era_v17_plus``), and exposes ONE
+to eight per-era handlers (``_era_v8_v9`` .. ``_era_v20``), and exposes ONE
 aggregate dispatcher (``framework_bases()``). Callers never see the registry or
-the era handlers directly. Adding v20 is a one-line append to the registry plus
-one new ``_era_v20`` handler for the NAME/status/file_path/has_setUpClass menu —
-see "V20 AUTO-EXTEND — DELIBERATELY ABSENT" below for the one thing that is NOT a
-one-line append (``removed_at()`` owns its own tiny registry, independent of
-``_FRAMEWORK_BASE_REGISTRY``, and needs its own entry too — see that function's
-docstring for why).
+the era handlers directly. Adding a new era is a one-line append to the registry
+plus one new era handler for the NAME/status/file_path/has_setUpClass menu -
+see "V20 AUTO-EXTEND - DELIBERATELY ABSENT" below for what is NOT a one-line
+append: ``removed_at()`` owns its own tiny registry (``_REMOVED_REGISTRY``),
+independent of ``_FRAMEWORK_BASE_REGISTRY``, and needs its own entry too (see
+that function's docstring for why), and so does the BaseCase concrete-subclass
+registry (``_BASECASE_CONCRETE_REGISTRY``) behind ``BaseCase``'s setup text.
 
-V20 AUTO-EXTEND — DELIBERATELY ABSENT (issue #362 WI-1 review, HIGH-2)
+THE v20 ERA (verified against odoo/odoo 20.0, ``odoo/tests/common.py``)
+------------------------------------------------------------------------
+* ``SingleTransactionCase`` is removed (commit 050ac53426c0 "[REM] tests, base:
+  remove SingleTransactionCase": its only users were sequence tests, converted
+  to ``TransactionCase`` with a single test method or subtests). The 20.0 file
+  defines ``BaseCase`` (line 580), ``CrossModule`` (1187), ``TransactionCase``
+  (1305) and ``HttpCase`` (2622) and no ``SingleTransactionCase``. Replacement:
+  ``TransactionCase`` (``removed_at()``).
+* ``CrossModule(case.TestCase)`` (common.py:1187, exported through
+  ``odoo.tests`` by ``from .common import *``) IS a menu entry: an addon test
+  author picks it to write a suite that runs once for every module in the run
+  (the test method receives the module list; web's ``WebSuite`` /
+  ``MobileWebSuite`` combine it with ``HttpCase``). It derives directly from
+  ``case.TestCase``, not ``BaseCase``, so it opens no cursor and no transaction
+  of its own: ``test_type='unittest'`` with a name-specific summary (see
+  ``_test_type_clause``). It is not a ``BaseCase`` subclass, so it is not in the
+  BaseCase concrete-subclass list.
+* ``BaseCase``, ``TransactionCase``, ``HttpCase``, ``Form``, ``O2MForm`` keep
+  their names, files (``Form``/``O2MForm`` in ``odoo/tests/form.py``) and
+  ``setUpClass`` shape.
+
+V20 AUTO-EXTEND - DELIBERATELY ABSENT (issue #362 WI-1 review, HIGH-2)
 ----------------------------------------------------------------------------
 An earlier version of this module, when given ``odoo_source_root``, APPENDED any
 parsed class name with no curated match to the returned menu ("v20 auto-extend" —
@@ -150,14 +172,15 @@ Auto-extend is therefore GONE. ``framework_bases(v, source_root)`` only ever
 ENRICHES (file_path/line/has_setUpClass, and promotes status to 'deprecated')
 entries the curated table for ``v`` ALREADY has; a parsed class with no curated
 match is silently ignored by the enrichment step (never written, never
-returned). THE DESIGNED CONSEQUENCE: when a future Odoo v20 ships a class this
-table does not know about yet, ``framework_bases('20.0')`` keeps returning the
-v17+ era menu, and ``tests/test_framework_bases_parity.py``'s dev-box layer goes
-RED against a real v20 checkout the moment one exists on this machine — that red
-IS the alarm doing its job, the signal for a human to append one era line (see
-"ADR-0052 SHAPE" above). A silent auto-extension would have suppressed exactly
-that alarm — the same "curated table quietly stops matching source" failure mode
-issue #362 exists to kill, just relocated one level up the stack.
+returned). THE DESIGNED CONSEQUENCE: when a future Odoo major ships a class this
+table does not know about yet, ``framework_bases()`` for that major keeps
+returning the newest known era menu, and ``tests/test_framework_bases_parity.py``'s
+dev-box layer goes RED against a real checkout of that major the moment one
+exists on this machine - that red IS the alarm doing its job, the signal for a
+human to append one era line (see "ADR-0052 SHAPE" above). A silent
+auto-extension would have suppressed exactly that alarm - the same "curated
+table quietly stops matching source" failure mode issue #362 exists to kill,
+just relocated one level up the stack.
 
 EXPLICIT PER-CLASS test_type (not name-substring inference)
 ------------------------------------------------------------------
@@ -205,7 +228,7 @@ COMPOSITION RULES (``framework_bases()`` internals — see api-contract.md)
    ``file_path``/``line``/``has_setUpClass`` from the parse, and PROMOTE
    ``status`` to ``'deprecated'`` when the parse says so — a curated
    ``'deprecated'`` is NEVER downgraded back to ``'available'`` by a silent parse
-   miss. A parsed name with NO curated match is ignored (see "V20 AUTO-EXTEND —
+   miss. A parsed name with NO curated match is ignored (see "V20 AUTO-EXTEND -
    DELIBERATELY ABSENT" above).
 4. ``setup_summary`` is composed by ONE renderer (``_render_setup_summary``) for
    EVERY entry, on EVERY path (curated-only or parse-enriched), deriving the
@@ -230,7 +253,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ..constants import ODOO_NAMESPACE_LEGACY_MAX_MAJOR
+from ..constants import (
+    ODOO_NAMESPACE_LEGACY_MAX_MAJOR,
+    SURVEYED_MAX_MAJOR,
+    SURVEYED_MIN_MAJOR,
+)
 from .parser_util import parse_external_source
 from .version_registry import VersionRegistry
 
@@ -285,6 +312,7 @@ KNOWN_FRAMEWORK_BASE_NAMES: frozenset[str] = frozenset({
     "TransactionCase",
     "SingleTransactionCase",
     "SavepointCase",
+    "CrossModule",
     "HttpCase",
     "HttpCaseCommon",
     "HttpSavepointCase",
@@ -421,7 +449,7 @@ def _era_v15_v16() -> list[FrameworkBaseFacts]:
     ]
 
 
-def _era_v17_plus() -> list[FrameworkBaseFacts]:
+def _era_v17_v19() -> list[FrameworkBaseFacts]:
     common_fp = "odoo/tests/common.py"
     form_fp = "odoo/tests/form.py"
     return [
@@ -435,8 +463,27 @@ def _era_v17_plus() -> list[FrameworkBaseFacts]:
     ]
 
 
+def _era_v20() -> list[FrameworkBaseFacts]:
+    common_fp = "odoo/tests/common.py"
+    form_fp = "odoo/tests/form.py"
+    return [
+        _curated_fact("BaseCase", "unittest", "available", common_fp, True),
+        _curated_fact("CrossModule", "unittest", "available", common_fp, False),
+        _curated_fact("Form", "form", "available", form_fp, False),
+        _curated_fact("HttpCase", "http", "available", common_fp, True),
+        _curated_fact("O2MForm", "form", "available", form_fp, False),
+        _curated_fact("TestCase", "unittest", "available", None, False),
+        _curated_fact("TransactionCase", "transaction", "available", common_fp, True),
+    ]
+
+
+# First major of the newest era: the menu an out-of-range or unparseable
+# version fails open to (and what the read side names in its provenance note).
+NEWEST_MENU_MIN_MAJOR = 20
+
 # Feature-owned registry (ADR-0052): one boundary set, per-era handlers, first
-# match wins. Adding v20: append one entry + write _era_v20.
+# match wins. Adding a new era: append one entry + write its handler, and move
+# NEWEST_MENU_MIN_MAJOR.
 _EraHandler = Callable[[], list[FrameworkBaseFacts]]
 _FRAMEWORK_BASE_REGISTRY: VersionRegistry[_EraHandler] = VersionRegistry([
     (8, 9, _era_v8_v9),
@@ -445,7 +492,8 @@ _FRAMEWORK_BASE_REGISTRY: VersionRegistry[_EraHandler] = VersionRegistry([
     (12, 13, _era_v12_v13),
     (14, 14, _era_v14),
     (15, 16, _era_v15_v16),
-    (17, None, _era_v17_plus),
+    (17, NEWEST_MENU_MIN_MAJOR - 1, _era_v17_v19),
+    (NEWEST_MENU_MIN_MAJOR, None, _era_v20),
 ])
 
 
@@ -463,38 +511,45 @@ def _resolve_major(odoo_version: str) -> int | None:
 
 
 def is_out_of_catalogue(odoo_version: str) -> bool:
-    """True when the resolved major is outside the surveyed [8, 19] range.
+    """True when the resolved major is outside the surveyed range
+    (``src.constants.SURVEYED_MIN_MAJOR``..``SURVEYED_MAX_MAJOR``).
 
     Also true for an unparseable/empty version — there is no real major to be
     "in catalogue" with. Drives the provenance line on the menu output (WI-3).
     """
     major = _resolve_major(odoo_version)
-    return major is None or major < 8 or major > 19
+    return major is None or major < SURVEYED_MIN_MAJOR or major > SURVEYED_MAX_MAJOR
 
 
 # removed_at()'s OWN tiny registry (ADR-0052: every feature-specific boundary
 # gets its own registry, never a scattered `if major >= N`, and never piggy-
-# backed on ANOTHER registry's object identity). issue #362 WI-1 review HIGH-1:
-# the previous implementation tested `era is _era_v17_plus` - the object
-# identity of _FRAMEWORK_BASE_REGISTRY's era-menu handler - so appending a
-# hypothetical (20, None, _era_v20) entry to THAT registry silently made
-# removed_at("20.0") and removed_at("99.0") both wrongly start returning []
-# (the identity check stopped matching), telling a v20/sentinel caller nothing
-# was ever removed - the exact "SavepointCase still looks available" defect
-# issue #362 exists to kill, just relocated to a new era boundary. This
-# registry is independent: appending a v20 era to _FRAMEWORK_BASE_REGISTRY
-# cannot change removed_at()'s answer at all, by construction.
+# backed on ANOTHER registry's object identity). Keying removal on the identity of
+# _FRAMEWORK_BASE_REGISTRY's era-menu handler would make a newly appended era
+# silently answer [] for every later major - the "SavepointCase still looks
+# available" defect issue #362 exists to kill, relocated to a new era
+# boundary. This registry is independent: appending an era to
+# _FRAMEWORK_BASE_REGISTRY cannot change removed_at()'s answer at all, by
+# construction; a new removal needs its own entry here.
+_REMOVED_V17: tuple[tuple[str, str], ...] = tuple(_DEPRECATION_REPLACEMENTS.items())
+# 20.0 additionally drops SingleTransactionCase (commit 050ac53426c0): its users
+# became TransactionCase tests with one method or subtests.
+_REMOVED_V20: tuple[tuple[str, str], ...] = (
+    *_REMOVED_V17, ("SingleTransactionCase", "TransactionCase"),
+)
 _REMOVED_REGISTRY: VersionRegistry[tuple[tuple[str, str], ...]] = VersionRegistry([
-    (17, None, tuple(_DEPRECATION_REPLACEMENTS.items())),
+    (17, NEWEST_MENU_MIN_MAJOR - 1, _REMOVED_V17),
+    (NEWEST_MENU_MIN_MAJOR, None, _REMOVED_V20),
 ])
 
 
 def removed_at(odoo_version: str) -> list[tuple[str, str]]:
     """[(removed_class, replacement)] a user of an OLDER series would look for.
 
-    v17+ (including the out-of-catalogue sentinel 99.0) -> SavepointCase and
-    HttpSavepointCase, both merged into their non-savepoint counterpart.
-    v8-v16 -> [] (both classes still exist there, merely deprecated at 15/16).
+    v17-v19 -> SavepointCase and HttpSavepointCase, both merged into their
+    non-savepoint counterpart. v20+ (including the out-of-catalogue sentinel
+    99.0) -> those two plus SingleTransactionCase, removed in favour of
+    TransactionCase. v8-v16 -> [] (all of these classes still exist there,
+    SavepointCase and HttpSavepointCase merely deprecated at 15/16).
     An unparseable/empty version fails open to the newest known era EXPLICITLY
     here (not via VersionRegistry's own default, which would answer [] for an
     unparseable major just as it would for a genuine v8-v16 major - the two
@@ -504,12 +559,33 @@ def removed_at(odoo_version: str) -> list[tuple[str, str]]:
     """
     major = _resolve_major(odoo_version)
     if major is None:
-        return list(_DEPRECATION_REPLACEMENTS.items())
+        return list(_REMOVED_V20)
     return list(_REMOVED_REGISTRY.resolve(major, default=()))
+
+
+# The concrete transactional classes BaseCase's summary names as its
+# subclasses, per era (its own registry, ADR-0052) - only classes that exist at
+# that era: SavepointCase until its removal at 17.0 (see _REMOVED_REGISTRY),
+# SingleTransactionCase until its removal at 20.0, TransactionCase throughout
+# (HttpCase derives from TransactionCase).
+_BASECASE_CONCRETE_REGISTRY: VersionRegistry[tuple[str, ...]] = VersionRegistry([
+    (SURVEYED_MIN_MAJOR, 16,
+     ("TransactionCase", "SingleTransactionCase", "SavepointCase")),
+    (17, NEWEST_MENU_MIN_MAJOR - 1, ("TransactionCase", "SingleTransactionCase")),
+    (NEWEST_MENU_MIN_MAJOR, None, ("TransactionCase",)),
+])
+
+
+def _basecase_concrete_subclasses(odoo_version: str) -> tuple[str, ...]:
+    resolved = _BASECASE_CONCRETE_REGISTRY.resolve_version(
+        odoo_version, default=("TransactionCase",),
+    )
+    return resolved or ("TransactionCase",)
 
 
 def _render_setup_summary(
     name: str, test_type: str, status: str, has_setUpClass: bool,
+    odoo_version: str,
 ) -> list[str]:
     """The ONE setup_summary renderer (composition rule 4). Deliberately the
     single place that turns {name, test_type, status, has_setUpClass} into
@@ -530,7 +606,7 @@ def _render_setup_summary(
     fourth fragment would vanish with no trace) can no longer bite, because
     there is never a fourth fragment to begin with.
     """
-    parts: list[str] = [_test_type_clause(name, test_type)]
+    parts: list[str] = [_test_type_clause(name, test_type, odoo_version)]
     if has_setUpClass:
         parts.append(
             f"Defines its own setUpClass - always call super().setUpClass() "
@@ -548,7 +624,7 @@ def _render_setup_summary(
     return [" ".join(parts)]
 
 
-def _test_type_clause(name: str, test_type: str) -> str:
+def _test_type_clause(name: str, test_type: str, odoo_version: str) -> str:
     """The test_type-driven semantic clause, name-specialized where the shared
     per-test_type text would otherwise conflate two behaviourally different
     classes (module docstring "EXPLICIT PER-CLASS test_type" / issue #362
@@ -602,12 +678,26 @@ def _test_type_clause(name: str, test_type: str) -> str:
     # transactions but silent about ORM-awareness, inviting exactly the
     # confident-but-wrong "no Odoo ORM" reading TestCase's own bucket implies.
     if name == "BaseCase":
+        concrete = _basecase_concrete_subclasses(odoo_version)
+        listed = (
+            concrete[0] if len(concrete) == 1
+            else f"{', '.join(concrete[:-1])}, or {concrete[-1]}"
+        )
         return (
             "Abstract Odoo test base, NOT stdlib-only - defines real "
             "Odoo-ORM-aware helpers (ref(), browse_ref(), cursor()) but "
             "expects self.registry/self.cr/self.uid to already be set by a "
-            "concrete subclass (TransactionCase, SingleTransactionCase, or "
-            "SavepointCase); carries no transaction semantics of its own."
+            f"concrete subclass ({listed}); carries no transaction "
+            "semantics of its own."
+        )
+    if name == "CrossModule":
+        return (
+            "Cross-module test mixin deriving directly from the stdlib "
+            "TestCase (not BaseCase): the suite runs once for every module "
+            "in the run and each test method receives the list of modules "
+            "under test as its argument. It opens no cursor and no "
+            "transaction of its own - combine it with HttpCase when the test "
+            "needs an environment or a browser."
         )
     return (
         "Framework base class; carries no transaction semantics of its "
@@ -626,7 +716,7 @@ def framework_bases(
     has_setUpClass from a real AST parse and may promote status to
     'deprecated' - see the composition rules in the module docstring.
     """
-    era = _FRAMEWORK_BASE_REGISTRY.resolve_version(odoo_version, default=_era_v17_plus)
+    era = _FRAMEWORK_BASE_REGISTRY.resolve_version(odoo_version, default=_era_v20)
     by_name: dict[str, FrameworkBaseFacts] = {fact.name: fact for fact in era()}
 
     if odoo_source_root is not None:
@@ -683,6 +773,7 @@ def framework_bases(
             fact,
             setup_summary=_render_setup_summary(
                 fact.name, fact.test_type, fact.status, fact.has_setUpClass,
+                odoo_version,
             ),
         )
         for fact in by_name.values()

@@ -6,11 +6,11 @@ Three live sources, gated at v{LINT_RULES_MIN_MAJOR} (currently v14 - see
 src/constants.py's LINT_RULES_MIN_MAJOR comment for the full per-version
 evidence this boundary is based on):
   - pylint-odoo checker: addons/test_lint/tests/_odoo_checker_*.py with `msgs = {...}`
-  - ESLint config:       addons/test_lint/tests/eslintrc (JSON, v16+; v19's real
-                          file has a trailing comma - see _load_json_lenient)
-  - ruff TOML:           ruff.toml (v19 only, [lint].select = [...])
+  - ESLint config:       addons/test_lint/tests/eslintrc (JSON, v16+; the real v19 and
+                          v20 files have a trailing comma - see _load_json_lenient)
+  - ruff TOML:           ruff.toml (v19+, [lint].select = [...])
 
-All 12 versions (v8-v19) have curated static JSON with `_curate_status: "complete"`
+All 13 versions (v8-v20) have curated static JSON with `_curate_status: "complete"`
 - none are empty placeholders (see src/indexer/spec_data/lint_rules_*.json).
 """
 import json
@@ -40,6 +40,7 @@ from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
 _V14_ROOT = checkout_root(14)
 _V17_ROOT = checkout_root(17)
 _V19_ROOT = checkout_root(19)
+_V20_ROOT = checkout_root(20)
 
 
 def test_parse_pylint_odoo_msgs_dict_extracts_rule_id():
@@ -134,6 +135,7 @@ def test_version_has_test_lint_v14_plus():
     assert _version_has_test_lint("17.0") is True
     assert _version_has_test_lint("18.0") is True
     assert _version_has_test_lint("19.0") is True
+    assert _version_has_test_lint("20.0") is True
     assert _version_has_test_lint("13.0") is False
     assert _version_has_test_lint("9.0") is False
 
@@ -285,6 +287,59 @@ def test_parse_lint_rules_smoke_real_v19_eslint_survives_trailing_comma():
     assert eslint_rules, (
         "v19 real eslintrc must yield eslint-odoo rules (trailing-comma regression)"
     )
+
+
+_V20_ESLINTRC = (
+    _V20_ROOT / "odoo" / "addons" / "test_lint" / "tests" / "eslintrc"
+    if _V20_ROOT is not None else None
+)
+
+
+@pytest.mark.skipif(
+    _V20_ROOT is None or _V20_ESLINTRC is None or not _V20_ESLINTRC.exists(),
+    reason=f"Real Odoo 20 eslintrc not on disk (checked {_V20_ESLINTRC})",
+)
+def test_parse_lint_rules_smoke_real_v20_live_layers_are_complete(tmp_path):
+    """Business rule: the live parse of the real Odoo 20 checkout recovers all
+    three source layers - the pylint-odoo checkers, the eslintrc rule family
+    (the real file keeps a trailing comma that strict `json.loads` rejects)
+    and the ruff.toml select list - so v20 does not silently lose a layer.
+    """
+    real_text = _V20_ESLINTRC.read_text(encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(real_text)
+
+    empty_static = tmp_path / "empty_static"
+    empty_static.mkdir()
+    rules = parse_lint_rules_for_version(
+        "20.0", odoo_source_root=str(_V20_ROOT), static_data_dir=str(empty_static),
+    )
+    by_kind: dict[str, set[str]] = {}
+    for r in rules:
+        by_kind.setdefault(r.kind, set()).add(r.rule_id)
+
+    assert {"E8501", "E8502", "E8503"} <= by_kind.get("pylint-odoo", set())
+    # eslintrc rules block: no-restricted-syntax carries the Owl 3 useEffect selectors.
+    assert {"no-undef", "no-restricted-syntax", "no-unused-vars"} <= by_kind.get(
+        "eslint-odoo", set()
+    )
+    # ruff.toml [lint].select: categories surface, `ignore` entries do not.
+    assert {"BLE", "F", "I", "UP"} <= by_kind.get("ruff-builtin", set())
+    assert "E501" not in by_kind.get("ruff-builtin", set())
+    ids = [(r.kind, r.rule_id) for r in rules]
+    assert len(ids) == len(set(ids)), "duplicate (kind, rule_id) in the live 20.0 parse"
+
+
+def test_parse_lint_rules_v20_merges_curated_layer_without_duplicates():
+    """Business rule: `parse_lint_rules_for_version('20.0')` serves the curated
+    editorial layer (not only the live subset) and never emits one rule twice.
+    Needs no checkout: the curated JSON alone must already carry the layer.
+    """
+    rules = parse_lint_rules_for_version("20.0")
+    ids = [(r.kind, r.rule_id) for r in rules]
+    assert len(ids) == len(set(ids))
+    assert len(rules) > 51, "v20 must carry more than the 51 live-source rules"
+    assert any(r.rule_id == "W8221" for r in rules)
 
 
 def test_translation_format_interpolation_in_static_v16(tmp_path):
@@ -465,13 +520,13 @@ def test_lint_rules_live_parser_coverage_is_reported():
     """T-D2 coverage visibility - business rule: a skipped guard must
     announce itself, not just fade into individual SKIPPED lines nobody
     aggregates. Reports, via a warning always shown in pytest's terminal
-    summary (regardless of -q/-v), how many of the 12 surveyed majors are
+    summary (regardless of -q/-v), how many of the surveyed majors are
     even architecturally ELIGIBLE for a live lint_rules oracle, and how many
     of those this session actually has a checkout for. Also self-checks the
     surveyed range itself so a future accidental narrowing of
     SURVEYED_MAJORS cannot silently shrink this report's coverage.
     """
-    assert SURVEYED_MAJORS == list(range(8, 20))
+    assert SURVEYED_MAJORS == list(range(8, 21))
     eligible = [m for m in SURVEYED_MAJORS if _version_has_test_lint(f"{m}.0")]
     exercised = [m for m in eligible if checkout_root(m) is not None]
     warnings.warn(

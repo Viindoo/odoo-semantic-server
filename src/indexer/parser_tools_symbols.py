@@ -61,7 +61,10 @@ it re-exports it from sibling submodule files via ``from .X import *`` /
    the owning module's own public surface too (subject to that module's own
    ``__all__``, when it defines one — v18/v19 ``misc.py`` explicitly lists
    ``'ustr'`` in ``__all__``, so the direct-``__all__`` path also covers it
-   there).
+   there). ``ustr`` exists through v19; v20 ``odoo/loglevels.py`` no longer
+   defines it, so it is not part of the v20 surface. ``exception_to_unicode``
+   (the same ``from odoo.loglevels import`` shape) is the witness of this
+   mechanism at every version v8-v20.
 
 SUBMODULE SELF-BINDING (a THIRD real-Python effect, needed for ``pycompat``,
 ``date_utils``, ``js_transpiler``, ``config`` — all curated already)
@@ -95,7 +98,7 @@ referencing entirely (found live at v19: ``date_utils``/``js_transpiler``).
 
 DOTTED ATTRIBUTE-PATH SYMBOLS (issue #364 Problem 2 — ``image_process`` at v19)
 --------------------------------------------------------------------------------
-``odoo/tools/image.py`` exists at every version v13-v19 and always resolves
+``odoo/tools/image.py`` exists at every version v13-v20 and always resolves
 as ``odoo.tools.image.image_process`` via ``from odoo.tools.image import
 image_process`` — a fact that holds regardless of whatever
 ``odoo/tools/__init__.py`` chooses to re-export flatly. Through v18,
@@ -112,12 +115,42 @@ pass one test: it is a real, always-valid Python import path for any
 submodule file that exists, and the general mechanism also means a FUTURE
 similar re-export drop at some other symbol is caught the same way, without
 another hand-tuned special case. Scope is deliberately narrow: only direct
-``.py`` files (not subdirectories like ``_vendor/``, ``pdf/``, ``zeep/``,
-``data/``, ``arabic_reshaper/``, ``babel/`` — vendored/data payloads, never
-curated as ``odoo.tools.*`` symbols) — and ``__all__`` does NOT gate this
+``.py`` files here (the subdirectories ``_vendor/``, ``pdf/``, ``zeep/``,
+``data/``, ``arabic_reshaper/``, ``babel/`` are vendored/data payloads, never
+curated as ``odoo.tools.*`` symbols; first-party packages are handled by
+"PACKAGE SUBMODULES" below) - and ``__all__`` does NOT gate this
 step (``__all__`` only governs ``import *`` semantics, never an explicit
 dotted/named import, so using the raw, unfiltered per-file scan here is the
 semantically correct choice, not merely the simpler one).
+
+PACKAGE SUBMODULES (v20: ``odoo/tools/safe_eval/``, ``odoo/tools/cache/``)
+----------------------------------------------------------------------------
+From v20 a logical ``odoo.tools`` module can be a package: ``safe_eval.py``
+became ``safe_eval/`` whose ``__init__.py`` re-exports its own submodules
+(``from .evaluation import *``, ``from .expression import expr_eval``,
+``from .runtime import *``). A ``.py``-only listing misses everything such a
+package exposes. From v20 on, every first-party package directly under
+``<era>/tools/`` (not ``_``-prefixed, not one of the payload directories
+above) is therefore bound under its bare name (``signature="module"``) and
+its ``__init__.py`` re-export surface, resolved with the same
+``_flat_public_api`` machinery as ``odoo/tools/__init__.py`` itself, is
+exposed at ``odoo.tools.<pkg>.<name>``
+(``odoo.tools.safe_eval.safe_eval``). The step is version-gated
+(``_PACKAGE_EXPOSURE_REGISTRY``) so the surface recovered for v8-v19 is
+exactly what it was before packages were modelled.
+
+MODULE-LEVEL ``__getattr__`` (v20: deprecated ``ormcache`` / ``cache``)
+------------------------------------------------------------------------
+v20's ``odoo/tools/__init__.py`` defines a module-level ``__getattr__`` that
+serves ``cache`` and ``ormcache`` (with a ``DeprecationWarning`` pointing at
+``odoo.api``) instead of binding them. ``from odoo.tools import ormcache``
+resolves through it, so the names it answers are real ``odoo.tools.<name>``
+symbols: the comparisons the function makes against its name parameter
+(``if name in ('cache', 'ormcache')``, ``name == 'x'``) are read as the
+served names. They are recorded with ``file_path`` of ``__init__.py`` and
+``signature=None`` (the value lives in another package), and take priority
+over the bare-submodule marker of the same name - Python consults
+``__getattr__`` before the submodule fallback.
 
 BARE SUBMODULE EXPOSURE (live finding beyond the phase2-C audit's two named
 problems — ``date_utils``/``js_transpiler`` at v19)
@@ -157,7 +190,7 @@ same v8/v9 hazard (bare ``except X, e:`` syntax, ``print`` statements, octal
 literals — all fatal to a Python-3 ``ast.parse`` of the WHOLE file even when
 the offending construct has nothing to do with the symbols this oracle
 cares about). ``misc.py`` and ``image.py`` happen to parse cleanly under
-Python 3.12 at every v8-v19 checkout on this machine (verified directly), so
+Python 3.12 at every v8-v20 checkout on this machine (verified directly), so
 neither ``html_escape`` nor ``ustr`` actually needs the fallback in practice
 — but several OTHER star-imported v8/v9 submodules genuinely do
 (``convert.py``, ``translate.py``, ``mail.py``, ``safe_eval.py``,
@@ -289,6 +322,18 @@ def _era_prefix(odoo_version: str) -> str:
     return _ERA_PREFIX_REGISTRY.resolve_version(odoo_version, default="odoo")  # type: ignore[return-value]
 
 
+# First-party packages directly under <era>/tools/ (v20: safe_eval/, cache/)
+# are modelled from this major on - module docstring "PACKAGE SUBMODULES".
+# Its own one-boundary registry (ADR-0052), never a scattered ``if major``.
+_PACKAGE_EXPOSURE_REGISTRY: VersionRegistry[bool] = VersionRegistry([
+    (20, None, True),
+])
+
+# Vendored / data payload directories under <era>/tools/ - never curated as
+# odoo.tools.* symbols (module docstring "DOTTED ATTRIBUTE-PATH SYMBOLS").
+_PAYLOAD_DIRS = frozenset({"arabic_reshaper", "babel", "data", "pdf", "zeep"})
+
+
 @dataclass(frozen=True)
 class _Binding:
     """One name bound at module scope of a single file (def/class/assign, an
@@ -336,6 +381,9 @@ class _RawScan:
     bindings: dict[str, _Binding]
     imports: list[_ImportStmt]
     dunder_all: list[str] | None
+    # Names a module-level ``def __getattr__(name)`` answers, as
+    # ``(name, line)`` - see module docstring "MODULE-LEVEL __getattr__".
+    getattr_names: tuple[tuple[str, int], ...] = ()
 
 
 def _iter_module_level_stmts(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -355,6 +403,36 @@ def _iter_module_level_stmts(body: list[ast.stmt]) -> list[ast.stmt]:
     return out
 
 
+def _served_names(fn: ast.FunctionDef) -> tuple[tuple[str, int], ...]:
+    """Names a module-level ``def __getattr__(name)`` answers: every string
+    constant its *name* parameter is compared against (``name in ('a', 'b')``,
+    ``name == 'a'``), with the comparison's line. ``ast.walk`` is correct here:
+    the scope is this one function's own body, never module scope.
+    """
+    if not fn.args.args:
+        return ()
+    param = fn.args.args[0].arg
+    served: dict[str, int] = {}
+    for node in ast.walk(fn):
+        if not (
+            isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Name)
+            and node.left.id == param
+            and all(isinstance(op, (ast.In, ast.Eq)) for op in node.ops)
+        ):
+            continue
+        for comparator in node.comparators:
+            elements = (
+                comparator.elts
+                if isinstance(comparator, (ast.Tuple, ast.List, ast.Set))
+                else [comparator]
+            )
+            for el in elements:
+                if isinstance(el, ast.Constant) and isinstance(el.value, str):
+                    served.setdefault(el.value, node.lineno)
+    return tuple(served.items())
+
+
 def _scan_ast(tree: ast.Module, relpath: str) -> _RawScan:
     """Primary path — tried first for every file (module docstring "TWO-TIER
     PARSE"). Discovers module-scope (+ one level into ``If``) FunctionDef/
@@ -365,10 +443,13 @@ def _scan_ast(tree: ast.Module, relpath: str) -> _RawScan:
     bindings: dict[str, _Binding] = {}
     imports: list[_ImportStmt] = []
     dunder_all: list[str] | None = None
+    getattr_names: tuple[tuple[str, int], ...] = ()
 
     def add(stmt: ast.stmt) -> None:
-        nonlocal dunder_all
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        nonlocal dunder_all, getattr_names
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == "__getattr__":
+            getattr_names = _served_names(stmt)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             if not stmt.name.startswith("_"):
                 sig = f"{stmt.name}({ast.unparse(stmt.args)})"
                 bindings[stmt.name] = _Binding(stmt.name, stmt.lineno, sig, relpath)
@@ -402,7 +483,10 @@ def _scan_ast(tree: ast.Module, relpath: str) -> _RawScan:
     for stmt in _iter_module_level_stmts(tree.body):
         add(stmt)
 
-    return _RawScan(bindings=bindings, imports=imports, dunder_all=dunder_all)
+    return _RawScan(
+        bindings=bindings, imports=imports, dunder_all=dunder_all,
+        getattr_names=getattr_names,
+    )
 
 
 # --- text-regex fallback (SyntaxError only) ---------------------------------
@@ -517,7 +601,7 @@ def _resolve_relative_submodule(tools_dir: Path, module_ref: str) -> Path | None
     *tools_dir*, or ``None`` when it is not a local sibling (an absolute
     external reference like ``odoo.loglevels``/``werkzeug.utils``, or simply
     not found on disk). Handles every era's spelling seen in real
-    ``odoo/tools/__init__.py`` across v8-v19:
+    ``odoo/tools/__init__.py`` across v8-v20:
 
       ``.misc``   - v10+ relative (``from .misc import *``)
       ``misc``    - v8-v10 implicit-relative (``from misc import *``,
@@ -647,6 +731,54 @@ def _flat_public_api(
     return merged
 
 
+def _expose_packages(
+    tools_dir: Path,
+    tools_relpath_base: str,
+    cache: dict[Path, _RawScan],
+    result: dict[str, ParsedToolSymbol],
+) -> None:
+    """Bind every first-party package under *tools_dir* by its bare name and
+    expose its ``__init__.py`` re-export surface at ``<pkg>.<name>`` (module
+    docstring "PACKAGE SUBMODULES"). Existing keys are never replaced.
+    """
+    try:
+        packages = sorted(
+            p for p in tools_dir.iterdir()
+            if p.is_dir()
+            and not p.name.startswith("_")
+            and p.name not in _PAYLOAD_DIRS
+            and (p / "__init__.py").is_file()
+        )
+    except OSError as exc:
+        _logger.warning(
+            "parse_tools_symbols: could not list %s (%s) - package "
+            "exposure skipped for this version.", tools_dir, exc,
+        )
+        return
+    for pkg_dir in packages:
+        pkg_base = f"{tools_relpath_base}/{pkg_dir.name}"
+        pkg_init = f"{pkg_base}/__init__.py"
+        result.setdefault(pkg_dir.name, ParsedToolSymbol(
+            name=pkg_dir.name,
+            qualified_name=f"odoo.tools.{pkg_dir.name}",
+            signature="module",
+            file_path=pkg_init,
+            line=None,
+        ))
+        surface = _flat_public_api(
+            pkg_dir / "__init__.py", pkg_init, pkg_dir, pkg_base, cache, frozenset(),
+        )
+        for name, binding in surface.items():
+            dotted = f"{pkg_dir.name}.{name}"
+            result.setdefault(dotted, ParsedToolSymbol(
+                name=dotted,
+                qualified_name=f"odoo.tools.{dotted}",
+                signature=binding.signature,
+                file_path=binding.file_path,
+                line=binding.line,
+            ))
+
+
 def parse_tools_symbols(
     odoo_source_root: str | Path,
     odoo_version: str,
@@ -704,6 +836,19 @@ def parse_tools_symbols(
             file_path=binding.file_path,
             line=binding.line,
         )
+
+    # Names served by a module-level __getattr__ (module docstring
+    # "MODULE-LEVEL __getattr__"). Before the submodule exposure below: Python
+    # consults __getattr__ ahead of the submodule fallback, so a served name
+    # wins over a same-named bare submodule marker.
+    for served, served_line in _raw_scan(init_path, init_relpath, cache).getattr_names:
+        result.setdefault(served, ParsedToolSymbol(
+            name=served,
+            qualified_name=f"odoo.tools.{served}",
+            signature=None,
+            file_path=init_relpath,
+            line=served_line,
+        ))
 
     # Dotted attribute-path exposure (module docstring "DOTTED
     # ATTRIBUTE-PATH SYMBOLS"): every direct .py submodule file under
@@ -763,6 +908,9 @@ def parse_tools_symbols(
                 file_path=binding.file_path,
                 line=binding.line,
             ))
+
+    if _PACKAGE_EXPOSURE_REGISTRY.resolve_version(odoo_version, default=False):
+        _expose_packages(tools_dir, tools_relpath_base, cache, result)
 
     if not result:
         _logger.warning(

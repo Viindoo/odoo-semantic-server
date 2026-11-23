@@ -1,0 +1,149 @@
+{
+  "_curate_status": "complete",
+  "_generated_at": "2026-11-23",
+  "_note": "Curated odoo.tools symbols for Odoo 20.0, verified against odoo/odoo 20.0 @ 530bc2789e2f (odoo/tools/__init__.py and the submodules it re-exports). Status doc of tools_symbol.schema.json applies: a name that no longer resolves is 'removed' and omitted. OMITTED (no longer resolve off odoo.tools at 20.0): ustr (no ustr remains under odoo/: odoo/loglevels.py defines only exception_to_unicode and odoo/tools/misc.py imports only that), Query (lives in odoo/orm/query.py, re-exported as odoo.models.Query), ormcache_context (no longer defined), get_encodings, pycompat, convert_csv_import, convert_sql_import, convert_xml_import, and the sql helpers that 'from .sql import *' used to flatten (create_index, index_exists, escape_psql, make_identifier, ...; odoo/tools/__init__.py now imports only SQL and drop_view_if_exists from .sql). street_split and mod10r resolve only as odoo.tools.business_data.street_split / .mod10r. DEPRECATED: odoo.tools.ormcache is not bound in odoo/tools/__init__.py; a module-level __getattr__ (odoo/tools/__init__.py:22-28) serves it, and 'cache', with a DeprecationWarning 'Since 20.0 import ormcache from odoo.api'. NEW at 20.0: BinaryBytes and BinaryValue (flat re-exports of odoo/tools/binary.py). PACKAGES: odoo/tools/safe_eval/ is a package at 20.0 (its __init__.py re-exports evaluation, expression and runtime); safe_eval is parsed from source by parse_odoo_core and is therefore never curated here (tests/test_parser_tools_symbols.py::TestSafeEvalImportPath). IMAGE: odoo.tools.image_process has no flat re-export at 20.0 (same as 19.0); only odoo.tools.image.image_process resolves. SUBMODULES: odoo/tools/__init__.py does not import date_utils or js_transpiler, but both files sit directly under odoo/tools/, so 'from odoo.tools import date_utils' / 'from odoo.tools import js_transpiler' resolve through Python's from-package-import submodule fallback; both are imported elsewhere in 20.0 core via their qualified path (odoo/orm/domains.py: 'from odoo.tools.date_utils import parse_date, parse_iso_date'; odoo/addons/base/models/assetsbundle.py: 'from odoo.tools.js_transpiler import ...'). Their member functions do NOT resolve flat. Every signature below is the real 20.0 parameter list (names, defaults); tests/test_tools_symbols_content_parity.py checks the names against the live oracle. Every qualified_name is recovered by parser_tools_symbols.parse_tools_symbols against the 20.0 checkout (tests/test_tools_symbols_content_parity.py::test_curated_tools_symbols_match_live_ast_oracle_per_version).",
+  "symbols": [
+    {
+      "qualified_name": "odoo.tools.SQL",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "class SQL",
+      "note": "SQL query builder for safe parameterized queries (odoo/tools/sql.py, re-exported by 'from .sql import SQL, drop_view_if_exists')."
+    },
+    {
+      "qualified_name": "odoo.tools.js_transpiler",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "module",
+      "note": "JavaScript transpiler submodule for the Odoo ES module system. odoo/tools/__init__.py does not import it, but js_transpiler.py exists directly under odoo/tools/, so 'from odoo.tools import js_transpiler' resolves through the from-package-import submodule fallback. Imported by odoo/addons/base/models/assetsbundle.py via its qualified path."
+    },
+    {
+      "qualified_name": "odoo.tools.image.image_process",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "image_process(source, size=(0, 0), verify_resolution=False, quality=0, expand=False, crop='', colorize=None, output_format='', padding=0) -> bytes | Literal[False]",
+      "note": "Real resolving import path for image_process at 20.0 (odoo/tools/image.py). There is no flat odoo.tools.image_process re-export, so the flat name is omitted from this file."
+    },
+    {
+      "qualified_name": "odoo.tools.date_utils",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "module",
+      "note": "Date utility submodule (start_of, end_of, add, subtract, parse_date, ...). odoo/tools/__init__.py does not import it, but date_utils.py exists directly under odoo/tools/, so 'from odoo.tools import date_utils' resolves through the from-package-import submodule fallback (odoo/orm/fields_temporal.py does exactly that). Individual functions do NOT resolve flat off odoo.tools - only the module itself does."
+    },
+    {
+      "qualified_name": "odoo.tools.format_datetime",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "format_datetime(env, value, tz=False, dt_format='medium', lang_code=None) -> str",
+      "note": "Format a datetime value using the user's locale."
+    },
+    {
+      "qualified_name": "odoo.tools.format_amount",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "format_amount(env, amount, currency, lang_code=None, trailing_zeroes=True) -> str",
+      "note": "Format a monetary amount using the user's locale and currency. trailing_zeroes=False drops trailing zero decimals."
+    },
+    {
+      "qualified_name": "odoo.tools.get_lang",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "get_lang(env, lang_code=None) -> LangData",
+      "note": "Get the language data (res.lang values) for the given, context or company language."
+    },
+    {
+      "qualified_name": "odoo.tools.float_compare",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_compare(value1, value2, precision_digits=None, precision_rounding=None) -> int",
+      "note": "Compare two floats with decimal precision."
+    },
+    {
+      "qualified_name": "odoo.tools.float_round",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_round(value, precision_digits=None, precision_rounding=None, rounding_method='HALF-UP') -> float",
+      "note": "Round a float with decimal precision."
+    },
+    {
+      "qualified_name": "odoo.tools.float_is_zero",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "float_is_zero(value, precision_digits=None, precision_rounding=None) -> bool",
+      "note": "Test if a float is effectively zero within precision."
+    },
+    {
+      "qualified_name": "odoo.tools.html_escape",
+      "kind": "tool_export",
+      "status": "deprecated",
+      "replacement_qname": "markupsafe.escape",
+      "signature": "html_escape = markupsafe.escape",
+      "note": "Alias of markupsafe.escape (odoo/tools/misc.py); call markupsafe.escape directly for Markup-aware escaping."
+    },
+    {
+      "qualified_name": "odoo.tools.plaintext2html",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "plaintext2html(text, container_tag=None, with_paragraph=True) -> Markup",
+      "note": "Convert plain text to HTML."
+    },
+    {
+      "qualified_name": "odoo.tools.html2plaintext",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "html2plaintext(html, body_id=None, encoding='utf-8', include_references=True) -> str",
+      "note": "Strip HTML tags and return plain text."
+    },
+    {
+      "qualified_name": "odoo.tools.DEFAULT_SERVER_DATE_FORMAT",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "str = '%Y-%m-%d'",
+      "note": "Constant for Odoo server-side date format string."
+    },
+    {
+      "qualified_name": "odoo.tools.DEFAULT_SERVER_DATETIME_FORMAT",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "str = '%Y-%m-%d %H:%M:%S'",
+      "note": "Constant for Odoo server-side datetime format string."
+    },
+    {
+      "qualified_name": "odoo.tools.mute_logger",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "mute_logger(*loggers) -> ContextManager",
+      "note": "Context manager and decorator to silence specific loggers. Use only in tests."
+    },
+    {
+      "qualified_name": "odoo.tools.config",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "odoo.tools.config.configmanager",
+      "note": "Global Odoo config manager singleton."
+    },
+    {
+      "qualified_name": "odoo.tools.ormcache",
+      "kind": "tool_export",
+      "status": "deprecated",
+      "replacement_qname": "odoo.api.ormcache",
+      "signature": "class ormcache",
+      "note": "Deprecated alias served by the module-level __getattr__ of odoo/tools/__init__.py, which emits a DeprecationWarning 'Since 20.0 import ormcache from odoo.api'. The class is odoo.orm.cache.ormcache, re-exported as odoo.api.ormcache (odoo/api/__init__.py). Use 'from odoo.api import ormcache'. odoo.tools.ormcache_context is not defined at 20.0."
+    },
+    {
+      "qualified_name": "odoo.tools.BinaryValue",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "class BinaryValue",
+      "note": "Abstract proxy for the content of a binary field value, in cache and on records (odoo/tools/binary.py). Re-exported flat by odoo/tools/__init__.py."
+    },
+    {
+      "qualified_name": "odoo.tools.BinaryBytes",
+      "kind": "tool_export",
+      "status": "stable",
+      "signature": "class BinaryBytes",
+      "note": "Static binary value held in memory, a BinaryValue subclass (odoo/tools/binary.py). Re-exported flat by odoo/tools/__init__.py."
+    }
+  ]
+}

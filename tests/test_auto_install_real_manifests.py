@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from src.constants import SURVEYED_MAX_MAJOR
 from src.indexer.registry import auto_install_triggers
 from src.mcp.install_set import COUNTRY_GATE_MIN_MAJOR, resolve_install_set
 from tests._odoo_checkouts import checkout_root
@@ -67,7 +68,7 @@ def _resolve(major: int, root_module: str):
                                      country_gate=major >= COUNTRY_GATE_MIN_MAJOR)
 
 
-@pytest.mark.parametrize("major", [18, 19])
+@pytest.mark.parametrize("major", range(18, SURVEYED_MAX_MAJOR + 1))
 def test_installing_account_on_v18_plus_auto_installs_no_country_gated_module(major):
     info, res = _resolve(major, "account")
     auto = {e.name for e in res.auto}

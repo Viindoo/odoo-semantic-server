@@ -93,9 +93,12 @@ _RE_MOUNT_VIEW = re.compile(
 )
 
 # class X extends models.Model { _name = "model.name" }
+# class X extends models.ServerModel { _name = "model.name" } (Hoot mock server:
+# a ServerModel mirrors a real server model, web/static/tests/_framework/
+# mock_server/mock_model.js)
 # Matches the class body block for _name assignment (simplified)
 _RE_MODEL_CLASS_NAME = re.compile(
-    r"""class\s+\w+\s+extends\s+models\.Model\s*\{[^}]*?_name\s*=\s*["']([^"'\\]+)["']""",
+    r"""class\s+\w+\s+extends\s+models\.(?:Server)?Model\s*\{[^}]*?_name\s*=\s*["']([^"'\\]+)["']""",
     re.MULTILINE | re.DOTALL,
 )
 

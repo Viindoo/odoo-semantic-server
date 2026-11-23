@@ -255,7 +255,7 @@ def test_test_base_classes_states_commit_forbidden_static_fallback(clean_neo4j):
 
 _REAL_VERSIONS_UNDER_TEST = [
     "8.0", "9.0", "10.0", "11.0", "12.0", "13.0",
-    "14.0", "15.0", "16.0", "17.0", "18.0", "19.0",
+    "14.0", "15.0", "16.0", "17.0", "18.0", "19.0", "20.0",
 ]
 
 # A class ROW is the only line shaped "<connector> <Name>   <test_type> · ...";
@@ -318,7 +318,7 @@ def clean_versions_neo4j(clean_neo4j):
     """Wipe framework TestHelper nodes at the REAL Odoo versions T10-T12 exercise.
 
     clean_neo4j only scrubs odoo_version == TEST_VERSION ('99.0'); T10-T12 render
-    output for real version strings (8.0..19.0), so this fixture keeps those reads
+    output for real version strings (8.0..20.0), so this fixture keeps those reads
     isolated from anything else the shared session-scoped Neo4j container holds.
     """
     _wipe_framework_helpers(clean_neo4j, _REAL_VERSIONS_UNDER_TEST)
@@ -392,6 +392,56 @@ def test_test_base_classes_v17_excludes_removed_savepointcase(clean_versions_neo
     assert _last_line(result).startswith("└─ Next:"), (
         f"Next: must be the last line. Got: {_last_line(result)!r}"
     )
+
+
+def test_test_base_classes_v20_menu_drops_single_transaction_case_and_offers_cross_module(
+    clean_versions_neo4j,
+):
+    """Business rule: at 20.0 odoo/tests/common.py defines no SingleTransactionCase
+    (removed in favour of TransactionCase with one test method or subtests) and
+    gains CrossModule, the base of a suite that runs once for every module under
+    test. The 20.0 menu must offer CrossModule as a class row, must never offer
+    SingleTransactionCase as a usable row, must name the removal and its
+    replacement, and must carry no out-of-catalogue note (20 is a surveyed major).
+    """
+    _seed_framework_menu("20.0")
+    from src.mcp.tools.test_tools import _COMMIT_FORBIDDEN_MSG, _test_base_classes
+
+    result = _test_base_classes(odoo_version="20.0", _driver=clean_versions_neo4j)
+
+    class_rows = _rendered_class_names(result)
+    assert "CrossModule" in class_rows, f"CrossModule must be a 20.0 menu row. Got:\n{result}"
+    assert "SingleTransactionCase" not in class_rows, (
+        f"SingleTransactionCase does not exist at Odoo 20.0. Got:\n{result}"
+    )
+    assert "SingleTransactionCase -> TransactionCase" in result, (
+        f"the removal line must name SingleTransactionCase and its replacement. Got:\n{result}"
+    )
+    assert "outside the surveyed catalogue" not in result, (
+        f"20.0 is inside the surveyed catalogue. Got:\n{result}"
+    )
+    assert _COMMIT_FORBIDDEN_MSG in result
+    assert _last_line(result).startswith("└─ Next:")
+
+
+def test_test_base_classes_v20_drilldown_states_single_transaction_case_absence(
+    clean_versions_neo4j,
+):
+    """Business rule: drilling into SingleTransactionCase at 20.0 answers NOT
+    AVAILABLE with its availability window (8.0-19.0, removed at 20.0) and points
+    at TransactionCase - never the whole menu.
+    """
+    from src.mcp.tools.test_tools import _test_base_classes
+
+    result = _test_base_classes(
+        odoo_version="20.0", name="SingleTransactionCase", _driver=clean_versions_neo4j,
+    )
+
+    assert "NOT AVAILABLE at Odoo 20.0" in result
+    assert "available 8.0-19.0" in result
+    assert "removed at 20.0" in result
+    assert "use: TransactionCase" in result
+    assert "CrossModule" not in result, "the drill-down must not print the whole menu"
 
 
 def test_test_base_classes_v15_shows_savepointcase_deprecated(clean_versions_neo4j):
@@ -515,8 +565,8 @@ def test_test_base_classes_v8_header_uses_openerp_prefix_and_footer_is_last_line
 def test_test_base_classes_99_resolves_to_modern_menu_with_out_of_catalogue_note(
     clean_versions_neo4j,
 ):
-    """Business rule: a major outside the surveyed catalogue (8..19), including the
-    99.0 test sentinel, resolves to the newest known era (v17+) AND the output
+    """Business rule: a major outside the surveyed catalogue (8..20), including the
+    99.0 test sentinel, resolves to the newest known era (v20+) AND the output
     states the substitution explicitly — fail-open-and-say-so, never
     fail-open-silently (api-contract.md §Out-of-catalogue, phase4-solution.md §7).
 

@@ -12,7 +12,7 @@ Two guards already exist for the cli_flags curated family and both stop short of
     audit was done, not as a live check. If a fact was wrong when the test was written,
     the test enshrines the wrong fact forever.
   - `tests/test_parser_cli.py`'s WI-D2 section (issue #364 D2) wakes the live oracle
-    (`parse_cli_flags`/`parse_cli_commands`) across all 12 surveyed majors, but
+    (`parse_cli_flags`/`parse_cli_commands`) across every surveyed major, but
     DELIBERATELY only checks EXISTENCE (a non-empty parse) - see that section's own
     "SCOPE NOTE" pointing here for "a separate, dedicated content-parity effort".
 
@@ -51,8 +51,10 @@ SCOPE - GLOBAL ("server") FLAGS ONLY, BY DESIGN
 `cli/upgrade_code.py` for their own argparse/optparse flags - there is no second walker in
 production. Every per-command curated entry (`command_name` NOT in `{None, "server"}` -
 10 to 86 entries per version, the MAJORITY of v19's 165-entry file) therefore has ZERO
-production oracle at any surveyed version. This is not something a smarter comparison can
-paper over: there is nothing to diff against. Rather than let those entries silently "pass"
+production oracle at any surveyed version (the 20.0 entries have a dev-box test oracle of
+their own, ``TestV20CliSurface`` in test_spec_data_cli_flags_curated.py). This is not
+something a smarter comparison can paper over: there is nothing to diff against. Rather
+than let those entries silently "pass"
 by omission, `test_out_of_scope_per_command_flag_count_is_computed_and_reported_per_version`
 below makes the count of unverifiable entries an explicit, asserted, per-version fact -
 visible in the test's own output, not hidden inside a scope comment nobody reads.
@@ -406,6 +408,8 @@ _CHOSEN_FIXTURE_FLAGS: dict[int, tuple[str, ...]] = {
          "--addons-path"),
     19: ("--addons-path", "--data-dir", "--database", "--db-filter", "--db_app_name",
          "--config"),
+    20: ("--addons-path", "--data-dir", "--http-interface", "--syslog", "--database",
+         "--stop"),
 }
 
 
@@ -427,9 +431,9 @@ def _ci_excerpt_diff(major: int) -> DiffResult:
 
 def test_ci_fixture_dir_has_one_excerpt_per_surveyed_major():
     """CI layer coverage guard - business rule: this file's parametrization must
-    exercise the full [8, 19] surveyed range. Mirrors
+    exercise the full [8, 20] surveyed range. Mirrors
     test_ci_layer_covers_every_surveyed_major_with_no_silent_gaps in the #363 template."""
-    assert SURVEYED_MAJORS == list(range(8, 20))
+    assert SURVEYED_MAJORS == list(range(8, 21))
     fixture_majors = {
         int(p.stem.split("_")[0][1:]) for p in CI_FIXTURE_DIR.glob("v*_config_excerpt.py")
     }
@@ -524,7 +528,7 @@ def test_dev_box_content_parity_coverage_is_reported():
     test_parser_cli.py.
     """
     import warnings
-    assert SURVEYED_MAJORS == list(range(8, 20))
+    assert SURVEYED_MAJORS == list(range(8, 21))
     exercised = [m for m in SURVEYED_MAJORS if checkout_root(m) is not None]
     warnings.warn(
         UserWarning(

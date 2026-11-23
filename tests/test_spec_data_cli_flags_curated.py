@@ -2,22 +2,23 @@
 """Tests for curated cli_flags_<version>.json spec data files (WI-A5).
 
 Validates:
-- All 12 version files have _curate_status="complete" and len(flags) >= 20
+- Every surveyed version (8.0 to 20.0) has a file with _curate_status="complete" and
+  len(flags) >= 20
 - Every flag entry conforms to the cli_flag.schema.json schema
 """
+import ast
 import json
 from pathlib import Path
 
 import pytest
 
+from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
+
 SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
 SCHEMA_PATH = SPEC_DATA_DIR / "cli_flag.schema.json"
 
-# All 12 versions that must be curated
-CURATED_VERSIONS = [
-    "8.0", "9.0", "10.0", "11.0", "12.0", "13.0",
-    "14.0", "15.0", "16.0", "17.0", "18.0", "19.0",
-]
+# Every surveyed version must be curated (SSOT: src.constants.SURVEYED_MAJORS).
+CURATED_VERSIONS = [f"{major}.0" for major in SURVEYED_MAJORS]
 
 MIN_FLAGS_PER_VERSION = 20
 
@@ -37,7 +38,12 @@ def _load_schema() -> dict:
 
 
 class TestEachVersionHasCuratedStatusComplete:
-    """All 12 cli_flags_*.json files must be marked complete with >= 20 flags."""
+    """Every surveyed version's cli_flags_*.json must be marked complete with >= 20 flags."""
+
+    def test_curated_range_is_the_full_surveyed_range(self) -> None:
+        # Pins the range against silent narrowing: dropping a version from the SSOT
+        # would otherwise shrink every parametrized guard in this file without a failure.
+        assert CURATED_VERSIONS == [f"{major}.0" for major in range(8, 21)]
 
     @pytest.mark.parametrize("version", CURATED_VERSIONS)
     def test_curate_status_is_complete(self, version: str) -> None:
@@ -357,6 +363,152 @@ class TestV19SubparserCommands:
                 "cli_flags_19.0.json: 'tsconfig' is listed in commands[] but has "
                 "no flag with status='removed'. Either remove it from commands[] "
                 "or add a sentinel flag with status='removed'."
+            )
+
+
+class TestV20CliSurface:
+    """Odoo 20.0 odoo-bin surface: the commands, sub-actions and flags 20.0 ships.
+
+    Facts come from odoo/odoo branch 20.0 (odoo/cli/*.py, addons/*/cli/*.py,
+    odoo/tools/config.py). The static guards run everywhere; the
+    ``odoo_source`` oracle at the end diffs the curated per-command flags against
+    the argparse/optparse declarations of a real 20.0 checkout.
+    """
+
+    V20 = "20.0"
+
+    EXPECTED_SUB_ACTIONS = {
+        "i18n import", "i18n export", "i18n loadlang",
+        "db init", "db load", "db dump", "db duplicate", "db rename", "db drop",
+        "module install", "module upgrade", "module uninstall", "module force-demo",
+        "module list",
+    }
+
+    def _command_names(self) -> set:
+        return {c.get("name") for c in _load_version(self.V20)["commands"]}
+
+    def _flags_of(self, command: str) -> dict:
+        return {
+            f["flag_name"]: f
+            for f in _load_version(self.V20)["flags"]
+            if f.get("command_name") == command
+        }
+
+    def _global(self, flag_name: str) -> dict:
+        matches = [
+            f for f in _load_version(self.V20)["flags"]
+            if f.get("flag_name") == flag_name and f.get("command_name") is None
+        ]
+        assert len(matches) == 1, f"expected exactly one global {flag_name!r}, got {len(matches)}"
+        return matches[0]
+
+    def test_every_sub_action_is_a_command(self) -> None:
+        missing = self.EXPECTED_SUB_ACTIONS - self._command_names()
+        assert not missing, f"cli_flags_20.0.json: missing sub-action commands: {sorted(missing)}"
+
+    def test_every_sub_action_with_own_flags_has_them(self) -> None:
+        # module force-demo and module list take only the flags shared on "module".
+        flagged = {f["command_name"] for f in _load_version(self.V20)["flags"]}
+        without_flags = (self.EXPECTED_SUB_ACTIONS - {"module force-demo", "module list"}) - flagged
+        assert not without_flags, f"sub-actions without flags: {sorted(without_flags)}"
+
+    def test_every_command_other_than_the_pure_dispatchers_has_flags(self) -> None:
+        excluded = {"server", "help", "i18n", "db", "module", "module force-demo", "module list"}
+        flagged = {f["command_name"] for f in _load_version(self.V20)["flags"]}
+        no_flags = sorted(self._command_names() - excluded - flagged)
+        assert not no_flags, f"commands listed in commands[] without any flag: {no_flags}"
+
+    def test_core_commands_follow_the_20_layout(self) -> None:
+        by_name = {c["name"]: c for c in _load_version(self.V20)["commands"]}
+        # duplicate is a core command; populate moved to the populate addon.
+        assert by_name["duplicate"]["file_path"] == "odoo/cli/duplicate.py"
+        assert by_name["populate"]["file_path"] == "addons/populate/cli/populate.py"
+        assert by_name["genproxytoken"]["file_path"] == "addons/iot_drivers/cli/genproxytoken.py"
+        assert "tsconfig" not in by_name
+
+    def test_duplicate_and_populate_carry_their_own_flag_sets(self) -> None:
+        assert set(self._flags_of("duplicate")) == {"--factors", "--models", "--sep"}
+        assert set(self._flags_of("populate")) == {
+            "--blueprint", "--seed", "--scale", "--jobs", "--resume", "--profile",
+        }
+
+    def test_module_sub_actions_take_dry_run_and_list_is_a_sub_action(self) -> None:
+        for sub in ("module install", "module upgrade", "module uninstall"):
+            assert "--dry-run" in self._flags_of(sub), f"{sub} must offer --dry-run"
+        assert "--outdated" in self._flags_of("module upgrade")
+        assert "module list" in self._command_names()
+
+    def test_db_load_offers_move(self) -> None:
+        assert "--move" in self._flags_of("db load")
+
+    def test_skip_auto_install_is_a_global_server_flag(self) -> None:
+        flag = self._global("--skip-auto-install")
+        assert flag["status"] == "stable"
+        assert flag["default"] == "False"
+
+    def test_stop_and_stop_after_init_are_both_live_global_flags(self) -> None:
+        # config.py declares one option under both names; neither is deprecated.
+        for name in ("--stop", "--stop-after-init"):
+            flag = self._global(name)
+            assert flag["status"] == "stable" and flag["replacement_flag_name"] is None
+
+    def test_flags_new_in_20_are_global(self) -> None:
+        assert self._global("--unsafe-policy")["type"] == "choice"
+        assert self._global("--db-system")["env_name"] == "PGDATABASE_SYSTEM"
+        assert self._global("--gevent-workers")["posix_only"] is True
+
+    def test_syslog_is_deprecated_in_favour_of_log_config(self) -> None:
+        flag = self._global("--syslog")
+        assert flag["status"] == "deprecated"
+        assert flag["replacement_flag_name"] == "--log-config"
+        assert "--log-config" in {f["flag_name"] for f in _load_version(self.V20)["flags"]}
+
+    def test_http_interface_defaults_to_loopback(self) -> None:
+        assert self._global("--http-interface")["default"] == "127.0.0.1"
+
+    def test_posix_only_flags_are_exactly_the_posix_only_option_wrappers(self) -> None:
+        posix = {
+            f["flag_name"] for f in _load_version(self.V20)["flags"] if f.get("posix_only")
+        }
+        assert posix == {
+            "--workers", "--gevent-workers", "--limit-memory-soft-gevent",
+            "--limit-memory-hard", "--limit-memory-hard-gevent", "--limit-time-cpu",
+            "--limit-request",
+        }
+
+    @pytest.mark.odoo_source
+    def test_per_command_flags_match_the_declarations_in_the_real_command_files(self) -> None:
+        """Oracle for the per-command entries (no production parser reads cli/*.py): for
+        every file in commands[], the long flags (and positional names, normalised to
+        --name) its add_argument/add_option calls declare are exactly the flags curated
+        under the commands that file defines - no phantom flag, no missing flag."""
+        root = checkout_root(20)
+        if root is None:
+            pytest.skip("Odoo 20 checkout not found (set ODOO20_SRC or OSM_ODOO_CHECKOUTS)")
+        data = _load_version(self.V20)
+        files: dict[str, set] = {}
+        for c in data["commands"]:
+            files.setdefault(c["file_path"], set()).add(c["name"])
+        for file_path, names in sorted(files.items()):
+            path = root / file_path
+            assert path.is_file(), f"commands[] names {file_path} but it is not in the checkout"
+            declared = set()
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in ("add_argument", "add_option")):
+                    strs = [a.value for a in node.args
+                            if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                    longs = [s for s in strs if s.startswith("--")]
+                    if longs:
+                        declared.add(longs[0])
+                    elif strs and not strs[0].startswith("-"):
+                        declared.add("--" + strs[0].replace("_", "-"))
+                    elif strs:
+                        declared.add(strs[0])
+            curated = {f["flag_name"] for f in data["flags"] if f["command_name"] in names}
+            assert curated == declared, (
+                f"{file_path}: curated-only {sorted(curated - declared)}, "
+                f"declared-only {sorted(declared - curated)}"
             )
 
 

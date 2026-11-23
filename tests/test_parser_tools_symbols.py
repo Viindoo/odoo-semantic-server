@@ -3,29 +3,41 @@
 """Unit tests for parser_tools_symbols._load_static_tools_symbols (ADR-0033).
 
 Covers:
-  1. Loader returns list[CoreSymbolInfo] with kind='tool_export' for all 12 versions.
+  1. Loader returns list[CoreSymbolInfo] with kind='tool_export' for every surveyed version.
   2. Per-version lifecycle correctness: SQL absent in 16.0, present in 17.0.
   3. safe_eval always uses qualified submodule path.
   4. image_resize_image present in v12, absent in v13+.
   5. format_datetime absent in v12, present in v13+.
   6. Returns empty list for a version without a JSON file.
-  7. JSON schema validation for all 12 required versions.
+  7. JSON schema validation for every surveyed version.
+  8. Real jsonschema-library validation of every curated entry.
+  9. note field loader-gap pin.
+ 10. v20 lifecycle: ustr removed, ormcache a deprecated alias, BinaryValue/BinaryBytes new.
+ 11. Oracle (parse_tools_symbols): packages and module-level __getattr__ on synthetic trees.
 """
 import json
 from pathlib import Path
 
 import pytest
 
+from src.constants import SURVEYED_MAJORS
 from src.indexer.models import CoreSymbolInfo
-from src.indexer.parser_tools_symbols import _load_static_tools_symbols
+from src.indexer.parser_tools_symbols import _load_static_tools_symbols, parse_tools_symbols
 
 _SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
 _SCHEMA_FILE = _SPEC_DATA_DIR / "tools_symbol.schema.json"
 
-_REQUIRED_VERSIONS = [
-    "8.0", "9.0", "10.0", "11.0", "12.0", "13.0",
-    "14.0", "15.0", "16.0", "17.0", "18.0", "19.0",
-]
+# Every surveyed version (SSOT: src.constants.SURVEYED_MAJORS).
+_REQUIRED_VERSIONS = [f"{major}.0" for major in SURVEYED_MAJORS]
+
+
+def _versions(min_major: int, max_major: int | None = None) -> list[str]:
+    """Surveyed versions in [min_major, max_major] (open-ended when max is None)."""
+    return [
+        f"{major}.0" for major in SURVEYED_MAJORS
+        if major >= min_major and (max_major is None or major <= max_major)
+    ]
+
 
 _MIN_SYMBOLS_PER_VERSION = 10
 
@@ -98,8 +110,8 @@ class TestSQLLifecycle:
             f"odoo.tools.SQL in v17.0 has status={sql_sym.status!r}; expected 'stable'"
         )
 
-    def test_sql_present_in_v18_and_v19(self):
-        for version in ("18.0", "19.0"):
+    def test_sql_present_from_v18(self):
+        for version in _versions(18):
             symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
             qnames = {s.qualified_name for s in symbols}
             assert "odoo.tools.SQL" in qnames, f"odoo.tools.SQL must be present in {version}"
@@ -155,7 +167,7 @@ class TestImageApiLifecycle:
             f"odoo.tools.image_resize_image must be present in {version}"
         )
 
-    @pytest.mark.parametrize("version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0", "19.0"])
+    @pytest.mark.parametrize("version", _versions(13))
     def test_image_resize_absent_from_v13(self, version: str):
         symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
         qnames = {s.qualified_name for s in symbols}
@@ -163,10 +175,10 @@ class TestImageApiLifecycle:
             f"odoo.tools.image_resize_image must NOT be present in {version} (removed v13)"
         )
 
-    @pytest.mark.parametrize("version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0"])
+    @pytest.mark.parametrize("version", _versions(13, 18))
     def test_image_process_present_from_v13(self, version: str):
-        """19.0 deliberately excluded here - see
-        test_image_process_flat_qname_removed_at_v19 below, not an oversight.
+        """19.0 and later deliberately excluded here - see
+        test_image_process_flat_qname_removed_from_v19 below, not an oversight.
         Through v18 the flat `odoo.tools.image_process` re-export is the real,
         resolving import path, so checking its literal presence in the
         curated qnames correctly models "is image_process available here".
@@ -177,8 +189,9 @@ class TestImageApiLifecycle:
             f"odoo.tools.image_process must be present in {version} (replacement since v13)"
         )
 
-    def test_image_process_flat_qname_removed_at_v19(self):
-        """v19 breaks the pattern test_image_process_present_from_v13 checks
+    @pytest.mark.parametrize("version", _versions(19))
+    def test_image_process_flat_qname_removed_from_v19(self, version: str):
+        """v19 and later break the pattern test_image_process_present_from_v13 checks
         for v13-v18 (issue #364 Problem 2 - resolved here, not by weakening
         that test to also cover v19).
 
@@ -205,10 +218,10 @@ class TestImageApiLifecycle:
         The capability itself is still present, just under its real
         resolving path - checked below.
         """
-        symbols = _load_static_tools_symbols("19.0", static_data_dir=_SPEC_DATA_DIR)
+        symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
         qnames = {s.qualified_name for s in symbols}
         assert "odoo.tools.image_process" not in qnames, (
-            "odoo.tools.image_process (flat) must NOT be present in 19.0 - "
+            f"odoo.tools.image_process (flat) must NOT be present in {version} - "
             "the re-export was dropped from odoo/tools/__init__.py at v19; "
             "keeping it (even as 'deprecated') misrepresents an unavailable "
             "name as available, contradicting the schema's own status "
@@ -219,8 +232,8 @@ class TestImageApiLifecycle:
             (s for s in symbols if s.qualified_name == "odoo.tools.image.image_process"), None
         )
         assert replacement is not None and replacement.status == "stable", (
-            "odoo.tools.image.image_process must be present and 'stable' in "
-            "19.0 - the real resolving path v19's own test_image.py imports "
+            f"odoo.tools.image.image_process must be present and 'stable' in "
+            f"{version} - the real resolving path v19's own test_image.py imports "
             "('from odoo.tools import image as tools')"
         )
 
@@ -238,7 +251,7 @@ class TestFormatDatetimeLifecycle:
             f"odoo.tools.format_datetime must NOT be present in {version} (introduced v13)"
         )
 
-    @pytest.mark.parametrize("version", ["13.0", "14.0", "15.0", "16.0", "17.0", "18.0", "19.0"])
+    @pytest.mark.parametrize("version", _versions(13))
     def test_format_datetime_present_from_v13(self, version: str):
         symbols = _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
         qnames = {s.qualified_name for s in symbols}
@@ -264,7 +277,7 @@ class TestMissingVersion:
 
 
 # ---------------------------------------------------------------------------
-# 7. Schema validation for all 12 versions
+# 7. Schema validation for every surveyed version
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
@@ -406,7 +419,7 @@ class TestJsonschemaLibraryValidation:
 # 9. note field - loader-gap pin (issue #364 C4)
 # ---------------------------------------------------------------------------
 # `note` is curated on every entry in every tools_symbols_<version>.json file
-# (204/204 as of this pass) and tools_symbol.schema.json documents it as
+# and tools_symbol.schema.json documents it as
 # "shown in tool output" - but `_load_static_tools_symbols` (this module)
 # never reads the JSON `note` key, so it is discarded the instant the file is
 # parsed and never reaches CoreSymbolInfo, Neo4j, or lookup_core_api. The
@@ -449,3 +462,121 @@ class TestNoteFieldPendingLoaderWiring:
             f"caveat on TestNoteFieldPendingLoaderWiring; do not just delete "
             f"this assertion."
         )
+
+
+# ---------------------------------------------------------------------------
+# 10. v20 lifecycle (source-verified against odoo/odoo 20.0, see the _note of
+#     tools_symbols_20.0.json; live-source proof lives in
+#     tests/test_tools_symbols_content_parity.py)
+# ---------------------------------------------------------------------------
+
+def _curated(version: str) -> dict[str, CoreSymbolInfo]:
+    return {
+        s.qualified_name: s
+        for s in _load_static_tools_symbols(version, static_data_dir=_SPEC_DATA_DIR)
+    }
+
+
+class TestV20Lifecycle:
+    @pytest.mark.parametrize("version", _versions(8, 19))
+    def test_ustr_curated_through_v19(self, version: str):
+        assert "odoo.tools.ustr" in _curated(version), (
+            f"odoo.tools.ustr resolves at {version} and must stay curated there"
+        )
+
+    def test_ustr_removed_from_v20(self):
+        """odoo/loglevels.py no longer defines ustr at 20.0, so the name does
+        not resolve off odoo.tools; a name that does not resolve is omitted
+        (tools_symbol.schema.json status doc), never kept as 'stable'."""
+        assert "odoo.tools.ustr" not in _curated("20.0")
+
+    def test_ormcache_is_a_deprecated_alias_of_odoo_api_ormcache_at_v20(self):
+        entry = _curated("20.0").get("odoo.tools.ormcache")
+        assert entry is not None, "odoo.tools.ormcache still resolves at 20.0 (deprecated alias)"
+        assert entry.status == "deprecated"
+        assert entry.replacement_qname == "odoo.api.ormcache"
+
+    @pytest.mark.parametrize("name", ["BinaryValue", "BinaryBytes"])
+    def test_binary_value_classes_are_stable_exports_at_v20(self, name: str):
+        entry = _curated("20.0").get(f"odoo.tools.{name}")
+        assert entry is not None and entry.status == "stable"
+        assert f"odoo.tools.{name}" not in _curated("19.0"), (
+            f"{name} is introduced at 20.0 (odoo/tools/binary.py)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. Oracle on synthetic trees: first-party packages and module-level
+#     __getattr__ (the real-checkout counterparts are in
+#     tests/test_tools_symbols_content_parity.py)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tools_tree(tmp_path):
+    """A minimal odoo/tools tree shaped like v20: a package re-exporting its
+    submodules, a payload package, a package shadowed by a served name, and a
+    module-level __getattr__."""
+    tools = tmp_path / "odoo" / "tools"
+    (tools / "pkg").mkdir(parents=True)
+    (tools / "pdf").mkdir()
+    (tools / "served_pkg").mkdir()
+    (tools / "__init__.py").write_text(
+        "from .misc import *\n"
+        "def __getattr__(name):\n"
+        "    if name in ('served_pkg', 'served_alias'):\n"
+        "        return 1\n"
+        "    if name == 'served_single':\n"
+        "        return 2\n"
+        "    raise AttributeError(name)\n"
+    )
+    (tools / "misc.py").write_text("def helper():\n    pass\n")
+    (tools / "pkg" / "__init__.py").write_text(
+        "from .impl import *\nfrom .other import thing\n"
+    )
+    (tools / "pkg" / "impl.py").write_text(
+        "__all__ = ['api_fn']\n"
+        "def api_fn(a, /, b, *, c=1):\n    pass\n"
+        "def hidden():\n    pass\n"
+    )
+    (tools / "pkg" / "other.py").write_text("def thing():\n    pass\n")
+    (tools / "pdf" / "__init__.py").write_text("from .render import render_pdf\n")
+    (tools / "pdf" / "render.py").write_text("def render_pdf():\n    pass\n")
+    (tools / "served_pkg" / "__init__.py").write_text("def inner():\n    pass\n")
+    return tmp_path
+
+
+class TestOracleOnSyntheticTree:
+    def test_package_surface_is_exposed_from_v20(self, tools_tree):
+        parsed = parse_tools_symbols(tools_tree, "20.0")
+        assert parsed is not None
+        assert parsed["pkg"].signature == "module"
+        assert parsed["pkg.api_fn"].file_path == "odoo/tools/pkg/impl.py"
+        assert parsed["pkg.thing"].file_path == "odoo/tools/pkg/other.py"
+        assert "pkg.hidden" not in parsed, "impl.py's __all__ gates the star re-export"
+
+    def test_packages_are_not_modelled_before_v20(self, tools_tree):
+        parsed = parse_tools_symbols(tools_tree, "19.0")
+        assert parsed is not None
+        assert "pkg" not in parsed
+        assert not [k for k in parsed if k.startswith("pkg.")]
+
+    def test_payload_packages_are_never_exposed(self, tools_tree):
+        parsed = parse_tools_symbols(tools_tree, "20.0")
+        assert parsed is not None
+        assert "pdf" not in parsed
+        assert "pdf.render_pdf" not in parsed
+
+    def test_names_served_by_module_getattr_are_symbols(self, tools_tree):
+        parsed = parse_tools_symbols(tools_tree, "20.0")
+        assert parsed is not None
+        for name in ("served_alias", "served_single"):
+            assert parsed[name].qualified_name == f"odoo.tools.{name}"
+            assert parsed[name].file_path == "odoo/tools/__init__.py"
+        assert "__getattr__" not in parsed
+
+    def test_served_name_wins_over_a_same_named_package(self, tools_tree):
+        """Python consults the module __getattr__ before the submodule
+        fallback, so the served name's origin is the tools __init__.py."""
+        parsed = parse_tools_symbols(tools_tree, "20.0")
+        assert parsed is not None
+        assert parsed["served_pkg"].file_path == "odoo/tools/__init__.py"

@@ -1,4 +1,4 @@
-# Khảo Sát Phiên Bản Odoo — v8 → v19
+# Khảo Sát Phiên Bản Odoo - v8 → v20
 
 > **Ground-truth cho indexer:** Tài liệu này là nguồn sự thật (SSOT) cho các quyết định parser theo version.
 > Mọi thay đổi phải cross-reference với `docs/adr/0032-parser-hooks-registry.md` (VersionRegistry) và
@@ -10,7 +10,7 @@
 
 ---
 
-## 1. Ma Trận Phiên Bản v8 → v19
+## 1. Ma Trận Phiên Bản v8 → v20
 
 Bảng dưới đây tóm tắt các đặc tính quan trọng nhất của từng major version Odoo,
 dùng để định hướng parser và indexer của OSM.
@@ -29,6 +29,7 @@ dùng để định hướng parser và indexer của OSM.
 | **v17** | `__manifest__.py` | `odoo/` (+ ORM refs) | era2 | - | `<tree>` + `<list>` alias | **OWL-only** | SCSS, Bootstrap 5.1.3 | 3.10+ |
 | **v18** | `__manifest__.py` | `odoo/` | era2 | - | **`<list>`** (0 `<tree>`) | 100% OWL | SCSS, Bootstrap 5.3.3 | 3.10+ |
 | **v19** | `__manifest__.py` | `odoo/orm/` split | era2 | - | `<list>` | OWL + loader | SCSS, Bootstrap 5.3.3 | 3.10+ |
+| **v20** | `__manifest__.py` | `odoo/orm/` split (+ `query.py`, `cache.py`, `models_cached.py`); `odoo/tools/safe_eval/` package | era2 (+ `models.CachedModel`) | - | `<list>` (+ view type `card`) | **Owl 3** (`useProps`), Hoot-only tests | SCSS, Bootstrap 5.3.3 | 3.12+ |
 
 ### Ghi chú chi tiết
 
@@ -40,6 +41,7 @@ dùng để định hướng parser và indexer của OSM.
 - v8/v9: `openerp/` — `_PREFIX_REGISTRY` trả `"openerp/"` cho `major <= 9`.
 - v10-v18: `odoo/`.
 - v19: module ORM được chuyển sang `odoo/orm/` — `_resolve_core_paths()` trong `parser_odoo_core.py` có fallback cho `odoo/fields.py`, `odoo/models.py`, `odoo/api.py` (path-existence check, không phải version-branch).
+- v20: `odoo/tools/query.py` chuyển sang `odoo/orm/query.py` (qname giữ `odoo.tools.query.*`); `odoo/tools/safe_eval.py` thành package `odoo/tools/safe_eval/` - `_resolve_core_targets()` đọc đúng những tên `__init__.py` re-export (star import theo `__all__`); `odoo.models.CachedModel` (`odoo/orm/models_cached.py`) và `odoo.api.ormcache` (`odoo/orm/cache.py`; `odoo.tools.ormcache` thành alias deprecated) là API mới.
 
 **ORM era:**
 - Era1 (v8-v9): `_columns = {field_name: fields.Char(...)}` dict. Parser dùng text-regex (`_parse_era1_text()`). `FIELD_TYPES_LEGACY` bao gồm `"function"`, `"related"`, `"dummy"`, `"sparse"`.
@@ -63,7 +65,7 @@ dùng để định hướng parser và indexer của OSM.
 - v15: VẪN là OWL 1 (bản 1.4.11) - OWL 2 CHƯA có tại v15 (issue #364 audit; xem §8 dưới). Widget
   dần bị loại bỏ, Era3: `odoo.define` song song với `import {Component}`.
 - v16: OWL 2 (bản 2.8.2) chính thức - xem §8. Widget tiếp tục bị loại bỏ.
-- v17+: OWL-only (100% component). Era3 JS patch detection (`_extract_era3_patches`) chỉ chạy cho `major >= 14` - xem `_OWL_ENABLED_REGISTRY` (ADR-0032). Lưu ý: OWL KHÔNG lên v3 tại bất kỳ version nào tính đến v19 (vẫn 2.8.2) - xem §8.
+- v17+: OWL-only (100% component). Era3 JS patch detection (`_extract_era3_patches`) chỉ chạy cho `major >= 14` - xem `_OWL_ENABLED_REGISTRY` (ADR-0032). Lưu ý: OWL KHÔNG lên v3 tại bất kỳ version nào tính đến v19 (vẫn 2.8.2) - xem §8. v20 lên Owl 3 (`addons/web/static/lib/owl/owl.js` `3.0.0-alpha.50` tại commit khảo sát `530bc2789e2f`): props khai báo bằng `props = useProps({...})` thay `static props` (1 file còn `static props` ở v20, 1194 ở v19); thư viện jQuery và QUnit bị gỡ khỏi `addons/web/static/lib/`.
 
 **Styles:**
 - v8-v11: LESS (Bootstrap 3.x). Parser: `src/indexer/parser_less.py`.
@@ -75,30 +77,33 @@ dùng để định hướng parser và indexer của OSM.
 ## 2. `odoo.tools` Lifecycle Map
 
 Bảng này tóm tắt vòng đời các symbol quan trọng trong `odoo.tools` qua các version.
-Nguồn sự thật: `src/indexer/spec_data/tools_symbols_X.0.json` (12 files, v8-v19) + `docs/adr/0033-odoo-tools-symbol-coverage.md`.
+Nguồn sự thật: `src/indexer/spec_data/tools_symbols_X.0.json` (13 files, v8-v20) + `docs/adr/0033-odoo-tools-symbol-coverage.md`.
 
 ### 2.1 Bảng lifecycle tóm tắt
 
-| Symbol / API | Thêm vào | Status v16 | Status v17 | Status v18 | Status v19 | Ghi chú |
-|---|---|---|---|---|---|---|
-| `odoo.tools.SQL` | v17 | not-available | stable | stable | stable | Structured SQL helper. Dùng thay raw string SQL từ v17+. |
-| `safe_eval` | v8+ | stable | stable | stable | **deprecated** | Import LUÔN từ `odoo.tools.safe_eval` (submodule), KHÔNG từ `odoo.tools` trực tiếp. Signature thay đổi keyword-only trong v19. `test_expr` bị xóa trong v19. |
-| `image_resize_image` | v8 | removed | removed | removed | removed | Bị xóa trong v13. Thay bằng `odoo.tools.image_process`. |
-| `image_resize_image_big` | v8 | removed | removed | removed | removed | Như trên. |
-| `image_resize_image_medium` | v8 | removed | removed | removed | removed | Như trên. |
-| `image_resize_image_small` | v8 | removed | removed | removed | removed | Như trên. |
-| `image_process` | v13 | stable | stable | stable | stable | Hàm xử lý ảnh thay thế cho 4 hàm cũ trên. |
-| `pycompat` | v11 | stable | stable | deprecated | **dropped** | Module tương thích Python 2/3. KHÔNG tồn tại tại v8/v9/v10 (`odoo/tools/pycompat.py` chỉ xuất hiện từ v11 - issue #364 audit, xem §8; curated data từng sai claim "stable" tại v8-v10). Bị xóa khỏi `odoo.tools.__init__` trong v19. Vẫn có file nhưng không export qua `__init__`. |
-| `ustr` | v8 | stable | soft-dep | soft-dep | soft-dep | Vẫn tồn tại qua v19 nhưng không cần thiết trong Python 3. |
-| `html_escape` | v8 | stable | **deprecated** | deprecated | deprecated | Từ v17: dùng `markupsafe.escape` thay thế. |
-| `float_compare` | v8 | stable | stable | stable | deprecated | v19: chuyển sang `odoo.tools.float_utils`, re-exported qua `odoo.tools`. |
-| `float_round` | v8 | stable | stable | stable | deprecated | Như `float_compare`. |
-| `get_modules` | v8 | stable | stable | **deprecated** | deprecated | v18: path module thay đổi. |
-| `format_datetime` | v13 | stable | stable | stable | stable | Thêm trong v13 cùng với locale utils. |
-| `format_amount` | v13 | stable | stable | stable | stable | Như `format_datetime`. |
-| `get_lang` | v13 | stable | stable | stable | stable | Helper lấy lang record từ env. |
-| `date_utils` | v12 | stable | stable | stable | stable | Thêm trong v12. |
-| `js_transpiler` | v15 | stable | stable | stable | stable | Thêm trong v15 cùng với OWL 2 build pipeline. |
+| Symbol / API | Thêm vào | Status v16 | Status v17 | Status v18 | Status v19 | Status v20 | Ghi chú |
+|---|---|---|---|---|---|---|---|
+| `odoo.tools.SQL` | v17 | not-available | stable | stable | stable | stable | Structured SQL helper. Dùng thay raw string SQL từ v17+. |
+| `safe_eval` | v8+ | stable | stable | stable | **deprecated** | stable (package `odoo/tools/safe_eval/`) | Import LUÔN từ `odoo.tools.safe_eval` (submodule), KHÔNG từ `odoo.tools` trực tiếp. Signature thay đổi keyword-only trong v19. `test_expr` bị xóa trong v19. |
+| `image_resize_image` | v8 | removed | removed | removed | removed | removed | Bị xóa trong v13. Thay bằng `odoo.tools.image_process`. |
+| `image_resize_image_big` | v8 | removed | removed | removed | removed | removed | Như trên. |
+| `image_resize_image_medium` | v8 | removed | removed | removed | removed | removed | Như trên. |
+| `image_resize_image_small` | v8 | removed | removed | removed | removed | removed | Như trên. |
+| `image_process` | v13 | stable | stable | stable | stable | stable (`odoo.tools.image.image_process`) | Hàm xử lý ảnh thay thế cho 4 hàm cũ trên. |
+| `pycompat` | v11 | stable | stable | deprecated | **dropped** | **removed** (file xoá) | Module tương thích Python 2/3. KHÔNG tồn tại tại v8/v9/v10 (`odoo/tools/pycompat.py` chỉ xuất hiện từ v11 - issue #364 audit, xem §8; curated data từng sai claim "stable" tại v8-v10). Bị xóa khỏi `odoo.tools.__init__` trong v19. Vẫn có file nhưng không export qua `__init__`. |
+| `ustr` | v8 | stable | soft-dep | soft-dep | soft-dep | **removed** | Vẫn tồn tại qua v19 nhưng không cần thiết trong Python 3. |
+| `html_escape` | v8 | stable | **deprecated** | deprecated | deprecated | deprecated | Từ v17: dùng `markupsafe.escape` thay thế. |
+| `float_compare` | v8 | stable | stable | stable | stable | stable | Định nghĩa ở `odoo/tools/float_utils.py`, re-export qua `odoo.tools` ở mọi version (không có thay đổi riêng của v19). |
+| `float_round` | v8 | stable | stable | stable | stable | stable | Như `float_compare`. |
+| `get_modules` | v8 | stable | stable | stable | **deprecated** | stable | `odoo.modules.get_modules`. v19: DeprecationWarning "Since 19.0, use Manifest.all_addon_manifests"; v20 bỏ cảnh báo, thân hàm đọc `Manifest.all_addon_manifests()` (`odoo/modules/module.py:573`). |
+| `format_datetime` | v13 | stable | stable | stable | stable | stable | Thêm trong v13 cùng với locale utils. |
+| `format_amount` | v13 | stable | stable | stable | stable | stable | Như `format_datetime`. |
+| `get_lang` | v13 | stable | stable | stable | stable | stable | Helper lấy lang record từ env. |
+| `date_utils` | v12 | stable | stable | stable | stable | stable | Thêm trong v12. |
+| `js_transpiler` | v15 | stable | stable | stable | stable | stable | Thêm trong v15 cùng với OWL 2 build pipeline. |
+| `ormcache` | v8 | stable | stable | stable | stable | **deprecated** | v20: chuyển sang `odoo/orm/cache.py`, dùng `odoo.api.ormcache`; `odoo.tools.ormcache` còn là alias qua `__getattr__` của `odoo/tools/__init__.py` (DeprecationWarning). |
+| `Query` | v8 | stable | stable | stable | stable | **moved** | v20: `odoo/orm/query.py`, import qua `odoo.models.Query`; không còn ở `odoo.tools`. |
+| `BinaryValue` / `BinaryBytes` | v20 | not-available | not-available | not-available | not-available | stable | Mới ở v20 (`odoo/tools/binary.py`). |
 
 ### 2.2 Cách dùng `safe_eval` đúng (mọi version)
 
@@ -191,10 +196,10 @@ Bảng này liên kết từng đặc điểm version với parser/registry cụ
 
 ---
 
-## 6. Test-Framework Base Classes - 7 Era (issue #362, ADR-0054)
+## 6. Test-Framework Base Classes - 8 Era (issue #362, ADR-0054)
 
 Bảng dưới liệt kê "menu" test-base-class (TransactionCase, SavepointCase, HttpCase, ...)
-mà `test_base_classes` trả về, theo 7 era version-dispatch trong
+mà `test_base_classes` trả về, theo 8 era version-dispatch trong
 `src/indexer/framework_bases.py` (SSOT duy nhất - thay cho `_FRAMEWORK_BASES` cũ đã bị
 xóa, vốn version-blind và là root cause của issue #362).
 
@@ -206,18 +211,19 @@ xóa, vốn version-blind và là root cause của issue #362).
 | v12-v13 | `odoo/tests/common.py` | + Form, O2MForm (9 lớp) |
 | v14 | `odoo/tests/common.py` | + HttpCaseCommon, HttpSavepointCase (11 lớp - full menu cũ, nhưng CHỈ đúng tại v14) |
 | v15-v16 | `odoo/tests/common.py` | - TreeCase, - HttpCaseCommon; SavepointCase/HttpSavepointCase chuyển `deprecated` (9 lớp) |
-| v17+ | `odoo/tests/common.py` (Form/O2MForm -> `odoo/tests/form.py`) | - SavepointCase, - HttpSavepointCase (REMOVED, không phải deprecated); Form/O2MForm chuyển file (7 lớp) |
+| v17-v19 | `odoo/tests/common.py` (Form/O2MForm -> `odoo/tests/form.py`) | - SavepointCase, - HttpSavepointCase (REMOVED, không phải deprecated); Form/O2MForm chuyển file (7 lớp) |
+| v20+ | `odoo/tests/common.py` + `odoo/tests/form.py` | - SingleTransactionCase (REMOVED, thay bằng TransactionCase - upstream `050ac53426c0`); + CrossModule (`case.TestCase`, chạy một lần cho mọi module; ghép với HttpCase khi cần env/browser) (7 lớp) |
 
 **Ghi chú quan trọng:**
 - Ranh giới v9->v10 KHÔNG đổi menu (danh sách lớp, test_type, status giống hệt) - chỉ đổi
   `openerp/` -> `odoo/` prefix. Đây là lý do `framework_bases.py` tách `_ERA_PREFIX_REGISTRY`
   (registry riêng cho prefix) khỏi `_FRAMEWORK_BASE_REGISTRY` (registry cho menu) - hai ranh
   giới khác nhau, theo đúng convention per-feature-VersionRegistry của ADR-0052.
-- Trong 11 ranh giới phiên bản liền kề từ v8 đến v19, menu (thành viên, status, hoặc vị trí
-  file) thực sự thay đổi tại 6: v9|v10 (prefix), v10|v11 (TreeCase), v11|v12 (Form/O2MForm),
+- Trong 12 ranh giới phiên bản liền kề từ v8 đến v20, menu (thành viên, status, hoặc vị trí
+  file) thực sự thay đổi tại 7: v9|v10 (prefix), v10|v11 (TreeCase), v11|v12 (Form/O2MForm),
   v13|v14 (HttpCaseCommon/HttpSavepointCase), v14|v15 (TreeCase + HttpCaseCommon bị xóa,
   SavepointCase/HttpSavepointCase deprecated), v16|v17 (SavepointCase/HttpSavepointCase bị
-  REMOVE). Đây là bằng chứng bác bỏ giả định "framework bases change rarely" trong
+  REMOVE), v19|v20 (SingleTransactionCase bị gỡ, CrossModule mới). Đây là bằng chứng bác bỏ giả định "framework bases change rarely" trong
   ADR-0051 Amendment 2.
 - `SavepointCase` xuất hiện tại v8 dù bản GA 8.0 (2014) chưa có lớp này - commit
   `11ba4689b1d9` (2015-06-23) backport nó vào nhánh 8.0 đã release, và
@@ -237,23 +243,32 @@ Xem `docs/adr/0054-parse-verified-framework-test-base-facts.md` cho quyết đ�
 
 ---
 
-## 7. v20 - Cách Thêm Support
+## 7. Thêm Một Series Mới (v21, ...)
 
-Nhờ ADR-0032 (`VersionRegistry`), thêm v20 là thao tác cục bộ trong registry list:
+Dải series đã khảo sát có MỘT nguồn: `src.constants.SURVEYED_MIN_MAJOR..SURVEYED_MAX_MAJOR`
+(đọc bởi `framework_bases.is_out_of_catalogue`, renderer `test_base_classes`,
+`tests/_odoo_checkouts.SURVEYED_MAJORS`). Mọi `VersionRegistry` (ADR-0032) đều open-ended ở
+đầu mới, nên series mới tự rơi vào era mới nhất; việc của người thêm series là xác nhận era
+đó còn đúng với nguồn thật. Trình tự đã dùng cho v20:
 
-```python
-# parser_python.py — nếu v20 có era3 (giả định):
-_ERA_REGISTRY: VersionRegistry[str] = VersionRegistry([
-    (8,  LEGACY_ERA_MAX_MAJOR, "era1"),
-    (10, 19,                   "era2"),  # cap: đổi từ open-ended sang bounded
-    (20, None,                 "era3"),  # thêm v20
-])
-
-# Nếu v20 giữ nguyên era2 (không thay đổi):
-# _ERA_REGISTRY không cần sửa — entry (10, None, "era2") đã cover v20 automatically.
-```
-
-Xem `docs/adr/0032-parser-hooks-registry.md §v20` cho ví dụ đầy đủ.
+1. Nâng `SURVEYED_MAX_MAJOR`. Parity test (`test_framework_bases_parity`, `test_cli_flags_*`,
+   `test_tools_symbols_content_parity`, `test_parser_lint_rules`, ...) đỏ ngay cho series mới -
+   đó là danh sách việc.
+2. So nguồn series mới với series trước ở mọi đường dẫn parser đọc: allow-list
+   `parser_odoo_core` (file dời chỗ, module thành package), lớp model gốc
+   (`parser_python.MODEL_BASE_CLASSES` - v20 thêm `CachedModel`), loại view
+   (`parser_xml._VIEW_TYPES` - v20 thêm `card`), `odoo/tests/` (era `framework_bases`),
+   `odoo/cli/` + `tools/config.py`, `odoo/tools/__init__.py`, `addons/test_lint/`.
+   Quy tắc: CoreSymbol giảm >20% so với series trước = bỏ sót path refactor.
+3. Dữ liệu curated của series mới, mỗi mục có oracle / lý do / provenance (ADR-0055):
+   `spec_data/cli_flags_<N>.0.json`, `lint_rules_<N>.0.json`, `tools_symbols_<N>.0.json`,
+   mục `<N>.0` trong `bootstrap_versions.json`, era `framework_bases` + fixture
+   `tests/fixtures/odoo_tests_headers/v<N>_*.py`, excerpt `cli_flags_config_excerpts`,
+   `_DEPRECATED_API_SYMBOLS`, rà `patterns.json` (cắt `odoo_version_max` cho pattern sai ở
+   series mới, thêm pattern thay thế).
+4. Migration seed profile gốc dùng chung `odoo_<N>`.
+5. Vận hành: `docs/deploy.md` §3.4.1 (index-core trước, rồi `index-repo --full` các profile
+   của series, rồi seed patterns).
 
 ---
 

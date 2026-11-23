@@ -3,8 +3,8 @@
 """Re-sync the curated GLOBAL CLI flags from the real Odoo ``tools/config.py`` (issue #380 item 6).
 
 Usage:
-    python scripts/sync_cli_flags.py --check [--checkouts DIR] [--majors 16 19] [--report-file F]
-    python scripts/sync_cli_flags.py --write [--checkouts DIR] [--majors 16 19] [--report-file F]
+    python scripts/sync_cli_flags.py --check [--checkouts DIR] [--majors 19 20] [--report-file F]
+    python scripts/sync_cli_flags.py --write [--checkouts DIR] [--majors 19 20] [--report-file F]
     python scripts/sync_cli_flags.py --print-majors
 
 ``--check``  exit 0 when every curated global flag equals what the oracle parses out of the
