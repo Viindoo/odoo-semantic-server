@@ -218,15 +218,18 @@ def test_every_v20_only_pattern_rule_has_behaviour_cases():
 def test_v20_drops_pylint_rules_whose_premise_is_false(rule_id):
     """Business rule: a rule whose premise does not hold at v20 is absent, not
     kept with a stale message (W8177 `_sql_constraints` messages, W8178 Html
-    sanitize default, W8204 `_sql_constraints` tuples)."""
+    sanitize default, W8204 `_sql_constraints` tuples). The same premises are
+    false at v19 (`_sql_constraints` unsupported, Html sanitizes by default),
+    so v19 does not serve them either."""
     assert rule_id not in _V20
-    assert _rules("19.0")[rule_id]["kind"] == "pylint-odoo"
+    assert rule_id not in _rules("19.0")
 
 
 def test_v20_drops_ruff_e501_because_ruff_toml_ignores_it():
-    """Business rule: a ruff rule listed in `ignore` is not an active v20 rule."""
+    """Business rule: a ruff rule listed in `ignore` is not an active v20 rule
+    (nor at v19, whose ruff.toml ignores E501 as well)."""
     assert "E501" not in _V20
-    assert _rules("19.0")["E501"]["kind"] == "ruff-builtin"
+    assert "E501" not in _rules("19.0")
 
 
 def test_v20_rules_keep_v19_provenance_for_shared_ids():

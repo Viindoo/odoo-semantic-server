@@ -18,7 +18,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Manifest file is missing required key `version`.",
+      "message": "Manifest file is missing key `version`; the loader falls back to `1.0`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py",
       "fix_template": "Add `'version': '11.0.1.0.0'` following OCA version convention."
@@ -52,16 +52,6 @@
       "file_pattern": "**/__manifest__.py"
     },
     {
-      "rule_id": "W8107",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": "real pylint-odoo 'prohibited-method-override': Prohibited override of \"%s\" method.",
-      "message": "`@api.multi` is deprecated and will be removed in v13 — prefer explicit `for rec in self:` pattern.",
-      "severity": "info",
-      "file_pattern": "**/*.py",
-      "code_pattern": "@api\\.multi\\b"
-    },
-    {
       "rule_id": "W8110",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
@@ -76,7 +66,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": "real pylint-odoo 'renamed-field-parameter': Field parameter \"%s\" is no longer supported. Use \"%s\" instead.",
-      "message": "`_constraints` list used — not supported in v11; use `@api.constrains`.",
+      "message": "`_constraints` list is the old API (still read by the v11 ORM) - use `@api.constrains`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Use `@api.constrains('field1', 'field2')` on the validation method."
@@ -86,7 +76,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Old API method signature `(cr, uid, ids, context)` — not supported in v11.",
+      "message": "Old API method signature `(cr, uid, ids, context)` is deprecated in v11 (the ORM logs `Deprecated method` for it) - use the new API `(self)`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Switch to new API: `def my_method(self, ...):`."
@@ -227,10 +217,10 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
+      "message": "Hardcoded company or currency ID - use `self.env.user.company_id`.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Use `self.env.company.id` rather than a literal integer.",
+      "fix_template": "Use `self.env.user.company_id.id` rather than a literal integer.",
       "code_pattern": "\\bcompany_id\\s*=\\s*\\d+\\b"
     },
     {
@@ -327,10 +317,10 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
+      "message": "`digits=(16, 2)` tuple format - prefer `digits=dp.get_precision('Product Price')` (`odoo.addons.decimal_precision`) so the precision stays configurable.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace `digits=(16, 2)` with `digits='Account'` referencing a `decimal.precision` record.",
+      "fix_template": "Replace `digits=(16, 2)` with `digits=dp.get_precision('Product Price')` after `from odoo.addons import decimal_precision as dp`.",
       "code_pattern": "\\bdigits\\s*=\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)"
     },
     {
@@ -354,27 +344,6 @@
       "fix_template": "Call `result = super().default_get(fields_list)` first, then update and return `result`."
     },
     {
-      "rule_id": "W8177",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
-      "severity": "info",
-      "file_pattern": "**/*.py",
-      "fix_template": "Use `_sql_constraints = [('name', 'UNIQUE(field)', _('Error message'))]`."
-    },
-    {
-      "rule_id": "W8178",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "fix_template": "Explicitly set `sanitize=True` (default) or document why sanitization is disabled.",
-      "code_pattern": "\\bfields\\.Html\\s*\\((?=[^)]*\\))(?![^)]*sanitize)"
-    },
-    {
       "rule_id": "W8179",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
@@ -383,16 +352,6 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Check `_order = 'field_name'` matches an actual field on the model."
-    },
-    {
-      "rule_id": "W8180",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "QWeb report template missing `t-name` attribute.",
-      "severity": "error",
-      "file_pattern": "**/report/*.xml",
-      "fix_template": "Add `t-name='module.report_template_id'` to the `<template>` tag."
     },
     {
       "rule_id": "W8183",
@@ -404,16 +363,6 @@
       "file_pattern": "**/*.xml"
     },
     {
-      "rule_id": "W8184",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
-      "severity": "error",
-      "file_pattern": "**/*.xml",
-      "fix_template": "Add `<field name='inherit_id' ref='module.view_id'/>` to the view record."
-    },
-    {
       "rule_id": "W8204",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
@@ -422,26 +371,6 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Valid form: `('constraint_name', 'UNIQUE(field)', 'Error message')`."
-    },
-    {
-      "rule_id": "no-var",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `var`. Use `let` or `const` instead.",
-      "severity": "error",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bvar\\s+\\w"
-    },
-    {
-      "rule_id": "no-console",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `console` statement in production JS.",
-      "severity": "warning",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bconsole\\s*\\."
     },
     {
       "rule_id": "no-undef",
@@ -463,24 +392,6 @@
       "fix_template": "Remove the unused variable declaration or use it."
     },
     {
-      "rule_id": "odoo-no-service-get",
-      "kind": "eslint",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "Direct `require()` of Odoo service — use `useService()` hook in OWL components.",
-      "severity": "warning",
-      "file_pattern": "**/*.js"
-    },
-    {
-      "rule_id": "no-restricted-globals",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Use of restricted global — prefer Odoo module-scoped equivalents.",
-      "severity": "warning",
-      "file_pattern": "**/*.js"
-    },
-    {
       "rule_id": "BLE001",
       "kind": "ruff-builtin",
       "rule_id_source": "upstream",
@@ -488,16 +399,6 @@
       "message": "Blind exception: do not catch `Exception` without re-raising or logging — catches too broadly.",
       "severity": "warning",
       "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "E501",
-      "kind": "ruff-builtin",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Line too long (exceeds max line length).",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "code_pattern": ".{80,}"
     },
     {
       "rule_id": "I001",

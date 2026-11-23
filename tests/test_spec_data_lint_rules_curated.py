@@ -43,7 +43,10 @@ _MIN_RULES_PER_VERSION = 10
 # >=10 baseline already enforced by TestEachVersionHasCuratedStatusComplete
 # .test_minimum_rule_count (every surveyed version). Thresholds unchanged.
 _MODERN_ERA_VERSIONS = [v for v in _REQUIRED_VERSIONS if int(v.split(".")[0]) >= 10]
-_MIN_RULES_MODERN = 50
+# The floor counts rules whose premise is true in source: a rule that flags correct
+# code is not depth (tests/test_lint_rules_source_parity.py removes those), so the
+# floor tracks the verified catalogue, not the historical count.
+_MIN_RULES_MODERN = 40
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +96,7 @@ class TestEachVersionHasCuratedStatusComplete:
 
     @pytest.mark.parametrize("version", _MODERN_ERA_VERSIONS)
     def test_minimum_rule_count_modern(self, version: str):
-        """Modern-era versions (v10+) must have >= 50 curated rules (WI-5 depth).
+        """Modern-era versions (v10+) must have >= 40 curated rules (WI-5 depth).
 
         Moved verbatim from the former test_lint_rules_minimum_count.py
         (TestModernEraMinimumCount). Floor `>=` is unaffected by #242 adding rules.
@@ -692,6 +695,29 @@ class TestCodePatternOverlayMechanism:
             f"Expected: {custom_pattern!r}\n"
             f"Got: {rules[0].code_pattern!r}"
         )
+
+    def test_overlay_gives_a_messageless_live_rule_its_curated_message(self, tmp_path):
+        """A live ESLint rule (``_parse_eslint_config``) carries no message, and the
+        live record wins the dedup; the curated wording must still reach lint_check,
+        and an existing message is never replaced."""
+        import json as _json
+
+        from src.indexer.models import LintRuleInfo
+        from src.indexer.parser_lint_rules import _apply_code_patterns_overlay
+
+        (tmp_path / "lint_rules_20.0.json").write_text(_json.dumps({"rules": [
+            {"rule_id": "no-undef", "kind": "eslint-odoo",
+             "message": "Reference to undeclared variable."},
+            {"rule_id": "E8502", "kind": "pylint-odoo", "message": "curated text"},
+        ]}))
+        live = LintRuleInfo(rule_id="no-undef", odoo_version="20.0", kind="eslint-odoo",
+                            message=None, severity="error")
+        own = LintRuleInfo(rule_id="E8502", odoo_version="20.0", kind="pylint-odoo",
+                           message="checker text", severity="error")
+        _apply_code_patterns_overlay([live, own], "20.0", tmp_path)
+
+        assert live.message == "Reference to undeclared variable."
+        assert own.message == "checker text"
 
     def test_real_merge_order_live_parse_wins_overlay_supplies_pattern(self, tmp_path):
         """Lock the REAL production merge order, not just the overlay function (PR #275 r3 #5).

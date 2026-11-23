@@ -53,6 +53,10 @@ _SPEC_DATA_PATH = (
 )
 _SPEC_17 = json.loads(_SPEC_DATA_PATH.read_text(encoding="utf-8"))
 _RULES_BY_ID: dict[str, dict] = {r["rule_id"]: r for r in _SPEC_17.get("rules", [])}
+_SPEC_20_PATH = _SPEC_DATA_PATH.with_name("lint_rules_20.0.json")
+_RULES_V20_BY_ID: dict[str, dict] = {
+    r["rule_id"]: r for r in json.loads(_SPEC_20_PATH.read_text(encoding="utf-8")).get("rules", [])
+}
 
 
 def _rule(message: str, rule_id: str = "E9001", severity: str = "warning") -> dict:
@@ -354,43 +358,40 @@ def test_pattern_e8501_fires_on_tuple_interpolation():
     )
 
 
-def test_pattern_w8178_fires_on_single_line_unsanitized_html():
-    """W8178 must still fire on a single-line `fields.Html(...)` lacking sanitize.
+def test_pattern_w8229_fires_on_single_line_html_with_sanitize_disabled():
+    """W8229 must fire on a single-line `fields.Html(..., sanitize=False)`.
 
-    Recall guard for the multi-line FP fix (PR #275 MED #3): tightening the
-    pattern to require `)` on the same line must not lose the single-line case.
+    Recall guard for the per-line matcher: a pattern that spans the argument
+    list must still match when the whole call sits on one line.
     """
-    rule = _RULES_BY_ID.get("W8178")
-    assert rule is not None, "W8178 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8178 must have a non-null code_pattern"
+    rule = _RULES_V20_BY_ID.get("W8229")
+    assert rule is not None, "W8229 must be present in lint_rules_20.0.json"
+    assert rule.get("code_pattern"), "W8229 must have a non-null code_pattern"
 
-    code = 'body = fields.Html(string="Body")'
+    code = 'body = fields.Html(string="Body", sanitize=False)'
     lines = _match_lint_rule_lines(code, rule)
     assert len(lines) >= 1, (
-        f"W8178 must fire on single-line unsanitized fields.Html; got none.\n"
+        f"W8229 must fire on single-line fields.Html(sanitize=False); got none.\n"
         f"code_pattern: {rule['code_pattern']!r}\ncode: {code!r}"
     )
 
 
-def test_pattern_w8178_silent_on_multiline_open_line():
-    """W8178 must NOT fire on the opening line of a multi-line `fields.Html(`.
+def test_pattern_w8229_silent_on_multiline_open_line_with_sanitize_on():
+    """W8229 must NOT fire on the opening line of a multi-line `fields.Html(`.
 
-    Regression for PR #275 MED #3: the per-line matcher previously flagged every
-    multi-line Html field's opening line because the `sanitize=` keyword (and the
-    closing `)`) live on a later line, so the negative lookahead vacuously
-    succeeded. The fix requires a `)` on the same line for the pattern to apply,
-    so a bare opening line no longer fires - including when `sanitize=True`
-    appears on a subsequent line.
+    Regression for PR #275 MED #3: the per-line matcher must not flag the
+    opening line of a multi-line field whose `sanitize=` keyword lives on a
+    later line - here `sanitize=True`, the default, so the field is correct.
     """
-    rule = _RULES_BY_ID.get("W8178")
-    assert rule is not None, "W8178 must be present in lint_rules_17.0.json"
-    assert rule.get("code_pattern"), "W8178 must have a non-null code_pattern"
+    rule = _RULES_V20_BY_ID.get("W8229")
+    assert rule is not None, "W8229 must be present in lint_rules_20.0.json"
+    assert rule.get("code_pattern"), "W8229 must have a non-null code_pattern"
 
     # The matcher is per-line; the opening line is what previously false-fired.
     multiline = "body = fields.Html(\n    sanitize=True,\n)"
     lines = _match_lint_rule_lines(multiline, rule)
     assert lines == [], (
-        f"W8178 must NOT fire on a multi-line fields.Html opening line; got "
+        f"W8229 must NOT fire on a multi-line fields.Html opening line; got "
         f"lines={lines}.\ncode_pattern: {rule['code_pattern']!r}\ncode: {multiline!r}"
     )
 

@@ -54,10 +54,9 @@ THIS FILE'S TWO LAYERS
    unmarked boundary claim is exactly what escapes review (this file's whole
    reason to exist). This layer does NOT check whether a classified-falsifiable
    rule's CONTENT is true - only that it was correctly IDENTIFIED as needing
-   scrutiny. Content correctness is layer 2 (layer 2 is intentionally NOT
-   widened to v14-v16 here - it targets the two specific, already-fixed W8202/
-   W8167 defects phase2-B found at v16-v19; a new content-correctness pass for
-   v14-v16 is separate, unstarted work, not silently assumed by this widening).
+   scrutiny. Content correctness of the W8202 / W8167 claims is layer 2 here;
+   the content of every other claim, at every version, is checked by
+   tests/test_lint_rules_source_parity.py.
 2. Content-vs-real-source checks (`test_w8202_*` / `test_w8167_*`) - dev-box
    only (`@pytest.mark.odoo_source`), skips per version when the checkout is
    absent. Diffs a specific falsifiable claim against the real Odoo checkout it
@@ -66,17 +65,16 @@ THIS FILE'S TWO LAYERS
    `tests/_odoo_checkouts.py` (issue #364 D2 SSOT) - no second discovery
    mechanism.
 
-EXPECT RED (do not weaken these to reach green - see the top-level task brief):
+Tests that guard the corrected W8202 / W8167 claims:
   - test_w8202_v17_own_file_falsely_claims_removal_at_v17
   - test_w8202_v19_contradicts_v18_true_removal_boundary
   - test_w8202_v16_recommends_switch_one_version_before_any_deprecation_signal
-  - test_w8167_claimed_v16_boundary_contradicts_real_v12_v13_transition[16.0]
-  - test_w8167_claimed_v16_boundary_contradicts_real_v12_v13_transition[17.0]
-  - test_w8167_claimed_v16_boundary_contradicts_real_v12_v13_transition[18.0]
-  - test_w8167_claimed_v16_boundary_contradicts_real_v12_v13_transition[19.0]
+  - test_w8167_claimed_v16_boundary_contradicts_real_v12_v13_transition[16.0..19.0]
 
-A later commit corrects `spec_data/lint_rules_*.json`; these tests turn green
-when it does. This file does not touch `src/` or `spec_data/*.json` itself.
+Their names describe the defect each one rejects; they pass while the data
+states the real boundary. Every other falsifiable claim of every version is
+checked by tests/test_lint_rules_source_parity.py (one oracle per curated
+(version, rule) pair, or a written reason).
 """
 from __future__ import annotations
 
@@ -173,7 +171,7 @@ def _name_get_body(root: Path) -> str | None:
 # ("XPath position='replace'" via a bare "replace" match) and pruned it by
 # hand; requiring the nearby v<N> token here prunes that class mechanically.
 _BOUNDARY_CLAIM_RE = re.compile(
-    r"\b(removed|deprecated|renamed|introduced|replaced|changed|used)\b"
+    r"\b(removed|deprecated|renamed|introduced|replaced|changed|used|exist)\b"
     r"[^.]{0,80}\bv\d{1,2}\+?\b"
     r"|\buse\b[^.]{0,60}\binstead\b[^.]{0,40}\bv\d{1,2}\b",
     re.IGNORECASE,
@@ -209,28 +207,31 @@ _KNOWN_FALSIFIABLE_RULE_IDS: dict[str, frozenset[str]] = {
         "W8107", "W8108", "W8110", "W8111",
     }),
     "15.0": frozenset({
-        "W8107", "W8108", "W8165", "W8166",
+        "W8107", "W8108", "W8166",
     }),
     "16.0": frozenset({
-        "W8107", "W8108", "W8166", "W8167", "W8202",
+        "W8107", "W8108", "W8165", "W8167", "W8202",
     }),
     "17.0": frozenset({
-        "W8107", "W8108", "W8166", "W8167", "W8168", "W8169", "W8202",
+        "W8107", "W8108", "W8167", "W8168", "W8169", "W8202",
     }),
     "18.0": frozenset({
         "W8107", "W8108", "W8167", "W8192", "W8193", "W8202", "W8210",
-        "W8211", "W8212", "W8213",
+        "W8212", "W8213",
     }),
     "19.0": frozenset({
-        "W8107", "W8108", "W8192", "W8202", "W8210", "W8220",
+        "W8107", "W8108", "W8192", "W8202", "W8210", "W8211",
     }),
     # v20.0: every claim below is checked against the real 19.0/20.0 sources by
     # tests/test_lint_rules_v20_source_parity.py (W8202 here as well).
     "20.0": frozenset({
-        "W8202", "W8211", "W8220", "W8223", "W8224", "W8225", "W8226",
-        "W8230", "W8233",
+        "W8107", "W8108", "W8165", "W8202", "W8211", "W8220", "W8223", "W8224",
+        "W8225", "W8226", "W8230", "W8233",
     }),
 }
+# Every claim in the snapshot above is also checked per version against the
+# real source by tests/test_lint_rules_source_parity.py (one oracle per
+# curated (version, rule) pair, or a written reason).
 
 
 @pytest.mark.parametrize("version", _LIVE_EXTRACTOR_VERSIONS)

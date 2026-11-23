@@ -352,15 +352,6 @@
       "file_pattern": "**/*.xml"
     },
     {
-      "rule_id": "W8184",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "View inheritance without `inherit_id` - `<record model='ir.ui.view'>` missing `inherit_id` field.",
-      "severity": "error",
-      "file_pattern": "**/*.xml"
-    },
-    {
       "rule_id": "W8192",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
@@ -424,28 +415,8 @@
       "code_pattern": "@api\\.deprecated\\b"
     },
     {
-      "rule_id": "no-var",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `var`. Use `let` or `const` instead.",
-      "severity": "error",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bvar\\s+\\w"
-    },
-    {
-      "rule_id": "no-console",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `console` statement in production JS.",
-      "severity": "warning",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bconsole\\s*\\."
-    },
-    {
       "rule_id": "no-undef",
-      "kind": "eslint",
+      "kind": "eslint-odoo",
       "rule_id_source": "upstream",
       "rule_id_collision": null,
       "message": "Reference to undeclared variable.",
@@ -454,7 +425,7 @@
     },
     {
       "rule_id": "no-unused-vars",
-      "kind": "eslint",
+      "kind": "eslint-odoo",
       "rule_id_source": "upstream",
       "rule_id_collision": null,
       "message": "Variable declared but never used.",
