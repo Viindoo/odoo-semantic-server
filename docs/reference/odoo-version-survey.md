@@ -64,8 +64,8 @@ dùng để định hướng parser và indexer của OSM.
 - v14: OWL 1 được giới thiệu — `Component` class từ `@odoo/owl`. Widget vẫn tồn tại.
 - v15: VẪN là OWL 1 (bản 1.4.11) - OWL 2 CHƯA có tại v15 (issue #364 audit; xem §8 dưới). Widget
   dần bị loại bỏ, Era3: `odoo.define` song song với `import {Component}`.
-- v16: OWL 2 (bản 2.8.2) chính thức - xem §8. Widget tiếp tục bị loại bỏ.
-- v17+: OWL-only (100% component). Era3 JS patch detection (`_extract_era3_patches`) chỉ chạy cho `major >= 14` - xem `_OWL_ENABLED_REGISTRY` (ADR-0032). Lưu ý: OWL KHÔNG lên v3 tại bất kỳ version nào tính đến v19 (vẫn 2.8.2) - xem §8. v20 lên Owl 3 (`addons/web/static/lib/owl/owl.js` `3.0.0-alpha.50` tại commit khảo sát `530bc2789e2f`): props khai báo bằng `props = useProps({...})` thay `static props` (1 file còn `static props` ở v20, 1194 ở v19); thư viện jQuery và QUnit bị gỡ khỏi `addons/web/static/lib/`.
+- v16: OWL 2 chính thức (đầu nhánh 16.0-19.0 hiện ship 2.8.4) - xem §8. Widget tiếp tục bị loại bỏ.
+- v17+: OWL-only (100% component). Era3 JS patch detection (`_extract_era3_patches`) chỉ chạy cho `major >= 14` - xem `_OWL_ENABLED_REGISTRY` (ADR-0032). Lưu ý: OWL KHÔNG lên v3 tại bất kỳ version nào tính đến v19 (đầu nhánh 16.0-19.0 ship 2.8.4) - xem §8. v20 lên Owl 3 (`addons/web/static/lib/owl/owl.js` `3.0.0-alpha.50` tại commit khảo sát `530bc2789e2f`): props khai báo bằng `props = useProps({...})` thay `static props` (1 file còn `static props` ở v20, 1194 ở v19); thư viện jQuery và QUnit bị gỡ khỏi `addons/web/static/lib/`.
 
 **Styles:**
 - v8-v11: LESS (Bootstrap 3.x). Parser: `src/indexer/parser_less.py`.
@@ -84,15 +84,15 @@ Nguồn sự thật: `src/indexer/spec_data/tools_symbols_X.0.json` (13 files, v
 | Symbol / API | Thêm vào | Status v16 | Status v17 | Status v18 | Status v19 | Status v20 | Ghi chú |
 |---|---|---|---|---|---|---|---|
 | `odoo.tools.SQL` | v17 | not-available | stable | stable | stable | stable | Structured SQL helper. Dùng thay raw string SQL từ v17+. |
-| `safe_eval` | v8+ | stable | stable | stable | **deprecated** | stable (package `odoo/tools/safe_eval/`) | Import LUÔN từ `odoo.tools.safe_eval` (submodule), KHÔNG từ `odoo.tools` trực tiếp. Signature thay đổi keyword-only trong v19. `test_expr` bị xóa trong v19. |
+| `safe_eval` | v8+ | stable | stable | stable | stable | stable (package `odoo/tools/safe_eval/`) | Import từ `odoo.tools.safe_eval`. v19 đổi chữ ký: `safe_eval(expr, /, context=None, *, mode='eval', filename=None)` - `globals_dict`/`locals_dict` gộp thành một `context`, bỏ `nocopy`/`locals_builtins`, `mode`/`filename` chỉ truyền bằng keyword. |
 | `image_resize_image` | v8 | removed | removed | removed | removed | removed | Bị xóa trong v13. Thay bằng `odoo.tools.image_process`. |
 | `image_resize_image_big` | v8 | removed | removed | removed | removed | removed | Như trên. |
 | `image_resize_image_medium` | v8 | removed | removed | removed | removed | removed | Như trên. |
 | `image_resize_image_small` | v8 | removed | removed | removed | removed | removed | Như trên. |
 | `image_process` | v13 | stable | stable | stable | stable | stable (`odoo.tools.image.image_process`) | Hàm xử lý ảnh thay thế cho 4 hàm cũ trên. |
-| `pycompat` | v11 | stable | stable | deprecated | **dropped** | **removed** (file xoá) | Module tương thích Python 2/3. KHÔNG tồn tại tại v8/v9/v10 (`odoo/tools/pycompat.py` chỉ xuất hiện từ v11 - issue #364 audit, xem §8; curated data từng sai claim "stable" tại v8-v10). Bị xóa khỏi `odoo.tools.__init__` trong v19. Vẫn có file nhưng không export qua `__init__`. |
-| `ustr` | v8 | stable | soft-dep | soft-dep | soft-dep | **removed** | Vẫn tồn tại qua v19 nhưng không cần thiết trong Python 3. |
-| `html_escape` | v8 | stable | **deprecated** | deprecated | deprecated | deprecated | Từ v17: dùng `markupsafe.escape` thay thế. |
+| `pycompat` | v11 | stable | stable | **deprecated** | deprecated | **removed** (file xoá) | Module tương thích Python 2/3, có từ v11 (không có ở v8-v10). v18-v19: mọi hàm public phát DeprecationWarning "Deprecated since Odoo 18.0"; v19 bỏ re-export khỏi `odoo/tools/__init__.py` nhưng `odoo.tools.pycompat` vẫn import được như submodule. v20: file bị xoá. |
+| `ustr` | v8 | stable | stable | **deprecated** | deprecated | **removed** | `odoo/loglevels.py`, chữ ký `ustr(value, hint_encoding='utf-8', errors='strict')`. Từ v18 phát DeprecationWarning "Deprecated since Odoo 18"; v20 bị xoá. |
+| `html_escape` | v8 | stable | stable | stable | stable | stable | Từ v15 là alias `html_escape = markupsafe.escape` (cùng một hàm, trả `Markup`); Odoo core vẫn dùng ở v17-v20, không có đánh dấu deprecated. |
 | `float_compare` | v8 | stable | stable | stable | stable | stable | Định nghĩa ở `odoo/tools/float_utils.py`, re-export qua `odoo.tools` ở mọi version (không có thay đổi riêng của v19). |
 | `float_round` | v8 | stable | stable | stable | stable | stable | Như `float_compare`. |
 | `get_modules` | v8 | stable | stable | stable | **deprecated** | stable | `odoo.modules.get_modules`. v19: DeprecationWarning "Since 19.0, use Manifest.all_addon_manifests"; v20 bỏ cảnh báo, thân hàm đọc `Manifest.all_addon_manifests()` (`odoo/modules/module.py:573`). |
@@ -108,18 +108,19 @@ Nguồn sự thật: `src/indexer/spec_data/tools_symbols_X.0.json` (13 files, v
 ### 2.2 Cách dùng `safe_eval` đúng (mọi version)
 
 ```python
-# ĐÚNG — import trực tiếp từ submodule
+# Import từ submodule ở mọi version
 from odoo.tools.safe_eval import safe_eval
 
-result = safe_eval(expr, locals_dict={}, globals_dict={})
-
-# SAI — đừng import từ odoo.tools trực tiếp (v19 breaking change)
-from odoo.tools import safe_eval  # risky từ v19+
+# v8-v18: safe_eval(expr, globals_dict=None, locals_dict=None, mode="eval", nocopy=False, ...)
+result = safe_eval(expr, {'a': 1})
+# v19+:   safe_eval(expr, /, context=None, *, mode="eval", filename=None)
+result = safe_eval(expr, {'a': 1}, mode="exec")
 ```
 
-**v19 breaking changes cho `safe_eval`:**
-- `test_expr` parameter bị xóa — nếu code đang dùng `safe_eval(expr, mode='eval', test_expr=True)` → xóa `test_expr`.
-- Một số args trở thành keyword-only — gọi explicitly (`safe_eval(expr, locals_dict=d)` thay vì positional).
+**v19 breaking changes cho `safe_eval`** (`odoo/tools/safe_eval.py:369` tại 19.0):
+- `globals_dict` và `locals_dict` gộp thành một tham số `context`; truyền `locals_dict=` báo lỗi.
+- `nocopy` và `locals_builtins` bị bỏ.
+- `expr` chỉ truyền theo vị trí; `mode` và `filename` chỉ truyền bằng keyword.
 
 ### 2.3 Image API migration v8-v12 → v13+
 
@@ -285,7 +286,7 @@ hoặc SỬA LẠI qua audit đó - ghi ở đây để người đọc sau khô
 |---|---|---|
 | Python-2 octal literal (`os.chmod(self.rcfile, 0600)`) trong `tools/config.py` | Có mặt v8-v10, sửa thành `0o600` từ v11 | Ranh giới v10→v11 - **MUỘN HƠN MỘT VERSION** so với ranh giới `openerp`/`odoo` namespace split (v9→v10, `ODOO_NAMESPACE_LEGACY_MAX_MAJOR`) - hai fact khác nhau, đừng gộp làm một. `parser_cli.py` vượt qua literal này bằng AST-first/text-regex-on-`SyntaxError` (cùng cơ chế `framework_bases.py`/`parser_python.py:993-1013`), không special-case riêng cho literal đó. |
 | `test_lint` checker source (filename khớp sạch glob `_odoo_checker_<topic>.py`) | Từ v14 | v11-v13 CÓ checker thật (`_odoo_checkers.py`, rule E3110) nhưng filename không khớp glob (thiếu `_` phân cách "checker" và suffix); riêng v13 có thêm `_odoo_checker_sql_injection.py` (E8501, khớp glob) - bật gate riêng cho v13 sẽ lấy được E8501 nhưng âm thầm bỏ sót E3110 ngay cạnh nó, một trích xuất một phần TỆ HƠN loại trừ trung thực. `LINT_RULES_MIN_MAJOR = 14` trong `src/constants.py` (trước đây `17`), v11-v13 bị loại có chủ đích. |
-| OWL version thật | 1.4.11 xuyên suốt tới v15; 2.8.2 từ v16 | KHÔNG có OWL v3 ở bất kỳ version nào tính đến v19 (v19 vẫn báo "2.8.2", giống v16/v17; v18 báo "2.8.4"). Nguồn: `src/indexer/spec_data/bootstrap_versions.json` (evidence string per version, đã đúng từ trước) + `lint_rules_19.0.json`/`lint_rules_15.0.json`/`lint_rules_13.0.json` `_note` (đã sửa các claim sai "OWL introduced v13", "OWL v3 incremental adoption tại v19"). |
+| OWL version thật | 1.4.11 xuyên suốt tới v15; OWL 2 từ v16; OWL 3 từ v20 | KHÔNG có OWL v3 ở bất kỳ version nào tính đến v19: đầu nhánh 16.0-19.0 của odoo/odoo đều ship "2.8.4" (`addons/web/static/lib/owl/owl.js`); v20 ship "3.0.0-alpha.50". Nguồn: `src/indexer/spec_data/bootstrap_versions.json` (evidence string per version, đã đúng từ trước) + `lint_rules_19.0.json`/`lint_rules_15.0.json`/`lint_rules_13.0.json` `_note` (đã sửa các claim sai "OWL introduced v13", "OWL v3 incremental adoption tại v19"). |
 | `@api.multi`/`@api.one` | Bị xóa tại v13 | KHÔNG phải v14 - `odoo/api.py` bỏ decorator VÀ addons/ usage về 0 kể từ v13; `lint_rules_14.0.json`'s `_note` cũ từng lặp lại claim "v14: @api.multi/@api.one removed" như một sự kiện MỚI tại v14, nay đã sửa để nói rõ đây là fact-đã-xảy-ra-từ-v13. |
 | `openerp` → `odoo` namespace rename | Hoàn tất tại v10 | KHÔNG phải v9 - `odoo9`'s thư mục `odoo/` (nếu có) giữ 0 file git-tracked; namespace thật vẫn là `openerp/` xuyên suốt v9 (`ODOO_NAMESPACE_LEGACY_MAX_MAJOR = 9` nghĩa là "v9 là major CUỐI CÙNG còn `openerp/`", không phải "rename xảy ra tại v9"). |
 | `name_get()` | Deprecated v17, REMOVED v18 | v17: vẫn định nghĩa trong `odoo/models.py`, chỉ mang `.. deprecated:: 17.0` + `DeprecationWarning` - CHƯA bị xóa; xóa thật tại v18. Trước audit, curated data có 3 claim mâu thuẫn nhau (v16/v17/v19) về đúng một ranh giới này. |
