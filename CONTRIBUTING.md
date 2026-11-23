@@ -517,7 +517,7 @@ Want to add a new pattern to the catalogue? Patterns are stored in `src/data/pat
 
 **PR template:** When opening a PR with pattern changes, use `.github/PULL_REQUEST_TEMPLATE/patterns.md` (GitHub auto-fills). The template lists the 7-rule checklist and examples.
 
-**Note:** After your pattern is merged, the catalogue auto-reseeds on the next indexer run (via `_SeedMeta` sentinel per ADR-0007) — no manual action needed. Pattern embeddings are computed and indexed into pgvector automatically.
+**Note:** The reseed reads the Postgres `patterns` table, not `patterns.json`. The deploy of a merged pattern change runs `ops/backfill_patterns.py` (syncs the file into the table); the next indexer run (or `python -m src.indexer.seed_patterns`) then reseeds Neo4j because the table content changed (`_SeedMeta` sentinel per ADR-0007). Pattern embeddings are computed and indexed into pgvector automatically.
 
 ---
 
