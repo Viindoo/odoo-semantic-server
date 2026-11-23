@@ -18,7 +18,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Manifest file is missing required key `version`.",
+      "message": "Manifest file is missing key `version`; the loader falls back to `1.0`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py",
       "fix_template": "Add `'version': '10.0.1.0.0'` following OCA version convention."
@@ -58,10 +58,10 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": "real pylint-odoo 'method-required-super': Missing `super` call in \"%s\" method.",
-      "message": "`__openerp__.py` is deprecated in v10; rename to `__manifest__.py`.",
+      "message": "`__openerp__.py` is the pre-v10 manifest file name; v10 modules use `__manifest__.py`.",
       "severity": "warning",
       "file_pattern": "**/__openerp__.py",
-      "fix_template": "Rename `__openerp__.py` to `__manifest__.py` — Odoo 10+ only recognizes __manifest__.py."
+      "fix_template": "Rename `__openerp__.py` to `__manifest__.py` - v10 core modules ship `__manifest__.py` (the v10 loader still reads `__openerp__.py` as a fallback)."
     },
     {
       "rule_id": "W8110",
@@ -88,7 +88,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Old API method signature `(cr, uid, ids, context)` — v10 requires new API `(self)`.",
+      "message": "Old API method signature `(cr, uid, ids, context)` is deprecated in v10 (the ORM logs `Deprecated method` for it) - use the new API `(self)`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Switch to `@api.multi` or `@api.model` with `def my_method(self, ...)`."
@@ -102,15 +102,6 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Replace `class MyModel(osv.osv):` with `class MyModel(models.Model):`."
-    },
-    {
-      "rule_id": "W8114",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": "real pylint-odoo 'website-manifest-key-not-valid-uri': Website \"%s\" in manifest key is not a valid URI. %s",
-      "message": "`@api.multi` method with return value should return a recordset, not a plain scalar.",
-      "severity": "warning",
-      "file_pattern": "**/*.py"
     },
     {
       "rule_id": "W8115",
@@ -239,10 +230,10 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Hardcoded company or currency ID — use `self.env.company` or `self.env.user.company_id`.",
+      "message": "Hardcoded company or currency ID - use `self.env.user.company_id`.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Use `self.env.company.id` rather than a literal integer.",
+      "fix_template": "Use `self.env.user.company_id.id` rather than a literal integer.",
       "code_pattern": "\\bcompany_id\\s*=\\s*\\d+\\b"
     },
     {
@@ -262,7 +253,7 @@
       "message": "`copy()` override does not call `super()` — may break duplication.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Ensure `res = super().copy(default)` is called first."
+      "fix_template": "Ensure `res = super(MyModel, self).copy(default)` is called first."
     },
     {
       "rule_id": "W8162",
@@ -272,7 +263,7 @@
       "message": "`write()` override does not call `super()` — record changes may not be persisted.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Ensure `res = super().write(vals)` is called and returned."
+      "fix_template": "Ensure `res = super(MyModel, self).write(vals)` is called and returned."
     },
     {
       "rule_id": "W8163",
@@ -282,7 +273,7 @@
       "message": "`create()` override does not call `super()` — record will not be created.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Ensure `record = super().create(vals)` then `return record`."
+      "fix_template": "Ensure `record = super(MyModel, self).create(vals)` then `return record`."
     },
     {
       "rule_id": "W8164",
@@ -292,7 +283,7 @@
       "message": "`unlink()` override does not call `super()` — records will not be deleted from DB.",
       "severity": "error",
       "file_pattern": "**/*.py",
-      "fix_template": "Ensure `res = super().unlink()` is called and returned."
+      "fix_template": "Ensure `res = super(MyModel, self).unlink()` is called and returned."
     },
     {
       "rule_id": "W8170",
@@ -319,10 +310,10 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`search()` method returns a list instead of a recordset — override must use `domain` arg and call `super()`.",
+      "message": "`search()` method override must return a recordset and call `super()`.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Ensure `search()` override returns `super().search(args, ...)` after modifying the domain."
+      "fix_template": "Ensure `search()` override returns `super(MyModel, self).search(args, ...)` after modifying the domain."
     },
     {
       "rule_id": "W8173",
@@ -339,10 +330,10 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
+      "message": "`digits=(16, 2)` tuple format - prefer `digits=dp.get_precision('Product Price')` (`odoo.addons.decimal_precision`) so the precision stays configurable.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Replace `digits=(16, 2)` with `digits='Account'` referencing a `decimal.precision` record.",
+      "fix_template": "Replace `digits=(16, 2)` with `digits=dp.get_precision('Product Price')` after `from odoo.addons import decimal_precision as dp`.",
       "code_pattern": "\\bdigits\\s*=\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)"
     },
     {
@@ -363,28 +354,7 @@
       "message": "`default_get()` override does not call `super()` — default values from other modules will be lost.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Call `result = super().default_get(fields_list)` first, then update and return `result`."
-    },
-    {
-      "rule_id": "W8177",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
-      "severity": "info",
-      "file_pattern": "**/*.py",
-      "fix_template": "Use `_sql_constraints = [('name', 'UNIQUE(field)', _('Error message'))]`."
-    },
-    {
-      "rule_id": "W8178",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "fix_template": "Explicitly set `sanitize=True` (default) or document why sanitization is disabled.",
-      "code_pattern": "\\bfields\\.Html\\s*\\((?=[^)]*\\))(?![^)]*sanitize)"
+      "fix_template": "Call `result = super(MyModel, self).default_get(fields_list)` first, then update and return `result`."
     },
     {
       "rule_id": "W8179",
@@ -397,16 +367,6 @@
       "fix_template": "Check `_order = 'field_name'` matches an actual field on the model."
     },
     {
-      "rule_id": "W8180",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "QWeb report template missing `t-name` attribute.",
-      "severity": "error",
-      "file_pattern": "**/report/*.xml",
-      "fix_template": "Add `t-name='module.report_template_id'` to the `<template>` tag."
-    },
-    {
       "rule_id": "W8183",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
@@ -417,40 +377,11 @@
       "fix_template": "Prefer `position='after'` or `position='before'` to add content without removing the original node."
     },
     {
-      "rule_id": "W8184",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
-      "severity": "error",
-      "file_pattern": "**/*.xml",
-      "fix_template": "Add `<field name='inherit_id' ref='module.view_id'/>` to the view record."
-    },
-    {
-      "rule_id": "W8185",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "Security group XML record missing `users` or `implied_ids` — group may grant no access.",
-      "severity": "info",
-      "file_pattern": "**/*.xml"
-    },
-    {
-      "rule_id": "W8186",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "Domain literal uses integer `1` or `0` instead of `True`/`False` — use boolean literals.",
-      "severity": "info",
-      "file_pattern": "**/*.py",
-      "fix_template": "Replace `[(1, '=', 1)]` with `[(True, '=', True)]` or use `[]` for unconditional match."
-    },
-    {
       "rule_id": "W8187",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`_defaults` dict used — deprecated since v7; use `default=` in field definition.",
+      "message": "`_defaults` dict is not read by the v10 ORM - declare `default=` on the field definition.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Move `_defaults = {'field': value}` to `field = fields.Char(default=value)` in v10+."
@@ -464,26 +395,6 @@
       "severity": "error",
       "file_pattern": "**/*.py",
       "fix_template": "Replace with `fields.Char(compute='_compute_field', store=True)` or a proper relational field."
-    },
-    {
-      "rule_id": "no-var",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `var`. Use `let` or `const` instead.",
-      "severity": "error",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bvar\\s+\\w"
-    },
-    {
-      "rule_id": "no-console",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `console` statement in production JS.",
-      "severity": "warning",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bconsole\\s*\\."
     },
     {
       "rule_id": "no-undef",
@@ -505,15 +416,6 @@
       "fix_template": "Remove the unused variable declaration or use it."
     },
     {
-      "rule_id": "no-restricted-globals",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Use of restricted global — prefer Odoo module-scoped equivalents.",
-      "severity": "warning",
-      "file_pattern": "**/*.js"
-    },
-    {
       "rule_id": "BLE001",
       "kind": "ruff-builtin",
       "rule_id_source": "upstream",
@@ -521,16 +423,6 @@
       "message": "Blind exception: do not catch `Exception` without re-raising or logging — catches too broadly.",
       "severity": "warning",
       "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "E501",
-      "kind": "ruff-builtin",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Line too long (exceeds max line length).",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "code_pattern": ".{80,}"
     },
     {
       "rule_id": "I001",

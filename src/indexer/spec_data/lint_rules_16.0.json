@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: `UserError(_('msg', arg))` lazy format, `_('msg', arg)` translation lazy pattern, `web.Widget` deprecated. `_compute_display_name()`/`name_get()`: at v16 `name_get()` carries no deprecation marker at all (no `.. deprecated::`, no warning) - the deprecation signal starts v17 (`.. deprecated:: 17.0` + DeprecationWarning), removal is v18; see W8202 rule body below, which already states this correctly. `group_operator` still present at v16 (renamed `aggregator` v18 - verified: v17 fields.py has group_operator only, v18 fields.py has aggregator with a group_operator compat shim). `track_visibility` was renamed to `tracking` in v13, not v16 (verified: file-count of `track_visibility` usage collapses from v12 to v13 while `tracking=` usage climbs sharply, and v13's addons/mail/models/mail_thread.py itself reads `getattr(field, 'tracking', None) or getattr(field, 'track_visibility', None)` - a fallback that only makes sense if `tracking` is the new attribute as of v13) - see W8167 rule body below, which already states v13 correctly.",
+  "_note": "Curated from pylint-odoo v8.x for Odoo v16. v16: the `_('msg', arg)` lazy translation format (available since v14) and `UserError(_('msg', arg))`; `web.Widget` is a legacy class under static/src/legacy (OWL components are the v16 pattern); `invalidate_cache()` and `flush()` carry a DeprecationWarning. `_compute_display_name()`/`name_get()`: at v16 `name_get()` carries no deprecation marker at all (no `.. deprecated::`, no warning) - the deprecation signal starts v17 (`.. deprecated:: 17.0` + DeprecationWarning), removal is v18; see W8202 rule body below, which already states this correctly. `group_operator` still present at v16 (renamed `aggregator` v18 - verified: v17 fields.py has group_operator only, v18 fields.py has aggregator with a group_operator compat shim). `track_visibility` was renamed to `tracking` in v13, not v16 (verified: file-count of `track_visibility` usage collapses from v12 to v13 while `tracking=` usage climbs sharply, and v13's addons/mail/models/mail_thread.py itself reads `getattr(field, 'tracking', None) or getattr(field, 'track_visibility', None)` - a fallback that only makes sense if `tracking` is the new attribute as of v13) - see W8167 rule body below, which already states v13 correctly.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -17,7 +17,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Manifest file is missing required key `version`.",
+      "message": "Manifest file is missing key `version`; the loader falls back to `1.0`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py",
       "fix_template": "Add `'version': '16.0.1.0.0'`."
@@ -54,7 +54,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": "real pylint-odoo 'prohibited-method-override': Prohibited override of \"%s\" method.",
-      "message": "`@api.multi` is removed in v16 — use plain method with `for rec in self:` loop.",
+      "message": "`@api.multi` does not exist in v16 - plain model methods already receive the whole recordset; drop the decorator and loop `for rec in self:`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "@api\\.multi\\b"
@@ -64,7 +64,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`@api.one` is removed in v16.",
+      "message": "`@api.one` does not exist in v16 - drop the decorator and loop `for rec in self:`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "@api\\.one\\b"
@@ -113,7 +113,7 @@
       "message": "Translation string uses positional `%s` formatting — use named `%(name)s` or lazy `_('msg', arg)` pattern.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "Use `_('Hello %(name)s') % {'name': name}` or `_('Hello %s', name)` (Odoo 16+ lazy format).",
+      "fix_template": "Use `_('Hello %(name)s') % {'name': name}` or `_('Hello %s', name)` (lazy format).",
       "code_pattern": "_\\s*\\([^)]*%s"
     },
     {
@@ -225,8 +225,8 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`invalidate_cache()` removed — use `flush_recordset()` or `invalidate_recordset()`.",
-      "severity": "error",
+      "message": "`invalidate_cache()` is deprecated in v16 (it emits a DeprecationWarning) - use `invalidate_model()`, `invalidate_recordset()` or `env.invalidate_all()`.",
+      "severity": "warning",
       "file_pattern": "**/*.py",
       "code_pattern": "\\binvalidate_cache\\s*\\("
     },
@@ -235,7 +235,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`web.Widget` class used — deprecated in v16; prefer OWL components.",
+      "message": "`web.Widget` is a legacy class in v16 (it lives under `static/src/legacy`) - prefer OWL components.",
       "severity": "warning",
       "file_pattern": "**/*.js",
       "code_pattern": "\\bweb\\.Widget\\b"
@@ -265,7 +265,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Computed field missing `@api.depends` decorator — will never be recomputed automatically.",
+      "message": "Computed field has neither an `@api.depends` decorator on its compute method nor a `depends=` field parameter - it will never be recomputed automatically.",
       "severity": "error",
       "file_pattern": "**/*.py"
     },
@@ -283,7 +283,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Many2one field missing `ondelete` parameter — defaults to 'set null' which may leave orphan references.",
+      "message": "Many2one field missing `ondelete` parameter - it defaults to 'set null' (or 'restrict' when required), which may leave orphan references; state the policy explicitly.",
       "severity": "info",
       "file_pattern": "**/*.py"
     },
@@ -292,7 +292,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
+      "message": "`digits=(16, 2)` tuple format - prefer a `decimal.precision` name string (for example `digits='Product Price'`) so the precision stays configurable.",
       "severity": "warning",
       "file_pattern": "**/*.py",
       "code_pattern": "\\bdigits\\s*=\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)"
@@ -314,25 +314,6 @@
       "message": "`default_get()` override does not call `super()` — default values from other modules will be lost.",
       "severity": "warning",
       "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "W8177",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
-      "severity": "info",
-      "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "W8178",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "code_pattern": "\\bfields\\.Html\\s*\\((?=[^)]*\\))(?![^)]*sanitize)"
     },
     {
       "rule_id": "W8179",
@@ -363,29 +344,11 @@
       "file_pattern": "**/*.xml"
     },
     {
-      "rule_id": "W8184",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
-      "severity": "error",
-      "file_pattern": "**/*.xml"
-    },
-    {
-      "rule_id": "W8190",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "OWL component class not registered via `registry` — component will not be accessible.",
-      "severity": "warning",
-      "file_pattern": "**/*.js"
-    },
-    {
       "rule_id": "W8191",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "OWL component uses deprecated lifecycle hook `mounted` — use `onMounted` hook.",
+      "message": "Owl 2 does not call a `mounted()` component method - register the callback with the `onMounted` hook inside `setup()`.",
       "severity": "warning",
       "file_pattern": "**/*.js",
       "code_pattern": "\\bmounted\\s*\\(\\s*\\)"
@@ -398,7 +361,7 @@
       "message": "String formatting used in UserError/ValidationError — use lazy args or named placeholders instead of %-interpolation.",
       "severity": "warning",
       "file_pattern": "**/*.py",
-      "fix_template": "raise UserError(_('Hello %(name)s') % {'name': name})  # acceptable\nraise UserError(_('Hello %s', name))  # preferred (Odoo 16+ lazy format)",
+      "fix_template": "raise UserError(_('Hello %(name)s') % {'name': name})  # acceptable\nraise UserError(_('Hello %s', name))  # preferred (lazy format)",
       "code_pattern": "(?:UserError|ValidationError)\\s*\\([^)]*(?:%[^%]|\\.format\\s*\\(|f[\"\\'][^\"\\']*\\{)"
     },
     {
@@ -422,28 +385,8 @@
       "file_pattern": "**/*.py"
     },
     {
-      "rule_id": "no-var",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `var`. Use `let` or `const` instead.",
-      "severity": "error",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bvar\\s+\\w"
-    },
-    {
-      "rule_id": "no-console",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `console` statement in production JS.",
-      "severity": "warning",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bconsole\\s*\\."
-    },
-    {
       "rule_id": "no-undef",
-      "kind": "eslint",
+      "kind": "eslint-odoo",
       "rule_id_source": "upstream",
       "rule_id_collision": null,
       "message": "Reference to undeclared variable.",
@@ -452,7 +395,7 @@
     },
     {
       "rule_id": "no-unused-vars",
-      "kind": "eslint",
+      "kind": "eslint-odoo",
       "rule_id_source": "upstream",
       "rule_id_collision": null,
       "message": "Variable declared but never used.",
@@ -476,16 +419,6 @@
       "message": "Blind exception: do not catch `Exception` without re-raising or logging.",
       "severity": "warning",
       "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "E501",
-      "kind": "ruff-builtin",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Line too long (exceeds max line length).",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "code_pattern": ".{80,}"
     },
     {
       "rule_id": "I001",

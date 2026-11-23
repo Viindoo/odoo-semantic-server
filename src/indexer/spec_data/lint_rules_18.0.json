@@ -1,7 +1,7 @@
 {
   "_curate_status": "complete",
   "_generated_at": "2026-05-22",
-  "_note": "Curated from pylint-odoo v9.x for Odoo v18. v18 breaking changes: `group_operator` renamed to `aggregator`, `--longpolling-port` removed (use `--gevent-port`), `name_get()` removed, `read_group()` signature changed, `<list>` preferred over `<tree>` in v18+, `<chatter/>` tag replaces `oe_chatter` div (W8193), always-invisible fields need an explanatory XML comment per base.TestInvisibleField (W8205), QUnit test framework replaced by Hoot (W8213). Merged with live-extracted rules when odoo_source_root provided.",
+  "_note": "Curated from pylint-odoo v9.x for Odoo v18. v18 breaking changes: `group_operator` renamed to `aggregator`, `--longpolling-port` removed (use `--gevent-port`), `name_get()` removed, `<list>` preferred over `<tree>` in v18+, `<chatter/>` tag replaces `oe_chatter` div (W8193), always-invisible fields need an explanatory XML comment per base.TestInvisibleField (W8205), the Hoot test framework ships next to QUnit, whose tests are being migrated (W8213). Merged with live-extracted rules when odoo_source_root provided.",
   "rules": [
     {
       "rule_id": "W8101",
@@ -17,7 +17,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Manifest file is missing required key `version`.",
+      "message": "Manifest file is missing key `version`; the loader falls back to `1.0`.",
       "severity": "warning",
       "file_pattern": "**/__manifest__.py",
       "fix_template": "Add `'version': '18.0.1.0.0'`."
@@ -54,7 +54,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": "real pylint-odoo 'prohibited-method-override': Prohibited override of \"%s\" method.",
-      "message": "`@api.multi` is removed in v18 — use plain method with `for rec in self:` loop.",
+      "message": "`@api.multi` does not exist in v18 - plain model methods already receive the whole recordset; drop the decorator and loop `for rec in self:`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "@api\\.multi\\b"
@@ -64,7 +64,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`@api.one` is removed in v18.",
+      "message": "`@api.one` does not exist in v18 - drop the decorator and loop `for rec in self:`.",
       "severity": "error",
       "file_pattern": "**/*.py",
       "code_pattern": "@api\\.one\\b"
@@ -273,7 +273,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Computed field missing `@api.depends` decorator — will never be recomputed automatically.",
+      "message": "Computed field has neither an `@api.depends` decorator on its compute method nor a `depends=` field parameter - it will never be recomputed automatically.",
       "severity": "error",
       "file_pattern": "**/*.py"
     },
@@ -291,7 +291,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "Many2one field missing `ondelete` parameter — defaults to 'set null' which may leave orphan references.",
+      "message": "Many2one field missing `ondelete` parameter - it defaults to 'set null' (or 'restrict' when required), which may leave orphan references; state the policy explicitly.",
       "severity": "info",
       "file_pattern": "**/*.py"
     },
@@ -300,7 +300,7 @@
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "`digits=(16, 2)` tuple format deprecated — use a precision field name string.",
+      "message": "`digits=(16, 2)` tuple format - prefer a `decimal.precision` name string (for example `digits='Product Price'`) so the precision stays configurable.",
       "severity": "warning",
       "file_pattern": "**/*.py",
       "code_pattern": "\\bdigits\\s*=\\s*\\(\\s*\\d+\\s*,\\s*\\d+\\s*\\)"
@@ -322,25 +322,6 @@
       "message": "`default_get()` override does not call `super()` — default values from other modules will be lost.",
       "severity": "warning",
       "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "W8177",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`_sql_constraints` entry message is not wrapped in `_()` for translation.",
-      "severity": "info",
-      "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "W8178",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`fields.Html` field without `sanitize=True` may allow XSS — verify sanitization is intentional.",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "code_pattern": "\\bfields\\.Html\\s*\\((?=[^)]*\\))(?![^)]*sanitize)"
     },
     {
       "rule_id": "W8179",
@@ -368,15 +349,6 @@
       "rule_id_collision": null,
       "message": "XPath `position='replace'` removes the target element entirely — verify this is intentional.",
       "severity": "info",
-      "file_pattern": "**/*.xml"
-    },
-    {
-      "rule_id": "W8184",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "View inheritance without `inherit_id` — `<record model='ir.ui.view'>` missing `inherit_id` field.",
-      "severity": "error",
       "file_pattern": "**/*.xml"
     },
     {
@@ -423,17 +395,6 @@
       "core_symbol_qname": "odoo.fields.Field.group_operator"
     },
     {
-      "rule_id": "W8211",
-      "kind": "pylint-odoo",
-      "rule_id_source": "osm-local",
-      "rule_id_collision": null,
-      "message": "`read_group()` method signature changed in v18 — `fields` parameter now required, `lazy` parameter removed.",
-      "severity": "error",
-      "file_pattern": "**/*.py",
-      "fix_template": "Update `read_group(domain, fields, groupby)` — `lazy` kwarg no longer accepted.",
-      "core_symbol_qname": "odoo.models.BaseModel.read_group"
-    },
-    {
       "rule_id": "W8212",
       "kind": "pylint-odoo",
       "rule_id_source": "osm-local",
@@ -452,28 +413,8 @@
       "file_pattern": "**/*.py"
     },
     {
-      "rule_id": "no-var",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `var`. Use `let` or `const` instead.",
-      "severity": "error",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bvar\\s+\\w"
-    },
-    {
-      "rule_id": "no-console",
-      "kind": "eslint",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Unexpected `console` statement in production JS.",
-      "severity": "warning",
-      "file_pattern": "**/*.js",
-      "code_pattern": "\\bconsole\\s*\\."
-    },
-    {
       "rule_id": "no-undef",
-      "kind": "eslint",
+      "kind": "eslint-odoo",
       "rule_id_source": "upstream",
       "rule_id_collision": null,
       "message": "Reference to undeclared variable.",
@@ -482,7 +423,7 @@
     },
     {
       "rule_id": "no-unused-vars",
-      "kind": "eslint",
+      "kind": "eslint-odoo",
       "rule_id_source": "upstream",
       "rule_id_collision": null,
       "message": "Variable declared but never used.",
@@ -506,16 +447,6 @@
       "message": "Blind exception: do not catch `Exception` without re-raising or logging.",
       "severity": "warning",
       "file_pattern": "**/*.py"
-    },
-    {
-      "rule_id": "E501",
-      "kind": "ruff-builtin",
-      "rule_id_source": "upstream",
-      "rule_id_collision": null,
-      "message": "Line too long (exceeds max line length).",
-      "severity": "warning",
-      "file_pattern": "**/*.py",
-      "code_pattern": ".{80,}"
     },
     {
       "rule_id": "I001",
@@ -615,7 +546,7 @@
       "kind": "eslint",
       "rule_id_source": "osm-local",
       "rule_id_collision": null,
-      "message": "QUnit test framework replaced by Hoot in v18 - migrate `QUnit.test` / `QUnit.module` to `@odoo/hoot` (`test` / `describe`).",
+      "message": "Hoot (`@odoo/hoot`) is the JS test framework introduced in v18 and `QUnit` tests are being migrated - write new tests with `test` / `describe` instead of `QUnit.test` / `QUnit.module`.",
       "severity": "warning",
       "file_pattern": "**/*.js",
       "code_pattern": "\\bQUnit\\s*\\."
