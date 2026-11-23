@@ -5,13 +5,25 @@ Validates:
 - Every surveyed version (8.0 to 20.0) has a file with _curate_status="complete" and
   len(flags) >= 20
 - Every flag entry conforms to the cli_flag.schema.json schema
+- (``odoo_source``, every surveyed major) the per-command flags, the sub-actions and the
+  curated-only fields of the global flags (``env_name``, ``posix_only``,
+  ``replacement_flag_name``) agree with the real odoo/odoo source of that major
 """
 import ast
 import json
+import re
 from pathlib import Path
 
 import pytest
 
+from src.indexer.parser_cli import (
+    _NOT_CONSTANT,
+    _constant_value,
+    _find_option_call_arg_spans,
+    _parse_options_calls,
+    _pkg_prefix,
+)
+from src.indexer.parser_util import parse_external_source
 from tests._odoo_checkouts import SURVEYED_MAJORS, checkout_root
 
 SPEC_DATA_DIR = Path(__file__).parent.parent / "src" / "indexer" / "spec_data"
@@ -370,9 +382,9 @@ class TestV20CliSurface:
     """Odoo 20.0 odoo-bin surface: the commands, sub-actions and flags 20.0 ships.
 
     Facts come from odoo/odoo branch 20.0 (odoo/cli/*.py, addons/*/cli/*.py,
-    odoo/tools/config.py). The static guards run everywhere; the
-    ``odoo_source`` oracle at the end diffs the curated per-command flags against
-    the argparse/optparse declarations of a real 20.0 checkout.
+    odoo/tools/config.py). The static guards run everywhere; the ``odoo_source``
+    oracles of ``TestCommandFlagsMatchTheRealSource`` (every surveyed major) diff the
+    curated per-command flags against the argparse/optparse declarations of a real checkout.
     """
 
     V20 = "20.0"
@@ -475,41 +487,6 @@ class TestV20CliSurface:
             "--limit-memory-hard", "--limit-memory-hard-gevent", "--limit-time-cpu",
             "--limit-request",
         }
-
-    @pytest.mark.odoo_source
-    def test_per_command_flags_match_the_declarations_in_the_real_command_files(self) -> None:
-        """Oracle for the per-command entries (no production parser reads cli/*.py): for
-        every file in commands[], the long flags (and positional names, normalised to
-        --name) its add_argument/add_option calls declare are exactly the flags curated
-        under the commands that file defines - no phantom flag, no missing flag."""
-        root = checkout_root(20)
-        if root is None:
-            pytest.skip("Odoo 20 checkout not found (set ODOO20_SRC or OSM_ODOO_CHECKOUTS)")
-        data = _load_version(self.V20)
-        files: dict[str, set] = {}
-        for c in data["commands"]:
-            files.setdefault(c["file_path"], set()).add(c["name"])
-        for file_path, names in sorted(files.items()):
-            path = root / file_path
-            assert path.is_file(), f"commands[] names {file_path} but it is not in the checkout"
-            declared = set()
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                        and node.func.attr in ("add_argument", "add_option")):
-                    strs = [a.value for a in node.args
-                            if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-                    longs = [s for s in strs if s.startswith("--")]
-                    if longs:
-                        declared.add(longs[0])
-                    elif strs and not strs[0].startswith("-"):
-                        declared.add("--" + strs[0].replace("_", "-"))
-                    elif strs:
-                        declared.add(strs[0])
-            curated = {f["flag_name"] for f in data["flags"] if f["command_name"] in names}
-            assert curated == declared, (
-                f"{file_path}: curated-only {sorted(curated - declared)}, "
-                f"declared-only {sorted(declared - curated)}"
-            )
 
 
 class TestV18SpecCorrectness:
@@ -726,8 +703,7 @@ class TestV16V18DbSubcommands:
     """db subcommands (Gap 2) must be indexed in v16/v17/v18.
 
     Guards: 5 compound subcommand names appear in commands[]; db load has the
-    correct per-version flags (--move only in v17). Fails on base because no
-    db subcommand entries exist in v16-18 yet.
+    correct per-version flags (--move from v17 on).
     """
 
     DB_VERSIONS = ["16.0", "17.0", "18.0"]
@@ -771,36 +747,24 @@ class TestV16V18DbSubcommands:
             f"{sorted(missing)}"
         )
 
-    def test_db_load_move_v17_only(self) -> None:
-        """--move on db load exists ONLY in v17, not in v16 or v18.
-
-        Source: v17 db.py adds '--move' (store_const, default=True, const=False)
-        to the load subparser. This flag was not present in v16 and was removed
-        before v18. Failing here means the version-specific flag was either
-        omitted from v17 or incorrectly added to v16/v18.
+    def test_db_load_move_exists_from_v17(self) -> None:
+        """--move on db load exists from v17 on (the load sub-parser adds '--move' as a
+        store_const flag), and not in v16, whose load sub-parser has no such option.
+        The oracle test of ``TestCommandFlagsMatchTheRealSource`` checks every major
+        against the real db.py; this pins the business rule where it is read first.
         """
-        # v17: --move must be present on db load
-        data17 = _load_version("17.0")
-        db_load_flags_v17 = {
-            f["flag_name"]
-            for f in data17.get("flags", [])
-            if f.get("command_name") == "db load"
-        }
-        assert "--move" in db_load_flags_v17, (
-            "cli_flags_17.0.json: db load is missing --move (v17-only flag)"
-        )
-
-        # v16 and v18: --move must NOT be present on db load
-        for version in ("16.0", "18.0"):
+        for version, present in (
+            ("16.0", False), ("17.0", True), ("18.0", True), ("19.0", True), ("20.0", True),
+        ):
             data = _load_version(version)
             db_load_flags = {
                 f["flag_name"]
                 for f in data.get("flags", [])
                 if f.get("command_name") == "db load"
             }
-            assert "--move" not in db_load_flags, (
-                f"cli_flags_{version}.json: db load wrongly has --move "
-                f"(this flag is v17-only)"
+            assert ("--move" in db_load_flags) is present, (
+                f"cli_flags_{version}.json: db load --move should be "
+                f"{'present' if present else 'absent'}"
             )
 
 
@@ -923,3 +887,507 @@ class TestGeoipAndGeventGap4:
                 f"cli_flags_18.0.json: {flag!r} is missing; "
                 f"this gevent memory-limit flag was added in v18 config.py"
             )
+
+
+class TestCuratedDataStatesCurrentFacts:
+    """The curated text states facts of the version, not where or when they were curated."""
+
+    @pytest.mark.parametrize("version", CURATED_VERSIONS)
+    def test_flag_help_carries_no_source_location(self, version: str) -> None:
+        # A "Source: file.py:NN" tail is a line number that rots with every upstream commit.
+        located = [
+            f"{f['command_name']} {f['flag_name']}"
+            for f in _load_version(version)["flags"]
+            if re.search(r"Source:|\b\w+\.py:\d+", f.get("help") or "")
+        ]
+        assert not located, f"cli_flags_{version}.json: help names a source location: {located}"
+
+    @pytest.mark.parametrize("version", CURATED_VERSIONS)
+    def test_note_names_no_local_path_ticket_or_work_item(self, version: str) -> None:
+        note = _load_version(version)["_note"]
+        assert note.strip(), f"cli_flags_{version}.json: empty _note"
+        assert not re.search(r"~/|/home/|#\d+|\bWI-|\bissue\b", note), (
+            f"cli_flags_{version}.json: _note carries a local path or tracker reference: {note!r}"
+        )
+
+    @pytest.mark.parametrize("version", CURATED_VERSIONS)
+    def test_help_is_a_command_of_every_version(self, version: str) -> None:
+        # ``odoo-bin help`` lists the commands in every series, 8.0 included.
+        commands = {c["name"]: c for c in _load_version(version)["commands"]}
+        assert "help" in commands, f"cli_flags_{version}.json: 'help' command missing"
+        assert commands["help"]["description"] == "Display the list of available commands"
+
+    @pytest.mark.parametrize("version", CURATED_VERSIONS)
+    def test_every_sub_action_has_its_parent_command(self, version: str) -> None:
+        names = {c["name"] for c in _load_version(version)["commands"]}
+        orphans = sorted(n for n in names if " " in n and n.split(" ", 1)[0] not in names)
+        assert not orphans, f"cli_flags_{version}.json: sub-actions without parent: {orphans}"
+
+    def test_the_config_file_variable_is_the_one_the_source_reads(self) -> None:
+        # v8-v9 read OPENERP_SERVER only; v10+ read ODOO_RC (OPENERP_SERVER stays a fallback).
+        for version in CURATED_VERSIONS:
+            config = next(
+                f for f in _load_version(version)["flags"]
+                if f["flag_name"] == "--config" and f["command_name"] is None
+            )
+            expected = "OPENERP_SERVER" if version in ("8.0", "9.0") else "ODOO_RC"
+            assert config["env_name"] == expected, f"cli_flags_{version}.json: --config"
+
+    def test_libpq_variables_only_where_odoo_defers_to_libpq(self) -> None:
+        # Before v19 Odoo passes host/port/user/password(/sslmode) to libpq only when the
+        # flag is set; PGDATABASE, PGPATH and PGDATABASE_TEMPLATE are no variable it reads.
+        for version in CURATED_VERSIONS[:CURATED_VERSIONS.index("19.0")]:
+            env = {
+                f["flag_name"]: f["env_name"] for f in _load_version(version)["flags"]
+                if f["command_name"] is None and f["env_name"]
+            }
+            assert env.get("--db_host") == "PGHOST"
+            assert not {"--database", "--pg_path", "--db-template"} & set(env), version
+
+    def test_v19_posix_only_flags_are_exactly_the_posix_only_option_wrappers(self) -> None:
+        posix = {
+            f["flag_name"] for f in _load_version("19.0")["flags"] if f.get("posix_only")
+        }
+        assert posix == {
+            "--workers", "--limit-memory-soft-gevent", "--limit-memory-hard",
+            "--limit-memory-hard-gevent", "--limit-time-cpu", "--limit-request",
+        }
+
+    @pytest.mark.parametrize("version", ["19.0", "20.0"])
+    def test_dev_flag_names_its_environment_variable(self, version: str) -> None:
+        dev = next(f for f in _load_version(version)["flags"] if f["flag_name"] == "--dev")
+        assert dev["env_name"] == "ODOO_DEV"
+
+    def test_numeric_expression_defaults_are_the_numbers(self) -> None:
+        for version in CURATED_VERSIONS:
+            flags = {
+                f["flag_name"]: f for f in _load_version(version)["flags"]
+                if f["command_name"] is None
+            }
+            assert flags["--limit-memory-soft"]["default"] == "2147483648"
+            assert flags["--limit-memory-hard"]["default"] == "2684354560"
+
+
+# ---------------------------------------------------------------------------
+# ADR-0055 oracles for the curated per-command data, every surveyed major.
+#
+# Per-command flags and sub-actions live in <pkg>/cli/*.py and addons/*/cli/*.py, which the
+# production global-flag oracle (config.py) never opens, so these tests read the real
+# declarations themselves. Era differences handled here:
+#   * v8-v10 command files are Python 2 (print statements): ``ast.parse`` rejects the file, so
+#     each ``add_option``/``add_argument`` call is isolated by the production text scanner
+#     and parsed on its own;
+#   * v16+ ``db`` (and v19+ ``i18n`` / ``module``) are argparse sub-parser trees: a flag is
+#     scoped to the sub-parser variable it is declared on, a ``for p in (a, b, c)`` loop
+#     scopes it to each member, and a flag every sub-action takes is indexed under the
+#     parent command;
+#   * v8/v9 live under ``openerp/``, v10+ under ``odoo/``.
+# Facts compared per flag: the long name (a positional is normalised to ``--<name>``), the
+# default when the declaration fixes it (a literal, a module constant, or the implicit
+# false/true of a store action) and the type when the declaration fixes it. The ``help``
+# texts of per-command flags are hand-written descriptions and have no mechanical oracle.
+# ---------------------------------------------------------------------------
+
+_OPTION_METHODS = ("add_argument", "add_option")
+_BOOLEAN_ACTIONS = frozenset({"store_true", "store_false", "store_const"})
+_UNDETERMINED = object()
+
+
+def _terminal_name(expr: ast.expr) -> str | None:
+    if isinstance(expr, ast.Name):
+        return expr.id
+    if isinstance(expr, ast.Attribute):
+        return expr.attr
+    return None
+
+
+def _declared_flag_name(call: ast.Call) -> str | None:
+    strings = [
+        a.value for a in call.args
+        if isinstance(a, ast.Constant) and isinstance(a.value, str)
+    ]
+    long_names = [s for s in strings if s.startswith("--")]
+    if long_names:
+        return long_names[0]
+    if strings and not strings[0].startswith("-"):
+        return "--" + strings[0].replace("_", "-")
+    return strings[0] if strings else None
+
+
+def _declared_kwargs(call: ast.Call, constants: dict) -> dict:
+    """Keyword values of an option call: the constant, or ``_UNDETERMINED`` when the value
+    is not a constant of the file (a call, an attribute, an unknown name)."""
+    out = {}
+    for kw in call.keywords:
+        if not kw.arg:
+            continue
+        value = _constant_value(kw.value)
+        if value is _NOT_CONSTANT and isinstance(kw.value, ast.Name):
+            value = constants.get(kw.value.id, _NOT_CONSTANT)
+        out[kw.arg] = _UNDETERMINED if value is _NOT_CONSTANT else value
+        if kw.arg == "type" and isinstance(kw.value, ast.Name):
+            out["type"] = ("type", kw.value.id)
+    return out
+
+
+def _module_constants(tree: ast.Module) -> dict:
+    constants = {}
+    for stmt in tree.body:
+        if (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                and isinstance(stmt.targets[0], ast.Name)):
+            value = _constant_value(stmt.value)
+            if value is not _NOT_CONSTANT:
+                constants[stmt.targets[0].id] = value
+    return constants
+
+
+def _isolated_call(argument_list: str) -> ast.Call:
+    """The option call whose argument list is *argument_list*, parsed on its own."""
+    return parse_external_source("f(" + argument_list + ")").body[0].value
+
+
+def declared_command_flags(source: str) -> dict[str, dict[str, dict]]:
+    """{scope: {flag name: keyword values}} an odoo/cli file declares.
+
+    Scope ``""`` is the command itself (or the options every sub-action shares); any other
+    scope is the name of one sub-parser (``add_parser('init')``).
+    """
+    try:
+        tree = parse_external_source(source)
+    except SyntaxError:
+        out: dict[str, dict[str, dict]] = {"": {}}
+        for span in _find_option_call_arg_spans(source):
+            call = _isolated_call(span)
+            name = _declared_flag_name(call)
+            if name:
+                out[""].setdefault(name, _declared_kwargs(call, {}))
+        return out
+
+    constants = _module_constants(tree)
+    sub_parsers: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Attribute)
+                and node.value.func.attr == "add_parser" and node.value.args
+                and isinstance(node.value.args[0], ast.Constant)):
+            for target in node.targets:
+                if _terminal_name(target):
+                    sub_parsers[_terminal_name(target)] = node.value.args[0].value
+    every_sub = set(sub_parsers.values())
+    out = {"": {}, **{sub: {} for sub in every_sub}}
+
+    def visit(node: ast.AST, loop_scopes: dict[str, set[str]]) -> None:
+        if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                and isinstance(node.iter, (ast.Tuple, ast.List))):
+            members = {
+                sub_parsers[_terminal_name(e)] for e in node.iter.elts
+                if _terminal_name(e) in sub_parsers
+            }
+            if members:
+                loop_scopes = {**loop_scopes, node.target.id: members}
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in _OPTION_METHODS):
+            owner = _terminal_name(node.func.value)
+            if owner in loop_scopes:
+                scopes = loop_scopes[owner]
+            elif owner in sub_parsers:
+                scopes = {sub_parsers[owner]}
+            else:
+                scopes = {""}
+            if every_sub and scopes >= every_sub:
+                scopes = {""}
+            name = _declared_flag_name(node)
+            if name:
+                for scope in scopes:
+                    out[scope].setdefault(name, _declared_kwargs(node, constants))
+        for child in ast.iter_child_nodes(node):
+            visit(child, loop_scopes)
+
+    visit(tree, {})
+    return out
+
+
+def _implied_default(kwargs: dict) -> object:
+    """The default a declaration fixes, as the curated string; ``_UNDETERMINED`` when it
+    depends on code (``default=template('default')``)."""
+    action = kwargs.get("action")
+    if action in ("store_true", "store_const"):
+        return "false"
+    if action == "store_false":
+        return "true"
+    default = kwargs.get("default", kwargs.get("my_default"))
+    if default is _UNDETERMINED:
+        return _UNDETERMINED
+    return None if default is None else str(default)
+
+
+def _implied_type(kwargs: dict) -> object:
+    """The type a declaration fixes; ``_UNDETERMINED`` when the curated label is a free choice
+    between equivalent spellings (str, path, ...)."""
+    action = kwargs.get("action")
+    if action in _BOOLEAN_ACTIONS:
+        return None
+    if action == "count":
+        return "count"
+    if "choices" in kwargs:
+        return "choice"
+    declared = kwargs.get("type")
+    if declared in (("type", "int"), "int"):
+        return "int"
+    if declared in (("type", "float"), "float"):
+        return "float"
+    return _UNDETERMINED
+
+
+def _curated_commands_by_file(data: dict) -> dict[str, list[str]]:
+    by_file: dict[str, list[str]] = {}
+    for command in data["commands"]:
+        by_file.setdefault(command["file_path"], []).append(command["name"])
+    return by_file
+
+
+@pytest.mark.odoo_source
+class TestCommandFlagsMatchTheRealSource:
+    """Every curated per-command flag, sub-action and sub-action description is what the
+    command file of the same major declares - no phantom, no missing flag."""
+
+    @pytest.mark.parametrize("major", SURVEYED_MAJORS)
+    def test_per_command_flags_match_the_declarations_in_the_real_command_files(
+        self, major: int,
+    ) -> None:
+        root = checkout_root(major)
+        if root is None:
+            pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+        data = _load_version(f"{major}.0")
+        problems: list[str] = []
+        commands_with_files = set()
+        for file_path, names in sorted(_curated_commands_by_file(data).items()):
+            path = root / file_path
+            assert path.is_file(), f"commands[] names {file_path} but it is not in the checkout"
+            declared = declared_command_flags(path.read_text(encoding="utf-8", errors="ignore"))
+            top_level = [n for n in names if " " not in n]
+            assert len(top_level) == 1, f"{file_path}: expected one command, got {top_level}"
+            for name in names:
+                commands_with_files.add(name)
+                scope = name.partition(" ")[2]
+                if scope not in declared:
+                    problems.append(f"{name}: no sub-parser {scope!r} in {file_path}")
+                    continue
+                curated = {f["flag_name"]: f for f in data["flags"] if f["command_name"] == name}
+                source = declared[scope]
+                if set(curated) != set(source):
+                    problems.append(
+                        f"{name}: curated-only {sorted(set(curated) - set(source))}, "
+                        f"declared-only {sorted(set(source) - set(curated))}"
+                    )
+                for flag in sorted(set(curated) & set(source)):
+                    for field_name, implied in (
+                        ("default", _implied_default(source[flag])),
+                        ("type", _implied_type(source[flag])),
+                    ):
+                        if implied is not _UNDETERMINED and curated[flag][field_name] != implied:
+                            problems.append(
+                                f"{name} {flag}: {field_name} {curated[flag][field_name]!r}, "
+                                f"source implies {implied!r}"
+                            )
+        orphans = {
+            f["command_name"] for f in data["flags"]
+            if f["command_name"] not in (None, "server")
+        } - commands_with_files
+        if orphans:
+            problems.append(f"flags under commands that are not in commands[]: {sorted(orphans)}")
+        assert not problems, f"v{major}: " + "; ".join(problems)
+
+    @pytest.mark.parametrize("major", SURVEYED_MAJORS)
+    def test_sub_actions_are_the_sub_parsers_of_their_file_and_carry_their_help(
+        self, major: int,
+    ) -> None:
+        root = checkout_root(major)
+        if root is None:
+            pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+        data = _load_version(f"{major}.0")
+        descriptions = {c["name"]: c["description"] for c in data["commands"]}
+        for file_path, names in sorted(_curated_commands_by_file(data).items()):
+            tree = parse_external_source(
+                (root / file_path).read_text(encoding="utf-8", errors="ignore"),
+            ) if major >= 11 else None
+            real: dict[str, str | None] = {}
+            if tree is not None:
+                for node in ast.walk(tree):
+                    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "add_parser"):
+                        help_kw = next((k.value for k in node.keywords if k.arg == "help"), None)
+                        real[node.args[0].value] = (
+                            help_kw.value if isinstance(help_kw, ast.Constant) else None
+                        )
+            top = next(n for n in names if " " not in n)
+            curated = {n.partition(" ")[2] for n in names if " " in n}
+            assert curated == set(real), (
+                f"v{major} {file_path}: curated sub-actions {sorted(curated)}, "
+                f"sub-parsers declared {sorted(real)}"
+            )
+            for sub, help_text in real.items():
+                assert descriptions[f"{top} {sub}"] == help_text, (
+                    f"v{major} {top} {sub}: description is not the sub-parser's help="
+                )
+
+
+# ---------------------------------------------------------------------------
+# ADR-0055 oracle for the curated-only fields of the GLOBAL flags: ``env_name``,
+# ``posix_only``, ``replacement_flag_name``. The sync oracle (cli_flags_sync) compares
+# status / default / type / help only; these three fields come from other constructs, each
+# read here from the real source of the same major:
+#   env_name   v19+: the literal ``env_name=`` argument of the add_option call (the parser
+#              reads it). Before v19 config.py has no such argument: the one environment
+#              variable it reads is the one that locates the config file (``--config``), and
+#              the flags that ``sql_db.connection_info_for`` leaves to libpq when empty
+#              (its ``for p in ('host', 'port', ...)`` loop) are served by libpq's PG<NAME>
+#              variable. Every other flag has no environment variable.
+#   posix_only v19+: the option is wrapped in ``PosixOnlyOption(...)`` (the parser reads it);
+#              before v19 it is declared inside an ``if os.name == 'posix':`` block.
+#   replacement_flag_name: the successor of a flag that a later major (or the same major, for
+#              a deprecated alias) declares; a command-level successor ("odoo-bin i18n
+#              export ...") names a command that a later major ships. Whether a successor
+#              EXISTS is mechanical; that a flag deserves one is a documented-successor
+#              judgement, so a ``Deprecated alias to the X option`` help must name ``X``.
+# ---------------------------------------------------------------------------
+
+_POSIX_BLOCK = re.compile(r"^(?P<indent>[ \t]*)if os\.name == 'posix':[ \t]*$")
+_CONFIG_FILE_ENV = re.compile(r"os\.environ\.get\('(\w+)'\)")
+_LIBPQ_LOOP = re.compile(
+    r"for p in \(([^)]*)\):\s*\n\s*cfg = tools\.config\['db_' \+ p\]"
+)
+_DEPRECATED_ALIAS_HELP = re.compile(r"Deprecated alias to the ([\w-]+) option")
+_COMMAND_SUCCESSOR = re.compile(r"^odoo-bin (\w+(?: \w+)?)")
+
+
+def _tools_file(root: Path, major: int, name: str) -> Path:
+    package = "openerp" if _pkg_prefix(f"{major}.0") == "openerp" else "odoo"
+    return root / package / name
+
+
+def _real_global_flags(root: Path, major: int) -> dict:
+    path = _tools_file(root, major, "tools/config.py")
+    source = path.read_text(encoding="utf-8", errors="ignore")
+    return {
+        f.flag_name: f for f in _parse_options_calls(source, f"{major}.0", "server", str(path))
+    }
+
+
+def _flags_declared_in_posix_blocks(source: str) -> set[str]:
+    lines = source.split("\n")
+    found: set[str] = set()
+    index = 0
+    while index < len(lines):
+        head = _POSIX_BLOCK.match(lines[index])
+        if not head:
+            index += 1
+            continue
+        indent = len(head.group("indent"))
+        end = index + 1
+        while end < len(lines) and (
+            not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent
+        ):
+            end += 1
+        for span in _find_option_call_arg_spans("\n".join(lines[index + 1:end])):
+            name = _declared_flag_name(_isolated_call(span))
+            if name:
+                found.add(name)
+        index = end
+    return found
+
+
+def _source_env_name(root: Path, major: int, flag: str, real: dict) -> str | None:
+    explicit = real[flag].env_name if flag in real else None
+    if explicit or major >= 19:
+        return explicit
+    config_source = _tools_file(root, major, "tools/config.py").read_text(
+        encoding="utf-8", errors="ignore")
+    if flag == "--config":
+        line = next(ln for ln in config_source.split("\n") if "opt.config or os.environ" in ln)
+        return _CONFIG_FILE_ENV.findall(line)[0]
+    sql_source = _tools_file(root, major, "sql_db.py").read_text(encoding="utf-8", errors="ignore")
+    loop = _LIBPQ_LOOP.search(sql_source)
+    assert loop, f"v{major}: sql_db.connection_info_for no longer has the libpq loop"
+    libpq = {"--db_" + p.strip(" '\"") for p in loop.group(1).split(",")}
+    return "PG" + flag[len("--db_"):].upper() if flag in libpq else None
+
+
+@pytest.mark.odoo_source
+class TestGlobalFlagCuratedOnlyFieldsMatchTheRealSource:
+    @pytest.mark.parametrize("major", SURVEYED_MAJORS)
+    def test_env_name_is_the_environment_variable_the_source_reads_for_the_flag(
+        self, major: int,
+    ) -> None:
+        root = checkout_root(major)
+        if root is None:
+            pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+        real = _real_global_flags(root, major)
+        wrong = []
+        for flag in _load_version(f"{major}.0")["flags"]:
+            if flag["command_name"] is not None:
+                continue
+            expected = _source_env_name(root, major, flag["flag_name"], real)
+            if flag["env_name"] != expected:
+                wrong.append(f"{flag['flag_name']}: {flag['env_name']!r}, source {expected!r}")
+        assert not wrong, f"v{major} env_name: " + "; ".join(wrong)
+
+    @pytest.mark.parametrize("major", SURVEYED_MAJORS)
+    def test_posix_only_flags_are_the_options_the_source_restricts_to_posix(
+        self, major: int,
+    ) -> None:
+        root = checkout_root(major)
+        if root is None:
+            pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS)")
+        real = _real_global_flags(root, major)
+        blocks = _flags_declared_in_posix_blocks(
+            _tools_file(root, major, "tools/config.py").read_text(encoding="utf-8", errors="ignore")
+        )
+        expected = {name for name, f in real.items() if f.posix_only} | blocks
+        assert expected, f"v{major}: no POSIX-only option found - the oracle is blind"
+        curated = {
+            f["flag_name"] for f in _load_version(f"{major}.0")["flags"]
+            if f["command_name"] is None and f["posix_only"]
+        }
+        assert curated == expected, (
+            f"v{major} posix_only: curated-only {sorted(curated - expected)}, "
+            f"source-only {sorted(expected - curated)}"
+        )
+
+    @pytest.mark.parametrize("major", SURVEYED_MAJORS)
+    def test_replacement_is_a_flag_or_command_a_surveyed_major_declares(
+        self, major: int,
+    ) -> None:
+        roots = {m: checkout_root(m) for m in SURVEYED_MAJORS if m >= major}
+        if any(r is None for r in roots.values()):
+            pytest.skip("a surveyed checkout is missing (set OSM_ODOO_CHECKOUTS)")
+        later_flags = set()
+        for m, root in roots.items():
+            later_flags |= set(_real_global_flags(root, m))
+            later_flags |= {
+                f["flag_name"] for f in _load_version(f"{m}.0")["flags"] if f["command_name"]
+            }
+        later_commands = {
+            c["name"] for m in roots for c in _load_version(f"{m}.0")["commands"]
+        }
+        wrong = []
+        for flag in _load_version(f"{major}.0")["flags"]:
+            replacement = flag["replacement_flag_name"]
+            if replacement is None:
+                continue
+            command = _COMMAND_SUCCESSOR.match(replacement)
+            known = (command.group(1) in later_commands) if command else (
+                replacement in later_flags)
+            if not known:
+                wrong.append(f"{flag['flag_name']} -> {replacement!r}")
+        assert not wrong, f"v{major}: successor no surveyed major declares: {wrong}"
+
+    @pytest.mark.parametrize("major", SURVEYED_MAJORS)
+    def test_a_deprecated_alias_help_names_the_replacement(self, major: int) -> None:
+        for flag in _load_version(f"{major}.0")["flags"]:
+            named = _DEPRECATED_ALIAS_HELP.search(flag["help"] or "")
+            if named:
+                assert flag["replacement_flag_name"] == f"--{named.group(1)}", (
+                    f"v{major} {flag['flag_name']}: help says it is a deprecated alias of "
+                    f"--{named.group(1)}, replacement is {flag['replacement_flag_name']!r}"
+                )

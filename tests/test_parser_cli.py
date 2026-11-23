@@ -10,7 +10,9 @@ Notes:
   - Odoo uses optparse (not argparse) — `group.add_option('--longpolling-port', ...)`.
   - We accept both add_option and add_argument shapes for forward compat.
 """
+import ast
 import json
+import re
 import warnings
 
 import pytest
@@ -20,6 +22,7 @@ from src.indexer.parser_cli import (
     _load_static_cli_commands,
     _load_static_cli_flags,
     _parse_cli_module,
+    _parse_cli_module_text,
     _parse_options_calls,
     _pkg_prefix,
     compute_cli_flag_diff,
@@ -518,45 +521,60 @@ def test_cli_live_parser_coverage_is_reported():
 
 
 # ---------------------------------------------------------------------------
-# Oracle for the curated commands[] list (ADR-0055). Every top-level command a
-# real checkout ships - a ``Command`` subclass in ``<pkg>/cli/*.py`` or in an
-# addon's ``cli/*.py`` - must be a curated commands[] entry with the file it
-# lives in, and every curated top-level entry must be backed by such a class.
-# Compound sub-action names ("db init", "module list") are argparse subparsers
-# that no class declares, so they stay out of this comparison.
-# Verified against real checkouts for v17 and later; earlier majors have not
-# been compared against checkouts yet.
+# Oracle for the curated commands[] list (ADR-0055), every surveyed major. Every command a
+# real checkout ships - a ``Command`` subclass in ``<pkg>/cli/*.py`` (``command.py`` and v8's
+# ``__init__.py`` hold ``Help``) or in an addon's ``cli/*.py`` - must be a curated commands[]
+# entry with the file it lives in and its docstring as description, and every curated
+# top-level entry must be backed by such a class. Compound sub-action names ("db init",
+# "module list") are argparse subparsers that no class declares; they are compared against
+# the ``add_parser`` calls in tests/test_spec_data_cli_flags_curated.py.
+# v8-v10 command files are Python 2: the independent count below reads the class headers
+# as plain text, so a blind parse cannot pass unnoticed.
 # ---------------------------------------------------------------------------
 
-_COMMAND_ORACLE_MAJORS = [m for m in SURVEYED_MAJORS if m >= 17]
+_COMMAND_ORACLE_MAJORS = list(SURVEYED_MAJORS)
+_COMMAND_CLASS_HEAD = re.compile(r"^class\s+\w+\s*\((?:[\w.]*\.)?Command\s*\)\s*:", re.MULTILINE)
 
 
 def _real_command_files(root, version):
     """{command name: source-root-relative file} for every Command class on disk."""
-    found = {}
+    return {
+        c.name: c.file_path
+        for c in parse_cli_commands(str(root), version, static_data_dir=root / "no-static-data")
+    }
+
+
+def _command_class_count(root, version):
     pkg = _pkg_prefix(version)
-    for pattern in (f"{pkg}/cli/*.py", "addons/*/cli/*.py"):
-        for f in sorted(root.glob(pattern)):
-            if f.name == "__init__.py" or f.stem == "command" or f.stem.startswith("_"):
-                continue
-            rel = str(f.relative_to(root))
-            source = f.read_text(encoding="utf-8", errors="ignore")
-            for cmd in _parse_cli_module(source, version, rel):
-                found[cmd.name] = rel
-    return found
+    files = [*sorted((root / pkg / "cli").glob("*.py")), *sorted(root.glob("addons/*/cli/*.py"))]
+    return sum(
+        len(_COMMAND_CLASS_HEAD.findall(f.read_text(encoding="utf-8", errors="ignore")))
+        for f in files
+    )
+
+
+def _argparse_description(source):
+    """The ``description=`` literal of the file's ArgumentParser (commands without a
+    docstring describe themselves there), else None."""
+    found = re.search(r"description\s*=\s*(\"[^\"\n]*\"|'[^'\n]*')", source)
+    return ast.literal_eval(found.group(1)) if found else None
 
 
 @pytest.mark.odoo_source
 @pytest.mark.parametrize("major", _COMMAND_ORACLE_MAJORS)
 def test_curated_top_level_commands_match_the_command_classes_on_disk(major):
     """The curated commands[] list names exactly the commands a real checkout ships, each
-    with the file its class lives in (core ``odoo/cli`` and addon ``cli`` directories)."""
+    with the file its class lives in (core ``<pkg>/cli`` and addon ``cli`` directories)."""
     root = checkout_root(major)
     if root is None:
         pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS to override)")
     version = f"{major}.0"
     real = _real_command_files(root, version)
     assert real, f"v{major}: no Command class found under {root} - the oracle is blind"
+    assert len(real) == _command_class_count(root, version), (
+        f"v{major}: the parser found {sorted(real)} but the sources declare "
+        f"{_command_class_count(root, version)} Command classes"
+    )
     curated = {
         c.name: c.file_path for c in _load_static_cli_commands(version, None) if " " not in c.name
     }
@@ -566,6 +584,168 @@ def test_curated_top_level_commands_match_the_command_classes_on_disk(major):
         f"not on disk: {sorted(set(curated) - set(real))}, "
         f"different file: {sorted(n for n in set(real) & set(curated) if real[n] != curated[n])}"
     )
+
+
+@pytest.mark.odoo_source
+@pytest.mark.parametrize("major", _COMMAND_ORACLE_MAJORS)
+def test_curated_command_description_is_the_class_docstring(major):
+    """A command is described by its class docstring (stripped); a command without one by the
+    ``description=`` of its argument parser, else by nothing."""
+    root = checkout_root(major)
+    if root is None:
+        pytest.skip(f"Odoo {major} checkout not found (set OSM_ODOO_CHECKOUTS to override)")
+    version = f"{major}.0"
+    live = {
+        c.name: c
+        for c in parse_cli_commands(str(root), version, static_data_dir=root / "no-static-data")
+    }
+    wrong = []
+    for c in _load_static_cli_commands(version, None):
+        if " " in c.name:
+            continue
+        source = (root / live[c.name].file_path).read_text(encoding="utf-8", errors="ignore")
+        expected = (live[c.name].description or "").strip() or _argparse_description(source) or None
+        if c.description != expected:
+            wrong.append(f"{c.name}: {c.description!r}, source {expected!r}")
+    assert not wrong, f"v{major}: " + "; ".join(wrong)
+
+
+# --- Python-2 command files: the class headers are read from the text -------------------
+
+_PY2_COMMAND_FILE = (
+    "import sys\n"
+    "from . import Command\n"
+    "\n"
+    "class Deploy(Command):\n"
+    "    \"\"\"Deploy a module on an Odoo instance\"\"\"\n"
+    "    def run(self, args):\n"
+    "        print 'deploying'\n"
+    "\n"
+    "class UpgradeCode(Command):\n"
+    "    # the explicit name wins over the class name\n"
+    "    name = 'upgrade_code'\n"
+    "\n"
+    "    def run(self, args):\n"
+    "        print 'upgrading'\n"
+    "\n"
+    "class Helper(object):\n"
+    "    \"\"\"Not a command\"\"\"\n"
+)
+
+
+def test_python2_command_file_still_yields_its_commands():
+    """Business rule: a v8-v10 command file (print statements: ``ast.parse`` rejects it) still
+    defines its commands - none is dropped, the explicit name attribute wins and the
+    docstring is the description."""
+    cmds = _parse_cli_module(_PY2_COMMAND_FILE, "8.0", "openerp/cli/deploy.py")
+    assert [(c.name, c.description, c.file_path) for c in cmds] == [
+        ("deploy", "Deploy a module on an Odoo instance", "openerp/cli/deploy.py"),
+        ("upgrade_code", None, "openerp/cli/deploy.py"),
+    ]
+
+
+def test_text_and_ast_command_readers_agree_on_parseable_source():
+    """The text reader must not drift from the AST reader: same names and descriptions on
+    a file both can read, for every docstring style."""
+    source = (
+        "from . import Command\n"
+        "class A(Command):\n"
+        "    \"\"\" Count lines of code per modules \"\"\"\n"
+        "class B(Command):\n"
+        "    '''Multi\n"
+        "\n"
+        "    line text\'\'\'\n"
+        "class Cc(command.Command):\n"
+        "    name = 'cee'\n"
+        "    description = 'ignored attribute'\n"
+        "class D(Command):\n"
+        "    def run(self): pass\n"
+    )
+    by_ast = _parse_cli_module(source, "17.0", "f.py")
+    by_text = _parse_cli_module_text(source, "17.0", "f.py")
+    assert [(c.name, c.description) for c in by_text] == [(c.name, c.description) for c in by_ast]
+    assert [c.name for c in by_text] == ["a", "b", "cee", "d"]
+
+
+def test_parse_cli_commands_reads_help_from_command_py_and_addon_cli_dirs(tmp_path):
+    """Business rule: ``help`` (defined in command.py) and a command an addon ships in its
+    own ``cli`` directory are commands of the version, found without any static data."""
+    (tmp_path / "odoo" / "cli").mkdir(parents=True)
+    (tmp_path / "odoo" / "cli" / "command.py").write_text(
+        "class Command:\n    name = None\n\n"
+        "class Help(Command):\n    \"\"\" Display the list of available commands \"\"\"\n"
+    )
+    (tmp_path / "addons" / "iot" / "cli").mkdir(parents=True)
+    (tmp_path / "addons" / "iot" / "cli" / "genproxytoken.py").write_text(
+        "from odoo.cli import Command\nclass GenProxyToken(Command):\n    pass\n"
+    )
+    cmds = parse_cli_commands(str(tmp_path), "17.0", static_data_dir=tmp_path / "none")
+    assert {c.name: c.file_path for c in cmds} == {
+        "help": "odoo/cli/command.py",
+        "genproxytoken": "addons/iot/cli/genproxytoken.py",
+    }
+
+
+# --- global flag declarations the parser must read in full -------------------------------
+
+_V19_STYLE_CONFIG = (
+    "group.add_option('-c', '--config', dest='config', type='path', env_name='ODOO_RC',\n"
+    "                 help='specify alternate config file')\n"
+    "group.add_option(PosixOnlyOption(\n"
+    "                 '--workers', dest='workers', my_default=0,\n"
+    "                 help='number of workers', type='int'))\n"
+    "group.add_option(PosixOnlyOption(\n"
+    "                 '--limit-request', dest='limit_request', my_default=2**16,\n"
+    "                 help='requests per worker', type='int'))\n"
+    "group.add_option('--limit-memory-hard', dest='m', my_default=2560 * 1024 * 1024)\n"
+    "group.add_option('--limit-time-real-cron', dest='c', my_default=-1)\n"
+    "group.add_option('--db_host', dest='db_host', my_default=_default_host())\n"
+    "group.add_option('--init', dest='init', my_default=[])\n"
+)
+
+
+def test_flag_declared_through_a_posix_only_wrapper_is_read_with_its_values():
+    """Business rule: ``add_option(PosixOnlyOption("--workers", ...))`` declares a real flag;
+    it is found with its source help/default/type and marked POSIX-only, and a plain flag
+    keeps ``posix_only`` false."""
+    flags = {f.flag_name: f for f in _parse_options_calls(_V19_STYLE_CONFIG, "19.0")}
+    assert flags["--workers"].posix_only is True
+    assert flags["--workers"].default == "0"
+    assert flags["--workers"].type == "int"
+    assert flags["--workers"].help == "number of workers"
+    assert flags["--limit-request"].posix_only is True
+    assert flags["--config"].posix_only is False
+
+
+def test_explicit_env_name_argument_is_read_and_absent_means_none():
+    flags = {f.flag_name: f for f in _parse_options_calls(_V19_STYLE_CONFIG, "19.0")}
+    assert flags["--config"].env_name == "ODOO_RC"
+    assert flags["--workers"].env_name is None
+
+
+def test_numeric_expression_defaults_are_evaluated_and_calls_are_not():
+    """Business rule: a default written as arithmetic over numbers (``2**16``, ``-1``,
+    ``2560 * 1024 * 1024``) is the number, so the index states the real default; a default
+    that needs code to evaluate (a call) stays unknown rather than guessed."""
+    flags = {f.flag_name: f for f in _parse_options_calls(_V19_STYLE_CONFIG, "19.0")}
+    assert flags["--limit-request"].default == "65536"
+    assert flags["--limit-memory-hard"].default == "2684354560"
+    assert flags["--limit-time-real-cron"].default == "-1"
+    assert flags["--init"].default == "[]"
+    assert flags["--db_host"].default is None
+
+
+def test_python2_config_text_tier_evaluates_the_same_defaults():
+    """The text tier (v8-v10 config.py: a Python-2 octal literal defeats ``ast.parse``) must
+    read the same defaults as the AST tier."""
+    source = _V19_STYLE_CONFIG.replace("PosixOnlyOption(", "dict(") + "os.chmod(rc, 0600)\n"
+    with pytest.raises(SyntaxError):
+        ast.parse(source)
+    flags = {f.flag_name: f for f in _parse_options_calls(source, "10.0")}
+    assert flags["--limit-memory-hard"].default == "2684354560"
+    assert flags["--limit-time-real-cron"].default == "-1"
+    assert flags["--init"].default == "[]"
+    assert flags["--db_host"].default is None
 
 
 def test_parsed_flag_keeps_the_curated_only_fields_of_its_static_entry(tmp_path):

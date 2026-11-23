@@ -8,38 +8,43 @@
     "source_commit": "4cc086d330b73514fbc64a7fcf22d8a7a9f1b691",
     "source_file": "odoo/tools/config.py",
     "oracle": "src.indexer.parser_cli._parse_options_calls",
-    "synced_at": "2026-10-20"
+    "synced_at": "2026-11-23"
   },
   "commands": [
     {
       "name": "server",
-      "description": "Start the Odoo server",
+      "description": "Start the odoo server (default command)",
       "file_path": "odoo/cli/server.py"
     },
     {
       "name": "scaffold",
-      "description": "Scaffold a new Odoo module",
+      "description": "Generates an Odoo module skeleton.",
       "file_path": "odoo/cli/scaffold.py"
     },
     {
       "name": "start",
-      "description": "Quick start with automatic database setup",
+      "description": "Quick start the Odoo server for your project",
       "file_path": "odoo/cli/start.py"
     },
     {
       "name": "deploy",
-      "description": "Deploy a module to an Odoo instance",
+      "description": "Deploy a module on an Odoo instance",
       "file_path": "odoo/cli/deploy.py"
     },
     {
       "name": "shell",
-      "description": "Open an interactive Python shell with Odoo environment",
+      "description": "Start odoo in an interactive shell",
       "file_path": "odoo/cli/shell.py"
     },
     {
       "name": "cloc",
-      "description": "Count lines of code for Odoo modules",
+      "description": "Odoo cloc is a tool to count the number of relevant lines written in\nPython, Javascript or XML. This can be used as rough metric for pricing\nmaintenance of customizations.\n\nIt has two modes of operation, either by providing a path:\n\n    odoo-bin cloc -p module_path\n\nOr by providing the name of a database:\n\n    odoo-bin cloc --addons-path=dirs -d database\n\nIn the latter mode, only the custom code is accounted for.",
       "file_path": "odoo/cli/cloc.py"
+    },
+    {
+      "name": "help",
+      "description": "Display the list of available commands",
+      "file_path": "odoo/cli/command.py"
     }
   ],
   "flags": [
@@ -344,7 +349,7 @@
       "flag_name": "--log-handler",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "[]",
       "type": null,
       "help": "setup a handler at LEVEL for a given PREFIX. An empty PREFIX indicates the root logger. This option can be repeated. Example: \"odoo.orm:DEBUG\" or \"werkzeug:CRITICAL\" (default: \":INFO\")",
       "replacement_flag_name": null,
@@ -502,7 +507,7 @@
       "type": null,
       "help": "specify the database name",
       "replacement_flag_name": null,
-      "env_name": "PGDATABASE",
+      "env_name": null,
       "posix_only": false
     },
     {
@@ -535,7 +540,7 @@
       "type": null,
       "help": "specify the pg executable path",
       "replacement_flag_name": null,
-      "env_name": "PGPATH",
+      "env_name": null,
       "posix_only": false
     },
     {
@@ -590,7 +595,7 @@
       "type": null,
       "help": "specify a custom database template to create a new database",
       "replacement_flag_name": null,
-      "env_name": "PGDATABASE_TEMPLATE",
+      "env_name": null,
       "posix_only": false
     },
     {
@@ -773,7 +778,7 @@
       "flag_name": "--limit-memory-soft",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "2147483648",
       "type": "int",
       "help": "Maximum allowed virtual memory per worker, when reached the worker be reset after the current request (default 2048MiB).",
       "replacement_flag_name": null,
@@ -784,7 +789,7 @@
       "flag_name": "--limit-memory-hard",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "2684354560",
       "type": "int",
       "help": "Maximum allowed virtual memory per worker, when reached, any memory allocation will fail (default 2560MiB).",
       "replacement_flag_name": null,
@@ -817,7 +822,7 @@
       "flag_name": "--limit-time-real-cron",
       "command_name": null,
       "status": "stable",
-      "default": null,
+      "default": "-1",
       "type": "int",
       "help": "Maximum allowed Real time per cron job. (default: --limit-time-real). Set to 0 for no limit. ",
       "replacement_flag_name": null,
@@ -841,7 +846,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Path of the module to deploy. Source: deploy.py",
+      "help": "Path of the module to deploy.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -852,7 +857,7 @@
       "status": "stable",
       "default": "http://localhost:8069",
       "type": "str",
-      "help": "URL of the server (default=http://localhost:8069). Source: deploy.py",
+      "help": "URL of the server (default=http://localhost:8069).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -863,7 +868,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Database to use if server does not use db-filter. Source: deploy.py",
+      "help": "Database to use if server does not use db-filter.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -874,7 +879,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "Login (default=admin). Source: deploy.py",
+      "help": "Login (default=admin).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -885,7 +890,7 @@
       "status": "stable",
       "default": "admin",
       "type": "str",
-      "help": "Password (default=admin). Source: deploy.py",
+      "help": "Password (default=admin).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -894,9 +899,9 @@
       "flag_name": "--verify-ssl",
       "command_name": "deploy",
       "status": "stable",
-      "default": null,
+      "default": "false",
       "type": null,
-      "help": "Verify SSL certificate. Source: deploy.py",
+      "help": "Verify SSL certificate.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -905,9 +910,9 @@
       "flag_name": "--force",
       "command_name": "deploy",
       "status": "stable",
-      "default": null,
+      "default": "false",
       "type": null,
-      "help": "Force init even if module is already installed (will update noupdate=1 records). Source: deploy.py",
+      "help": "Force init even if module is already installed (will update noupdate=1 records).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -918,7 +923,7 @@
       "status": "stable",
       "default": ".",
       "type": "str",
-      "help": "Directory where project modules are stored (default: .). Source: start.py",
+      "help": "Directory where project modules are stored (default: .).",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -929,7 +934,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Specify the database name. Source: start.py",
+      "help": "Specify the database name.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -940,7 +945,29 @@
       "status": "stable",
       "default": "default",
       "type": "str",
-      "help": "Use a custom module template, can be a template name or path (default: default). Source: scaffold.py-19",
+      "help": "Use a custom module template, can be a template name or path (default: default).",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--name",
+      "command_name": "scaffold",
+      "status": "stable",
+      "default": null,
+      "type": "str",
+      "help": "name of the module to create (positional, required)",
+      "replacement_flag_name": null,
+      "env_name": null,
+      "posix_only": false
+    },
+    {
+      "flag_name": "--dest",
+      "command_name": "scaffold",
+      "status": "stable",
+      "default": ".",
+      "type": "str",
+      "help": "directory to create the module in (positional, optional)",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -951,7 +978,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "Database name. Source: cloc.py",
+      "help": "Database name.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -962,7 +989,7 @@
       "status": "stable",
       "default": null,
       "type": "str",
-      "help": "File or directory path. Source: cloc.py",
+      "help": "File or directory path.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false
@@ -973,7 +1000,7 @@
       "status": "stable",
       "default": "0",
       "type": "count",
-      "help": "Verbose output. Source: cloc.py",
+      "help": "Verbose output.",
       "replacement_flag_name": null,
       "env_name": null,
       "posix_only": false

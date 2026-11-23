@@ -21,22 +21,23 @@ not in ``{None, "server"}``: ``odoo-bin db``, ``i18n``, ``module``, ``scaffold``
 never opens, so they have NO production oracle at any version. ADR-0055 allows curated
 data without an oracle only when the reason is written down - this is that statement:
 those entries are left byte-for-byte untouched by every operation here, and the sync
-report states their count per version so the gap stays visible. The v20 entries are
-additionally diffed against the argparse/optparse declarations of a real checkout by
-``tests/test_spec_data_cli_flags_curated.py::TestV20CliSurface``.
+report states their count per version so the gap stays visible. Every surveyed major's
+entries are instead diffed against the argparse/optparse declarations of a real checkout by
+``tests/test_spec_data_cli_flags_curated.py::TestCommandFlagsMatchTheRealSource``.
 
 What a sync changes (and what it never does)
 --------------------------------------------
 * a curated global flag the oracle also finds: ``status`` / ``default`` / ``type`` /
   ``help`` (``COMPARED_FIELDS``) are set to the oracle's values;
 * a flag the oracle finds that has no curated global entry: appended after the last
-  global entry with the oracle's values. ``replacement_flag_name`` / ``env_name`` /
-  ``posix_only`` start at their defaults - the oracle never populates them
-  (see ``tests/test_cli_flags_content_parity.py`` ``EXCLUDED_FIELDS``) so a reviewer must
-  curate them by hand; the report lists every added flag for exactly that reason;
+  global entry with the oracle's values, ``env_name`` / ``posix_only`` included (the
+  oracle reads the ``env_name=`` argument and the ``PosixOnlyOption`` wrapper of v19+).
+  ``replacement_flag_name`` starts at its default and, before v19, so do ``env_name`` /
+  ``posix_only`` (see ``tests/test_cli_flags_content_parity.py`` ``EXCLUDED_FIELDS``): a
+  reviewer curates them by hand; the report lists every added flag for exactly that reason;
 * a curated global flag the oracle does NOT find is only reported. It may be genuinely
-  removed upstream or an oracle blind spot (``PosixOnlyOption(...)`` wrappers, multi-alias
-  calls), and telling those apart is a human judgement the generator must not guess;
+  removed upstream or an oracle blind spot (multi-alias calls), and telling those apart is
+  a human judgement the generator must not guess;
 * the file's ``_global_flags_provenance`` block (repo, branch, commit, source file, oracle,
   date) is rewritten whenever the global data changed or the block is missing. An unchanged
   file is not re-stamped, so the recorded commit is "the source state this data was last
@@ -90,7 +91,7 @@ class DiffResult:
     field_mismatches: tuple[FieldMismatch, ...]
     # Present in the curated global set, absent from the oracle output. NOT drift: it can
     # mean a genuinely removed flag OR a real oracle blind spot (the geoip-db multi-alias
-    # call, the ``--stop-after-init`` alias of v20's ``--stop``, v19+ ``PosixOnlyOption(...)``);
+    # call, the ``--stop-after-init`` alias of v20's ``--stop``);
     # conflating the two would be a false alarm.
     curated_only: frozenset[str]
     # Present in the oracle output (demonstrably real, current source) but absent from the
@@ -303,7 +304,8 @@ def plan_sync(
         entry = {
             "flag_name": name, "command_name": None, "status": o.status,
             "default": o.default, "type": o.type, "help": o.help,
-            "replacement_flag_name": None, "env_name": None, "posix_only": False,
+            "replacement_flag_name": None, "env_name": o.env_name,
+            "posix_only": o.posix_only,
         }
         assert tuple(entry) == _ENTRY_KEYS
         flags.insert(insert_at, entry)

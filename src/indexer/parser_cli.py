@@ -3,9 +3,12 @@
 """Extract CLICommand + CLIFlag from Odoo upstream source (M4.5 WI4).
 
 Sources:
-    <pkg>/cli/<name>.py — `class X(Command)` subclasses → CLICommandInfo.
+    <pkg>/cli/<name>.py, addons/*/cli/<name>.py — `class X(Command)` subclasses →
+                            CLICommandInfo (``Help`` lives in command.py, v8's in
+                            __init__.py; a Python-2 file is read from its text).
     <pkg>/tools/config.py — `parser.add_option / group.add_option / parser.add_argument`
-                            AST calls → CLIFlagInfo.
+                            AST calls → CLIFlagInfo (``env_name=`` and a
+                            ``PosixOnlyOption(...)`` wrapper included).
     (<pkg> is ``odoo`` for v10+, ``openerp`` for v8/v9.)
 
 NOTE on optparse vs argparse: Odoo upstream historically uses optparse
@@ -43,8 +46,8 @@ graceful degradation): try ``ast.parse`` first for every era: on
 ``SyntaxError``, fall back to a text scan (``_parse_options_calls_text``)
 that locates each ``add_option``/``add_argument`` call site by a
 paren/quote-aware text scan and decodes its argument list via
-``ast.literal_eval`` on each already-isolated segment — never a second
-whole-file ``ast.parse`` — so the fallback is robust to Python-2 syntax
+``_constant_from_text`` (``ast.parse`` of one already-isolated segment) —
+never a second whole-file ``ast.parse`` — so the fallback is robust to Python-2 syntax
 ANYWHERE ELSE in the file (not special-cased to the one known ``0600``
 literal), and degrades per-call, never all-or-nothing. The fallback is a
 BY-DESIGN success path for v8-v10 checkouts, so it is logged at DEBUG, never
@@ -56,6 +59,7 @@ was filed to fix.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import logging
 import re
@@ -145,7 +149,9 @@ def _parse_cli_module(
         # path so any diagnostic is attributable (not <unknown>). See parser_util.
         tree = parse_external_source(source, filename=file_path)
     except SyntaxError:
-        return []
+        # v8-v10 command files use Python-2 syntax (print statements): read the
+        # class headers from the text instead of dropping every command they define.
+        return _parse_cli_module_text(source, odoo_version, file_path)
     out: list[CLICommandInfo] = []
     for node in tree.body:
         if not isinstance(node, ast.ClassDef):
@@ -159,6 +165,55 @@ def _parse_cli_module(
         # lowercased class name (Odoo convention) when no attribute is set.
         cmd_name = _command_name_attr(node) or node.name.lower()
         description = ast.get_docstring(node)
+        out.append(CLICommandInfo(
+            name=cmd_name,
+            odoo_version=odoo_version,
+            description=description,
+            file_path=file_path,
+        ))
+    return out
+
+
+_RE_COMMAND_CLASS = re.compile(
+    r"^class[ \t]+(\w+)[ \t]*\(([^)\n]*)\)[ \t]*:[ \t]*(?:#.*)?$", re.MULTILINE,
+)
+_RE_CLASS_NAME_ATTR = re.compile(
+    r"^[ \t]+name[ \t]*(?::[ \t]*\w+[ \t]*)?=[ \t]*(['\"])([^'\"\n]*)\1[ \t]*$", re.MULTILINE,
+)
+_RE_CLASS_DOCSTRING = re.compile(
+    r"\A(?:[ \t]*(?:#[^\n]*)?\n)*[ \t]+[rRuU]?"
+    r"(?:\"\"\"(.*?)\"\"\"|\'\'\'(.*?)\'\'\'|\"([^\"\n]*)\"|\'([^\'\n]*)\')",
+    re.DOTALL,
+)
+_RE_TOP_LEVEL_LINE = re.compile(r"^\S", re.MULTILINE)
+
+
+def _parse_cli_module_text(
+    source: str, odoo_version: str, file_path: str | None,
+) -> list[CLICommandInfo]:
+    """Text twin of the ``class X(Command)`` walk for a file ``ast.parse`` rejects.
+
+    Finds each top-level ``class X(<bases>):`` whose bases name ``Command``, then reads
+    the class-body ``name = '...'`` attribute and the docstring from the text of that
+    class only, so Python-2 syntax elsewhere in the file cannot hide a command.
+    """
+    out: list[CLICommandInfo] = []
+    heads = list(_RE_COMMAND_CLASS.finditer(source))
+    for head in heads:
+        bases = [b.strip() for b in head.group(2).split(",")]
+        if not any(b == "Command" or b.endswith(".Command") for b in bases):
+            continue
+        rest = source[head.end():]
+        next_top_level = _RE_TOP_LEVEL_LINE.search(rest)
+        body = rest if next_top_level is None else rest[: next_top_level.start()]
+        name_attr = _RE_CLASS_NAME_ATTR.search(body)
+        cmd_name = name_attr.group(2) if name_attr else head.group(1).lower()
+        doc_match = _RE_CLASS_DOCSTRING.match(body)
+        description = None
+        if doc_match:
+            raw = next((g for g in doc_match.groups() if g is not None), None)
+            if raw is not None:
+                description = inspect.cleandoc(raw) or None
         out.append(CLICommandInfo(
             name=cmd_name,
             odoo_version=odoo_version,
@@ -212,14 +267,19 @@ def parse_cli_commands(
     an indexed source root still produce CLICommand nodes.
     """
     pkg = _pkg_prefix(odoo_version)
-    cli_dir = Path(odoo_source_root) / pkg / "cli"
+    root = Path(odoo_source_root)
+    cli_dirs = [root / pkg / "cli", *sorted(root.glob("addons/*/cli"))]
 
     out: list[CLICommandInfo] = []
     seen: set[str] = set()
 
-    if cli_dir.is_dir():
+    for cli_dir in cli_dirs:
+        if not cli_dir.is_dir():
+            continue
         for f in sorted(cli_dir.glob("*.py")):
-            if f.name in {"__init__.py", "command.py"} or f.stem.startswith("_"):
+            # command.py (v9+) and v8's __init__.py hold the Help command; neither holds
+            # another command, and the base ``Command`` class is not a subclass of itself.
+            if f.stem.startswith("_") and f.name != "__init__.py":
                 continue
             try:
                 src = f.read_text(encoding="utf-8", errors="ignore")
@@ -246,14 +306,54 @@ def parse_cli_commands(
 
 # --- CLI flag parsing (odoo/tools/config.py) -------------------------------
 
+_NOT_CONSTANT = object()
+_BINARY_NUMBER_OPS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Pow: lambda a, b: a ** b if abs(b) <= 64 else _NOT_CONSTANT,
+}
+
+
+def _constant_value(node: ast.expr) -> object:
+    """Value of a literal constant, of a list or tuple of constants, or of arithmetic
+    over number literals (``-1``, ``2**16``, ``2048 * 1024 * 1024``); ``_NOT_CONSTANT``
+    for anything else (names, calls). Odoo writes numeric defaults this way, e.g.
+    ``my_default=2560 * 1024 * 1024``.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items = [_constant_value(element) for element in node.elts]
+        if any(item is _NOT_CONSTANT for item in items):
+            return _NOT_CONSTANT
+        return items if isinstance(node, ast.List) else tuple(items)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        operand = _constant_value(node.operand)
+        if isinstance(operand, (int, float)) and not isinstance(operand, bool):
+            return -operand if isinstance(node.op, ast.USub) else operand
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_NUMBER_OPS:
+        left, right = _constant_value(node.left), _constant_value(node.right)
+        numbers = (int, float)
+        if (isinstance(left, numbers) and isinstance(right, numbers)
+                and not isinstance(left, bool) and not isinstance(right, bool)):
+            try:
+                return _BINARY_NUMBER_OPS[type(node.op)](left, right)
+            except ArithmeticError:
+                return _NOT_CONSTANT
+    return _NOT_CONSTANT
+
+
 def _extract_kwargs_strings(call_node: ast.Call) -> dict[str, object]:
-    """Collect simple string/int/bool kwargs from an add_option call."""
+    """Collect simple string/number/bool kwargs from an add_option call."""
     out: dict[str, object] = {}
     for kw in call_node.keywords:
         if not kw.arg:
             continue
-        if isinstance(kw.value, ast.Constant):
-            out[kw.arg] = kw.value.value
+        value = _constant_value(kw.value)
+        if value is not _NOT_CONSTANT:
+            out[kw.arg] = value
     return out
 
 
@@ -270,7 +370,7 @@ def _pick_flag_name(string_args: list[str]) -> str | None:
     args; fall back to the first string. Shared by both tiers — the AST tier
     (`_flag_name_from_args`, which resolves `ast.Constant` string args) and
     the text tier (`_parse_options_calls_text`, which decodes positionals via
-    `ast.literal_eval` — see `_parse_call_args_text`) — so "which positional
+    `_constant_from_text` — see `_parse_call_args_text`) — so "which positional
     wins" can never diverge between the two.
     """
     long_form = next((s for s in string_args if s.startswith("--")), None)
@@ -279,6 +379,21 @@ def _pick_flag_name(string_args: list[str]) -> str | None:
     if string_args:
         return string_args[0]
     return None
+
+
+# v19+ wraps a POSIX-only option as ``group.add_option(PosixOnlyOption("--workers", ...))``.
+_POSIX_ONLY_OPTION_CLASS = "PosixOnlyOption"
+
+
+def _unwrap_option_class(call_node: ast.Call) -> tuple[ast.Call, bool]:
+    """Return the call that carries the option's strings and keywords, and whether the
+    option is POSIX-only. ``add_option(PosixOnlyOption("--x", ...))`` hands its strings
+    and keywords to the inner constructor call; every other call carries its own."""
+    if len(call_node.args) == 1 and isinstance(call_node.args[0], ast.Call):
+        inner = call_node.args[0]
+        if isinstance(inner.func, ast.Name) and inner.func.id.endswith("Option"):
+            return inner, inner.func.id == _POSIX_ONLY_OPTION_CLASS
+    return call_node, False
 
 
 def _flag_name_from_args(args: list[ast.expr]) -> str | None:
@@ -295,6 +410,7 @@ def _build_flag_info(
     kwargs: dict[str, object],
     odoo_version: str,
     command_name: str,
+    posix_only: bool = False,
 ) -> CLIFlagInfo:
     """Turn one call's {flag_name, kwargs} into a CLIFlagInfo. The ONE place
     that derives status/default/type/help from raw kwargs — both the AST tier
@@ -313,6 +429,8 @@ def _build_flag_info(
     # Default value lives under either `default` or `my_default` (Odoo idiom).
     default = kwargs.get("default", kwargs.get("my_default"))
     flag_type = kwargs.get("type")
+    # v19+ declares the environment variable of a flag as a literal ``env_name=`` argument.
+    env_name = kwargs.get("env_name")
     return CLIFlagInfo(
         flag_name=flag_name,
         command_name=command_name,
@@ -321,6 +439,8 @@ def _build_flag_info(
         default=str(default) if default is not None else None,
         type=str(flag_type) if flag_type else None,
         help=help_text if isinstance(help_text, str) else None,
+        env_name=env_name if isinstance(env_name, str) and env_name else None,
+        posix_only=posix_only,
     )
 
 
@@ -338,12 +458,15 @@ def _parse_options_calls_ast(
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not _is_option_call(node):
             continue
-        flag_name = _flag_name_from_args(node.args)
+        option_call, posix_only = _unwrap_option_class(node)
+        flag_name = _flag_name_from_args(option_call.args)
         if not flag_name or flag_name in seen:
             continue
         seen.add(flag_name)
-        kwargs = _extract_kwargs_strings(node)
-        out.append(_build_flag_info(flag_name, kwargs, odoo_version, command_name))
+        kwargs = _extract_kwargs_strings(option_call)
+        out.append(_build_flag_info(
+            flag_name, kwargs, odoo_version, command_name, posix_only=posix_only,
+        ))
     return out
 
 
@@ -351,7 +474,7 @@ def _parse_options_calls_ast(
 #
 # Locates each `add_option`/`add_argument` call site by a paren/quote-aware
 # text scan, then decodes its (already-isolated) argument-list text via
-# `ast.literal_eval` PER SEGMENT — never a second whole-file `ast.parse` — so
+# `_constant_from_text` PER SEGMENT — never a second whole-file `ast.parse` — so
 # a Python-2 construct anywhere else in the file (this tier is not
 # special-cased to the one known `0600` octal literal) can never block
 # recovery, and a single call whose OWN argument text is itself unparseable
@@ -454,18 +577,28 @@ def _split_call_args(args_text: str) -> list[str]:
     return [s.strip() for s in segments if s.strip()]
 
 
+def _constant_from_text(text: str) -> object:
+    """``_constant_value`` of one already-isolated argument text; ``_NOT_CONSTANT`` when
+    the text is not a constant expression or is not valid Python on its own."""
+    try:
+        return _constant_value(ast.parse(text, mode="eval").body)
+    except (ValueError, SyntaxError):
+        return _NOT_CONSTANT
+
+
 def _parse_call_args_text(args_text: str) -> tuple[list[str], dict[str, object]]:
     """Decode one call's raw argument-list text into (positional_str_args,
     kwargs) — the text-tier equivalent of reading `node.args`/`node.keywords`
     off an `ast.Call`. Each segment's VALUE is decoded via
-    `ast.literal_eval` on that segment alone (never a whole-file `ast.parse`)
-    so a literal that IS a constant on its own (a quoted string, an int,
-    True/False/None) is recovered even when some UNRELATED part of the file
-    is Python-2-only syntax; a value that is NOT a literal constant (a bare
-    name, a call expression like `_get_default_datadir()`, or a leading-zero
-    octal like `0600`) is silently skipped for THAT ONE value only — matching
-    `_extract_kwargs_strings`'s own `ast.Constant`-only contract, so the two
-    tiers report identical shapes for whatever both CAN resolve.
+    `_constant_from_text` on that segment alone (never a whole-file
+    `ast.parse`) so a constant on its own (a quoted string, a number or
+    number arithmetic such as `-1` or `2**16`, True/False/None) is recovered
+    even when some UNRELATED part of the file is Python-2-only syntax; a value
+    that is NOT a constant (a bare name, a call expression like
+    `_get_default_datadir()`, or a leading-zero octal like `0600`) is silently
+    skipped for THAT ONE value only — matching `_extract_kwargs_strings`'s own
+    `_constant_value` contract, so the two tiers report identical shapes for
+    whatever both CAN resolve.
     """
     positional: list[str] = []
     kwargs: dict[str, object] = {}
@@ -473,16 +606,12 @@ def _parse_call_args_text(args_text: str) -> tuple[list[str], dict[str, object]]
         kw_match = _RE_KWARG.match(segment)
         if kw_match:
             key, value_text = kw_match.group(1), kw_match.group(2)
-            try:
-                value = ast.literal_eval(value_text.strip())
-            except (ValueError, SyntaxError):
+            value = _constant_from_text(value_text.strip())
+            if value is _NOT_CONSTANT:
                 continue
             kwargs[key] = value
         else:
-            try:
-                value = ast.literal_eval(segment)
-            except (ValueError, SyntaxError):
-                continue
+            value = _constant_from_text(segment)
             if isinstance(value, str):
                 positional.append(value)
     return positional, kwargs
