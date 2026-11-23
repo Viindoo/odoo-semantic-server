@@ -143,7 +143,9 @@ jobs:
   browser-tests-admin:
     # Admin browser tests — require Postgres + FastAPI api_server + Astro preview
     # Time budget: ≤20 min (70+ tests × ~15s each with Playwright)
-    runs-on: ubuntu-latest
+    # Playwright 1.60 (uv.lock) installs Chromium's system dependencies only on
+    # Ubuntu releases it supports; ubuntu-latest (26.04) is not one of them.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       PG_PASSWORD: password
@@ -201,7 +203,9 @@ jobs:
   browser-tests-public:
     # Public browser tests — require only Astro preview (no Postgres, no FastAPI)
     # Time budget: ≤2 min
-    runs-on: ubuntu-latest
+    # Playwright 1.60 (uv.lock) installs Chromium's system dependencies only on
+    # Ubuntu releases it supports; ubuntu-latest (26.04) is not one of them.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
