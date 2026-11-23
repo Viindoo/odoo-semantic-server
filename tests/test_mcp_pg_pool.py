@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # tests/test_mcp_pg_pool.py
-"""Unit/integration tests for the SimpleConnectionPool refactor (WI-P2).
+"""Unit/integration tests for the PgPool connection pool (WI-P2).
 
 Marker: pytest.mark.postgres — tests that need a live PostgreSQL connection.
 
@@ -196,9 +196,10 @@ def test_pool_max_blocks_or_raises_at_11():
     Either outcome is acceptable — the important thing is the pool does NOT
     silently return a None/invalid connection.
 
-    Note: SimpleConnectionPool.getconn() with no connections available raises
-    ``psycopg2.pool.PoolError`` immediately (no blocking wait). This test
-    asserts that the 11th checkout raises PoolError within 2 seconds.
+    Note: this drives the raw psycopg2 pool (``PgPool._pool.getconn()``),
+    whose getconn raises ``psycopg2.pool.PoolError`` immediately when every
+    connection is in use (no blocking wait); ``PgPool.checkout()`` adds the
+    bounded wait on top (tests/test_pg_pool_checkout_wait.py).
     """
     import os
 
@@ -213,7 +214,7 @@ def test_pool_max_blocks_or_raises_at_11():
     # The _reset_pg_pool autouse fixture will close and reset it after the test.
     small_pool_obj = PgPool(dsn, min_conn=1, max_conn=10)
     pg_mod._pool = small_pool_obj  # fixture's autouse reset will clean this up
-    small_pool = small_pool_obj._pool  # underlying SimpleConnectionPool for direct getconn()
+    small_pool = small_pool_obj._pool  # underlying psycopg2 pool for direct getconn()
 
     held_events: list = []
     release_event = __import__("threading").Event()
@@ -252,8 +253,7 @@ def test_pool_max_blocks_or_raises_at_11():
             pass
 
     # Assert: pool behaviour at maxconn+1 is observable (PoolError raised or
-    # at most maxconn simultaneous holders due to psycopg2's best-effort
-    # thread-safety in SimpleConnectionPool).
+    # at most maxconn simultaneous holders).
     pool_error_raised = len([e for e in errors if isinstance(e, psycopg2.pool.PoolError)])
     other_errors = [e for e in errors if not isinstance(e, psycopg2.pool.PoolError)]
 
