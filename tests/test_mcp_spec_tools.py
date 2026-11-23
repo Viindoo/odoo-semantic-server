@@ -562,3 +562,92 @@ class TestFindDeprecatedUsageProfileFilter:
         out = spec_tools._find_deprecated_usage(v, profile_name="alpha_depr")
         assert "legacy_alpha" in out  # matching profile still surfaces its hit
         assert "legacy_beta" not in out  # non-matching profile narrowed away (non-escalating)
+
+
+# --- issue #404: a version index-core never ran for -------------------------
+
+# A version with module data but no index-core run has no CoreSymbol / CLI*
+# node. Nothing in this module (or any other test) seeds it.
+UNCATALOGUED_VERSION = "79.0"
+
+
+@pytest.fixture
+def uncatalogued(neo4j_driver, seeded_spec_neo4j):
+    with neo4j_driver.session() as s:
+        s.run("MATCH (n) WHERE n.odoo_version = $v DETACH DELETE n",
+              v=UNCATALOGUED_VERSION).consume()
+    return UNCATALOGUED_VERSION
+
+
+def _says_not_indexed(out: str) -> bool:
+    return "Status:      not_indexed" in out and "NOT evidence" in out
+
+
+class TestUncataloguedVersionIsNotAbsence:
+    """Business rule (#404): on a version whose spec catalogue was never
+    indexed, a lookup miss is answered with a distinct not_indexed status that
+    a client cannot read as "this flag / command / symbol does not exist"; a
+    miss on an indexed version still answers "not found"."""
+
+    def test_cli_flag_on_uncatalogued_version(self, spec_tools, uncatalogued):
+        out = spec_tools._cli_help(
+            "server", flag="--skip-auto-install", odoo_version=uncatalogued,
+        )
+        assert _says_not_indexed(out), out
+        assert "not found" not in out.lower(), out
+        assert "odoo-bin server --help" in out, out
+
+    def test_cli_command_and_listing_on_uncatalogued_version(
+        self, spec_tools, uncatalogued,
+    ):
+        for out in (
+            spec_tools._cli_help("server", flag=None, odoo_version=uncatalogued),
+            spec_tools._cli_help(None, flag=None, odoo_version=uncatalogued),
+        ):
+            assert _says_not_indexed(out), out
+            assert "not found" not in out.lower(), out
+
+    def test_cli_miss_on_indexed_version_is_still_not_found(
+        self, spec_tools, seeded_spec_neo4j,
+    ):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._cli_help(
+            "server", flag="--no-such-flag", odoo_version=v_from,
+        )
+        assert "not found" in out.lower(), out
+        assert "not_indexed" not in out, out
+
+    def test_core_lookup_on_uncatalogued_version(self, spec_tools, uncatalogued):
+        out = spec_tools._lookup_core_api("safe_eval", uncatalogued)
+        assert _says_not_indexed(out), out
+        assert "not found" not in out.lower(), out
+
+    def test_core_miss_on_indexed_version_is_still_not_found(
+        self, spec_tools, seeded_spec_neo4j,
+    ):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._lookup_core_api("definitely_not_a_real_symbol_xyz", v_from)
+        assert "not found" in out.lower(), out
+        assert "not_indexed" not in out, out
+
+    def test_api_diff_into_uncatalogued_version_never_reports_removed(
+        self, spec_tools, seeded_spec_neo4j, uncatalogued,
+    ):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._api_version_diff("safe_eval", v_from, uncatalogued)
+        assert _says_not_indexed(out), out
+        assert "removed in" not in out, out
+        assert uncatalogued in out and v_from not in out.split("Status:")[1], out
+
+    def test_deprecated_usage_on_uncatalogued_version_is_not_a_clean_bill(
+        self, spec_tools, uncatalogued,
+    ):
+        out = spec_tools._find_deprecated_usage(odoo_version=uncatalogued)
+        assert _says_not_indexed(out), out
+
+    def test_deprecated_usage_on_indexed_version_has_no_warning(
+        self, spec_tools, seeded_spec_neo4j,
+    ):
+        v_from, _ = seeded_spec_neo4j
+        out = spec_tools._find_deprecated_usage(odoo_version=v_from)
+        assert "not_indexed" not in out, out

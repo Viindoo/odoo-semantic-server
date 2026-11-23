@@ -20,6 +20,7 @@ performed at call time.
 
 import sys
 
+from src.mcp.catalogue import NOT_INDEXED_STATUS, catalogue_indexed, not_indexed_warning
 from src.mcp.server import (
     READONLY_TOOL_KWARGS,
     RequiredOdooVersion,
@@ -49,6 +50,19 @@ def _format_cli_flag_detail(rec: dict, replacement: str | None, version: str) ->
     else:
         lines[-1] = lines[-1].replace("├─", "└─")
     return "\n".join(lines)
+
+
+def _format_cli_not_indexed(head: str, version: str, subject: str, check: str) -> str:
+    """Answer for a lookup on a version whose CLI catalogue is not indexed (#404).
+
+    A distinct ``Status: not_indexed`` - never "not found" - so a client cannot
+    read it as "this command / flag does not exist at this version".
+    """
+    return "\n".join([
+        head,
+        f"├─ Status:      {NOT_INDEXED_STATUS}",
+        f"└─ {not_indexed_warning('cli', version, subject, check)}",
+    ])
 
 
 def _format_cli_command_summary(
@@ -140,6 +154,15 @@ def _cli_help(
                 label=f"CLI flag {flag!r} of {command!r} (Odoo {odoo_version})",
                 flag=flag, cmd=command, v=odoo_version,
             )
+            if rec is None and curate_rec is None and not catalogue_indexed(
+                _srv._single_bounded, session, "cli", odoo_version,
+            ):
+                return _format_cli_not_indexed(
+                    f"cli_help({command!r}, {flag!r}, Odoo {odoo_version})",
+                    odoo_version,
+                    f"flag {flag!r} of command {command!r}",
+                    f"`odoo-bin {command} --help`",
+                )
             if rec is None:
                 result = (
                     f"cli_help({command!r}, {flag!r}, Odoo {odoo_version})\n"
@@ -179,6 +202,15 @@ def _cli_help(
                 label=f"CLI command {command!r} (Odoo {odoo_version})",
                 cmd=command, v=odoo_version,
             )
+            if cmd_rec is None and curate_rec is None and not catalogue_indexed(
+                _srv._single_bounded, session, "cli", odoo_version,
+            ):
+                return _format_cli_not_indexed(
+                    f"cli_help({command!r}, Odoo {odoo_version})",
+                    odoo_version,
+                    f"command {command!r}",
+                    "`odoo-bin --help`",
+                )
             if cmd_rec is None:
                 result = (
                     f"cli_help({command!r}, Odoo {odoo_version})\n"
@@ -235,6 +267,15 @@ def _cli_help(
             label=f"CLI command list (Odoo {odoo_version})",
             v=odoo_version,
         )
+    if not cmds and curate_rec is None:
+        # Neither a CLICommand nor the SpecMetadata index-core writes with them:
+        # index-core never ran for this version.
+        return _format_cli_not_indexed(
+            f"cli_help(Odoo {odoo_version})",
+            odoo_version,
+            "any command",
+            "`odoo-bin --help`",
+        )
     if not cmds:
         result = (
             f"cli_help(Odoo {odoo_version})\n"
@@ -286,6 +327,8 @@ def cli_help(
 
     Returns:
         Tree text: flag status, type, default, help text, replacement.
+        "Status: not_indexed" means the version's CLI catalogue is not
+        indexed yet - never evidence that a command or flag is absent.
 
     Example:
         cli_help("server", "--longpolling-port", odoo_version="18.0")
